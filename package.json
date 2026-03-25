@@ -9,7 +9,9 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "build:web": "vite build --config vite.web.config.ts",
+    "dev:web": "vite --config vite.web.config.ts"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
