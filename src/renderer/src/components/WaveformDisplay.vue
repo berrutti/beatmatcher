@@ -436,13 +436,13 @@ function applyDrag(clientX: number) {
   }
 
   if (dragging.value === 'new') {
-    // First real move — now we have a safe duration, create the region
     const sec = pxToSec(px)
     const start = Math.min(newRegionAnchorSec, sec)
     const end = Math.max(newRegionAnchorSec, sec)
     if (end - start > 0.001) {
       deck.value.setLoopRegion({ startSec: start, endSec: end, beats: deck.value.loopBeats })
-      dragging.value = 'end' // continue dragging the end handle
+      // Drag whichever edge is under the cursor
+      dragging.value = sec < newRegionAnchorSec ? 'start' : 'end'
     }
     drawWaveform()
     return
