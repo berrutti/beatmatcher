@@ -21,6 +21,7 @@
         class="waveform__canvas"
         @mousedown="onMouseDown"
         @mousemove="onMouseMoveCanvas"
+        @wheel.prevent="onWheel"
         @contextmenu.prevent
       />
 
@@ -314,11 +315,8 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
 let rafId = 0
 
 function getPlayheadSec(): number | null {
-  const region = deck.value.loopRegion
-  if (!region || !deck.value.playing) return null
-  const phase = deck.value.getLoopEngine().getPhase()
-  const dur = region.endSec - region.startSec
-  return region.startSec + (phase % 1) * dur
+  if (!deck.value.loopRegion || !deck.value.playing) return null
+  return deck.value.getLoopEngine().getLoopPositionSec()
 }
 
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
@@ -334,7 +332,6 @@ function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.moveTo(x, 0)
   ctx.lineTo(x, h)
   ctx.stroke()
-  // Triangle head at top
   ctx.fillStyle = '#ffffff'
   ctx.beginPath()
   ctx.moveTo(x - 5, 0)
@@ -348,20 +345,15 @@ function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
 function updateCenterLock() {
   const sec = getPlayheadSec()
   if (sec === null) return
+  const region = deck.value.loopRegion!
+  const loopDur = region.endSec - region.startSec
   const viewSpan = viewEndSec.value - viewStartSec.value
-  const w = canvasEl.value?.clientWidth || 800
-  // Only center-lock when view is narrower than the full loop duration
-  // Edge behavior: clamp so playhead doesn't go past 20% from either edge
-  const margin = viewSpan * 0.2
-  const playheadPx = secToPx(sec)
-  const center = w / 2
-  if (Math.abs(playheadPx - center) > w * 0.05) {
-    const [s, e] = clampView(sec - viewSpan / 2, viewSpan)
-    viewStartSec.value = s
-    viewEndSec.value = e
-    buildVisiblePeaks()
-  }
-  void margin // used conceptually in clampView
+  // Only lock when zoomed in enough that the loop is wider than the view
+  if (loopDur <= viewSpan) return
+  const [s, e] = clampView(sec - viewSpan / 2, viewSpan)
+  viewStartSec.value = s
+  viewEndSec.value = e
+  buildVisiblePeaks()
 }
 
 function rafLoop() {
@@ -481,6 +473,11 @@ function onMouseMoveCanvas(e: MouseEvent) {
 function onMouseMoveWindow(e: MouseEvent) {
   if (!dragging.value) return
   applyDrag(e.clientX)
+}
+
+function onWheel(e: WheelEvent) {
+  if (e.deltaY < 0) zoomIn()
+  else zoomOut()
 }
 
 function onMouseUp() {

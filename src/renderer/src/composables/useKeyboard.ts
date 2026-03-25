@@ -20,8 +20,13 @@ export function useKeyboard() {
   const store = useDecksStore()
 
   function isTyping(e: KeyboardEvent): boolean {
-    const tag = (e.target as HTMLElement).tagName
-    return tag === 'INPUT' || tag === 'TEXTAREA'
+    const el = e.target as HTMLInputElement
+    if (el.tagName === 'TEXTAREA') return true
+    if (el.tagName === 'INPUT') {
+      const type = el.type.toLowerCase()
+      return type === 'text' || type === 'number' || type === 'email' || type === 'search'
+    }
+    return false
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -32,28 +37,31 @@ export function useKeyboard() {
     const key = e.key.toLowerCase()
 
     // Deck A
-    if (key === 'a') { deckA.togglePlay(); return }
-    if (key === 's') { deckA.cue(); return }
+    if (key === 'a') { deckA.cueStart(); return }
+    if (key === 's') { deckA.togglePlay(); return }
     if (key === 'q') { deckA.nudgeStart('back'); return }
     if (key === 'w') { deckA.nudgeStart('forward'); return }
     if (e.key === 'Tab') { e.preventDefault(); deckA.togglePulse(); return }
 
     // Deck B
-    if (key === 'k') { deckB.togglePlay(); return }
-    if (key === 'l') { deckB.cue(); return }
-    if (key === 'o') { deckB.nudgeStart('back'); return }
-    if (key === 'p') { deckB.nudgeStart('forward'); return }
+    if (key === 'k') { deckB.cueStart(); return }
+    if (key === 'l') { deckB.togglePlay(); return }
+    if (key === 'i') { deckB.nudgeStart('back'); return }
+    if (key === 'o') { deckB.nudgeStart('forward'); return }
     if (key === "'") { deckB.togglePulse(); return }
   }
 
   function onKeyUp(e: KeyboardEvent) {
+    if (e.key === 'Tab') e.preventDefault()
     if (isTyping(e)) return
 
     const { deckA, deckB } = store
     const key = e.key.toLowerCase()
 
     if (key === 'q' || key === 'w') deckA.nudgeEnd()
-    if (key === 'o' || key === 'p') deckB.nudgeEnd()
+    if (key === 'i' || key === 'o') deckB.nudgeEnd()
+    if (key === 'a') deckA.cueEnd()
+    if (key === 'k') deckB.cueEnd()
   }
 
   onMounted(() => {

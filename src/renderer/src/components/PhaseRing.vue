@@ -20,8 +20,7 @@ function getPhase(): number {
 }
 
 const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
-const SIZE = 160
-const LINE_WIDTH = 10
+const LINE_WIDTH_RATIO = 0.065 // line width as fraction of canvas size
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 let rafId = 0
@@ -33,11 +32,16 @@ function draw() {
   if (!canvas) return
   const ctx = canvas.getContext('2d')!
   const dpr = window.devicePixelRatio || 1
+  const SIZE = canvas.clientWidth
+  const LINE_WIDTH = SIZE * LINE_WIDTH_RATIO
   const cx = SIZE / 2
   const cy = SIZE / 2
   const radius = SIZE / 2 - LINE_WIDTH
 
-  ctx.clearRect(0, 0, SIZE * dpr, SIZE * dpr)
+  canvas.width = SIZE * dpr
+  canvas.height = SIZE * dpr
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, SIZE, SIZE)
 
   // Background track
   ctx.beginPath()
@@ -108,14 +112,6 @@ function draw() {
 }
 
 onMounted(() => {
-  const canvas = canvasEl.value!
-  const dpr = window.devicePixelRatio || 1
-  canvas.width = SIZE * dpr
-  canvas.height = SIZE * dpr
-  canvas.style.width = `${SIZE}px`
-  canvas.style.height = `${SIZE}px`
-  const ctx = canvas.getContext('2d')!
-  ctx.scale(dpr, dpr)
   rafId = requestAnimationFrame(draw)
 })
 
@@ -127,5 +123,7 @@ onUnmounted(() => {
 <style scoped>
 .phase-ring {
   display: block;
+  width: 100%;
+  aspect-ratio: 1;
 }
 </style>

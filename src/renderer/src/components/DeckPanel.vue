@@ -28,7 +28,9 @@
     <WaveformDisplay v-show="deck.mode === 'edit'" :deck-id="deckId" class="deck__waveform" />
 
     <template v-if="deck.mode === 'play'">
-      <PhaseRing :deck-id="deckId" />
+      <div class="phase-ring-wrapper">
+        <PhaseRing :deck-id="deckId" />
+      </div>
 
       <div class="deck__bpm-display">
         <input
@@ -65,12 +67,29 @@
         <button class="deck__bpm-step" @mousedown.prevent="startBpmStep(-1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▼</button>
       </div>
 
+      <div class="deck__eq-row">
+        <div v-for="band in (['low', 'mid', 'high'] as const)" :key="band" class="deck__eq-band">
+          <input
+            type="range"
+            class="deck__slider deck__slider--eq"
+            min="-12"
+            max="12"
+            step="0.5"
+            :value="deck.eq[band]"
+            orient="vertical"
+            @input="e => deck.setEq(band, parseFloat((e.target as HTMLInputElement).value))"
+            @dblclick="deck.setEq(band, 0)"
+          />
+          <span class="deck__slider-label">{{ band.toUpperCase() }}</span>
+        </div>
+      </div>
+
       <button
         class="deck__pulse-btn"
         :class="{ 'deck__pulse-btn--on': deck.pulseEnabled }"
         @click="deck.togglePulse()"
       >
-        <span class="deck__btn-key">{{ deckId === 'A' ? 'TAB' : '\'' }}</span>
+        <span class="deck__btn-key">{{ deckId === 'A' ? 'TAB' : "'" }}</span>
         <span>PULSE</span>
       </button>
 
@@ -82,7 +101,7 @@
           @mouseup="deck.nudgeEnd()"
           @mouseleave="deck.nudgeEnd()"
         >
-          <span class="deck__btn-key">{{ deckId === 'A' ? 'Q' : 'O' }}</span>
+          <span class="deck__btn-key">{{ deckId === 'A' ? 'Q' : 'I' }}</span>
           <span class="deck__btn-icon">◀◀</span>
         </button>
         <button
@@ -92,14 +111,20 @@
           @mouseup="deck.nudgeEnd()"
           @mouseleave="deck.nudgeEnd()"
         >
-          <span class="deck__btn-key">{{ deckId === 'A' ? 'W' : 'P' }}</span>
+          <span class="deck__btn-key">{{ deckId === 'A' ? 'W' : 'O' }}</span>
           <span class="deck__btn-icon">▶▶</span>
         </button>
       </div>
 
       <div class="deck__transport-row">
-        <button class="deck__btn deck__btn--cue" @click="deck.cue()">
-          <span class="deck__btn-key">{{ deckId === 'A' ? 'S' : 'L' }}</span>
+        <button
+          class="deck__btn deck__btn--cue"
+          :class="{ 'deck__btn--cueing': deck.cueing }"
+          @mousedown.prevent="deck.cueStart()"
+          @mouseup="deck.cueEnd()"
+          @mouseleave="deck.cueEnd()"
+        >
+          <span class="deck__btn-key">{{ deckId === 'A' ? 'A' : 'K' }}</span>
           <span>CUE</span>
         </button>
         <button
@@ -107,7 +132,7 @@
           :class="{ 'deck__btn--playing': deck.playing }"
           @click="deck.togglePlay()"
         >
-          <span class="deck__btn-key">{{ deckId === 'A' ? 'A' : 'K' }}</span>
+          <span class="deck__btn-key">{{ deckId === 'A' ? 'S' : 'L' }}</span>
           <span>{{ deck.playing ? '⏸' : '▶' }}</span>
         </button>
       </div>

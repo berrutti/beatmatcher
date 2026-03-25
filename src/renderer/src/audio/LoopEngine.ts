@@ -22,6 +22,9 @@ export class LoopEngine {
   private buffer: AudioBuffer | null = null
   private source: AudioBufferSourceNode | null = null
   private gainNode: GainNode
+  private eqLow: BiquadFilterNode
+  private eqMid: BiquadFilterNode
+  private eqHigh: BiquadFilterNode
 
   private _region: LoopRegion | null = null
   private _targetBpm = 138
@@ -34,8 +37,31 @@ export class LoopEngine {
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx
+
+    this.eqLow = ctx.createBiquadFilter()
+    this.eqLow.type = 'lowshelf'
+    this.eqLow.frequency.value = 200
+
+    this.eqMid = ctx.createBiquadFilter()
+    this.eqMid.type = 'peaking'
+    this.eqMid.frequency.value = 1000
+    this.eqMid.Q.value = 1
+
+    this.eqHigh = ctx.createBiquadFilter()
+    this.eqHigh.type = 'highshelf'
+    this.eqHigh.frequency.value = 8000
+
     this.gainNode = ctx.createGain()
+
+    this.eqLow.connect(this.eqMid)
+    this.eqMid.connect(this.eqHigh)
+    this.eqHigh.connect(this.gainNode)
     this.gainNode.connect(ctx.destination)
+  }
+
+  setEq(band: 'low' | 'mid' | 'high', db: number): void {
+    const node = band === 'low' ? this.eqLow : band === 'mid' ? this.eqMid : this.eqHigh
+    node.gain.value = Math.max(-12, Math.min(12, db))
   }
 
   get audioContext(): AudioContext {
@@ -140,6 +166,19 @@ export class LoopEngine {
     return total % 1.0
   }
 
+  /** Position within the loop region in seconds (wraps around on each loop). */
+  getLoopPositionSec(): number {
+    if (!this._playing || !this._region) return this._region?.startSec ?? 0
+    const dur = this._region.endSec - this._region.startSec
+    if (dur <= 0) return this._region.startSec
+    const now = this.ctx.currentTime
+    // Total beats elapsed, then convert to seconds within loop at playback rate
+    const totalBeats = this.accumulatedPhase + (now - this.lastSegmentStart) * this.effectiveTargetBpm / 60
+    const loopBeats = this._region.beats
+    const positionInLoop = (totalBeats % loopBeats) / loopBeats
+    return this._region.startSec + positionInLoop * dur
+  }
+
   start(): void {
     this.startAt(this.ctx.currentTime)
   }
@@ -160,7 +199,7 @@ export class LoopEngine {
     src.loopStart = startSec
     src.loopEnd = endSec
     src.playbackRate.value = this.playbackRate
-    src.connect(this.gainNode)
+    src.connect(this.eqLow)
     src.start(when, startSec)
 
     this.source = src
