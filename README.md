@@ -1,23 +1,33 @@
-# beatmatcher
+# BeatMatcher
 
-A desktop app for practicing beat matching. Two independent decks, each with a pulse metronome and loop playback from audio files. The phase ring and Lissajous scope give real-time visual feedback on sync.
+A desktop app for practicing beat matching. Two independent decks, each with a pulse (similar to a metronome) and or a loop from a local audio. It has some animations for a visual representation of how accurate the beatmatching is.
 
-## Stack
+**[Try it in the browser](https://berrutti.github.io/beatmatcher/)**
 
-Electron + Vue 3 + TypeScript + Vite (via electron-vite).
+---
 
-## Setup
+## Download
+
+Get the latest release for macOS or Windows from the [Releases](https://github.com/berrutti/beatmatcher/releases) page.
+
+### macOS note
+
+The app is not code-signed, so macOS will block it on first launch. To fix this, after you drag and dropped the app to `Applications`, run once in Terminal:
 
 ```bash
-yarn install
-yarn dev
+xattr -cr /Applications/BeatMatcher.app
 ```
+
+Then the app should open without problems.
+
+---
 
 ## How it works
 
-Each deck has two audio sources that run together: a pulse (metronome click) and an audio loop. The loop is defined by marking a region on the waveform and declaring how many beats it contains — BPM is inferred from the duration. Playback rate adjusts automatically to match the target BPM.
+Each deck has two audio sources: a pulse and an audio loop. Mark a region on the waveform and declare how many beats it contains. BPM is inferred from the duration. Playback rate adjusts automatically to match the target BPM.
 
-The phase ring shows position within the current beat. The Lissajous scope in the center plots both decks' phases against each other — a straight diagonal line means they are in sync.
+Animations:
+The phase ring shows position within the current beat. The Lissajous scope plots both decks' phases against each other — a straight diagonal means they are in sync.
 
 ## Keyboard
 
@@ -27,3 +37,14 @@ The phase ring shows position within the current beat. The Lissajous scope in th
 | S / L | Deck A/B cue |
 | Q W / O P | Deck A/B nudge (pitch bend while held) |
 | Tab / ' | Deck A/B pulse toggle |
+
+---
+
+## Development
+
+```bash
+yarn install
+yarn dev
+```
+
+Built with Electron + Vue 3 + TypeScript + Vite.

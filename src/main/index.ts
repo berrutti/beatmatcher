@@ -12,6 +12,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     title: 'BeatMatcher',
     backgroundColor: '#0a0a0a',
+    icon: join(__dirname, '../../build/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -36,6 +37,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.beatmatcher')
+  app.dock?.setIcon(join(__dirname, '../../build/icon.png'))
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
