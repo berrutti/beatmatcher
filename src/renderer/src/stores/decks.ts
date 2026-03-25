@@ -175,8 +175,17 @@ function createDeck(id: DeckId) {
 
     nudgeEnd() {
       state.nudging = null
-      pulse.setNudge(0)
       loop.setNudge(0)
+      pulse.setNudge(0)
+      // Re-sync pulse to the loop's next beat boundary to fix phase drift
+      if (state.loopPlaying && state.pulsePlaying) {
+        pulse.stop()
+        const secondsPerBeat = 60 / state.bpm
+        const phaseInBeat = loop.getPhase()
+        const secondsUntilNextBeat = secondsPerBeat * (1 - phaseInBeat)
+        const startTime = pulse.audioContext.currentTime + secondsUntilNextBeat
+        pulse.startAt(startTime)
+      }
     },
 
     // playing = true only when in normal play mode, not cueing

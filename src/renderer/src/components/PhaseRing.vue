@@ -13,9 +13,8 @@ const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
 
 function getPhase(): number {
-  // Use pulse phase if pulse is playing, otherwise loop phase, otherwise 0
-  if (deck.value.pulsePlaying) return deck.value.getPulseEngine().getPhase()
   if (deck.value.loopPlaying) return deck.value.getLoopEngine().getPhase()
+  if (deck.value.pulsePlaying) return deck.value.getPulseEngine().getPhase()
   return 0
 }
 
@@ -53,7 +52,7 @@ function draw() {
   const phase = getPhase()
 
   // Beat crossing detection
-  if (deck.value.playing && prevPhase > 0.85 && phase < 0.15) {
+  if (deck.value.loopPlaying && prevPhase > 0.85 && phase < 0.15) {
     flashStrength = 1.0
   }
   prevPhase = phase
