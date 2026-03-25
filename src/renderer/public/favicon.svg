@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1e1b2e"/>
+      <stop offset="100%" stop-color="#0e0c1a"/>
+    </radialGradient>
+    <clipPath id="clip">
+      <circle cx="256" cy="256" r="236"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+
+  <!-- Subtle dark border -->
+  <circle cx="256" cy="256" r="244" fill="none" stroke="#2d2a40" stroke-width="24"/>
+
+  <!-- Wave 1 (orange) -->
+  <path
+    d="M 40 256 C 100 256, 120 140, 180 140 C 240 140, 260 372, 320 372 C 380 372, 400 256, 460 256"
+    fill="none"
+    stroke="#f97316"
+    stroke-width="14"
+    stroke-linecap="round"
+    clip-path="url(#clip)"
+  />
+
+  <!-- Wave 2 (cyan) — half period out of phase -->
+  <path
+    d="M 40 256 C 100 256, 120 372, 180 372 C 240 372, 260 140, 320 140 C 380 140, 400 256, 460 256"
+    fill="none"
+    stroke="#38bdf8"
+    stroke-width="14"
+    stroke-linecap="round"
+    clip-path="url(#clip)"
+  />
+</svg>
