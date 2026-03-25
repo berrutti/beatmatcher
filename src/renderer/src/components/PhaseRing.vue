@@ -5,14 +5,19 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useDecksStore } from '@renderer/stores/decks'
-import { usePhase } from '@renderer/composables/usePhase'
 import type { DeckId } from '@renderer/stores/decks'
 
 const props = defineProps<{ deckId: DeckId }>()
 
 const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
-const { getPhase } = usePhase(deck.value.getPulseEngine())
+
+function getPhase(): number {
+  // Use pulse phase if pulse is playing, otherwise loop phase, otherwise 0
+  if (deck.value.pulsePlaying) return deck.value.getPulseEngine().getPhase()
+  if (deck.value.loopPlaying) return deck.value.getLoopEngine().getPhase()
+  return 0
+}
 
 const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
 const SIZE = 160

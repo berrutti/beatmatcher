@@ -12,8 +12,10 @@ const NUDGE_PERCENT = 4
 const BPM_MIN = 60
 const BPM_MAX = 200
 
+const PULSE_FREQUENCIES: Record<DeckId, number> = { A: 1000, B: 600 }
+
 function createDeck(id: DeckId) {
-  const pulse = new PulseEngine({ bpm: DEFAULT_BPM })
+  const pulse = new PulseEngine({ bpm: DEFAULT_BPM, frequency: PULSE_FREQUENCIES[id] })
   // LoopEngine shares the same AudioContext as PulseEngine
   const loop = new LoopEngine(pulse.audioContext)
 
@@ -29,7 +31,7 @@ function createDeck(id: DeckId) {
     trackLoaded: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
-    loopBeats: 32 as 16 | 32,
+    loopBeats: 16 as 16 | 32,
 
     // Shared BPM (drives both pulse and loop playback rate)
     bpm: DEFAULT_BPM,
@@ -39,9 +41,7 @@ function createDeck(id: DeckId) {
     getPulseEngine(): PulseEngine { return pulse },
     getLoopEngine(): LoopEngine { return loop },
 
-    // Inferred from loop region if loaded, otherwise manual BPM
     get displayBpm(): number {
-      if (state.trackLoaded && state.loopRegion) return loop.inferredBpm
       return state.bpm
     },
 
@@ -61,31 +61,36 @@ function createDeck(id: DeckId) {
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region
       loop.setRegion(region)
-      // Sync BPM from the newly defined loop
-      state.bpm = loop.inferredBpm
-      pulse.bpm = loop.inferredBpm
+      // Sync pulse to inferred BPM so pulse and loop stay phase-locked.
+      // Do NOT touch loop.targetBpm — it stays as the user's slider value,
+      // so playbackRate = targetBpm / inferredBpm applies the correct pitch shift.
+      const inferred = loop.inferredBpm
+      pulse.bpm = inferred
+      state.bpm = inferred
     },
 
     setLoopBeats(beats: 16 | 32) {
       state.loopBeats = beats
       loop.setBeats(beats)
       if (state.loopRegion) {
-        // Update stored region reference after LoopEngine scaled it
         const r = loop.region
         if (r) state.loopRegion = r
-        state.bpm = loop.inferredBpm
-        pulse.bpm = loop.inferredBpm
+        const inferred = loop.inferredBpm
+        pulse.bpm = inferred
+        state.bpm = inferred
       }
     },
 
     togglePlay() {
       const isPlaying = state.pulsePlaying || state.loopPlaying
       if (isPlaying) {
-        if (state.pulseEnabled) { pulse.stop(); state.pulsePlaying = false }
-        if (state.trackLoaded) { loop.stop(); state.loopPlaying = false }
+        pulse.stop(); state.pulsePlaying = false
+        loop.stop(); state.loopPlaying = false
       } else {
-        if (state.pulseEnabled) { pulse.start(); state.pulsePlaying = true }
-        if (state.trackLoaded && state.loopRegion) { loop.start(); state.loopPlaying = true }
+        // Schedule both at the same AudioContext time so they start in sync
+        const startTime = pulse.audioContext.currentTime + 0.05
+        if (state.pulseEnabled) { pulse.startAt(startTime); state.pulsePlaying = true }
+        if (state.trackLoaded && state.loopRegion) { loop.startAt(startTime); state.loopPlaying = true }
       }
     },
 
@@ -98,6 +103,10 @@ function createDeck(id: DeckId) {
       state.pulseEnabled = !state.pulseEnabled
       if (!state.pulseEnabled && state.pulsePlaying) {
         pulse.stop(); state.pulsePlaying = false
+      } else if (state.pulseEnabled && state.loopPlaying) {
+        // Re-enable pulse while loop is already playing — start it now in sync
+        pulse.startAt(pulse.audioContext.currentTime + 0.05)
+        state.pulsePlaying = true
       }
     },
 

@@ -46,12 +46,13 @@ html, body {
 
 .app__header {
   text-align: center;
-  padding: 16px 0 8px;
+  padding: clamp(4px, 1vh, 16px) 0 clamp(2px, 0.5vh, 8px);
   border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .app__title {
-  font-size: 1.25rem;
+  font-size: clamp(0.75rem, 1.5vh, 1.25rem);
   font-weight: 700;
   letter-spacing: 0.3em;
   margin: 0;
@@ -59,10 +60,10 @@ html, body {
 }
 
 .app__subtitle {
-  font-size: 0.65rem;
+  font-size: clamp(0.5rem, 0.9vh, 0.65rem);
   color: var(--color-muted);
   letter-spacing: 0.2em;
-  margin: 4px 0 0;
+  margin: 2px 0 0;
 }
 
 .app__decks {
@@ -87,11 +88,12 @@ html, body {
   display: flex;
   justify-content: center;
   gap: 48px;
-  padding: 10px 0;
+  padding: clamp(4px, 0.8vh, 10px) 0;
   border-top: 1px solid var(--color-border);
-  font-size: 0.65rem;
+  font-size: clamp(0.5rem, 0.9vh, 0.65rem);
   color: var(--color-muted);
   letter-spacing: 0.05em;
+  flex-shrink: 0;
 }
 
 .app__kb-group {
@@ -121,12 +123,13 @@ kbd {
 .deck {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 20px 32px;
-  gap: 24px;
+  padding: clamp(8px, 2vh, 20px) clamp(12px, 2vw, 32px);
+  gap: clamp(8px, 1.5vh, 24px);
   transition: background 0.2s;
 }
 
@@ -179,14 +182,14 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 20px;
+  gap: clamp(2px, 0.4vh, 4px);
+  padding: clamp(4px, 0.8vh, 8px) clamp(10px, 1.5vw, 20px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-muted);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: clamp(0.6rem, 1.3vh, 0.85rem);
   letter-spacing: 0.1em;
   cursor: pointer;
 }
@@ -207,7 +210,7 @@ kbd {
 }
 
 .deck__label {
-  font-size: 1.25rem;
+  font-size: clamp(0.75rem, 1.8vh, 1.25rem);
   font-weight: 700;
   letter-spacing: 0.25em;
   color: var(--color-muted);
@@ -237,18 +240,56 @@ kbd {
 }
 
 .deck__bpm-value {
-  font-size: 3.5rem;
+  font-size: clamp(1.8rem, 6vh, 3.5rem);
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  cursor: text;
 }
 
 .deck--a .deck__bpm-value { color: var(--color-accent-a); }
 .deck--b .deck__bpm-value { color: var(--color-accent-b); }
 
+.deck__bpm-input {
+  font-size: clamp(1.8rem, 6vh, 3.5rem);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid currentColor;
+  color: inherit;
+  width: 5ch;
+  padding: 0;
+  outline: none;
+}
+
+.deck--a .deck__bpm-input { color: var(--color-accent-a); }
+.deck--b .deck__bpm-input { color: var(--color-accent-b); }
+
+.deck__bpm-step {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  width: 28px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  user-select: none;
+}
+
+.deck__bpm-step:hover { border-color: #555; color: #eee; }
+
 .deck__bpm-unit {
-  font-size: 1.5rem;
+  font-size: clamp(0.9rem, 2.5vh, 1.5rem);
   color: var(--color-muted);
   letter-spacing: 0.1em;
 }
@@ -262,7 +303,7 @@ kbd {
 }
 
 .deck__slider-label {
-  font-size: 1.1rem;
+  font-size: clamp(0.6rem, 1.5vh, 1.1rem);
   color: var(--color-muted);
   letter-spacing: 0.05em;
 }
@@ -273,7 +314,7 @@ kbd {
   writing-mode: vertical-lr;
   direction: rtl;
   width: 28px;
-  height: 160px;
+  height: clamp(80px, 18vh, 200px);
   cursor: pointer;
   accent-color: var(--color-accent-a);
 }
@@ -286,7 +327,7 @@ kbd {
 .deck__nudge-row,
 .deck__transport-row {
   display: flex;
-  gap: 16px;
+  gap: clamp(6px, 1.2vw, 16px);
 }
 
 .deck__btn {
@@ -294,15 +335,15 @@ kbd {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 140px;
-  height: 110px;
+  gap: clamp(2px, 0.5vh, 6px);
+  width: clamp(70px, 11vw, 140px);
+  height: clamp(56px, 11vh, 110px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-text);
   font-family: var(--font-mono);
-  font-size: 2.5rem;
+  font-size: clamp(1.2rem, 3.5vh, 2.5rem);
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s, box-shadow 0.1s;
 }
@@ -313,13 +354,13 @@ kbd {
 }
 
 .deck__btn-key {
-  font-size: 1rem;
+  font-size: clamp(0.55rem, 1.5vh, 1rem);
   color: var(--color-muted);
   letter-spacing: 0.15em;
 }
 
 .deck__btn-icon {
-  font-size: 1.5rem;
+  font-size: clamp(0.8rem, 2.2vh, 1.5rem);
 }
 
 /* Nudge active state */
@@ -338,7 +379,7 @@ kbd {
 
 /* PLAY */
 .deck__btn--play {
-  font-size: 3rem;
+  font-size: clamp(1.5rem, 4.5vh, 3rem);
 }
 
 .deck--a .deck__btn--play:hover {

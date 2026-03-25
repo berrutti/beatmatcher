@@ -90,10 +90,11 @@ export class LoopEngine {
 
   setRegion(region: LoopRegion): void {
     this._region = region
-    if (this._playing) {
-      // Restart loop with new region
-      this.stop()
-      this.start()
+    if (this._playing && this.source) {
+      // Update loop boundaries on the live source — no restart needed
+      this.source.loopStart = region.startSec
+      this.source.loopEnd = region.endSec
+      this.applyPlaybackRate()
     }
   }
 
@@ -140,6 +141,10 @@ export class LoopEngine {
   }
 
   start(): void {
+    this.startAt(this.ctx.currentTime)
+  }
+
+  startAt(when: number): void {
     if (!this.buffer || !this._region || this._playing) return
 
     const { startSec, endSec } = this._region
@@ -147,7 +152,7 @@ export class LoopEngine {
     if (dur <= 0) return
 
     this.accumulatedPhase = 0
-    this.lastSegmentStart = this.ctx.currentTime
+    this.lastSegmentStart = when
 
     const src = this.ctx.createBufferSource()
     src.buffer = this.buffer
@@ -156,7 +161,7 @@ export class LoopEngine {
     src.loopEnd = endSec
     src.playbackRate.value = this.playbackRate
     src.connect(this.gainNode)
-    src.start(0, startSec)
+    src.start(when, startSec)
 
     this.source = src
     this._playing = true

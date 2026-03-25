@@ -20,12 +20,11 @@
         ref="canvasEl"
         class="waveform__canvas"
         @mousedown="onMouseDown"
-        @mousemove="onMouseMove"
-        @mouseup="onMouseUp"
-        @mouseleave="onMouseLeave"
+        @mousemove="onMouseMoveCanvas"
+        @contextmenu.prevent
       />
 
-      <!-- Beat count selector -->
+      <!-- Controls bar -->
       <div class="waveform__controls">
         <span class="waveform__ctrl-label">LOOP</span>
         <button
@@ -38,9 +37,18 @@
           :class="{ 'waveform__beat-btn--active': deck.loopBeats === 32 }"
           @click="deck.setLoopBeats(32)"
         >32</button>
+
         <span class="waveform__bpm-readout" v-if="deck.loopRegion">
           {{ deck.displayBpm.toFixed(1) }} BPM
         </span>
+
+        <!-- Zoom controls -->
+        <div class="waveform__zoom">
+          <button class="waveform__zoom-btn" @click="zoomOut">−</button>
+          <span class="waveform__zoom-label">{{ zoomLabel }}</span>
+          <button class="waveform__zoom-btn" @click="zoomIn">+</button>
+        </div>
+
         <button class="waveform__mode-btn" @click="deck.mode = 'play'" v-if="deck.loopRegion">
           ▶ PLAY MODE
         </button>
@@ -63,27 +71,68 @@ const deck = computed(() => store.decks[props.deckId])
 const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
 const HANDLE_W = 8
 
+// Zoom levels in seconds of visible track
+const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300]
+const DEFAULT_ZOOM_SEC = 10
+
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const isDragOver = ref(false)
 
-// Peaks data for waveform rendering
-let peaks: Float32Array | null = null
+// Raw PCM channel data (kept in memory for high-res zoom)
+let rawChannel: Float32Array | null = null
+let sampleRate = 0
+let trackDuration = 0
 
-// Loop region in pixel coords (derived from seconds on resize)
-const loopPxStart = ref(0)
-const loopPxEnd = ref(0)
+// Visible window in seconds
+const viewStartSec = ref(0)
+const viewEndSec = ref(0)
 
-// Drag state
-type DragHandle = 'start' | 'end' | 'body' | null
-const dragging = ref<DragHandle>(null)
-const dragOffsetPx = ref(0)  // for body drag: offset from region start
+// Current zoom index
+const zoomIdx = ref(ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC))
+
+const zoomLabel = computed(() => {
+  const s = ZOOM_LEVELS_SEC[zoomIdx.value]
+  return s >= 60 ? `${s / 60}m` : `${s}s`
+})
+
+function viewDurationSec(): number {
+  return ZOOM_LEVELS_SEC[zoomIdx.value]
+}
+
+function clampView(start: number, duration: number): [number, number] {
+  const dur = Math.min(duration, trackDuration)
+  let s = Math.max(0, start)
+  if (s + dur > trackDuration) s = Math.max(0, trackDuration - dur)
+  return [s, s + dur]
+}
+
+function setZoomCentered(idx: number) {
+  zoomIdx.value = Math.max(0, Math.min(ZOOM_LEVELS_SEC.length - 1, idx))
+  const dur = viewDurationSec()
+  const center = (viewStartSec.value + viewEndSec.value) / 2
+  const [s, e] = clampView(center - dur / 2, dur)
+  viewStartSec.value = s
+  viewEndSec.value = e
+  buildVisiblePeaks()
+  drawWaveform()
+}
+
+// Lower index = fewer seconds = more detail = zoom in
+function zoomIn() { setZoomCentered(zoomIdx.value - 1) }
+function zoomOut() { setZoomCentered(zoomIdx.value + 1) }
 
 // ── File loading ──────────────────────────────────────────────
 
 async function loadFile(file: File) {
   await deck.value.loadTrack(file)
   await nextTick()
-  buildPeaks()
+  trackDuration = deck.value.getLoopEngine().buffer_?.duration ?? 0
+  buildFullPeaks()
+  zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC)
+  const dur = viewDurationSec()
+  viewStartSec.value = 0
+  viewEndSec.value = Math.min(dur, trackDuration)
+  buildVisiblePeaks()
   drawWaveform()
 }
 
@@ -103,59 +152,80 @@ function openFileDialog() {
   input.click()
 }
 
-// ── Peak extraction (runs once after load) ───────────────────
+// ── Peak extraction ───────────────────────────────────────────
 
-function buildPeaks() {
+function buildFullPeaks() {
   const buf = deck.value.getLoopEngine().buffer_
-  if (!buf || !canvasEl.value) return
+  if (!buf) return
+  rawChannel = buf.getChannelData(0)
+  sampleRate = buf.sampleRate
+}
 
-  const canvas = canvasEl.value
-  const width = canvas.clientWidth || canvas.offsetWidth || 800
-  const channel = buf.getChannelData(0)
-  const blockSize = Math.floor(channel.length / width)
+// Sample directly from raw PCM for the visible window — resolution scales with zoom
+let visiblePeaks: Float32Array | null = null
 
-  peaks = new Float32Array(width)
-  for (let i = 0; i < width; i++) {
+function buildVisiblePeaks() {
+  if (!rawChannel || !canvasEl.value) return
+  const width = canvasEl.value.clientWidth || 800
+  visiblePeaks = new Float32Array(width)
+  const viewStart = viewStartSec.value
+  const viewEnd = viewEndSec.value
+  const totalSamples = rawChannel.length
+
+  for (let x = 0; x < width; x++) {
+    const tStart = viewStart + (x / width) * (viewEnd - viewStart)
+    const tEnd = viewStart + ((x + 1) / width) * (viewEnd - viewStart)
+    const iStart = Math.max(0, Math.floor(tStart * sampleRate))
+    const iEnd = Math.min(totalSamples, Math.ceil(tEnd * sampleRate))
     let max = 0
-    const offset = i * blockSize
-    for (let j = 0; j < blockSize; j++) {
-      const abs = Math.abs(channel[offset + j] || 0)
+    for (let i = iStart; i < iEnd; i++) {
+      const abs = Math.abs(rawChannel[i])
       if (abs > max) max = abs
     }
-    peaks[i] = max
+    visiblePeaks[x] = max
   }
 }
 
-// ── Canvas drawing ───────────────────────────────────────────
+// ── Coordinate helpers ────────────────────────────────────────
+
+function pxToSec(px: number): number {
+  const w = canvasEl.value!.clientWidth
+  return viewStartSec.value + (px / w) * (viewEndSec.value - viewStartSec.value)
+}
+
+function secToPx(sec: number): number {
+  const w = canvasEl.value!.clientWidth
+  const span = viewEndSec.value - viewStartSec.value
+  return ((sec - viewStartSec.value) / span) * w
+}
+
+// ── Canvas drawing ────────────────────────────────────────────
 
 function drawWaveform() {
   const canvas = canvasEl.value
-  if (!canvas || !peaks) return
+  if (!canvas || !visiblePeaks) return
 
   const ctx = canvas.getContext('2d')!
   const dpr = window.devicePixelRatio || 1
   const w = canvas.clientWidth
   const h = canvas.clientHeight
 
-  // Resize canvas to match display size
   if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
     canvas.width = w * dpr
     canvas.height = h * dpr
     ctx.scale(dpr, dpr)
-    buildPeaks() // rebuild at new width
+    buildVisiblePeaks()
   }
 
   ctx.clearRect(0, 0, w, h)
-
-  // Background
   ctx.fillStyle = '#0a0a0a'
   ctx.fillRect(0, 0, w, h)
 
   const mid = h / 2
 
-  // Waveform
+  // Waveform (dim, outside loop)
   for (let x = 0; x < w; x++) {
-    const amp = (peaks[x] || 0) * mid * 0.9
+    const amp = (visiblePeaks[x] || 0) * mid * 0.9
     ctx.fillStyle = '#333'
     ctx.fillRect(x, mid - amp, 1, amp * 2)
   }
@@ -163,42 +233,49 @@ function drawWaveform() {
   // Loop region overlay
   const region = deck.value.loopRegion
   if (region) {
-    const buf = deck.value.getLoopEngine().buffer_!
-    const totalDur = buf.duration
-    const sx = (region.startSec / totalDur) * w
-    const ex = (region.endSec / totalDur) * w
-    loopPxStart.value = sx
-    loopPxEnd.value = ex
+    const sx = secToPx(region.startSec)
+    const ex = secToPx(region.endSec)
 
-    // Tinted overlay
-    ctx.fillStyle = `${ACCENT}22`
-    ctx.fillRect(sx, 0, ex - sx, h)
+    // Clamp to canvas
+    const visStart = Math.max(0, sx)
+    const visEnd = Math.min(w, ex)
 
-    // Waveform inside loop — brighter
-    for (let x = Math.floor(sx); x < Math.ceil(ex); x++) {
-      const amp = (peaks[x] || 0) * mid * 0.9
-      ctx.fillStyle = ACCENT
-      ctx.globalAlpha = 0.7
-      ctx.fillRect(x, mid - amp, 1, amp * 2)
+    if (visEnd > visStart) {
+      // Tinted overlay
+      ctx.fillStyle = `${ACCENT}22`
+      ctx.fillRect(visStart, 0, visEnd - visStart, h)
+
+      // Bright waveform inside loop
+      ctx.globalAlpha = 0.8
+      for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
+        const amp = (visiblePeaks[x] || 0) * mid * 0.9
+        ctx.fillStyle = ACCENT
+        ctx.fillRect(x, mid - amp, 1, amp * 2)
+      }
       ctx.globalAlpha = 1
     }
 
-    // Handles
-    drawHandle(ctx, sx, h, 'start')
-    drawHandle(ctx, ex, h, 'end')
+    // Handles (only if visible)
+    if (sx >= -HANDLE_W && sx <= w + HANDLE_W) drawHandle(ctx, sx, h)
+    if (ex >= -HANDLE_W && ex <= w + HANDLE_W) drawHandle(ctx, ex, h)
 
-    // BPM label inside region
-    const bpm = deck.value.displayBpm.toFixed(1)
+    // BPM label
+    const labelX = Math.max(visStart + 10, 10)
     ctx.fillStyle = '#ffffff99'
     ctx.font = `bold 11px monospace`
-    ctx.fillText(`${deck.value.loopBeats} beats · ${bpm} BPM`, sx + 10, 18)
+    ctx.fillText(`${deck.value.loopBeats} beats · ${deck.value.displayBpm.toFixed(1)} BPM`, labelX, 18)
   }
+
+  // Time ruler
+  drawRuler(ctx, w, h)
+
+  // Playhead
+  drawPlayhead(ctx, w, h)
 }
 
-function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number, _side: 'start' | 'end') {
+function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number) {
   ctx.fillStyle = ACCENT
   ctx.fillRect(x - HANDLE_W / 2, 0, HANDLE_W, h)
-  // Triangle grip
   ctx.fillStyle = '#fff'
   const mid = h / 2
   ctx.beginPath()
@@ -206,79 +283,167 @@ function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number, _side: 
   ctx.fill()
 }
 
-// ── Drag interaction ─────────────────────────────────────────
+function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const region = deck.value.loopRegion
+  if (!region) return
 
-function pxToSec(px: number): number {
-  const canvas = canvasEl.value!
-  const buf = deck.value.getLoopEngine().buffer_!
-  return (px / canvas.clientWidth) * buf.duration
+  // Draw a line every 4 beats inside the loop region only.
+  // beat 0 = region start, so lines at beat 4, 8, 12 (not at 0 or 16 — those are the handles).
+  const totalBeats = region.beats
+  const dur = region.endSec - region.startSec
+  if (dur <= 0) return
+
+  const beatDur = dur / totalBeats
+
+  ctx.strokeStyle = '#ffffff40'
+  ctx.lineWidth = 1
+
+  for (let b = 4; b < totalBeats; b += 4) {
+    const t = region.startSec + b * beatDur
+    const x = secToPx(t)
+    if (x < 0 || x > w) continue
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, h)
+    ctx.stroke()
+  }
 }
+
+// ── Playhead ──────────────────────────────────────────────────
+
+let rafId = 0
+
+function getPlayheadSec(): number | null {
+  const region = deck.value.loopRegion
+  if (!region || !deck.value.playing) return null
+  const phase = deck.value.getLoopEngine().getPhase()
+  const dur = region.endSec - region.startSec
+  return region.startSec + (phase % 1) * dur
+}
+
+function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const sec = getPlayheadSec()
+  if (sec === null) return
+  const x = secToPx(sec)
+  if (x < 0 || x > w) return
+  ctx.save()
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = 1.5
+  ctx.globalAlpha = 0.9
+  ctx.beginPath()
+  ctx.moveTo(x, 0)
+  ctx.lineTo(x, h)
+  ctx.stroke()
+  // Triangle head at top
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  ctx.moveTo(x - 5, 0)
+  ctx.lineTo(x + 5, 0)
+  ctx.lineTo(x, 8)
+  ctx.closePath()
+  ctx.fill()
+  ctx.restore()
+}
+
+function updateCenterLock() {
+  const sec = getPlayheadSec()
+  if (sec === null) return
+  const viewSpan = viewEndSec.value - viewStartSec.value
+  const w = canvasEl.value?.clientWidth || 800
+  // Only center-lock when view is narrower than the full loop duration
+  // Edge behavior: clamp so playhead doesn't go past 20% from either edge
+  const margin = viewSpan * 0.2
+  const playheadPx = secToPx(sec)
+  const center = w / 2
+  if (Math.abs(playheadPx - center) > w * 0.05) {
+    const [s, e] = clampView(sec - viewSpan / 2, viewSpan)
+    viewStartSec.value = s
+    viewEndSec.value = e
+    buildVisiblePeaks()
+  }
+  void margin // used conceptually in clampView
+}
+
+function rafLoop() {
+  if (deck.value.playing) updateCenterLock()
+  drawWaveform()
+  rafId = requestAnimationFrame(rafLoop)
+}
+
+// ── Drag interaction ──────────────────────────────────────────
+
+type DragHandle = 'start' | 'end' | 'body' | 'pan' | null
+const dragging = ref<DragHandle>(null)
+const dragOffsetSec = ref(0)
+const panStartX = ref(0)
+const panStartViewSec = ref(0)
 
 function hitTest(px: number): DragHandle {
   const region = deck.value.loopRegion
   if (!region) return null
-  const sx = loopPxStart.value
-  const ex = loopPxEnd.value
+  const sx = secToPx(region.startSec)
+  const ex = secToPx(region.endSec)
   if (Math.abs(px - sx) < HANDLE_W + 4) return 'start'
   if (Math.abs(px - ex) < HANDLE_W + 4) return 'end'
   if (px > sx && px < ex) return 'body'
   return null
 }
 
+function canvasPx(clientX: number): number {
+  const rect = canvasEl.value!.getBoundingClientRect()
+  return clientX - rect.left
+}
+
 function onMouseDown(e: MouseEvent) {
-  const rect = (e.target as HTMLCanvasElement).getBoundingClientRect()
-  const px = e.clientX - rect.left
+  const px = canvasPx(e.clientX)
   const hit = hitTest(px)
 
-  if (hit) {
+  if (e.button === 2) {
+    dragging.value = 'pan'
+    panStartX.value = px
+    panStartViewSec.value = viewStartSec.value
+  } else if (hit === 'start' || hit === 'end') {
     dragging.value = hit
-    dragOffsetPx.value = px - loopPxStart.value
-  } else {
-    // Start a new region
+  } else if (hit === 'body') {
+    dragging.value = 'body'
+    dragOffsetSec.value = pxToSec(px) - deck.value.loopRegion!.startSec
+  } else if (!deck.value.loopRegion) {
     dragging.value = 'end'
     const sec = pxToSec(px)
-    const newRegion: LoopRegion = {
-      startSec: sec,
-      endSec: sec + 0.1,
-      beats: deck.value.loopBeats
-    }
-    deck.value.setLoopRegion(newRegion)
-    loopPxStart.value = px
-    loopPxEnd.value = px + 1
+    deck.value.setLoopRegion({ startSec: sec, endSec: sec + 0.001, beats: deck.value.loopBeats })
+  }
+
+  if (dragging.value) {
+    window.addEventListener('mousemove', onMouseMoveWindow)
+    window.addEventListener('mouseup', onMouseUp)
   }
 }
 
-function onMouseMove(e: MouseEvent) {
-  if (!dragging.value) {
-    // Update cursor
-    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect()
-    const px = e.clientX - rect.left
-    const hit = hitTest(px)
-    ;(e.target as HTMLElement).style.cursor =
-      hit === 'start' || hit === 'end' ? 'ew-resize'
-      : hit === 'body' ? 'grab'
-      : 'crosshair'
+function applyDrag(clientX: number) {
+  const px = canvasPx(clientX)
+
+  if (dragging.value === 'pan') {
+    const viewSpan = viewEndSec.value - viewStartSec.value
+    const w = canvasEl.value!.clientWidth
+    const deltaSec = -((px - panStartX.value) / w) * viewSpan
+    const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan)
+    viewStartSec.value = s
+    viewEndSec.value = e
+    buildVisiblePeaks()
+    drawWaveform()
     return
   }
 
-  const rect = (e.target as HTMLCanvasElement).getBoundingClientRect()
-  const px = e.clientX - rect.left
   const region = deck.value.loopRegion!
-  const buf = deck.value.getLoopEngine().buffer_!
-  const totalDur = buf.duration
-
-  let newRegion: LoopRegion = { ...region }
+  const newRegion: LoopRegion = { ...region }
 
   if (dragging.value === 'start') {
-    const sec = Math.max(0, Math.min(pxToSec(px), region.endSec - 0.1))
-    newRegion.startSec = sec
+    newRegion.startSec = Math.max(0, Math.min(pxToSec(px), region.endSec - 0.01))
   } else if (dragging.value === 'end') {
-    const sec = Math.min(totalDur, Math.max(pxToSec(px), region.startSec + 0.1))
-    newRegion.endSec = sec
+    newRegion.endSec = Math.min(trackDuration, Math.max(pxToSec(px), region.startSec + 0.01))
   } else if (dragging.value === 'body') {
-    const startPx = px - dragOffsetPx.value
     const dur = region.endSec - region.startSec
-    const newStart = Math.max(0, Math.min(pxToSec(startPx), totalDur - dur))
+    const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur))
     newRegion.startSec = newStart
     newRegion.endSec = newStart + dur
   }
@@ -287,37 +452,59 @@ function onMouseMove(e: MouseEvent) {
   drawWaveform()
 }
 
+// Canvas hover — only updates cursor when not dragging
+function onMouseMoveCanvas(e: MouseEvent) {
+  if (dragging.value) return
+  const px = canvasPx(e.clientX)
+  const hit = hitTest(px)
+  canvasEl.value!.style.cursor =
+    hit === 'start' || hit === 'end' ? 'ew-resize'
+    : hit === 'body' ? 'grab'
+    : deck.value.loopRegion ? 'default' : 'col-resize'
+}
+
+// Window-level move — fires even when mouse leaves canvas
+function onMouseMoveWindow(e: MouseEvent) {
+  if (!dragging.value) return
+  applyDrag(e.clientX)
+}
+
 function onMouseUp() {
   dragging.value = null
+  window.removeEventListener('mousemove', onMouseMoveWindow)
+  window.removeEventListener('mouseup', onMouseUp)
 }
 
-function onMouseLeave() {
-  dragging.value = null
-}
-
-// ── Resize handling ──────────────────────────────────────────
+// ── Resize handling ───────────────────────────────────────────
 
 let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   if (!canvasEl.value) return
   resizeObserver = new ResizeObserver(() => {
-    buildPeaks()
+    buildVisiblePeaks()
     drawWaveform()
   })
   resizeObserver.observe(canvasEl.value.parentElement!)
+  rafId = requestAnimationFrame(rafLoop)
 })
 
 onUnmounted(() => {
   resizeObserver?.disconnect()
+  cancelAnimationFrame(rafId)
 })
 
-// Redraw when region changes externally (e.g. beat count change)
-watch(() => deck.value.loopRegion, () => drawWaveform())
+
 watch(() => deck.value.trackLoaded, async (loaded) => {
   if (loaded) {
     await nextTick()
-    buildPeaks()
+    trackDuration = deck.value.getLoopEngine().buffer_?.duration ?? 0
+    buildFullPeaks()
+    zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC)
+    const dur = viewDurationSec()
+    viewStartSec.value = 0
+    viewEndSec.value = Math.min(dur, trackDuration)
+    buildVisiblePeaks()
     drawWaveform()
   }
 })
@@ -338,7 +525,6 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   outline-offset: -4px;
 }
 
-/* Empty state */
 .waveform__empty {
   flex: 1;
   display: flex;
@@ -382,7 +568,6 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   color: #eee;
 }
 
-/* Canvas */
 .waveform__canvas {
   flex: 1;
   width: 100%;
@@ -390,7 +575,6 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   cursor: crosshair;
 }
 
-/* Controls bar */
 .waveform__controls {
   display: flex;
   align-items: center;
@@ -428,6 +612,47 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   color: v-bind(ACCENT);
   margin-left: auto;
   letter-spacing: 0.05em;
+}
+
+.waveform__zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.waveform__bpm-readout + .waveform__zoom {
+  margin-left: 0;
+}
+
+.waveform__zoom-btn {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  color: #aaa;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  width: 26px;
+  height: 26px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.waveform__zoom-btn:hover {
+  border-color: #555;
+  color: #eee;
+}
+
+.waveform__zoom-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  color: #555;
+  min-width: 24px;
+  text-align: center;
 }
 
 .waveform__mode-btn {
