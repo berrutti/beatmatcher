@@ -372,11 +372,12 @@ function rafLoop() {
 
 // ── Drag interaction ──────────────────────────────────────────
 
-type DragHandle = 'start' | 'end' | 'body' | 'pan' | null
+type DragHandle = 'start' | 'end' | 'body' | 'pan' | 'new' | null
 const dragging = ref<DragHandle>(null)
 const dragOffsetSec = ref(0)
 const panStartX = ref(0)
 const panStartViewSec = ref(0)
+let newRegionAnchorSec = 0 // start point for a brand-new selection drag
 
 function hitTest(px: number): DragHandle {
   const region = deck.value.loopRegion
@@ -408,9 +409,9 @@ function onMouseDown(e: MouseEvent) {
     dragging.value = 'body'
     dragOffsetSec.value = pxToSec(px) - deck.value.loopRegion!.startSec
   } else if (!deck.value.loopRegion) {
-    dragging.value = 'end'
-    const sec = pxToSec(px)
-    deck.value.setLoopRegion({ startSec: sec, endSec: sec + 0.001, beats: deck.value.loopBeats })
+    // Don't create the region yet — wait for first mousemove so we have a real duration
+    dragging.value = 'new'
+    newRegionAnchorSec = pxToSec(px)
   }
 
   if (dragging.value) {
@@ -430,6 +431,19 @@ function applyDrag(clientX: number) {
     viewStartSec.value = s
     viewEndSec.value = e
     buildVisiblePeaks()
+    drawWaveform()
+    return
+  }
+
+  if (dragging.value === 'new') {
+    // First real move — now we have a safe duration, create the region
+    const sec = pxToSec(px)
+    const start = Math.min(newRegionAnchorSec, sec)
+    const end = Math.max(newRegionAnchorSec, sec)
+    if (end - start > 0.001) {
+      deck.value.setLoopRegion({ startSec: start, endSec: end, beats: deck.value.loopBeats })
+      dragging.value = 'end' // continue dragging the end handle
+    }
     drawWaveform()
     return
   }
