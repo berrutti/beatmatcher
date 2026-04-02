@@ -12,18 +12,12 @@ const props = defineProps<{ deckId: DeckId }>()
 const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
 
-function getPhase(): number {
-  const loop = deck.value.getLoopEngine()
-  if (loop.playing) return loop.getPhase()
-  return 0
-}
-
 const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
 const LINE_WIDTH_RATIO = 0.065 // line width as fraction of canvas size
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 let rafId = 0
-let prevPhase = 0
+let prevBeatFrac = 0
 let flashStrength = 0
 
 function draw() {
@@ -49,13 +43,26 @@ function draw() {
   ctx.lineWidth = LINE_WIDTH
   ctx.stroke()
 
-  const phase = getPhase()
+  const loop = deck.value.getLoopEngine()
+  const region = loop.region
+
+  let phase4 = 0
+  let beatFrac = 0
+
+  if (loop.playing && region) {
+    const loopDur = region.endSec - region.startSec
+    const beatDur = loopDur / region.beats
+    const posInLoop = loop.getLoopPositionSec() - region.startSec
+    const currentBeat = posInLoop / beatDur
+    beatFrac = currentBeat % 1
+    phase4 = (currentBeat % 4) / 4
+  }
 
   // Beat crossing detection
-  if (deck.value.loopPlaying && prevPhase > 0.85 && phase < 0.15) {
+  if (loop.playing && prevBeatFrac > 0.85 && beatFrac < 0.15) {
     flashStrength = 1.0
   }
-  prevPhase = phase
+  prevBeatFrac = beatFrac
 
   // Decay flash each frame
   if (flashStrength > 0.01) {
@@ -65,7 +72,7 @@ function draw() {
   }
 
   const startAngle = -Math.PI / 2
-  const endAngle = startAngle + phase * Math.PI * 2
+  const endAngle = startAngle + phase4 * Math.PI * 2
 
   // Glow pass when flashing
   if (flashStrength > 0.01) {

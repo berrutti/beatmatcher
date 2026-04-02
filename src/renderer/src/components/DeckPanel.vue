@@ -32,12 +32,12 @@
 
     <WaveformDisplay v-show="deck.mode === 'edit' && !deck.detecting" :deck-id="deckId" class="deck__waveform" />
 
+    <div v-show="deck.mode === 'play' && !deck.detecting" class="phase-ring-wrapper">
+      <PhaseRing :deck-id="deckId" />
+    </div>
+
     <template v-if="deck.mode === 'play' && !deck.detecting">
       <div v-if="!deck.trackLoaded" class="deck__no-track">NO TRACK LOADED</div>
-
-      <div class="phase-ring-wrapper">
-        <PhaseRing :deck-id="deckId" />
-      </div>
 
       <div class="deck__bpm-display">
         <input
@@ -52,13 +52,13 @@
           @keydown.enter="onBpmInputBlur"
           @keydown.escape="editingBpm = false"
         />
-        <span v-else class="deck__bpm-value" @click="startEditingBpm">{{ deck.targetBpm.toFixed(1) }}</span>
+        <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{ deck.trackLoaded ? deck.targetBpm.toFixed(1) : '0.0' }}</span>
         <span class="deck__bpm-unit">BPM</span>
         <span class="deck__bpm-inferred" v-if="deck.loopRegion">({{ deck.inferredBpm.toFixed(1) }})</span>
       </div>
 
       <div class="deck__slider-wrapper">
-        <button class="deck__bpm-step" @mousedown.prevent="startBpmStep(1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▲</button>
+        <button class="deck__bpm-step" :disabled="!deck.trackLoaded" @mousedown.prevent="onBpmStepMouseDown(1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▲</button>
         <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
         <input
           type="range"
@@ -68,11 +68,12 @@
           step="0.1"
           :value="deck.pitchOffset"
           orient="vertical"
+          :disabled="!deck.trackLoaded"
           @input="onSliderInput"
-          @dblclick="deck.setPitchOffset(0)"
+          @dblclick="onPitchDblClick"
         />
         <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
-        <button class="deck__bpm-step" @mousedown.prevent="startBpmStep(-1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▼</button>
+        <button class="deck__bpm-step" :disabled="!deck.trackLoaded" @mousedown.prevent="onBpmStepMouseDown(-1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▼</button>
       </div>
 
       <div class="deck__eq-row">
@@ -85,8 +86,9 @@
             step="0.5"
             :value="deck.eq[band]"
             orient="vertical"
-            @input="e => deck.setEq(band, parseFloat((e.target as HTMLInputElement).value))"
-            @dblclick="deck.setEq(band, 0)"
+            :disabled="!deck.trackLoaded"
+            @input="e => onEqInput(band, e)"
+            @dblclick="onEqDblClick(band)"
           />
           <span class="deck__slider-label">{{ band.toUpperCase() }}</span>
         </div>
@@ -96,7 +98,8 @@
         <button
           class="deck__btn deck__btn--nudge"
           :class="{ 'deck__btn--active': deck.nudging === 'back' }"
-          @mousedown="deck.nudgeStart('back')"
+          :disabled="!deck.trackLoaded"
+          @mousedown="onNudgeStart('back')"
           @mouseup="deck.nudgeEnd()"
           @mouseleave="deck.nudgeEnd()"
         >
@@ -106,7 +109,8 @@
         <button
           class="deck__btn deck__btn--nudge"
           :class="{ 'deck__btn--active': deck.nudging === 'forward' }"
-          @mousedown="deck.nudgeStart('forward')"
+          :disabled="!deck.trackLoaded"
+          @mousedown="onNudgeStart('forward')"
           @mouseup="deck.nudgeEnd()"
           @mouseleave="deck.nudgeEnd()"
         >
@@ -119,7 +123,8 @@
         <button
           class="deck__btn deck__btn--cue"
           :class="{ 'deck__btn--cueing': deck.cueing }"
-          @mousedown.prevent="deck.cueStart()"
+          :disabled="!deck.trackLoaded"
+          @mousedown.prevent="onCueStart()"
           @mouseup="deck.cueEnd()"
           @mouseleave="deck.cueEnd()"
         >
@@ -129,7 +134,8 @@
         <button
           class="deck__btn deck__btn--play"
           :class="{ 'deck__btn--playing': deck.playing }"
-          @click="deck.togglePlay()"
+          :disabled="!deck.trackLoaded"
+          @click="onTogglePlay()"
         >
           <span class="deck__btn-key">{{ deckId === 'A' ? 'S' : 'L' }}</span>
           <span>{{ deck.playing ? '⏸' : '▶' }}</span>
@@ -151,11 +157,6 @@ const props = defineProps<{ deckId: DeckId }>()
 const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
 
-function onSliderInput(e: Event) {
-  const val = parseFloat((e.target as HTMLInputElement).value)
-  deck.value.setPitchOffset(val)
-}
-
 // BPM text editing
 const editingBpm = ref(false)
 const bpmInputEl = ref<HTMLInputElement | null>(null)
@@ -166,16 +167,43 @@ async function startEditingBpm() {
   bpmInputEl.value?.select()
 }
 
+function onBpmValueClick() {
+  if (!deck.value.trackLoaded) return
+  startEditingBpm()
+}
+
 function onBpmInputBlur(e: Event) {
   const val = parseFloat((e.target as HTMLInputElement).value)
   if (!isNaN(val) && val > 0) deck.value.setTargetBpm(val)
   editingBpm.value = false
 }
 
+function onSliderInput(e: Event) {
+  if (!deck.value.trackLoaded) return
+  const val = parseFloat((e.target as HTMLInputElement).value)
+  deck.value.setPitchOffset(val)
+}
+
+function onPitchDblClick() {
+  if (!deck.value.trackLoaded) return
+  deck.value.setPitchOffset(0)
+}
+
+function onEqInput(band: 'low' | 'mid' | 'high', e: Event) {
+  if (!deck.value.trackLoaded) return
+  deck.value.setEq(band, parseFloat((e.target as HTMLInputElement).value))
+}
+
+function onEqDblClick(band: 'low' | 'mid' | 'high') {
+  if (!deck.value.trackLoaded) return
+  deck.value.setEq(band, 0)
+}
+
 // Step buttons adjust targetBpm by 0.1
 let stepInterval: ReturnType<typeof setInterval> | null = null
 
-function startBpmStep(dir: 1 | -1) {
+function onBpmStepMouseDown(dir: 1 | -1) {
+  if (!deck.value.trackLoaded) return
   deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
   stepInterval = setInterval(() => {
     deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
@@ -184,5 +212,20 @@ function startBpmStep(dir: 1 | -1) {
 
 function stopBpmStep() {
   if (stepInterval !== null) { clearInterval(stepInterval); stepInterval = null }
+}
+
+function onNudgeStart(direction: 'back' | 'forward') {
+  if (!deck.value.trackLoaded) return
+  deck.value.nudgeStart(direction)
+}
+
+function onCueStart() {
+  if (!deck.value.trackLoaded) return
+  deck.value.cueStart()
+}
+
+function onTogglePlay() {
+  if (!deck.value.trackLoaded) return
+  deck.value.togglePlay()
 }
 </script>

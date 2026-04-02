@@ -126,6 +126,15 @@ function createDeck(id: DeckId) {
       if (currentFilename) saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm })
     },
 
+    moveLoopRegion(startSec: number) {
+      if (!state.loopRegion) return
+      const dur = state.loopRegion.endSec - state.loopRegion.startSec
+      const region = { ...state.loopRegion, startSec, endSec: startSec + dur }
+      state.loopRegion = region
+      loop.setRegion(region)
+      if (currentFilename) saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm })
+    },
+
     setLoopBeats(beats: 16 | 32) {
       state.loopBeats = beats
       loop.setBeats(beats)
@@ -141,6 +150,7 @@ function createDeck(id: DeckId) {
     },
 
     togglePlay() {
+      if (!state.trackLoaded) return
       if (state.cueing) {
         state.cueing = false
         return
@@ -154,6 +164,7 @@ function createDeck(id: DeckId) {
     },
 
     cueStart() {
+      if (!state.trackLoaded) return
       if (state.cueing || state.loopPlaying) return
       state.cueing = true
       const startTime = audioCtx.currentTime + 0.01
@@ -173,6 +184,7 @@ function createDeck(id: DeckId) {
     },
 
     nudgeStart(direction: 'back' | 'forward') {
+      if (!state.trackLoaded) return
       state.nudging = direction
       const offset = direction === 'forward' ? NUDGE_PERCENT : -NUDGE_PERCENT
       loop.setNudge(offset)

@@ -121,7 +121,6 @@ function setZoomCentered(idx: number) {
   const [s, e] = clampView(center - dur / 2, dur)
   viewStartSec.value = s
   viewEndSec.value = e
-  buildVisiblePeaks()
   drawWaveform()
 }
 
@@ -140,7 +139,6 @@ async function loadFile(file: File) {
   const dur = viewDurationSec()
   viewStartSec.value = 0
   viewEndSec.value = Math.min(dur, trackDuration)
-  buildVisiblePeaks()
   drawWaveform()
 }
 
@@ -162,28 +160,35 @@ function openFileDialog() {
 
 // ── Peak extraction ───────────────────────────────────────────
 
+let visiblePeaks: Float32Array | null = null
+let peaksCachedViewStart = NaN
+let peaksCachedViewEnd = NaN
+let peaksCachedWidth = 0
+
 function buildFullPeaks() {
   const buf = deck.value.getLoopEngine().buffer_
   if (!buf) return
   rawChannel = buf.getChannelData(0)
   sampleRate = buf.sampleRate
+  peaksCachedViewStart = NaN  // invalidate cache
 }
 
-// Sample directly from raw PCM for the visible window — resolution scales with zoom
-let visiblePeaks: Float32Array | null = null
-
-function buildVisiblePeaks() {
-  if (!rawChannel || !canvasEl.value) return
-  const width = canvasEl.value.clientWidth
-  if (width === 0) return
-  visiblePeaks = new Float32Array(width)
+function ensureVisiblePeaks(w: number) {
+  if (!rawChannel) return
   const viewStart = viewStartSec.value
   const viewEnd = viewEndSec.value
-  const totalSamples = rawChannel.length
+  if (
+    visiblePeaks !== null &&
+    peaksCachedWidth === w &&
+    peaksCachedViewStart === viewStart &&
+    peaksCachedViewEnd === viewEnd
+  ) return
 
-  for (let x = 0; x < width; x++) {
-    const tStart = viewStart + (x / width) * (viewEnd - viewStart)
-    const tEnd = viewStart + ((x + 1) / width) * (viewEnd - viewStart)
+  visiblePeaks = new Float32Array(w)
+  const totalSamples = rawChannel.length
+  for (let x = 0; x < w; x++) {
+    const tStart = viewStart + (x / w) * (viewEnd - viewStart)
+    const tEnd = viewStart + ((x + 1) / w) * (viewEnd - viewStart)
     const iStart = Math.max(0, Math.floor(tStart * sampleRate))
     const iEnd = Math.min(totalSamples, Math.ceil(tEnd * sampleRate))
     let max = 0
@@ -193,6 +198,9 @@ function buildVisiblePeaks() {
     }
     visiblePeaks[x] = max
   }
+  peaksCachedViewStart = viewStart
+  peaksCachedViewEnd = viewEnd
+  peaksCachedWidth = w
 }
 
 // ── Coordinate helpers ────────────────────────────────────────
@@ -212,7 +220,7 @@ function secToPx(sec: number): number {
 
 function drawWaveform() {
   const canvas = canvasEl.value
-  if (!canvas || !visiblePeaks) return
+  if (!canvas || !rawChannel) return
 
   const ctx = canvas.getContext('2d')!
   const dpr = window.devicePixelRatio || 1
@@ -224,8 +232,10 @@ function drawWaveform() {
     canvas.width = w * dpr
     canvas.height = h * dpr
     ctx.scale(dpr, dpr)
-    buildVisiblePeaks()
   }
+
+  ensureVisiblePeaks(w)
+  if (!visiblePeaks) return
 
   ctx.clearRect(0, 0, w, h)
   ctx.fillStyle = '#0a0a0a'
@@ -235,7 +245,7 @@ function drawWaveform() {
 
   // Waveform (dim, outside loop)
   for (let x = 0; x < w; x++) {
-    const amp = (visiblePeaks[x] || 0) * mid * 0.9
+    const amp = visiblePeaks[x] * mid * 0.9
     ctx.fillStyle = '#333'
     ctx.fillRect(x, mid - amp, 1, amp * 2)
   }
@@ -258,7 +268,7 @@ function drawWaveform() {
       // Bright waveform inside loop
       ctx.globalAlpha = 0.8
       for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
-        const amp = (visiblePeaks[x] || 0) * mid * 0.9
+        const amp = visiblePeaks[x] * mid * 0.9
         ctx.fillStyle = ACCENT
         ctx.fillRect(x, mid - amp, 1, amp * 2)
       }
@@ -351,22 +361,7 @@ function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.restore()
 }
 
-function updateCenterLock() {
-  const sec = getPlayheadSec()
-  if (sec === null) return
-  const region = deck.value.loopRegion!
-  const loopDur = region.endSec - region.startSec
-  const viewSpan = viewEndSec.value - viewStartSec.value
-  // Only lock when zoomed in enough that the loop is wider than the view
-  if (loopDur <= viewSpan) return
-  const [s, e] = clampView(sec - viewSpan / 2, viewSpan)
-  viewStartSec.value = s
-  viewEndSec.value = e
-  buildVisiblePeaks()
-}
-
 function rafLoop() {
-  if (deck.value.loopPlaying) updateCenterLock()
   drawWaveform()
   rafId = requestAnimationFrame(rafLoop)
 }
@@ -431,7 +426,6 @@ function applyDrag(clientX: number) {
     const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan)
     viewStartSec.value = s
     viewEndSec.value = e
-    buildVisiblePeaks()
     drawWaveform()
     return
   }
@@ -459,8 +453,9 @@ function applyDrag(clientX: number) {
   } else if (dragging.value === 'body') {
     const dur = region.endSec - region.startSec
     const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur))
-    newRegion.startSec = newStart
-    newRegion.endSec = newStart + dur
+    deck.value.moveLoopRegion(newStart)
+    drawWaveform()
+    return
   }
 
   deck.value.setLoopRegion(newRegion)
@@ -500,13 +495,14 @@ function onMouseUp() {
 
 let resizeObserver: ResizeObserver | null = null
 
+watch(canvasEl, (el) => {
+  if (el && !resizeObserver) {
+    resizeObserver = new ResizeObserver(() => { drawWaveform() })
+    resizeObserver.observe(el.parentElement!)
+  }
+})
+
 onMounted(() => {
-  if (!canvasEl.value) return
-  resizeObserver = new ResizeObserver(() => {
-    buildVisiblePeaks()
-    drawWaveform()
-  })
-  resizeObserver.observe(canvasEl.value.parentElement!)
   rafId = requestAnimationFrame(rafLoop)
 })
 
@@ -525,18 +521,13 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
     const dur = viewDurationSec()
     viewStartSec.value = 0
     viewEndSec.value = Math.min(dur, trackDuration)
-    buildVisiblePeaks()
     drawWaveform()
   }
 })
 
 watch(() => deck.value.mode, (mode) => {
   if (mode === 'edit') {
-    // Wait for v-show to make the canvas visible and layout to update
-    requestAnimationFrame(() => {
-      buildVisiblePeaks()
-      drawWaveform()
-    })
+    requestAnimationFrame(() => { drawWaveform() })
   }
 })
 </script>
