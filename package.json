@@ -1,6 +1,6 @@
 {
   "name": "beatmatcher",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Beat matching trainer app",
   "main": "./out/main/index.js",
   "author": "berrutti",
