@@ -9,6 +9,8 @@
         <DeckPanel deck-id="B" />
       </main>
 
+      <BpmModal />
+
       <Transition name="kb">
         <div v-if="showKeys" class="app__keybindings">
           <div class="app__kb-group">
@@ -17,7 +19,6 @@
             <div class="app__kb-row"><kbd>S</kbd> play / pause</div>
             <div class="app__kb-row"><kbd>Q</kbd> nudge ◀</div>
             <div class="app__kb-row"><kbd>W</kbd> nudge ▶</div>
-            <div class="app__kb-row"><kbd>TAB</kbd> pulse</div>
           </div>
           <div class="app__kb-group">
             <span class="app__kb-title">DECK B</span>
@@ -25,7 +26,6 @@
             <div class="app__kb-row"><kbd>L</kbd> play / pause</div>
             <div class="app__kb-row"><kbd>I</kbd> nudge ◀</div>
             <div class="app__kb-row"><kbd>O</kbd> nudge ▶</div>
-            <div class="app__kb-row"><kbd>'</kbd> pulse</div>
           </div>
         </div>
       </Transition>
@@ -39,6 +39,7 @@ import { useDecksStore } from '@renderer/stores/decks'
 import { useKeyboard } from '@renderer/composables/useKeyboard'
 import DeckPanel from '@renderer/components/DeckPanel.vue'
 import LissajousScope from '@renderer/components/LissajousScope.vue'
+import BpmModal from '@renderer/components/BpmModal.vue'
 
 useKeyboard()
 

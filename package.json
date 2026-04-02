@@ -16,7 +16,9 @@
     "dist": "electron-vite build && electron-builder",
     "release": "tsx scripts/release.ts",
     "release:minor": "tsx scripts/release.ts minor",
-    "release:major": "tsx scripts/release.ts major"
+    "release:major": "tsx scripts/release.ts major",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "build": {
     "appId": "com.berrutti.beatmatcher",
@@ -76,6 +78,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",
     "vite": "^6.3.2",
+    "vitest": "^3.2.1",
     "vue-tsc": "^2.2.8"
   }
 }

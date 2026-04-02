@@ -19,9 +19,7 @@ const store = useDecksStore()
 function getBestPhase(deckId: 'A' | 'B'): number {
   const deck = store.decks[deckId]
   const loop = deck.getLoopEngine()
-  const pulse = deck.getPulseEngine()
   if (loop.playing) return loop.getPhase()
-  if (pulse.playing) return pulse.getPhase()
   return 0
 }
 

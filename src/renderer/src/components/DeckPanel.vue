@@ -11,6 +11,7 @@
     <div class="deck__header">
       <span class="deck__label">DECK {{ deckId }}</span>
       <div class="deck__status-dot" :class="{ 'deck__status-dot--on': deck.playing }" />
+      <span v-if="deck.trackName" class="deck__track-name" :title="deck.trackName">{{ deck.trackName }}</span>
       <div class="deck__mode-tabs">
         <button
           class="deck__mode-tab"
@@ -25,9 +26,15 @@
       </div>
     </div>
 
-    <WaveformDisplay v-show="deck.mode === 'edit'" :deck-id="deckId" class="deck__waveform" />
+    <div v-if="deck.detecting" class="deck__detecting">
+      <span class="deck__detecting-text">Detecting BPM...</span>
+    </div>
 
-    <template v-if="deck.mode === 'play'">
+    <WaveformDisplay v-show="deck.mode === 'edit' && !deck.detecting" :deck-id="deckId" class="deck__waveform" />
+
+    <template v-if="deck.mode === 'play' && !deck.detecting">
+      <div v-if="!deck.trackLoaded" class="deck__no-track">NO TRACK LOADED</div>
+
       <div class="phase-ring-wrapper">
         <PhaseRing :deck-id="deckId" />
       </div>
@@ -84,15 +91,6 @@
           <span class="deck__slider-label">{{ band.toUpperCase() }}</span>
         </div>
       </div>
-
-      <button
-        class="deck__pulse-btn"
-        :class="{ 'deck__pulse-btn--on': deck.pulseEnabled }"
-        @click="deck.togglePulse()"
-      >
-        <span class="deck__btn-key">{{ deckId === 'A' ? 'TAB' : "'" }}</span>
-        <span>PULSE</span>
-      </button>
 
       <div class="deck__nudge-row">
         <button

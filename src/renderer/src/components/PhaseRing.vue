@@ -14,9 +14,7 @@ const deck = computed(() => store.decks[props.deckId])
 
 function getPhase(): number {
   const loop = deck.value.getLoopEngine()
-  const pulse = deck.value.getPulseEngine()
   if (loop.playing) return loop.getPhase()
-  if (pulse.playing) return pulse.getPhase()
   return 0
 }
 

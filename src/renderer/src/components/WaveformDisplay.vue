@@ -39,6 +39,13 @@
           @click="deck.setLoopBeats(32)"
         >32</button>
 
+        <button
+          class="waveform__lock-btn"
+          :class="{ 'waveform__lock-btn--unlocked': !deck.regionLocked }"
+          @click="deck.regionLocked = !deck.regionLocked"
+          :title="deck.regionLocked ? 'Region locked. Click to unlock and resize.' : 'Region unlocked. Click to lock.'"
+        >{{ deck.regionLocked ? '🔒' : '🔓' }}</button>
+
         <span class="waveform__bpm-readout" v-if="deck.loopRegion">
           {{ deck.inferredBpm.toFixed(1) }} BPM
         </span>
@@ -50,9 +57,9 @@
           <button class="waveform__zoom-btn" @click="zoomIn">+</button>
         </div>
 
-        <button class="waveform__mode-btn" @click="deck.mode = 'play'" v-if="deck.loopRegion">
-          ▶ PLAY MODE
-        </button>
+        <button class="waveform__set-bpm-btn" @click="openFileDialog">LOAD</button>
+        <button class="waveform__set-bpm-btn" @click="deck._requestBpmInput()">SET BPM</button>
+
       </div>
     </template>
   </div>
@@ -392,18 +399,18 @@ function canvasPx(clientX: number): number {
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
+  const locked = deck.value.regionLocked
 
   if (e.button === 2) {
     dragging.value = 'pan'
     panStartX.value = px
     panStartViewSec.value = viewStartSec.value
-  } else if (hit === 'start' || hit === 'end') {
+  } else if ((hit === 'start' || hit === 'end') && !locked) {
     dragging.value = hit
   } else if (hit === 'body') {
     dragging.value = 'body'
     dragOffsetSec.value = pxToSec(px) - deck.value.loopRegion!.startSec
-  } else {
-    // Clicking outside the region (or on empty space) starts a new selection
+  } else if (!locked) {
     dragging.value = 'new'
     newRegionAnchorSec = pxToSec(px)
   }
@@ -465,10 +472,11 @@ function onMouseMoveCanvas(e: MouseEvent) {
   if (dragging.value) return
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
+  const locked = deck.value.regionLocked
   canvasEl.value!.style.cursor =
-    hit === 'start' || hit === 'end' ? 'ew-resize'
+    (hit === 'start' || hit === 'end') ? (locked ? 'not-allowed' : 'ew-resize')
     : hit === 'body' ? 'grab'
-    : 'col-resize'
+    : locked ? 'default' : 'col-resize'
 }
 
 // Window-level move — fires even when mouse leaves canvas
@@ -629,6 +637,24 @@ watch(() => deck.value.mode, (mode) => {
   color: v-bind(ACCENT);
 }
 
+.waveform__lock-btn {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.waveform__lock-btn:hover {
+  border-color: #555;
+}
+
+.waveform__lock-btn--unlocked {
+  border-color: v-bind(ACCENT);
+}
+
 .waveform__bpm-readout {
   font-size: 0.85rem;
   font-weight: 700;
@@ -678,20 +704,21 @@ watch(() => deck.value.mode, (mode) => {
   text-align: center;
 }
 
-.waveform__mode-btn {
+.waveform__set-bpm-btn {
   background: transparent;
   border: 1px solid #333;
-  color: #aaa;
+  color: #777;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   letter-spacing: 0.15em;
-  padding: 4px 12px;
+  padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
 }
 
-.waveform__mode-btn:hover {
-  border-color: #666;
-  color: #eee;
+.waveform__set-bpm-btn:hover {
+  border-color: #555;
+  color: #aaa;
 }
+
 </style>
