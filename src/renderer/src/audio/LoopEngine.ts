@@ -6,9 +6,6 @@
  * BPM is inferred entirely from the loop region:
  *   bpm = (beatCount × 60) / loopDuration
  *
- * playbackRate = targetBpm / inferredBpm
- * which simplifies to:
- *   playbackRate = (targetBpm × loopDuration) / (beatCount × 60)
  */
 
 export type LoopRegion = {
@@ -31,7 +28,6 @@ export class LoopEngine {
   private _playing = false
   private _nudgePercent = 0
 
-  // Phase tracking (mirrors PulseEngine approach)
   private accumulatedPhase = 0
   private lastSegmentStart = 0
 

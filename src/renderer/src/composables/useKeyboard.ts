@@ -10,7 +10,6 @@ import { useDecksStore } from '@renderer/stores/decks'
  * W  nudge forward    P  nudge forward
  * A  play/pause       K  play/pause
  * S  cue              L  cue
- * TAB pulse toggle    '  pulse toggle
  *
  * All shortcuts are global — they fire regardless of UI focus or deck mode.
  * Only blocked when typing in an actual text input.
@@ -41,14 +40,12 @@ export function useKeyboard() {
     if (key === 's') { deckA.togglePlay(); return }
     if (key === 'q') { deckA.nudgeStart('back'); return }
     if (key === 'w') { deckA.nudgeStart('forward'); return }
-    if (e.key === 'Tab') { e.preventDefault(); deckA.togglePulse(); return }
 
     // Deck B
     if (key === 'k') { deckB.cueStart(); return }
     if (key === 'l') { deckB.togglePlay(); return }
     if (key === 'i') { deckB.nudgeStart('back'); return }
     if (key === 'o') { deckB.nudgeStart('forward'); return }
-    if (key === "'") { deckB.togglePulse(); return }
   }
 
   function onKeyUp(e: KeyboardEvent) {

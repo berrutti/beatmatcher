@@ -39,8 +39,15 @@
           @click="deck.setLoopBeats(32)"
         >32</button>
 
+        <button
+          class="waveform__lock-btn"
+          :class="{ 'waveform__lock-btn--unlocked': !deck.regionLocked }"
+          @click="deck.regionLocked = !deck.regionLocked"
+          :title="deck.regionLocked ? 'Region locked. Click to unlock and resize.' : 'Region unlocked. Click to lock.'"
+        >{{ deck.regionLocked ? '🔒' : '🔓' }}</button>
+
         <span class="waveform__bpm-readout" v-if="deck.loopRegion">
-          {{ deck.displayBpm.toFixed(1) }} BPM
+          {{ deck.inferredBpm.toFixed(1) }} BPM
         </span>
 
         <!-- Zoom controls -->
@@ -50,9 +57,9 @@
           <button class="waveform__zoom-btn" @click="zoomIn">+</button>
         </div>
 
-        <button class="waveform__mode-btn" @click="deck.mode = 'play'" v-if="deck.loopRegion">
-          ▶ PLAY MODE
-        </button>
+        <button class="waveform__set-bpm-btn" @click="openFileDialog">LOAD</button>
+        <button class="waveform__set-bpm-btn" @click="deck._requestBpmInput()">SET BPM</button>
+
       </div>
     </template>
   </div>
@@ -167,7 +174,8 @@ let visiblePeaks: Float32Array | null = null
 
 function buildVisiblePeaks() {
   if (!rawChannel || !canvasEl.value) return
-  const width = canvasEl.value.clientWidth || 800
+  const width = canvasEl.value.clientWidth
+  if (width === 0) return
   visiblePeaks = new Float32Array(width)
   const viewStart = viewStartSec.value
   const viewEnd = viewEndSec.value
@@ -210,6 +218,7 @@ function drawWaveform() {
   const dpr = window.devicePixelRatio || 1
   const w = canvas.clientWidth
   const h = canvas.clientHeight
+  if (w === 0 || h === 0) return
 
   if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
     canvas.width = w * dpr
@@ -264,7 +273,7 @@ function drawWaveform() {
     const labelX = Math.max(visStart + 10, 10)
     ctx.fillStyle = '#ffffff99'
     ctx.font = `bold 11px monospace`
-    ctx.fillText(`${deck.value.loopBeats} beats · ${deck.value.displayBpm.toFixed(1)} BPM`, labelX, 18)
+    ctx.fillText(`${deck.value.loopBeats} beats · ${deck.value.inferredBpm.toFixed(1)} BPM`, labelX, 18)
   }
 
   // Time ruler
@@ -315,7 +324,7 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
 let rafId = 0
 
 function getPlayheadSec(): number | null {
-  if (!deck.value.loopRegion || !deck.value.playing) return null
+  if (!deck.value.loopRegion || !deck.value.loopPlaying) return null
   return deck.value.getLoopEngine().getLoopPositionSec()
 }
 
@@ -357,7 +366,7 @@ function updateCenterLock() {
 }
 
 function rafLoop() {
-  if (deck.value.playing) updateCenterLock()
+  if (deck.value.loopPlaying) updateCenterLock()
   drawWaveform()
   rafId = requestAnimationFrame(rafLoop)
 }
@@ -390,18 +399,18 @@ function canvasPx(clientX: number): number {
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
+  const locked = deck.value.regionLocked
 
   if (e.button === 2) {
     dragging.value = 'pan'
     panStartX.value = px
     panStartViewSec.value = viewStartSec.value
-  } else if (hit === 'start' || hit === 'end') {
+  } else if ((hit === 'start' || hit === 'end') && !locked) {
     dragging.value = hit
   } else if (hit === 'body') {
     dragging.value = 'body'
     dragOffsetSec.value = pxToSec(px) - deck.value.loopRegion!.startSec
-  } else if (!deck.value.loopRegion) {
-    // Don't create the region yet — wait for first mousemove so we have a real duration
+  } else if (!locked) {
     dragging.value = 'new'
     newRegionAnchorSec = pxToSec(px)
   }
@@ -463,10 +472,11 @@ function onMouseMoveCanvas(e: MouseEvent) {
   if (dragging.value) return
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
+  const locked = deck.value.regionLocked
   canvasEl.value!.style.cursor =
-    hit === 'start' || hit === 'end' ? 'ew-resize'
+    (hit === 'start' || hit === 'end') ? (locked ? 'not-allowed' : 'ew-resize')
     : hit === 'body' ? 'grab'
-    : deck.value.loopRegion ? 'default' : 'col-resize'
+    : locked ? 'default' : 'col-resize'
 }
 
 // Window-level move — fires even when mouse leaves canvas
@@ -517,6 +527,16 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
     viewEndSec.value = Math.min(dur, trackDuration)
     buildVisiblePeaks()
     drawWaveform()
+  }
+})
+
+watch(() => deck.value.mode, (mode) => {
+  if (mode === 'edit') {
+    // Wait for v-show to make the canvas visible and layout to update
+    requestAnimationFrame(() => {
+      buildVisiblePeaks()
+      drawWaveform()
+    })
   }
 })
 </script>
@@ -617,6 +637,24 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   color: v-bind(ACCENT);
 }
 
+.waveform__lock-btn {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.waveform__lock-btn:hover {
+  border-color: #555;
+}
+
+.waveform__lock-btn--unlocked {
+  border-color: v-bind(ACCENT);
+}
+
 .waveform__bpm-readout {
   font-size: 0.85rem;
   font-weight: 700;
@@ -666,20 +704,21 @@ watch(() => deck.value.trackLoaded, async (loaded) => {
   text-align: center;
 }
 
-.waveform__mode-btn {
+.waveform__set-bpm-btn {
   background: transparent;
   border: 1px solid #333;
-  color: #aaa;
+  color: #777;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   letter-spacing: 0.15em;
-  padding: 4px 12px;
+  padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
 }
 
-.waveform__mode-btn:hover {
-  border-color: #666;
-  color: #eee;
+.waveform__set-bpm-btn:hover {
+  border-color: #555;
+  color: #aaa;
 }
+
 </style>

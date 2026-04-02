@@ -10,15 +10,21 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useDecksStore } from '@renderer/stores/decks'
-import { usePhase } from '@renderer/composables/usePhase'
 
 const SIZE = 200
 const FADE_ALPHA = 0.045   // trail persistence — lower = longer trail
 const DOT_RADIUS = 4
 
 const store = useDecksStore()
-const { getPhase: getPhaseA } = usePhase(store.deckA.getPulseEngine())
-const { getPhase: getPhaseB } = usePhase(store.deckB.getPulseEngine())
+function getBestPhase(deckId: 'A' | 'B'): number {
+  const deck = store.decks[deckId]
+  const loop = deck.getLoopEngine()
+  if (loop.playing) return loop.getPhase()
+  return 0
+}
+
+const getPhaseA = () => getBestPhase('A')
+const getPhaseB = () => getBestPhase('B')
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 let rafId = 0

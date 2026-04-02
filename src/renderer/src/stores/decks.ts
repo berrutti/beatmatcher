@@ -1,22 +1,18 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
-import { PulseEngine } from '@renderer/audio/PulseEngine'
+import { reactive, ref } from 'vue'
 import { LoopEngine } from '@renderer/audio/LoopEngine'
 import type { LoopRegion } from '@renderer/audio/LoopEngine'
+import { detectBpm } from '@renderer/audio/bpmDetect'
 
 export type DeckId = 'A' | 'B'
 export type DeckMode = 'edit' | 'play'
 
 const DEFAULT_BPM = 138
 const NUDGE_PERCENT = 4
-const BPM_MIN = 60
-const BPM_MAX = 200
+export const PITCH_RANGE = 10
 
-const PULSE_FREQUENCIES: Record<DeckId, number> = { A: 1000, B: 600 }
-
-// ── Region persistence ─────────────────────────────
-type SavedRegion = { startSec: number; endSec: number; beats: 16 | 32 }
-const STORAGE_KEY = 'beatmatcher:regions'
+type SavedRegion = { startSec: number; endSec: number; beats: 16 | 32; detectedBpm: number }
+const STORAGE_KEY = 'beatmatcher:track-regions'
 
 function loadSavedRegions(): Record<string, SavedRegion> {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') } catch { return {} }
@@ -29,14 +25,14 @@ function saveRegion(filename: string, region: SavedRegion) {
 }
 
 function getSavedRegion(filename: string): SavedRegion | null {
-  return loadSavedRegions()[filename] ?? null
+  const saved = loadSavedRegions()[filename]
+  if (!saved || !saved.detectedBpm) return null
+  return saved
 }
 
-// ──────────────────────────────────────────────────
-
 function createDeck(id: DeckId) {
-  const pulse = new PulseEngine({ bpm: DEFAULT_BPM, frequency: PULSE_FREQUENCIES[id] })
-  const loop = new LoopEngine(pulse.audioContext)
+  const audioCtx = new AudioContext()
+  const loop = new LoopEngine(audioCtx)
 
   let currentFilename = ''
 
@@ -44,55 +40,90 @@ function createDeck(id: DeckId) {
     id,
     mode: 'play' as DeckMode,
 
-    pulseEnabled: true,
-    pulsePlaying: false,
-
+    trackName: '',
     trackLoaded: false,
+    detecting: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
     loopBeats: 16 as 16 | 32,
 
-    bpm: DEFAULT_BPM,
+    inferredBpm: DEFAULT_BPM,
+    targetBpm: DEFAULT_BPM,
+    pitchOffset: 0,
 
+    regionLocked: true,
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
     eq: { low: 0, mid: 0, high: 0 },
 
-    getPulseEngine(): PulseEngine { return pulse },
     getLoopEngine(): LoopEngine { return loop },
+    getAudioContext(): AudioContext { return audioCtx },
 
-    get displayBpm(): number { return state.bpm },
+    _applyRate() {
+      loop.targetBpm = state.targetBpm
+    },
 
-    setBpm(value: number) {
-      const clamped = Math.max(BPM_MIN, Math.min(BPM_MAX, value))
-      state.bpm = clamped
-      pulse.bpm = clamped
-      loop.targetBpm = clamped
+    setTargetBpm(value: number) {
+      const minBpm = state.inferredBpm * (1 - PITCH_RANGE / 100)
+      const maxBpm = state.inferredBpm * (1 + PITCH_RANGE / 100)
+      state.targetBpm = Math.max(minBpm, Math.min(maxBpm, value))
+      state.pitchOffset = ((state.targetBpm / state.inferredBpm) - 1) * 100
+      state._applyRate()
+    },
+
+    setPitchOffset(pct: number) {
+      state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct))
+      state.targetBpm = state.inferredBpm * (1 + state.pitchOffset / 100)
+      state._applyRate()
     },
 
     async loadTrack(file: File) {
       await loop.loadFile(file)
       currentFilename = file.name
+      state.trackName = file.name
       state.trackLoaded = true
-      state.mode = 'edit'
 
-      // Restore saved region if available
       const saved = getSavedRegion(file.name)
       if (saved) {
         state.loopBeats = saved.beats
         state.setLoopRegion(saved)
         state.mode = 'play'
+        return
+      }
+
+      state.detecting = true
+      let detectedBpm = 0
+      const buffer = loop.buffer_
+      if (buffer) {
+        const result = await detectBpm(buffer)
+        if (result.bpm > 0) detectedBpm = result.bpm
+      }
+      state.detecting = false
+
+      if (detectedBpm > 0) {
+        state.setTrackBpm(detectedBpm)
+        state.mode = 'edit'
+      } else {
+        state._requestBpmInput()
       }
     },
+
+    setTrackBpm(bpm: number) {
+      const start = state.loopRegion?.startSec ?? 0
+      const dur = (state.loopBeats / bpm) * 60
+      state.setLoopRegion({ startSec: start, endSec: start + dur, beats: state.loopBeats })
+    },
+
+    _requestBpmInput() {},
 
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region
       loop.setRegion(region)
-      const inferred = loop.inferredBpm
-      state.bpm = inferred
-      pulse.bpm = inferred
-      loop.targetBpm = inferred
-      if (currentFilename) saveRegion(currentFilename, region)
+      state.inferredBpm = loop.inferredBpm
+      state.targetBpm = state.inferredBpm
+      state.pitchOffset = 0
+      state._applyRate()
+      if (currentFilename) saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm })
     },
 
     setLoopBeats(beats: 16 | 32) {
@@ -101,64 +132,39 @@ function createDeck(id: DeckId) {
       if (state.loopRegion) {
         const r = loop.region
         if (r) state.loopRegion = r
-        const inferred = loop.inferredBpm
-        state.bpm = inferred
-        pulse.bpm = inferred
-        loop.targetBpm = inferred
-        if (currentFilename) saveRegion(currentFilename, { ...state.loopRegion!, beats })
+        state.inferredBpm = loop.inferredBpm
+        state.targetBpm = state.inferredBpm
+        state.pitchOffset = 0
+        state._applyRate()
+        if (currentFilename) saveRegion(currentFilename, { ...state.loopRegion!, beats, detectedBpm: state.inferredBpm })
       }
     },
 
     togglePlay() {
       if (state.cueing) {
-        // CUE→PLAY handoff: just drop the cueing flag, keep playing
         state.cueing = false
         return
       }
       if (state.loopPlaying) {
-        pulse.stop(); state.pulsePlaying = false
         loop.stop(); state.loopPlaying = false
       } else {
-        const startTime = pulse.audioContext.currentTime + 0.05
+        const startTime = audioCtx.currentTime + 0.05
         loop.startAt(startTime); state.loopPlaying = true
-        if (state.pulseEnabled) { pulse.startAt(startTime); state.pulsePlaying = true }
       }
     },
 
     cueStart() {
       if (state.cueing || state.loopPlaying) return
       state.cueing = true
-      const startTime = pulse.audioContext.currentTime + 0.01
+      const startTime = audioCtx.currentTime + 0.01
       loop.startAt(startTime); state.loopPlaying = true
-      if (state.pulseEnabled) { pulse.startAt(startTime); state.pulsePlaying = true }
     },
 
     cueEnd() {
       if (!state.cueing) return
       state.cueing = false
-      pulse.stop(); state.pulsePlaying = false
       loop.stop(); state.loopPlaying = false
-      loop.cue(); pulse.cue()
-    },
-
-    togglePulse() {
-      state.pulseEnabled = !state.pulseEnabled
-      if (state.loopPlaying) {
-        if (state.pulseEnabled) {
-          // Sync pulse to the current beat boundary of the loop.
-          // The loop's phase tells us how far into the current beat we are,
-          // so we schedule the pulse to start at the beginning of the next beat.
-          const loopEngine = loop
-          const secondsPerBeat = 60 / state.bpm
-          const phaseInBeat = loopEngine.getPhase() // 0..1 within current beat
-          const secondsUntilNextBeat = secondsPerBeat * (1 - phaseInBeat)
-          const startTime = pulse.audioContext.currentTime + secondsUntilNextBeat
-          pulse.startAt(startTime)
-          state.pulsePlaying = true
-        } else {
-          pulse.stop(); state.pulsePlaying = false
-        }
-      }
+      loop.cue()
     },
 
     setEq(band: 'low' | 'mid' | 'high', db: number) {
@@ -169,33 +175,21 @@ function createDeck(id: DeckId) {
     nudgeStart(direction: 'back' | 'forward') {
       state.nudging = direction
       const offset = direction === 'forward' ? NUDGE_PERCENT : -NUDGE_PERCENT
-      pulse.setNudge(offset)
       loop.setNudge(offset)
     },
 
     nudgeEnd() {
       state.nudging = null
       loop.setNudge(0)
-      pulse.setNudge(0)
-      // Re-sync pulse to the loop's next beat boundary to fix phase drift
-      if (state.loopPlaying && state.pulsePlaying) {
-        pulse.stop()
-        const secondsPerBeat = 60 / state.bpm
-        const phaseInBeat = loop.getPhase()
-        const secondsUntilNextBeat = secondsPerBeat * (1 - phaseInBeat)
-        const startTime = pulse.audioContext.currentTime + secondsUntilNextBeat
-        pulse.startAt(startTime)
-      }
     },
 
-    // playing = true only when in normal play mode, not cueing
     get playing(): boolean {
       return state.loopPlaying && !state.cueing
     },
 
     destroy() {
-      pulse.destroy()
       loop.destroy()
+      audioCtx.close()
     }
   })
 
@@ -208,10 +202,27 @@ export const useDecksStore = defineStore('decks', () => {
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB }
 
+  const bpmModalDeck = ref<DeckId | null>(null)
+
+  deckA._requestBpmInput = () => { bpmModalDeck.value = 'A' }
+  deckB._requestBpmInput = () => { bpmModalDeck.value = 'B' }
+
+  function submitBpmModal(bpm: number) {
+    const deckId = bpmModalDeck.value
+    if (!deckId) return
+    decks[deckId].setTrackBpm(bpm)
+    decks[deckId].mode = 'edit'
+    bpmModalDeck.value = null
+  }
+
+  function dismissBpmModal() {
+    bpmModalDeck.value = null
+  }
+
   function destroy() {
     deckA.destroy()
     deckB.destroy()
   }
 
-  return { deckA, deckB, decks, destroy }
+  return { deckA, deckB, decks, bpmModalDeck, submitBpmModal, dismissBpmModal, destroy }
 })

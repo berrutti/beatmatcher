@@ -90,6 +90,10 @@ html, body {
 .deck--edit { padding: 0; justify-content: flex-start; }
 .deck--edit .deck__header { padding: 0.6em 1em; width: 100%; border-bottom: 1px solid var(--color-border); }
 .deck__waveform { flex: 1; width: 100%; min-height: 0; }
+.deck__detecting { flex: 1; display: flex; align-items: center; justify-content: center; }
+.deck__detecting-text { font-size: 1em; opacity: 0.6; animation: pulse-fade 1.2s ease-in-out infinite; }
+@keyframes pulse-fade { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.8; } }
+.deck__no-track { font-size: 0.7em; color: #444; letter-spacing: 0.15em; text-align: center; padding: 0.5em 0; }
 
 /* ── Header ───────────────────────────────────────── */
 .deck__header {
@@ -116,6 +120,15 @@ html, body {
 .deck__status-dot--on {
   background: var(--color-play);
   box-shadow: 0 0 0.5em var(--color-play);
+}
+
+.deck__track-name {
+  font-size: 0.65em;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12em;
 }
 
 .deck__mode-tabs { display: flex; gap: 0.3em; margin-left: auto; }
@@ -181,6 +194,11 @@ html, body {
   color: var(--color-muted);
   letter-spacing: 0.1em;
 }
+.deck__bpm-inferred {
+  font-size: 0.7em;
+  color: var(--color-muted);
+  opacity: 0.6;
+}
 
 /* ── BPM slider ───────────────────────────────────── */
 .deck__slider-wrapper {
@@ -223,28 +241,6 @@ html, body {
 }
 .deck--a .deck__slider { accent-color: var(--color-a); }
 .deck--b .deck__slider { accent-color: var(--color-b); }
-
-/* ── Pulse button ─────────────────────────────────── */
-.deck__pulse-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.15em;
-  padding: 0.4em 1.2em;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 0.8em;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.deck__pulse-btn--on {
-  border-color: var(--color-play);
-  color: var(--color-play);
-  background: rgba(34,197,94,0.08);
-}
 
 /* ── Buttons ──────────────────────────────────────── */
 .deck__nudge-row,
