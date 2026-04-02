@@ -13,8 +13,10 @@ const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
 
 function getPhase(): number {
-  if (deck.value.loopPlaying) return deck.value.getLoopEngine().getPhase()
-  if (deck.value.pulsePlaying) return deck.value.getPulseEngine().getPhase()
+  const loop = deck.value.getLoopEngine()
+  const pulse = deck.value.getPulseEngine()
+  if (loop.playing) return loop.getPhase()
+  if (pulse.playing) return pulse.getPhase()
   return 0
 }
 
@@ -62,11 +64,6 @@ function draw() {
     flashStrength *= 0.82
   } else {
     flashStrength = 0
-  }
-
-  if (phase === 0 && !deck.value.playing) {
-    rafId = requestAnimationFrame(draw)
-    return
   }
 
   const startAngle = -Math.PI / 2

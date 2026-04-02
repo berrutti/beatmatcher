@@ -181,6 +181,11 @@ html, body {
   color: var(--color-muted);
   letter-spacing: 0.1em;
 }
+.deck__bpm-inferred {
+  font-size: 0.7em;
+  color: var(--color-muted);
+  opacity: 0.6;
+}
 
 /* ── BPM slider ───────────────────────────────────── */
 .deck__slider-wrapper {

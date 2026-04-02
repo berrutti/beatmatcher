@@ -9,8 +9,7 @@ export type DeckMode = 'edit' | 'play'
 
 const DEFAULT_BPM = 138
 const NUDGE_PERCENT = 4
-const BPM_MIN = 60
-const BPM_MAX = 200
+export const PITCH_RANGE = 10 // ±10% fine-tune slider range
 
 const PULSE_FREQUENCIES: Record<DeckId, number> = { A: 1000, B: 600 }
 
@@ -52,7 +51,13 @@ function createDeck(id: DeckId) {
     loopRegion: null as LoopRegion | null,
     loopBeats: 16 as 16 | 32,
 
-    bpm: DEFAULT_BPM,
+    // inferredBpm: derived from region (beats / duration). Read-only to the user.
+    // targetBpm: what BPM you want to play at. Defaults to inferredBpm, user can override.
+    // pitchOffset: ±PITCH_RANGE% fine-tune on top of targetBpm. Slider controls this.
+    // Final playbackRate = (targetBpm * (1 + pitchOffset/100)) / inferredBpm
+    inferredBpm: DEFAULT_BPM,
+    targetBpm: DEFAULT_BPM,
+    pitchOffset: 0,
 
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
@@ -61,13 +66,21 @@ function createDeck(id: DeckId) {
     getPulseEngine(): PulseEngine { return pulse },
     getLoopEngine(): LoopEngine { return loop },
 
-    get displayBpm(): number { return state.bpm },
+    // Apply current targetBpm + pitchOffset to both engines
+    _applyRate() {
+      const effective = state.targetBpm * (1 + state.pitchOffset / 100)
+      pulse.bpm = effective
+      loop.targetBpm = effective
+    },
 
-    setBpm(value: number) {
-      const clamped = Math.max(BPM_MIN, Math.min(BPM_MAX, value))
-      state.bpm = clamped
-      pulse.bpm = clamped
-      loop.targetBpm = clamped
+    setTargetBpm(value: number) {
+      state.targetBpm = Math.max(20, value)
+      state._applyRate()
+    },
+
+    setPitchOffset(pct: number) {
+      state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct))
+      state._applyRate()
     },
 
     async loadTrack(file: File) {
@@ -76,22 +89,26 @@ function createDeck(id: DeckId) {
       state.trackLoaded = true
       state.mode = 'edit'
 
-      // Restore saved region if available
       const saved = getSavedRegion(file.name)
       if (saved) {
         state.loopBeats = saved.beats
         state.setLoopRegion(saved)
         state.mode = 'play'
+      } else {
+        // Auto-place a default region: 16 beats at current BPM, starting at 0.
+        const dur = (state.loopBeats / state.inferredBpm) * 60
+        state.setLoopRegion({ startSec: 0, endSec: dur, beats: state.loopBeats })
       }
     },
 
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region
       loop.setRegion(region)
-      const inferred = loop.inferredBpm
-      state.bpm = inferred
-      pulse.bpm = inferred
-      loop.targetBpm = inferred
+      state.inferredBpm = loop.inferredBpm
+      // Reset targetBpm to match inferred (1x playback) and clear pitch offset
+      state.targetBpm = state.inferredBpm
+      state.pitchOffset = 0
+      state._applyRate()
       if (currentFilename) saveRegion(currentFilename, region)
     },
 
@@ -101,10 +118,10 @@ function createDeck(id: DeckId) {
       if (state.loopRegion) {
         const r = loop.region
         if (r) state.loopRegion = r
-        const inferred = loop.inferredBpm
-        state.bpm = inferred
-        pulse.bpm = inferred
-        loop.targetBpm = inferred
+        state.inferredBpm = loop.inferredBpm
+        state.targetBpm = state.inferredBpm
+        state.pitchOffset = 0
+        state._applyRate()
         if (currentFilename) saveRegion(currentFilename, { ...state.loopRegion!, beats })
       }
     },
@@ -145,12 +162,8 @@ function createDeck(id: DeckId) {
       state.pulseEnabled = !state.pulseEnabled
       if (state.loopPlaying) {
         if (state.pulseEnabled) {
-          // Sync pulse to the current beat boundary of the loop.
-          // The loop's phase tells us how far into the current beat we are,
-          // so we schedule the pulse to start at the beginning of the next beat.
-          const loopEngine = loop
-          const secondsPerBeat = 60 / state.bpm
-          const phaseInBeat = loopEngine.getPhase() // 0..1 within current beat
+          const secondsPerBeat = 60 / state.targetBpm
+          const phaseInBeat = loop.getPhase()
           const secondsUntilNextBeat = secondsPerBeat * (1 - phaseInBeat)
           const startTime = pulse.audioContext.currentTime + secondsUntilNextBeat
           pulse.startAt(startTime)
@@ -180,7 +193,7 @@ function createDeck(id: DeckId) {
       // Re-sync pulse to the loop's next beat boundary to fix phase drift
       if (state.loopPlaying && state.pulsePlaying) {
         pulse.stop()
-        const secondsPerBeat = 60 / state.bpm
+        const secondsPerBeat = 60 / state.targetBpm
         const phaseInBeat = loop.getPhase()
         const secondsUntilNextBeat = secondsPerBeat * (1 - phaseInBeat)
         const startTime = pulse.audioContext.currentTime + secondsUntilNextBeat

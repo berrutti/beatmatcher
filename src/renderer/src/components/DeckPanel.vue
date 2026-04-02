@@ -38,32 +38,33 @@
           ref="bpmInputEl"
           class="deck__bpm-input"
           type="number"
-          :min="BPM_MIN"
-          :max="BPM_MAX"
+          min="20"
           step="0.1"
-          :value="deck.displayBpm.toFixed(1)"
+          :value="deck.targetBpm.toFixed(1)"
           @blur="onBpmInputBlur"
           @keydown.enter="onBpmInputBlur"
           @keydown.escape="editingBpm = false"
         />
-        <span v-else class="deck__bpm-value" @click="startEditingBpm">{{ deck.displayBpm.toFixed(1) }}</span>
+        <span v-else class="deck__bpm-value" @click="startEditingBpm">{{ deck.targetBpm.toFixed(1) }}</span>
         <span class="deck__bpm-unit">BPM</span>
+        <span class="deck__bpm-inferred" v-if="deck.loopRegion">({{ deck.inferredBpm.toFixed(1) }})</span>
       </div>
 
       <div class="deck__slider-wrapper">
         <button class="deck__bpm-step" @mousedown.prevent="startBpmStep(1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▲</button>
-        <span class="deck__slider-label">{{ BPM_MAX }}</span>
+        <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
         <input
           type="range"
           class="deck__slider"
-          :min="BPM_MIN"
-          :max="BPM_MAX"
+          :min="-PITCH_RANGE"
+          :max="PITCH_RANGE"
           step="0.1"
-          :value="deck.bpm"
+          :value="deck.pitchOffset"
           orient="vertical"
           @input="onSliderInput"
+          @dblclick="deck.setPitchOffset(0)"
         />
-        <span class="deck__slider-label">{{ BPM_MIN }}</span>
+        <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
         <button class="deck__bpm-step" @mousedown.prevent="startBpmStep(-1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▼</button>
       </div>
 
@@ -142,7 +143,7 @@
 
 <script setup lang="ts">
 import { computed, ref, nextTick } from 'vue'
-import { useDecksStore } from '@renderer/stores/decks'
+import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks'
 import type { DeckId } from '@renderer/stores/decks'
 import PhaseRing from '@renderer/components/PhaseRing.vue'
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue'
@@ -152,22 +153,9 @@ const props = defineProps<{ deckId: DeckId }>()
 const store = useDecksStore()
 const deck = computed(() => store.decks[props.deckId])
 
-const BPM_MIN = 60
-const BPM_MAX = 200
-const SNAP_THRESHOLD = 0.1 // snap to integer if within 10% of a beat interval
-
-function snapBpm(val: number): number {
-  const rounded = Math.round(val)
-  const beatInterval = 60 / val // seconds per beat
-  const snapWindow = beatInterval * SNAP_THRESHOLD
-  // Convert back: if raw value is within snapWindow seconds of the rounded bpm's beat interval
-  if (Math.abs(val - rounded) < SNAP_THRESHOLD) return rounded
-  return Math.round(val * 10) / 10
-}
-
 function onSliderInput(e: Event) {
   const val = parseFloat((e.target as HTMLInputElement).value)
-  deck.value.setBpm(snapBpm(val))
+  deck.value.setPitchOffset(val)
 }
 
 // BPM text editing
@@ -182,17 +170,17 @@ async function startEditingBpm() {
 
 function onBpmInputBlur(e: Event) {
   const val = parseFloat((e.target as HTMLInputElement).value)
-  if (!isNaN(val)) deck.value.setBpm(Math.max(BPM_MIN, Math.min(BPM_MAX, val)))
+  if (!isNaN(val) && val > 0) deck.value.setTargetBpm(val)
   editingBpm.value = false
 }
 
-// BPM step buttons (hold to repeat)
+// Step buttons adjust targetBpm by 0.1
 let stepInterval: ReturnType<typeof setInterval> | null = null
 
 function startBpmStep(dir: 1 | -1) {
-  deck.value.setBpm(snapBpm(deck.value.bpm + dir * 0.1))
+  deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
   stepInterval = setInterval(() => {
-    deck.value.setBpm(snapBpm(deck.value.bpm + dir * 0.1))
+    deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
   }, 80)
 }
 
