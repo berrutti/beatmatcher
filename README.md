@@ -1,4 +1,4 @@
-# BeatMatcher
+# Beatmatcher
 
 A desktop app for practicing beat matching. Two independent decks, each with a pulse (similar to a metronome) and or a loop from a local audio. It has some animations for a visual representation of how accurate the beatmatching is.
 
