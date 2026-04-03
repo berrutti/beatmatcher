@@ -3,17 +3,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useDecksStore } from '@renderer/stores/decks'
-import type { DeckId } from '@renderer/stores/decks'
+import { ref, onMounted, onUnmounted } from 'vue'
+import type { LoopRegion } from '@renderer/audio/LoopEngine'
 
-const props = defineProps<{ deckId: DeckId }>()
+const props = defineProps<{
+  accent: string
+  loopRegion: LoopRegion | null
+  getTrackPosition: () => number | null
+}>()
 
-const store = useDecksStore()
-const deck = computed(() => store.decks[props.deckId])
-
-const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
-const LINE_WIDTH_RATIO = 0.065 // line width as fraction of canvas size
+const LINE_WIDTH_RATIO = 0.065
+const FLASH_DECAY = 0.82
+const BEAT_CROSSING_HIGH = 0.85
+const BEAT_CROSSING_LOW = 0.15
+const FLASH_SHADOW_BLUR = 24
+const DOT_EXTRA_RADIUS = 2
+const DOT_SHADOW_BASE = 10
+const DOT_SHADOW_PEAK = 20
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 let rafId = 0
@@ -23,7 +29,8 @@ let flashStrength = 0
 function draw() {
   const canvas = canvasEl.value
   if (!canvas) return
-  const ctx = canvas.getContext('2d')!
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
   const dpr = window.devicePixelRatio || 1
   const SIZE = canvas.clientWidth
   const LINE_WIDTH = SIZE * LINE_WIDTH_RATIO
@@ -36,37 +43,36 @@ function draw() {
   ctx.scale(dpr, dpr)
   ctx.clearRect(0, 0, SIZE, SIZE)
 
-  // Background track
   ctx.beginPath()
   ctx.arc(cx, cy, radius, 0, Math.PI * 2)
   ctx.strokeStyle = '#2a2a2a'
   ctx.lineWidth = LINE_WIDTH
   ctx.stroke()
 
-  const loop = deck.value.getLoopEngine()
-  const region = loop.region
-
   let phase4 = 0
   let beatFrac = 0
+  let playing = false
 
-  if (loop.playing && region) {
-    const loopDur = region.endSec - region.startSec
-    const beatDur = loopDur / region.beats
-    const posInLoop = loop.getLoopPositionSec() - region.startSec
-    const currentBeat = posInLoop / beatDur
-    beatFrac = currentBeat % 1
-    phase4 = (currentBeat % 4) / 4
+  if (props.loopRegion) {
+    const positionSec = props.getTrackPosition()
+    if (positionSec !== null) {
+      playing = true
+      const loopDur = props.loopRegion.endSec - props.loopRegion.startSec
+      const beatDur = loopDur / props.loopRegion.beats
+      const posInLoop = positionSec - props.loopRegion.startSec
+      const currentBeat = posInLoop / beatDur
+      beatFrac = currentBeat % 1
+      phase4 = (currentBeat % 4) / 4
+    }
   }
 
-  // Beat crossing detection
-  if (loop.playing && prevBeatFrac > 0.85 && beatFrac < 0.15) {
+  if (playing && prevBeatFrac > BEAT_CROSSING_HIGH && beatFrac < BEAT_CROSSING_LOW) {
     flashStrength = 1.0
   }
   prevBeatFrac = beatFrac
 
-  // Decay flash each frame
   if (flashStrength > 0.01) {
-    flashStrength *= 0.82
+    flashStrength *= FLASH_DECAY
   } else {
     flashStrength = 0
   }
@@ -74,38 +80,35 @@ function draw() {
   const startAngle = -Math.PI / 2
   const endAngle = startAngle + phase4 * Math.PI * 2
 
-  // Glow pass when flashing
   if (flashStrength > 0.01) {
     ctx.save()
     ctx.beginPath()
     ctx.arc(cx, cy, radius, startAngle, endAngle)
-    ctx.strokeStyle = ACCENT
+    ctx.strokeStyle = props.accent
     ctx.lineWidth = LINE_WIDTH
-    ctx.shadowColor = ACCENT
-    ctx.shadowBlur = 24 * flashStrength
+    ctx.shadowColor = props.accent
+    ctx.shadowBlur = FLASH_SHADOW_BLUR * flashStrength
     ctx.globalAlpha = 0.4 + 0.6 * flashStrength
     ctx.stroke()
     ctx.restore()
   }
 
-  // Main arc
   ctx.beginPath()
   ctx.arc(cx, cy, radius, startAngle, endAngle)
-  ctx.strokeStyle = ACCENT
+  ctx.strokeStyle = props.accent
   ctx.lineWidth = LINE_WIDTH
   ctx.shadowColor = 'transparent'
   ctx.shadowBlur = 0
   ctx.globalAlpha = 1
   ctx.stroke()
 
-  // Dot at current position
   const dotX = cx + radius * Math.cos(endAngle)
   const dotY = cy + radius * Math.sin(endAngle)
   ctx.beginPath()
-  ctx.arc(dotX, dotY, LINE_WIDTH / 2 + 2, 0, Math.PI * 2)
-  ctx.fillStyle = ACCENT
-  ctx.shadowColor = ACCENT
-  ctx.shadowBlur = 10 + 20 * flashStrength
+  ctx.arc(dotX, dotY, LINE_WIDTH / 2 + DOT_EXTRA_RADIUS, 0, Math.PI * 2)
+  ctx.fillStyle = props.accent
+  ctx.shadowColor = props.accent
+  ctx.shadowBlur = DOT_SHADOW_BASE + DOT_SHADOW_PEAK * flashStrength
   ctx.fill()
   ctx.shadowBlur = 0
 

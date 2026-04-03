@@ -115,6 +115,8 @@ export function detectBpmFromSamples(data: Float32Array, sampleRate: number): Bp
   }
 }
 
+const PEAK_FILTER_FREQ = 150
+
 async function lowPassFilter(buffer: AudioBuffer): Promise<Float32Array> {
   const ctx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate)
   const source = ctx.createBufferSource()
@@ -122,7 +124,7 @@ async function lowPassFilter(buffer: AudioBuffer): Promise<Float32Array> {
 
   const filter = ctx.createBiquadFilter()
   filter.type = 'lowpass'
-  filter.frequency.value = 150
+  filter.frequency.value = PEAK_FILTER_FREQ
 
   source.connect(filter)
   filter.connect(ctx.destination)
