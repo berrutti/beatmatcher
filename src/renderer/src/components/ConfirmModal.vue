@@ -5,8 +5,12 @@
         <div class="confirm-modal__title">{{ title }}</div>
         <div class="confirm-modal__body">{{ body }}</div>
         <div class="confirm-modal__actions">
-          <button class="confirm-modal__btn confirm-modal__btn--cancel" @click="emit('cancel')">Cancel</button>
-          <button class="confirm-modal__btn confirm-modal__btn--confirm" @click="emit('confirm')">Load</button>
+          <button class="confirm-modal__btn confirm-modal__btn--cancel" @click="emit('cancel')">
+            Cancel
+          </button>
+          <button class="confirm-modal__btn confirm-modal__btn--confirm" @click="emit('confirm')">
+            Load
+          </button>
         </div>
       </div>
     </div>
@@ -14,8 +18,8 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{ open: boolean; title: string; body: string }>()
-const emit = defineEmits<{ confirm: []; cancel: [] }>()
+defineProps<{ open: boolean; title: string; body: string }>();
+const emit = defineEmits<{ confirm: []; cancel: [] }>();
 </script>
 
 <style scoped>

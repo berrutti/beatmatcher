@@ -15,7 +15,9 @@
           @keydown.escape="emit('cancel')"
         />
         <div class="bpm-modal__actions">
-          <button class="bpm-modal__btn bpm-modal__btn--cancel" @click="emit('cancel')">Cancel</button>
+          <button class="bpm-modal__btn bpm-modal__btn--cancel" @click="emit('cancel')">
+            Cancel
+          </button>
           <button class="bpm-modal__btn bpm-modal__btn--submit" @click="submit">Set BPM</button>
         </div>
       </div>
@@ -24,27 +26,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue';
 
-const props = defineProps<{ open: boolean; currentBpm: number | null }>()
-const emit = defineEmits<{ submit: [bpm: number]; cancel: [] }>()
+const props = defineProps<{ open: boolean; currentBpm: number | null }>();
+const emit = defineEmits<{ submit: [bpm: number]; cancel: [] }>();
 
-const inputEl = ref<HTMLInputElement | null>(null)
+const inputEl = ref<HTMLInputElement | null>(null);
 
-watch(() => props.open, async (isOpen) => {
-  if (isOpen) {
-    await nextTick()
-    if (inputEl.value) {
-      inputEl.value.value = props.currentBpm ? props.currentBpm.toFixed(1) : ''
-      inputEl.value.select()
+watch(
+  () => props.open,
+  async (isOpen) => {
+    if (isOpen) {
+      await nextTick();
+      if (inputEl.value) {
+        inputEl.value.value = props.currentBpm ? props.currentBpm.toFixed(1) : '';
+        inputEl.value.select();
+      }
     }
   }
-})
+);
 
 function submit() {
-  const val = parseFloat(inputEl.value?.value ?? '')
-  if (isNaN(val) || val <= 0) return
-  emit('submit', val)
+  const val = parseFloat(inputEl.value?.value ?? '');
+  if (isNaN(val) || val <= 0) return;
+  emit('submit', val);
 }
 </script>
 

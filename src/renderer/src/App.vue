@@ -7,13 +7,12 @@
           <LissajousScope
             :sources="[
               { getPhase: () => store.deckA.phase, accent: store.deckA.accent, label: 'A' },
-              { getPhase: () => store.deckB.phase, accent: store.deckB.accent, label: 'B' },
+              { getPhase: () => store.deckB.phase, accent: store.deckB.accent, label: 'B' }
             ]"
           />
         </div>
         <DeckPanel deck-id="B" />
       </main>
-
 
       <Transition name="kb">
         <div v-if="showKeys" class="app__keybindings">
@@ -38,32 +37,32 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useDecksStore } from '@renderer/stores/decks'
-import { useKeyboard } from '@renderer/composables/useKeyboard'
-import DeckPanel from '@renderer/components/DeckPanel.vue'
-import LissajousScope from '@renderer/components/LissajousScope.vue'
+import { ref, onMounted, onUnmounted } from 'vue';
+import { useDecksStore } from '@renderer/stores/decks';
+import { useKeyboard } from '@renderer/composables/useKeyboard';
+import DeckPanel from '@renderer/components/DeckPanel.vue';
+import LissajousScope from '@renderer/components/LissajousScope.vue';
 
-useKeyboard()
+useKeyboard();
 
-const store = useDecksStore()
-onUnmounted(() => store.destroy())
+const store = useDecksStore();
+onUnmounted(() => store.destroy());
 
-const showKeys = ref(false)
+const showKeys = ref(false);
 
 function onKeyDown(e: KeyboardEvent) {
-  if (e.key === '?' && !e.repeat) showKeys.value = true
+  if (e.key === '?' && !e.repeat) showKeys.value = true;
 }
 function onKeyUp(e: KeyboardEvent) {
-  if (e.key === '?') showKeys.value = false
+  if (e.key === '?') showKeys.value = false;
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', onKeyDown)
-  window.addEventListener('keyup', onKeyUp)
-})
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+});
 onUnmounted(() => {
-  window.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('keyup', onKeyUp)
-})
+  window.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('keyup', onKeyUp);
+});
 </script>
