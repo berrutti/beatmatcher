@@ -30,7 +30,21 @@
       <span class="deck__detecting-text">Detecting BPM...</span>
     </div>
 
-    <WaveformDisplay v-show="deck.mode === 'edit' && !deck.detecting" :deck-id="deckId" class="deck__waveform" />
+    <WaveformDisplay
+      v-show="deck.mode === 'edit' && !deck.detecting"
+      class="deck__waveform"
+      :accent="deckId === 'A' ? '#3b82f6' : '#f97316'"
+      :buffer="deck.buffer"
+      :loop-region="deck.loopRegion"
+      :loop-beats="deck.loopBeats"
+      :inferred-bpm="deck.inferredBpm"
+      :get-playhead-sec="() => deck.getTrackPositionSec()"
+      @load="onLoadFile"
+      @set-region="deck.setLoopRegion"
+      @move-region="deck.moveLoopRegion"
+      @set-beats="deck.setLoopBeats"
+      @request-bpm-input="store.requestBpmModal(deckId)"
+    />
 
     <div v-show="deck.mode === 'play' && !deck.detecting" class="phase-ring-wrapper">
       <PhaseRing :deck-id="deckId" />
@@ -227,5 +241,13 @@ function onCueStart() {
 function onTogglePlay() {
   if (!deck.value.trackLoaded) return
   deck.value.togglePlay()
+}
+
+function onLoadFile(file: File) {
+  if (deck.value.loopPlaying) {
+    deck.value._requestLoadConfirm(file)
+    return
+  }
+  deck.value.loadTrack(file)
 }
 </script>

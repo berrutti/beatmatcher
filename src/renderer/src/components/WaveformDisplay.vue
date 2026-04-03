@@ -7,7 +7,7 @@
     @drop.prevent="onDrop"
   >
     <!-- Empty state -->
-    <div v-if="!deck.trackLoaded" class="waveform__empty">
+    <div v-if="!props.buffer" class="waveform__empty">
       <div class="waveform__drop-icon">⊕</div>
       <p class="waveform__drop-hint">Drop audio file here</p>
       <p class="waveform__drop-hint waveform__drop-hint--sub">or</p>
@@ -15,7 +15,7 @@
     </div>
 
     <!-- Waveform canvas -->
-    <template v-else>
+    <template v-if="props.buffer">
       <canvas
         ref="canvasEl"
         class="waveform__canvas"
@@ -30,35 +30,35 @@
         <span class="waveform__ctrl-label">LOOP</span>
         <button
           class="waveform__beat-btn"
-          :class="{ 'waveform__beat-btn--active': deck.loopBeats === 16 }"
-          @click="deck.setLoopBeats(16)"
+          :class="{ 'waveform__beat-btn--active': props.loopBeats === 16 }"
+          @click="emit('setBeats', 16)"
         >16</button>
         <button
           class="waveform__beat-btn"
-          :class="{ 'waveform__beat-btn--active': deck.loopBeats === 32 }"
-          @click="deck.setLoopBeats(32)"
+          :class="{ 'waveform__beat-btn--active': props.loopBeats === 32 }"
+          @click="emit('setBeats', 32)"
         >32</button>
 
         <button
           class="waveform__lock-btn"
-          :class="{ 'waveform__lock-btn--unlocked': !deck.regionLocked }"
-          @click="deck.regionLocked = !deck.regionLocked"
-          :title="deck.regionLocked ? 'Region locked. Click to unlock and resize.' : 'Region unlocked. Click to lock.'"
-        >{{ deck.regionLocked ? '🔒' : '🔓' }}</button>
+          :class="{ 'waveform__lock-btn--unlocked': !regionLocked }"
+          @click="regionLocked = !regionLocked"
+          :title="regionLocked ? 'Region locked. Click to unlock and resize.' : 'Region unlocked. Click to lock.'"
+        >{{ regionLocked ? '🔒' : '🔓' }}</button>
 
-        <span class="waveform__bpm-readout" v-if="deck.loopRegion">
-          {{ deck.inferredBpm.toFixed(1) }} BPM
+        <span class="waveform__bpm-readout" v-if="props.loopRegion">
+          {{ props.inferredBpm.toFixed(1) }} BPM
         </span>
 
         <!-- Zoom controls -->
         <div class="waveform__zoom">
-          <button class="waveform__zoom-btn" @click="zoomOut">−</button>
+          <button class="waveform__zoom-btn" @click="() => zoomOut()">−</button>
           <span class="waveform__zoom-label">{{ zoomLabel }}</span>
-          <button class="waveform__zoom-btn" @click="zoomIn">+</button>
+          <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
 
         <button class="waveform__set-bpm-btn" @click="openFileDialog">LOAD</button>
-        <button class="waveform__set-bpm-btn" @click="deck._requestBpmInput()">SET BPM</button>
+        <button class="waveform__set-bpm-btn" @click="emit('requestBpmInput')">SET BPM</button>
 
       </div>
     </template>
@@ -66,17 +66,28 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { useDecksStore } from '@renderer/stores/decks'
-import type { DeckId } from '@renderer/stores/decks'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { LoopRegion } from '@renderer/audio/LoopEngine'
 
-const props = defineProps<{ deckId: DeckId }>()
+const props = defineProps<{
+  accent: string
+  buffer: AudioBuffer | null
+  loopRegion: LoopRegion | null
+  loopBeats: 16 | 32
+  inferredBpm: number
+  getPlayheadSec: () => number | null
+}>()
 
-const store = useDecksStore()
-const deck = computed(() => store.decks[props.deckId])
+const emit = defineEmits<{
+  load: [file: File]
+  setRegion: [region: LoopRegion]
+  moveRegion: [startSec: number]
+  setBeats: [beats: 16 | 32]
+  requestBpmInput: []
+}>()
 
-const ACCENT = props.deckId === 'A' ? '#3b82f6' : '#f97316'
+const accent = computed(() => props.accent)
+const regionLocked = ref(true)
 const HANDLE_W = 8
 
 // Zoom levels in seconds of visible track
@@ -114,10 +125,12 @@ function clampView(start: number, duration: number): [number, number] {
   return [s, s + dur]
 }
 
-function setZoomCentered(idx: number) {
-  zoomIdx.value = Math.max(0, Math.min(ZOOM_LEVELS_SEC.length - 1, idx))
+function setZoomCentered(idx: number, anchorSec?: number) {
+  const newZoom = Math.max(0, Math.min(ZOOM_LEVELS_SEC.length - 1, idx));
+  if (newZoom === zoomIdx.value) return;
+  zoomIdx.value = newZoom;
   const dur = viewDurationSec()
-  const center = (viewStartSec.value + viewEndSec.value) / 2
+  const center = anchorSec ?? (viewStartSec.value + viewEndSec.value) / 2
   const [s, e] = clampView(center - dur / 2, dur)
   viewStartSec.value = s
   viewEndSec.value = e
@@ -125,27 +138,15 @@ function setZoomCentered(idx: number) {
 }
 
 // Lower index = fewer seconds = more detail = zoom in
-function zoomIn() { setZoomCentered(zoomIdx.value - 1) }
-function zoomOut() { setZoomCentered(zoomIdx.value + 1) }
+function zoomIn(anchorSec?: number) { setZoomCentered(zoomIdx.value - 1, anchorSec) }
+function zoomOut(anchorSec?: number) { setZoomCentered(zoomIdx.value + 1, anchorSec) }
 
 // ── File loading ──────────────────────────────────────────────
-
-async function loadFile(file: File) {
-  await deck.value.loadTrack(file)
-  await nextTick()
-  trackDuration = deck.value.getLoopEngine().buffer_?.duration ?? 0
-  buildFullPeaks()
-  zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC)
-  const dur = viewDurationSec()
-  viewStartSec.value = 0
-  viewEndSec.value = Math.min(dur, trackDuration)
-  drawWaveform()
-}
 
 function onDrop(e: DragEvent) {
   isDragOver.value = false
   const file = e.dataTransfer?.files[0]
-  if (file) loadFile(file)
+  if (file) emit('load', file)
 }
 
 function openFileDialog() {
@@ -153,7 +154,7 @@ function openFileDialog() {
   input.type = 'file'
   input.accept = 'audio/*'
   input.onchange = () => {
-    if (input.files?.[0]) loadFile(input.files[0])
+    if (input.files?.[0]) emit('load', input.files[0])
   }
   input.click()
 }
@@ -166,10 +167,9 @@ let peaksCachedViewEnd = NaN
 let peaksCachedWidth = 0
 
 function buildFullPeaks() {
-  const buf = deck.value.getLoopEngine().buffer_
-  if (!buf) return
-  rawChannel = buf.getChannelData(0)
-  sampleRate = buf.sampleRate
+  if (!props.buffer) return
+  rawChannel = props.buffer.getChannelData(0)
+  sampleRate = props.buffer.sampleRate
   peaksCachedViewStart = NaN  // invalidate cache
 }
 
@@ -206,14 +206,16 @@ function ensureVisiblePeaks(w: number) {
 // ── Coordinate helpers ────────────────────────────────────────
 
 function pxToSec(px: number): number {
-  const w = canvasEl.value!.clientWidth
-  return viewStartSec.value + (px / w) * (viewEndSec.value - viewStartSec.value)
+  const canvas = canvasEl.value
+  if (!canvas) return 0
+  return viewStartSec.value + (px / canvas.clientWidth) * (viewEndSec.value - viewStartSec.value)
 }
 
 function secToPx(sec: number): number {
-  const w = canvasEl.value!.clientWidth
+  const canvas = canvasEl.value
+  if (!canvas) return 0
   const span = viewEndSec.value - viewStartSec.value
-  return ((sec - viewStartSec.value) / span) * w
+  return ((sec - viewStartSec.value) / span) * canvas.clientWidth
 }
 
 // ── Canvas drawing ────────────────────────────────────────────
@@ -222,7 +224,8 @@ function drawWaveform() {
   const canvas = canvasEl.value
   if (!canvas || !rawChannel) return
 
-  const ctx = canvas.getContext('2d')!
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
   const dpr = window.devicePixelRatio || 1
   const w = canvas.clientWidth
   const h = canvas.clientHeight
@@ -251,7 +254,7 @@ function drawWaveform() {
   }
 
   // Loop region overlay
-  const region = deck.value.loopRegion
+  const region = props.loopRegion
   if (region) {
     const sx = secToPx(region.startSec)
     const ex = secToPx(region.endSec)
@@ -262,14 +265,14 @@ function drawWaveform() {
 
     if (visEnd > visStart) {
       // Tinted overlay
-      ctx.fillStyle = `${ACCENT}22`
+      ctx.fillStyle = `${props.accent}22`
       ctx.fillRect(visStart, 0, visEnd - visStart, h)
 
       // Bright waveform inside loop
       ctx.globalAlpha = 0.8
       for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
         const amp = visiblePeaks[x] * mid * 0.9
-        ctx.fillStyle = ACCENT
+        ctx.fillStyle = props.accent;
         ctx.fillRect(x, mid - amp, 1, amp * 2)
       }
       ctx.globalAlpha = 1
@@ -283,7 +286,7 @@ function drawWaveform() {
     const labelX = Math.max(visStart + 10, 10)
     ctx.fillStyle = '#ffffff99'
     ctx.font = `bold 11px monospace`
-    ctx.fillText(`${deck.value.loopBeats} beats · ${deck.value.inferredBpm.toFixed(1)} BPM`, labelX, 18)
+    ctx.fillText(`${props.loopBeats} beats · ${props.inferredBpm.toFixed(1)} BPM`, labelX, 18)
   }
 
   // Time ruler
@@ -294,7 +297,7 @@ function drawWaveform() {
 }
 
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number) {
-  ctx.fillStyle = ACCENT
+  ctx.fillStyle = props.accent;
   ctx.fillRect(x - HANDLE_W / 2, 0, HANDLE_W, h)
   ctx.fillStyle = '#fff'
   const mid = h / 2
@@ -304,7 +307,7 @@ function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number) {
 }
 
 function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const region = deck.value.loopRegion
+  const region = props.loopRegion
   if (!region) return
 
   // Draw a line every 4 beats inside the loop region only.
@@ -334,8 +337,7 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
 let rafId = 0
 
 function getPlayheadSec(): number | null {
-  if (!deck.value.loopRegion || !deck.value.loopPlaying) return null
-  return deck.value.getLoopEngine().getLoopPositionSec()
+  return props.getPlayheadSec()
 }
 
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
@@ -376,7 +378,7 @@ const panStartViewSec = ref(0)
 let newRegionAnchorSec = 0 // start point for a brand-new selection drag
 
 function hitTest(px: number): DragHandle {
-  const region = deck.value.loopRegion
+  const region = props.loopRegion
   if (!region) return null
   const sx = secToPx(region.startSec)
   const ex = secToPx(region.endSec)
@@ -387,14 +389,15 @@ function hitTest(px: number): DragHandle {
 }
 
 function canvasPx(clientX: number): number {
-  const rect = canvasEl.value!.getBoundingClientRect()
-  return clientX - rect.left
+  const canvas = canvasEl.value
+  if (!canvas) return 0
+  return clientX - canvas.getBoundingClientRect().left
 }
 
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
-  const locked = deck.value.regionLocked
+  const locked = regionLocked.value
 
   if (e.button === 2) {
     dragging.value = 'pan'
@@ -403,8 +406,10 @@ function onMouseDown(e: MouseEvent) {
   } else if ((hit === 'start' || hit === 'end') && !locked) {
     dragging.value = hit
   } else if (hit === 'body') {
+    const region = props.loopRegion
+    if (!region) return
     dragging.value = 'body'
-    dragOffsetSec.value = pxToSec(px) - deck.value.loopRegion!.startSec
+    dragOffsetSec.value = pxToSec(px) - region.startSec
   } else if (!locked) {
     dragging.value = 'new'
     newRegionAnchorSec = pxToSec(px)
@@ -435,15 +440,15 @@ function applyDrag(clientX: number) {
     const start = Math.min(newRegionAnchorSec, sec)
     const end = Math.max(newRegionAnchorSec, sec)
     if (end - start > 0.001) {
-      deck.value.setLoopRegion({ startSec: start, endSec: end, beats: deck.value.loopBeats })
-      // Drag whichever edge is under the cursor
+      emit('setRegion', { startSec: start, endSec: end, beats: props.loopBeats })
       dragging.value = sec < newRegionAnchorSec ? 'start' : 'end'
     }
     drawWaveform()
     return
   }
 
-  const region = deck.value.loopRegion!
+  const region = props.loopRegion
+  if (!region) return
   const newRegion: LoopRegion = { ...region }
 
   if (dragging.value === 'start') {
@@ -453,12 +458,12 @@ function applyDrag(clientX: number) {
   } else if (dragging.value === 'body') {
     const dur = region.endSec - region.startSec
     const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur))
-    deck.value.moveLoopRegion(newStart)
+    emit('moveRegion', newStart)
     drawWaveform()
     return
   }
 
-  deck.value.setLoopRegion(newRegion)
+  emit('setRegion', newRegion)
   drawWaveform()
 }
 
@@ -467,8 +472,10 @@ function onMouseMoveCanvas(e: MouseEvent) {
   if (dragging.value) return
   const px = canvasPx(e.clientX)
   const hit = hitTest(px)
-  const locked = deck.value.regionLocked
-  canvasEl.value!.style.cursor =
+  const locked = regionLocked.value
+  const canvas = canvasEl.value
+  if (!canvas) return
+  canvas.style.cursor =
     (hit === 'start' || hit === 'end') ? (locked ? 'not-allowed' : 'ew-resize')
     : hit === 'body' ? 'grab'
     : locked ? 'default' : 'col-resize'
@@ -481,8 +488,17 @@ function onMouseMoveWindow(e: MouseEvent) {
 }
 
 function onWheel(e: WheelEvent) {
-  if (e.deltaY < 0) zoomIn()
-  else zoomOut()
+  const canvas = canvasEl.value
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect()
+    const frac = (e.clientX - rect.left) / rect.width
+    const anchorSec = viewStartSec.value + frac * (viewEndSec.value - viewStartSec.value)
+    if (e.deltaY < 0) zoomIn(anchorSec)
+    else zoomOut(anchorSec)
+  } else {
+    if (e.deltaY < 0) zoomIn()
+    else zoomOut()
+  }
 }
 
 function onMouseUp() {
@@ -512,22 +528,19 @@ onUnmounted(() => {
 })
 
 
-watch(() => deck.value.trackLoaded, async (loaded) => {
-  if (loaded) {
-    await nextTick()
-    trackDuration = deck.value.getLoopEngine().buffer_?.duration ?? 0
+watch(() => props.buffer, (buf) => {
+  if (buf) {
+    trackDuration = buf.duration
     buildFullPeaks()
     zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC)
     const dur = viewDurationSec()
     viewStartSec.value = 0
     viewEndSec.value = Math.min(dur, trackDuration)
-    drawWaveform()
-  }
-})
-
-watch(() => deck.value.mode, (mode) => {
-  if (mode === 'edit') {
-    requestAnimationFrame(() => { drawWaveform() })
+  } else {
+    rawChannel = null
+    sampleRate = 0
+    trackDuration = 0
+    visiblePeaks = null
   }
 })
 </script>
@@ -624,8 +637,8 @@ watch(() => deck.value.mode, (mode) => {
 }
 
 .waveform__beat-btn--active {
-  border-color: v-bind(ACCENT);
-  color: v-bind(ACCENT);
+  border-color: v-bind(accent);
+  color: v-bind(accent);
 }
 
 .waveform__lock-btn {
@@ -643,13 +656,13 @@ watch(() => deck.value.mode, (mode) => {
 }
 
 .waveform__lock-btn--unlocked {
-  border-color: v-bind(ACCENT);
+  border-color: v-bind(accent);
 }
 
 .waveform__bpm-readout {
   font-size: 0.85rem;
   font-weight: 700;
-  color: v-bind(ACCENT);
+  color: v-bind(accent);
   margin-left: auto;
   letter-spacing: 0.05em;
 }
@@ -711,5 +724,6 @@ watch(() => deck.value.mode, (mode) => {
   border-color: #555;
   color: #aaa;
 }
+
 
 </style>

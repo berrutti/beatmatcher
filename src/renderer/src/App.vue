@@ -10,6 +10,7 @@
       </main>
 
       <BpmModal />
+      <ConfirmModal />
 
       <Transition name="kb">
         <div v-if="showKeys" class="app__keybindings">
@@ -40,6 +41,7 @@ import { useKeyboard } from '@renderer/composables/useKeyboard'
 import DeckPanel from '@renderer/components/DeckPanel.vue'
 import LissajousScope from '@renderer/components/LissajousScope.vue'
 import BpmModal from '@renderer/components/BpmModal.vue'
+import ConfirmModal from '@renderer/components/ConfirmModal.vue'
 
 useKeyboard()
 

@@ -10,7 +10,7 @@ function createWindow(): void {
     minHeight: 580,
     show: false,
     autoHideMenuBar: true,
-    title: 'BeatMatcher',
+    title: 'Beatmatcher',
     backgroundColor: '#0a0a0a',
     icon: join(__dirname, '../../build/icon.png'),
     webPreferences: {

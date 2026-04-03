@@ -74,7 +74,7 @@ jobs:
             ### macOS — first launch
             The app is not code-signed. After dragging it to Applications, run once in Terminal:
             ```bash
-            xattr -cr /Applications/BeatMatcher.app
+            xattr -cr /Applications/Beatmatcher.app
             ```
 
             ---

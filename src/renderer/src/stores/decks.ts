@@ -30,7 +30,7 @@ function getSavedRegion(filename: string): SavedRegion | null {
   return saved
 }
 
-function createDeck(id: DeckId) {
+function createDeck(id: DeckId, onNeedBpmInput: () => void) {
   const audioCtx = new AudioContext()
   const loop = new LoopEngine(audioCtx)
 
@@ -42,6 +42,7 @@ function createDeck(id: DeckId) {
 
     trackName: '',
     trackLoaded: false,
+    buffer: null as AudioBuffer | null,
     detecting: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
@@ -51,13 +52,14 @@ function createDeck(id: DeckId) {
     targetBpm: DEFAULT_BPM,
     pitchOffset: 0,
 
-    regionLocked: true,
+
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
     eq: { low: 0, mid: 0, high: 0 },
 
     getLoopEngine(): LoopEngine { return loop },
     getAudioContext(): AudioContext { return audioCtx },
+    getTrackPositionSec(): number | null { return loop.getTrackPositionSec() },
 
     _applyRate() {
       loop.targetBpm = state.targetBpm
@@ -78,7 +80,18 @@ function createDeck(id: DeckId) {
     },
 
     async loadTrack(file: File) {
+      if (state.loopPlaying) {
+        loop.stop()
+        state.loopPlaying = false
+      }
+      state.cueing = false
+      state.nudging = null
+      loop.setNudge(0)
+      state.loopRegion = null
+      state.buffer = null
+
       await loop.loadFile(file)
+      state.buffer = loop.buffer_
       currentFilename = file.name
       state.trackName = file.name
       state.trackLoaded = true
@@ -104,7 +117,7 @@ function createDeck(id: DeckId) {
         state.setTrackBpm(detectedBpm)
         state.mode = 'edit'
       } else {
-        state._requestBpmInput()
+        onNeedBpmInput()
       }
     },
 
@@ -114,7 +127,8 @@ function createDeck(id: DeckId) {
       state.setLoopRegion({ startSec: start, endSec: start + dur, beats: state.loopBeats })
     },
 
-    _requestBpmInput() {},
+
+    _requestLoadConfirm(_file: File) {},
 
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region
@@ -209,15 +223,16 @@ function createDeck(id: DeckId) {
 }
 
 export const useDecksStore = defineStore('decks', () => {
-  const deckA = createDeck('A')
-  const deckB = createDeck('B')
+  const bpmModalDeck = ref<DeckId | null>(null)
+
+  const deckA = createDeck('A', () => { bpmModalDeck.value = 'A' })
+  const deckB = createDeck('B', () => { bpmModalDeck.value = 'B' })
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB }
 
-  const bpmModalDeck = ref<DeckId | null>(null)
-
-  deckA._requestBpmInput = () => { bpmModalDeck.value = 'A' }
-  deckB._requestBpmInput = () => { bpmModalDeck.value = 'B' }
+  function requestBpmModal(deckId: DeckId) {
+    bpmModalDeck.value = deckId
+  }
 
   function submitBpmModal(bpm: number) {
     const deckId = bpmModalDeck.value
@@ -231,10 +246,29 @@ export const useDecksStore = defineStore('decks', () => {
     bpmModalDeck.value = null
   }
 
+  const loadConfirmDeck = ref<DeckId | null>(null)
+  let pendingLoadFile: File | null = null
+
+  deckA._requestLoadConfirm = (file) => { pendingLoadFile = file; loadConfirmDeck.value = 'A' }
+  deckB._requestLoadConfirm = (file) => { pendingLoadFile = file; loadConfirmDeck.value = 'B' }
+
+  function confirmLoadTrack() {
+    const id = loadConfirmDeck.value
+    const file = pendingLoadFile
+    loadConfirmDeck.value = null
+    pendingLoadFile = null
+    if (id && file) decks[id].loadTrack(file)
+  }
+
+  function cancelLoadTrack() {
+    loadConfirmDeck.value = null
+    pendingLoadFile = null
+  }
+
   function destroy() {
     deckA.destroy()
     deckB.destroy()
   }
 
-  return { deckA, deckB, decks, bpmModalDeck, submitBpmModal, dismissBpmModal, destroy }
+  return { deckA, deckB, decks, bpmModalDeck, requestBpmModal, submitBpmModal, dismissBpmModal, loadConfirmDeck, confirmLoadTrack, cancelLoadTrack, destroy }
 })
