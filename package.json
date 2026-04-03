@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.berrutti.beatmatcher",
-    "productName": "BeatMatcher",
+    "productName": "Beatmatcher",
     "icon": "build/icon",
     "files": [
       "out/**/*"

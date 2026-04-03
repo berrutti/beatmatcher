@@ -1,8 +1,8 @@
 <template>
   <Transition name="bpm-modal">
-    <div v-if="store.bpmModalDeck" class="bpm-modal__backdrop" @click.self="store.dismissBpmModal()">
+    <div v-if="open" class="bpm-modal__backdrop" @click.self="emit('cancel')">
       <div class="bpm-modal">
-        <div class="bpm-modal__title">Set track BPM for Deck {{ store.bpmModalDeck }}</div>
+        <div class="bpm-modal__title">Set track BPM</div>
         <input
           ref="inputEl"
           class="bpm-modal__input"
@@ -12,10 +12,10 @@
           step="0.1"
           placeholder="e.g. 128"
           @keydown.enter="submit"
-          @keydown.escape="store.dismissBpmModal()"
+          @keydown.escape="emit('cancel')"
         />
         <div class="bpm-modal__actions">
-          <button class="bpm-modal__btn bpm-modal__btn--cancel" @click="store.dismissBpmModal()">Cancel</button>
+          <button class="bpm-modal__btn bpm-modal__btn--cancel" @click="emit('cancel')">Cancel</button>
           <button class="bpm-modal__btn bpm-modal__btn--submit" @click="submit">Set BPM</button>
         </div>
       </div>
@@ -24,24 +24,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
-import { useDecksStore } from '@renderer/stores/decks'
+import { ref, watch, nextTick } from 'vue'
 
-const store = useDecksStore()
+const props = defineProps<{ open: boolean; currentBpm: number | null }>()
+const emit = defineEmits<{ submit: [bpm: number]; cancel: [] }>()
+
 const inputEl = ref<HTMLInputElement | null>(null)
 
-const currentBpm = computed(() => {
-  const deckId = store.bpmModalDeck
-  if (!deckId) return null
-  const deck = store.decks[deckId]
-  return deck.loopRegion ? deck.inferredBpm : null
-})
-
-watch(() => store.bpmModalDeck, async (deckId) => {
-  if (deckId) {
+watch(() => props.open, async (isOpen) => {
+  if (isOpen) {
     await nextTick()
     if (inputEl.value) {
-      inputEl.value.value = currentBpm.value ? currentBpm.value.toFixed(1) : ''
+      inputEl.value.value = props.currentBpm ? props.currentBpm.toFixed(1) : ''
       inputEl.value.select()
     }
   }
@@ -50,7 +44,7 @@ watch(() => store.bpmModalDeck, async (deckId) => {
 function submit() {
   const val = parseFloat(inputEl.value?.value ?? '')
   if (isNaN(val) || val <= 0) return
-  store.submitBpmModal(val)
+  emit('submit', val)
 }
 </script>
 

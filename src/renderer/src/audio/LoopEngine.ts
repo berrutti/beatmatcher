@@ -14,6 +14,13 @@ export type LoopRegion = {
   beats: 16 | 32
 }
 
+function advanceBuffer(pos: number, elapsed: number, loopStart: number, loopEnd: number): number {
+  const loopDur = loopEnd - loopStart
+  const distToFirstWrap = loopEnd - pos
+  if (elapsed < distToFirstWrap) return pos + elapsed
+  return loopStart + (elapsed - distToFirstWrap) % loopDur
+}
+
 export class LoopEngine {
   private ctx: AudioContext
   private buffer: AudioBuffer | null = null
@@ -29,6 +36,7 @@ export class LoopEngine {
   private _nudgePercent = 0
 
   private accumulatedPhase = 0
+  private bufferAnchorPos = 0
   private lastSegmentStart = 0
 
   constructor(ctx: AudioContext) {
@@ -111,12 +119,14 @@ export class LoopEngine {
   }
 
   setRegion(region: LoopRegion): void {
-    this._region = region
     if (this._playing && this.source) {
-      // Update loop boundaries on the live source — no restart needed
+      this.flushSegment()
+      this._region = region
       this.source.loopStart = region.startSec
       this.source.loopEnd = region.endSec
       this.applyPlaybackRate()
+    } else {
+      this._region = region
     }
   }
 
@@ -151,7 +161,11 @@ export class LoopEngine {
 
   private flushSegment(): void {
     const now = this.ctx.currentTime
-    this.accumulatedPhase += (now - this.lastSegmentStart) * this.effectiveTargetBpm / 60
+    const dt = now - this.lastSegmentStart
+    this.accumulatedPhase += dt * this.effectiveTargetBpm / 60
+    if (this._region) {
+      this.bufferAnchorPos = advanceBuffer(this.bufferAnchorPos, dt * this.playbackRate, this._region.startSec, this._region.endSec)
+    }
     this.lastSegmentStart = now
   }
 
@@ -160,6 +174,17 @@ export class LoopEngine {
     const now = this.ctx.currentTime
     const total = this.accumulatedPhase + (now - this.lastSegmentStart) * this.effectiveTargetBpm / 60
     return total % 1.0
+  }
+
+  /** Absolute position in the track in seconds, follows actual buffer playback through loop boundary changes. Returns null when not playing. */
+  getTrackPositionSec(): number | null {
+    if (!this._playing) return null
+    if (!this._region) {
+      // this should never happen: _playing is only true when a region is set
+      throw new Error('LoopEngine: playing without a region')
+    }
+    const elapsed = (this.ctx.currentTime - this.lastSegmentStart) * this.playbackRate
+    return advanceBuffer(this.bufferAnchorPos, elapsed, this._region.startSec, this._region.endSec)
   }
 
   /** Position within the loop region in seconds (wraps around on each loop). */
@@ -187,6 +212,7 @@ export class LoopEngine {
     if (dur <= 0) return
 
     this.accumulatedPhase = 0
+    this.bufferAnchorPos = startSec
     this.lastSegmentStart = when
 
     const src = this.ctx.createBufferSource()

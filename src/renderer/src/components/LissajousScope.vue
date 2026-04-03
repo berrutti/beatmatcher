@@ -18,8 +18,8 @@ const DOT_RADIUS = 4
 const store = useDecksStore()
 function getBestPhase(deckId: 'A' | 'B'): number {
   const deck = store.decks[deckId]
-  const loop = deck.getLoopEngine()
-  if (loop.playing) return loop.getPhase()
+  const engine = deck.getLoopEngine()
+  if (engine.playing) return engine.getPhase()
   return 0
 }
 

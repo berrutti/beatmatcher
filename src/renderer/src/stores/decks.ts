@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { reactive, ref } from 'vue'
+import { reactive } from 'vue'
 import { LoopEngine } from '@renderer/audio/LoopEngine'
 import type { LoopRegion } from '@renderer/audio/LoopEngine'
 import { detectBpm } from '@renderer/audio/bpmDetect'
@@ -42,6 +42,7 @@ function createDeck(id: DeckId) {
 
     trackName: '',
     trackLoaded: false,
+    buffer: null as AudioBuffer | null,
     detecting: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
@@ -51,34 +52,41 @@ function createDeck(id: DeckId) {
     targetBpm: DEFAULT_BPM,
     pitchOffset: 0,
 
-    regionLocked: true,
+
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
     eq: { low: 0, mid: 0, high: 0 },
 
     getLoopEngine(): LoopEngine { return loop },
-    getAudioContext(): AudioContext { return audioCtx },
-
-    _applyRate() {
-      loop.targetBpm = state.targetBpm
-    },
+    getTrackPositionSec(): number | null { return loop.getTrackPositionSec() },
 
     setTargetBpm(value: number) {
       const minBpm = state.inferredBpm * (1 - PITCH_RANGE / 100)
       const maxBpm = state.inferredBpm * (1 + PITCH_RANGE / 100)
       state.targetBpm = Math.max(minBpm, Math.min(maxBpm, value))
       state.pitchOffset = ((state.targetBpm / state.inferredBpm) - 1) * 100
-      state._applyRate()
+      loop.targetBpm = state.targetBpm
     },
 
     setPitchOffset(pct: number) {
       state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct))
       state.targetBpm = state.inferredBpm * (1 + state.pitchOffset / 100)
-      state._applyRate()
+      loop.targetBpm = state.targetBpm
     },
 
-    async loadTrack(file: File) {
+    async loadTrack(file: File, onNeedBpmInput: () => void) {
+      if (state.loopPlaying) {
+        loop.stop()
+        state.loopPlaying = false
+      }
+      state.cueing = false
+      state.nudging = null
+      loop.setNudge(0)
+      state.loopRegion = null
+      state.buffer = null
+
       await loop.loadFile(file)
+      state.buffer = loop.buffer_
       currentFilename = file.name
       state.trackName = file.name
       state.trackLoaded = true
@@ -93,9 +101,8 @@ function createDeck(id: DeckId) {
 
       state.detecting = true
       let detectedBpm = 0
-      const buffer = loop.buffer_
-      if (buffer) {
-        const result = await detectBpm(buffer)
+      if (state.buffer) {
+        const result = await detectBpm(state.buffer)
         if (result.bpm > 0) detectedBpm = result.bpm
       }
       state.detecting = false
@@ -104,7 +111,7 @@ function createDeck(id: DeckId) {
         state.setTrackBpm(detectedBpm)
         state.mode = 'edit'
       } else {
-        state._requestBpmInput()
+        onNeedBpmInput()
       }
     },
 
@@ -114,15 +121,13 @@ function createDeck(id: DeckId) {
       state.setLoopRegion({ startSec: start, endSec: start + dur, beats: state.loopBeats })
     },
 
-    _requestBpmInput() {},
-
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region
       loop.setRegion(region)
       state.inferredBpm = loop.inferredBpm
       state.targetBpm = state.inferredBpm
       state.pitchOffset = 0
-      state._applyRate()
+      loop.targetBpm = state.targetBpm
       if (currentFilename) saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm })
     },
 
@@ -138,14 +143,14 @@ function createDeck(id: DeckId) {
     setLoopBeats(beats: 16 | 32) {
       state.loopBeats = beats
       loop.setBeats(beats)
-      if (state.loopRegion) {
-        const r = loop.region
-        if (r) state.loopRegion = r
+      const r = loop.region
+      if (r) {
+        state.loopRegion = r
         state.inferredBpm = loop.inferredBpm
         state.targetBpm = state.inferredBpm
         state.pitchOffset = 0
-        state._applyRate()
-        if (currentFilename) saveRegion(currentFilename, { ...state.loopRegion!, beats, detectedBpm: state.inferredBpm })
+        loop.targetBpm = state.targetBpm
+        if (currentFilename) saveRegion(currentFilename, { ...r, beats, detectedBpm: state.inferredBpm })
       }
     },
 
@@ -214,27 +219,10 @@ export const useDecksStore = defineStore('decks', () => {
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB }
 
-  const bpmModalDeck = ref<DeckId | null>(null)
-
-  deckA._requestBpmInput = () => { bpmModalDeck.value = 'A' }
-  deckB._requestBpmInput = () => { bpmModalDeck.value = 'B' }
-
-  function submitBpmModal(bpm: number) {
-    const deckId = bpmModalDeck.value
-    if (!deckId) return
-    decks[deckId].setTrackBpm(bpm)
-    decks[deckId].mode = 'edit'
-    bpmModalDeck.value = null
-  }
-
-  function dismissBpmModal() {
-    bpmModalDeck.value = null
-  }
-
   function destroy() {
     deckA.destroy()
     deckB.destroy()
   }
 
-  return { deckA, deckB, decks, bpmModalDeck, submitBpmModal, dismissBpmModal, destroy }
+  return { deckA, deckB, decks, destroy }
 })
