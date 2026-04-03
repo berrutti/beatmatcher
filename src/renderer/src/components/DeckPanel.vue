@@ -8,6 +8,21 @@
       'deck--edit': deck.mode === 'edit'
     }"
   >
+    <ConfirmModal
+      :open="pendingFile !== null"
+      title="Load new track?"
+      body="Playback will stop and the current region will be replaced."
+      @confirm="onConfirmLoad"
+      @cancel="pendingFile = null"
+    />
+
+    <BpmModal
+      :open="bpmModalOpen"
+      :current-bpm="deck.loopRegion ? deck.inferredBpm : null"
+      @submit="onBpmModalSubmit"
+      @cancel="bpmModalOpen = false"
+    />
+
     <div class="deck__header">
       <span class="deck__label">DECK {{ deckId }}</span>
       <div class="deck__status-dot" :class="{ 'deck__status-dot--on': deck.playing }" />
@@ -43,7 +58,7 @@
       @set-region="deck.setLoopRegion"
       @move-region="deck.moveLoopRegion"
       @set-beats="deck.setLoopBeats"
-      @request-bpm-input="store.requestBpmModal(deckId)"
+      @request-bpm-input="bpmModalOpen = true"
     />
 
     <div v-show="deck.mode === 'play' && !deck.detecting" class="phase-ring-wrapper">
@@ -165,6 +180,8 @@ import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks'
 import type { DeckId } from '@renderer/stores/decks'
 import PhaseRing from '@renderer/components/PhaseRing.vue'
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue'
+import ConfirmModal from '@renderer/components/ConfirmModal.vue'
+import BpmModal from '@renderer/components/BpmModal.vue'
 
 const props = defineProps<{ deckId: DeckId }>()
 
@@ -243,11 +260,26 @@ function onTogglePlay() {
   deck.value.togglePlay()
 }
 
+const pendingFile = ref<File | null>(null)
+const bpmModalOpen = ref(false)
+
 function onLoadFile(file: File) {
   if (deck.value.loopPlaying) {
-    deck.value._requestLoadConfirm(file)
+    pendingFile.value = file
     return
   }
-  deck.value.loadTrack(file)
+  deck.value.loadTrack(file, () => { bpmModalOpen.value = true })
+}
+
+function onConfirmLoad() {
+  const file = pendingFile.value
+  pendingFile.value = null
+  if (file) deck.value.loadTrack(file, () => { bpmModalOpen.value = true })
+}
+
+function onBpmModalSubmit(bpm: number) {
+  deck.value.setTrackBpm(bpm)
+  deck.value.mode = 'edit'
+  bpmModalOpen.value = false
 }
 </script>

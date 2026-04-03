@@ -1,12 +1,12 @@
 <template>
   <Transition name="bpm-modal">
-    <div v-if="store.loadConfirmDeck" class="confirm-modal__backdrop" @click.self="store.cancelLoadTrack()">
+    <div v-if="open" class="confirm-modal__backdrop" @click.self="emit('cancel')">
       <div class="confirm-modal">
-        <div class="confirm-modal__title">Load new track?</div>
-        <div class="confirm-modal__body">Playback will stop and the current region will be replaced.</div>
+        <div class="confirm-modal__title">{{ title }}</div>
+        <div class="confirm-modal__body">{{ body }}</div>
         <div class="confirm-modal__actions">
-          <button class="confirm-modal__btn confirm-modal__btn--cancel" @click="store.cancelLoadTrack()">Cancel</button>
-          <button class="confirm-modal__btn confirm-modal__btn--confirm" @click="store.confirmLoadTrack()">Load</button>
+          <button class="confirm-modal__btn confirm-modal__btn--cancel" @click="emit('cancel')">Cancel</button>
+          <button class="confirm-modal__btn confirm-modal__btn--confirm" @click="emit('confirm')">Load</button>
         </div>
       </div>
     </div>
@@ -14,9 +14,8 @@
 </template>
 
 <script setup lang="ts">
-import { useDecksStore } from '@renderer/stores/decks'
-
-const store = useDecksStore()
+defineProps<{ open: boolean; title: string; body: string }>()
+const emit = defineEmits<{ confirm: []; cancel: [] }>()
 </script>
 
 <style scoped>
