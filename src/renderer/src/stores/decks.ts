@@ -9,6 +9,7 @@ export type DeckMode = 'edit' | 'play'
 
 const DEFAULT_BPM = 138
 const NUDGE_PERCENT = 4
+const START_LATENCY = 0.05
 export const PITCH_RANGE = 10
 
 type SavedRegion = { startSec: number; endSec: number; beats: 16 | 32; detectedBpm: number }
@@ -30,7 +31,7 @@ function getSavedRegion(filename: string): SavedRegion | null {
   return saved
 }
 
-function createDeck(id: DeckId) {
+function createDeck(id: DeckId, accent: string) {
   const audioCtx = new AudioContext()
   const loop = new LoopEngine(audioCtx)
 
@@ -38,6 +39,7 @@ function createDeck(id: DeckId) {
 
   const state = reactive({
     id,
+    accent,
     mode: 'play' as DeckMode,
 
     trackName: '',
@@ -57,8 +59,8 @@ function createDeck(id: DeckId) {
     cueing: false,
     eq: { low: 0, mid: 0, high: 0 },
 
-    getLoopEngine(): LoopEngine { return loop },
-    getTrackPositionSec(): number | null { return loop.getTrackPositionSec() },
+    get trackPosition(): number | null { return loop.trackPosition },
+    get phase(): number { return loop.phase },
 
     setTargetBpm(value: number) {
       const minBpm = state.inferredBpm * (1 - PITCH_RANGE / 100)
@@ -163,7 +165,7 @@ function createDeck(id: DeckId) {
       if (state.loopPlaying) {
         loop.stop(); state.loopPlaying = false
       } else {
-        const startTime = audioCtx.currentTime + 0.05
+        const startTime = audioCtx.currentTime + START_LATENCY
         loop.startAt(startTime); state.loopPlaying = true
       }
     },
@@ -172,7 +174,7 @@ function createDeck(id: DeckId) {
       if (!state.trackLoaded) return
       if (state.cueing || state.loopPlaying) return
       state.cueing = true
-      const startTime = audioCtx.currentTime + 0.01
+      const startTime = audioCtx.currentTime + START_LATENCY
       loop.startAt(startTime); state.loopPlaying = true
     },
 
@@ -214,8 +216,8 @@ function createDeck(id: DeckId) {
 }
 
 export const useDecksStore = defineStore('decks', () => {
-  const deckA = createDeck('A')
-  const deckB = createDeck('B')
+  const deckA = createDeck('A', '#3b82f6')
+  const deckB = createDeck('B', '#f97316')
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB }
 

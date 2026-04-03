@@ -4,7 +4,12 @@
       <main class="app__decks">
         <DeckPanel deck-id="A" />
         <div class="app__center">
-          <LissajousScope />
+          <LissajousScope
+            :sources="[
+              { getPhase: () => store.deckA.phase, accent: store.deckA.accent, label: 'A' },
+              { getPhase: () => store.deckB.phase, accent: store.deckB.accent, label: 'B' },
+            ]"
+          />
         </div>
         <DeckPanel deck-id="B" />
       </main>

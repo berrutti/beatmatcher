@@ -21,6 +21,13 @@ function advanceBuffer(pos: number, elapsed: number, loopStart: number, loopEnd:
   return loopStart + (elapsed - distToFirstWrap) % loopDur
 }
 
+const EQ_LOW_FREQ = 200
+const EQ_MID_FREQ = 1000
+const EQ_MID_Q = 1
+const EQ_HIGH_FREQ = 8000
+const EQ_GAIN_LIMIT = 12
+const DEFAULT_BPM = 138
+
 export class LoopEngine {
   private ctx: AudioContext
   private buffer: AudioBuffer | null = null
@@ -31,7 +38,7 @@ export class LoopEngine {
   private eqHigh: BiquadFilterNode
 
   private _region: LoopRegion | null = null
-  private _targetBpm = 138
+  private _targetBpm = DEFAULT_BPM
   private _playing = false
   private _nudgePercent = 0
 
@@ -44,16 +51,16 @@ export class LoopEngine {
 
     this.eqLow = ctx.createBiquadFilter()
     this.eqLow.type = 'lowshelf'
-    this.eqLow.frequency.value = 200
+    this.eqLow.frequency.value = EQ_LOW_FREQ
 
     this.eqMid = ctx.createBiquadFilter()
     this.eqMid.type = 'peaking'
-    this.eqMid.frequency.value = 1000
-    this.eqMid.Q.value = 1
+    this.eqMid.frequency.value = EQ_MID_FREQ
+    this.eqMid.Q.value = EQ_MID_Q
 
     this.eqHigh = ctx.createBiquadFilter()
     this.eqHigh.type = 'highshelf'
-    this.eqHigh.frequency.value = 8000
+    this.eqHigh.frequency.value = EQ_HIGH_FREQ
 
     this.gainNode = ctx.createGain()
 
@@ -65,11 +72,7 @@ export class LoopEngine {
 
   setEq(band: 'low' | 'mid' | 'high', db: number): void {
     const node = band === 'low' ? this.eqLow : band === 'mid' ? this.eqMid : this.eqHigh
-    node.gain.value = Math.max(-12, Math.min(12, db))
-  }
-
-  get audioContext(): AudioContext {
-    return this.ctx
+    node.gain.value = Math.max(-EQ_GAIN_LIMIT, Math.min(EQ_GAIN_LIMIT, db))
   }
 
   get playing(): boolean {
@@ -169,15 +172,15 @@ export class LoopEngine {
     this.lastSegmentStart = now
   }
 
-  getPhase(): number {
+  get phase(): number {
     if (!this._playing) return 0
     const now = this.ctx.currentTime
     const total = this.accumulatedPhase + (now - this.lastSegmentStart) * this.effectiveTargetBpm / 60
     return total % 1.0
   }
 
-  /** Absolute position in the track in seconds, follows actual buffer playback through loop boundary changes. Returns null when not playing. */
-  getTrackPositionSec(): number | null {
+  /** Absolute position in the track in seconds, follows actual buffer playback through loop boundary changes. Null when not playing. */
+  get trackPosition(): number | null {
     if (!this._playing) return null
     if (!this._region) {
       // this should never happen: _playing is only true when a region is set
@@ -185,19 +188,6 @@ export class LoopEngine {
     }
     const elapsed = (this.ctx.currentTime - this.lastSegmentStart) * this.playbackRate
     return advanceBuffer(this.bufferAnchorPos, elapsed, this._region.startSec, this._region.endSec)
-  }
-
-  /** Position within the loop region in seconds (wraps around on each loop). */
-  getLoopPositionSec(): number {
-    if (!this._playing || !this._region) return this._region?.startSec ?? 0
-    const dur = this._region.endSec - this._region.startSec
-    if (dur <= 0) return this._region.startSec
-    const now = this.ctx.currentTime
-    // Total beats elapsed, then convert to seconds within loop at playback rate
-    const totalBeats = this.accumulatedPhase + (now - this.lastSegmentStart) * this.effectiveTargetBpm / 60
-    const loopBeats = this._region.beats
-    const positionInLoop = (totalBeats % loopBeats) / loopBeats
-    return this._region.startSec + positionInLoop * dur
   }
 
   start(): void {

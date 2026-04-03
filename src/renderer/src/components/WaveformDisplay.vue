@@ -75,7 +75,7 @@ const props = defineProps<{
   loopRegion: LoopRegion | null
   loopBeats: 16 | 32
   inferredBpm: number
-  getPlayheadSec: () => number | null
+  getTrackPosition: () => number | null
 }>()
 
 const emit = defineEmits<{
@@ -89,6 +89,16 @@ const emit = defineEmits<{
 const accent = computed(() => props.accent)
 const regionLocked = ref(true)
 const HANDLE_W = 8
+const HANDLE_CIRCLE_RADIUS = 6
+const WAVEFORM_AMP_SCALE = 0.9
+const REGION_IN_LOOP_ALPHA = 0.8
+const BPM_LABEL_FONT_SIZE = 11
+const MIN_NEW_REGION_SEC = 0.001
+const MIN_REGION_SEC = 0.01
+const PLAYHEAD_LINE_WIDTH = 1.5
+const PLAYHEAD_ALPHA = 0.9
+const PLAYHEAD_ARROW_HALF = 5
+const PLAYHEAD_ARROW_HEIGHT = 8
 
 // Zoom levels in seconds of visible track
 const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300]
@@ -248,7 +258,7 @@ function drawWaveform() {
 
   // Waveform (dim, outside loop)
   for (let x = 0; x < w; x++) {
-    const amp = visiblePeaks[x] * mid * 0.9
+    const amp = visiblePeaks[x] * mid * WAVEFORM_AMP_SCALE
     ctx.fillStyle = '#333'
     ctx.fillRect(x, mid - amp, 1, amp * 2)
   }
@@ -269,9 +279,9 @@ function drawWaveform() {
       ctx.fillRect(visStart, 0, visEnd - visStart, h)
 
       // Bright waveform inside loop
-      ctx.globalAlpha = 0.8
+      ctx.globalAlpha = REGION_IN_LOOP_ALPHA
       for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
-        const amp = visiblePeaks[x] * mid * 0.9
+        const amp = visiblePeaks[x] * mid * WAVEFORM_AMP_SCALE
         ctx.fillStyle = props.accent;
         ctx.fillRect(x, mid - amp, 1, amp * 2)
       }
@@ -285,7 +295,7 @@ function drawWaveform() {
     // BPM label
     const labelX = Math.max(visStart + 10, 10)
     ctx.fillStyle = '#ffffff99'
-    ctx.font = `bold 11px monospace`
+    ctx.font = `bold ${BPM_LABEL_FONT_SIZE}px monospace`
     ctx.fillText(`${props.loopBeats} beats · ${props.inferredBpm.toFixed(1)} BPM`, labelX, 18)
   }
 
@@ -302,7 +312,7 @@ function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number) {
   ctx.fillStyle = '#fff'
   const mid = h / 2
   ctx.beginPath()
-  ctx.arc(x, mid, 6, 0, Math.PI * 2)
+  ctx.arc(x, mid, HANDLE_CIRCLE_RADIUS, 0, Math.PI * 2)
   ctx.fill()
 }
 
@@ -336,28 +346,24 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
 
 let rafId = 0
 
-function getPlayheadSec(): number | null {
-  return props.getPlayheadSec()
-}
-
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const sec = getPlayheadSec()
+  const sec = props.getTrackPosition()
   if (sec === null) return
   const x = secToPx(sec)
   if (x < 0 || x > w) return
   ctx.save()
   ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 1.5
-  ctx.globalAlpha = 0.9
+  ctx.lineWidth = PLAYHEAD_LINE_WIDTH
+  ctx.globalAlpha = PLAYHEAD_ALPHA
   ctx.beginPath()
   ctx.moveTo(x, 0)
   ctx.lineTo(x, h)
   ctx.stroke()
   ctx.fillStyle = '#ffffff'
   ctx.beginPath()
-  ctx.moveTo(x - 5, 0)
-  ctx.lineTo(x + 5, 0)
-  ctx.lineTo(x, 8)
+  ctx.moveTo(x - PLAYHEAD_ARROW_HALF, 0)
+  ctx.lineTo(x + PLAYHEAD_ARROW_HALF, 0)
+  ctx.lineTo(x, PLAYHEAD_ARROW_HEIGHT)
   ctx.closePath()
   ctx.fill()
   ctx.restore()
@@ -439,7 +445,7 @@ function applyDrag(clientX: number) {
     const sec = pxToSec(px)
     const start = Math.min(newRegionAnchorSec, sec)
     const end = Math.max(newRegionAnchorSec, sec)
-    if (end - start > 0.001) {
+    if (end - start > MIN_NEW_REGION_SEC) {
       emit('setRegion', { startSec: start, endSec: end, beats: props.loopBeats })
       dragging.value = sec < newRegionAnchorSec ? 'start' : 'end'
     }
@@ -452,9 +458,9 @@ function applyDrag(clientX: number) {
   const newRegion: LoopRegion = { ...region }
 
   if (dragging.value === 'start') {
-    newRegion.startSec = Math.max(0, Math.min(pxToSec(px), region.endSec - 0.01))
+    newRegion.startSec = Math.max(0, Math.min(pxToSec(px), region.endSec - MIN_REGION_SEC))
   } else if (dragging.value === 'end') {
-    newRegion.endSec = Math.min(trackDuration, Math.max(pxToSec(px), region.startSec + 0.01))
+    newRegion.endSec = Math.min(trackDuration, Math.max(pxToSec(px), region.startSec + MIN_REGION_SEC))
   } else if (dragging.value === 'body') {
     const dur = region.endSec - region.startSec
     const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur))

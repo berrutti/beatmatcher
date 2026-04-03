@@ -48,12 +48,12 @@
     <WaveformDisplay
       v-show="deck.mode === 'edit' && !deck.detecting"
       class="deck__waveform"
-      :accent="deckId === 'A' ? '#3b82f6' : '#f97316'"
+      :accent="deck.accent"
       :buffer="deck.buffer"
       :loop-region="deck.loopRegion"
       :loop-beats="deck.loopBeats"
       :inferred-bpm="deck.inferredBpm"
-      :get-playhead-sec="() => deck.getTrackPositionSec()"
+      :get-track-position="() => deck.trackPosition"
       @load="onLoadFile"
       @set-region="deck.setLoopRegion"
       @move-region="deck.moveLoopRegion"
@@ -62,7 +62,11 @@
     />
 
     <div v-show="deck.mode === 'play' && !deck.detecting" class="phase-ring-wrapper">
-      <PhaseRing :deck-id="deckId" />
+      <PhaseRing
+        :accent="deck.accent"
+        :loop-region="deck.loopRegion"
+        :get-track-position="() => deck.trackPosition"
+      />
     </div>
 
     <template v-if="deck.mode === 'play' && !deck.detecting">
@@ -177,6 +181,9 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from 'vue'
 import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks'
+
+const BPM_STEP = 0.1
+const BPM_STEP_INTERVAL_MS = 80
 import type { DeckId } from '@renderer/stores/decks'
 import PhaseRing from '@renderer/components/PhaseRing.vue'
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue'
@@ -235,10 +242,10 @@ let stepInterval: ReturnType<typeof setInterval> | null = null
 
 function onBpmStepMouseDown(dir: 1 | -1) {
   if (!deck.value.trackLoaded) return
-  deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
+  deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP)
   stepInterval = setInterval(() => {
-    deck.value.setTargetBpm(deck.value.targetBpm + dir * 0.1)
-  }, 80)
+    deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP)
+  }, BPM_STEP_INTERVAL_MS)
 }
 
 function stopBpmStep() {
