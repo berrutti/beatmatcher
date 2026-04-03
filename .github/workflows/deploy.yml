@@ -29,6 +29,9 @@ jobs:
 
       - run: yarn install --frozen-lockfile
 
+      - run: yarn lint:ci
+      - run: yarn format:check
+
       - run: yarn build:web
 
       - uses: actions/configure-pages@v4

@@ -26,18 +26,24 @@
     <div class="deck__header">
       <span class="deck__label">DECK {{ deckId }}</span>
       <div class="deck__status-dot" :class="{ 'deck__status-dot--on': deck.playing }" />
-      <span v-if="deck.trackName" class="deck__track-name" :title="deck.trackName">{{ deck.trackName }}</span>
+      <span v-if="deck.trackName" class="deck__track-name" :title="deck.trackName">{{
+        deck.trackName
+      }}</span>
       <div class="deck__mode-tabs">
         <button
           class="deck__mode-tab"
           :class="{ 'deck__mode-tab--active': deck.mode === 'edit' }"
           @click="deck.mode = 'edit'"
-        >EDIT</button>
+        >
+          EDIT
+        </button>
         <button
           class="deck__mode-tab"
           :class="{ 'deck__mode-tab--active': deck.mode === 'play' }"
           @click="deck.mode = 'play'"
-        >PLAY</button>
+        >
+          PLAY
+        </button>
       </div>
     </div>
 
@@ -85,13 +91,25 @@
           @keydown.enter="onBpmInputBlur"
           @keydown.escape="editingBpm = false"
         />
-        <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{ deck.trackLoaded ? deck.targetBpm.toFixed(1) : '0.0' }}</span>
+        <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{
+          deck.trackLoaded ? deck.targetBpm.toFixed(1) : '0.0'
+        }}</span>
         <span class="deck__bpm-unit">BPM</span>
-        <span class="deck__bpm-inferred" v-if="deck.loopRegion">({{ deck.inferredBpm.toFixed(1) }})</span>
+        <span class="deck__bpm-inferred" v-if="deck.loopRegion"
+          >({{ deck.inferredBpm.toFixed(1) }})</span
+        >
       </div>
 
       <div class="deck__slider-wrapper">
-        <button class="deck__bpm-step" :disabled="!deck.trackLoaded" @mousedown.prevent="onBpmStepMouseDown(1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▲</button>
+        <button
+          class="deck__bpm-step"
+          :disabled="!deck.trackLoaded"
+          @mousedown.prevent="onBpmStepMouseDown(1)"
+          @mouseup="stopBpmStep"
+          @mouseleave="stopBpmStep"
+        >
+          ▲
+        </button>
         <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
         <input
           type="range"
@@ -106,11 +124,19 @@
           @dblclick="onPitchDblClick"
         />
         <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
-        <button class="deck__bpm-step" :disabled="!deck.trackLoaded" @mousedown.prevent="onBpmStepMouseDown(-1)" @mouseup="stopBpmStep" @mouseleave="stopBpmStep">▼</button>
+        <button
+          class="deck__bpm-step"
+          :disabled="!deck.trackLoaded"
+          @mousedown.prevent="onBpmStepMouseDown(-1)"
+          @mouseup="stopBpmStep"
+          @mouseleave="stopBpmStep"
+        >
+          ▼
+        </button>
       </div>
 
       <div class="deck__eq-row">
-        <div v-for="band in (['low', 'mid', 'high'] as const)" :key="band" class="deck__eq-band">
+        <div v-for="band in ['low', 'mid', 'high'] as const" :key="band" class="deck__eq-band">
           <input
             type="range"
             class="deck__slider deck__slider--eq"
@@ -120,7 +146,7 @@
             :value="deck.eq[band]"
             orient="vertical"
             :disabled="!deck.trackLoaded"
-            @input="e => onEqInput(band, e)"
+            @input="(e) => onEqInput(band, e)"
             @dblclick="onEqDblClick(band)"
           />
           <span class="deck__slider-label">{{ band.toUpperCase() }}</span>
@@ -179,114 +205,122 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick } from 'vue'
-import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks'
+import { computed, ref, nextTick } from 'vue';
+import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks';
 
-const BPM_STEP = 0.1
-const BPM_STEP_INTERVAL_MS = 80
-import type { DeckId } from '@renderer/stores/decks'
-import PhaseRing from '@renderer/components/PhaseRing.vue'
-import WaveformDisplay from '@renderer/components/WaveformDisplay.vue'
-import ConfirmModal from '@renderer/components/ConfirmModal.vue'
-import BpmModal from '@renderer/components/BpmModal.vue'
+const BPM_STEP = 0.1;
+const BPM_STEP_INTERVAL_MS = 80;
+import type { DeckId } from '@renderer/stores/decks';
+import PhaseRing from '@renderer/components/PhaseRing.vue';
+import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
+import ConfirmModal from '@renderer/components/ConfirmModal.vue';
+import BpmModal from '@renderer/components/BpmModal.vue';
 
-const props = defineProps<{ deckId: DeckId }>()
+const props = defineProps<{ deckId: DeckId }>();
 
-const store = useDecksStore()
-const deck = computed(() => store.decks[props.deckId])
+const store = useDecksStore();
+const deck = computed(() => store.decks[props.deckId]);
 
 // BPM text editing
-const editingBpm = ref(false)
-const bpmInputEl = ref<HTMLInputElement | null>(null)
+const editingBpm = ref(false);
+const bpmInputEl = ref<HTMLInputElement | null>(null);
 
 async function startEditingBpm() {
-  editingBpm.value = true
-  await nextTick()
-  bpmInputEl.value?.select()
+  editingBpm.value = true;
+  await nextTick();
+  bpmInputEl.value?.select();
 }
 
 function onBpmValueClick() {
-  if (!deck.value.trackLoaded) return
-  startEditingBpm()
+  if (!deck.value.trackLoaded) return;
+  startEditingBpm();
 }
 
 function onBpmInputBlur(e: Event) {
-  const val = parseFloat((e.target as HTMLInputElement).value)
-  if (!isNaN(val) && val > 0) deck.value.setTargetBpm(val)
-  editingBpm.value = false
+  const val = parseFloat((e.target as HTMLInputElement).value);
+  if (!isNaN(val) && val > 0) deck.value.setTargetBpm(val);
+  editingBpm.value = false;
 }
 
 function onSliderInput(e: Event) {
-  if (!deck.value.trackLoaded) return
-  const val = parseFloat((e.target as HTMLInputElement).value)
-  deck.value.setPitchOffset(val)
+  if (!deck.value.trackLoaded) return;
+  const val = parseFloat((e.target as HTMLInputElement).value);
+  deck.value.setPitchOffset(val);
 }
 
 function onPitchDblClick() {
-  if (!deck.value.trackLoaded) return
-  deck.value.setPitchOffset(0)
+  if (!deck.value.trackLoaded) return;
+  deck.value.setPitchOffset(0);
 }
 
 function onEqInput(band: 'low' | 'mid' | 'high', e: Event) {
-  if (!deck.value.trackLoaded) return
-  deck.value.setEq(band, parseFloat((e.target as HTMLInputElement).value))
+  if (!deck.value.trackLoaded) return;
+  deck.value.setEq(band, parseFloat((e.target as HTMLInputElement).value));
 }
 
 function onEqDblClick(band: 'low' | 'mid' | 'high') {
-  if (!deck.value.trackLoaded) return
-  deck.value.setEq(band, 0)
+  if (!deck.value.trackLoaded) return;
+  deck.value.setEq(band, 0);
 }
 
 // Step buttons adjust targetBpm by 0.1
-let stepInterval: ReturnType<typeof setInterval> | null = null
+let stepInterval: ReturnType<typeof setInterval> | null = null;
 
 function onBpmStepMouseDown(dir: 1 | -1) {
-  if (!deck.value.trackLoaded) return
-  deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP)
+  if (!deck.value.trackLoaded) return;
+  deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP);
   stepInterval = setInterval(() => {
-    deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP)
-  }, BPM_STEP_INTERVAL_MS)
+    deck.value.setTargetBpm(deck.value.targetBpm + dir * BPM_STEP);
+  }, BPM_STEP_INTERVAL_MS);
 }
 
 function stopBpmStep() {
-  if (stepInterval !== null) { clearInterval(stepInterval); stepInterval = null }
+  if (stepInterval !== null) {
+    clearInterval(stepInterval);
+    stepInterval = null;
+  }
 }
 
 function onNudgeStart(direction: 'back' | 'forward') {
-  if (!deck.value.trackLoaded) return
-  deck.value.nudgeStart(direction)
+  if (!deck.value.trackLoaded) return;
+  deck.value.nudgeStart(direction);
 }
 
 function onCueStart() {
-  if (!deck.value.trackLoaded) return
-  deck.value.cueStart()
+  if (!deck.value.trackLoaded) return;
+  deck.value.cueStart();
 }
 
 function onTogglePlay() {
-  if (!deck.value.trackLoaded) return
-  deck.value.togglePlay()
+  if (!deck.value.trackLoaded) return;
+  deck.value.togglePlay();
 }
 
-const pendingFile = ref<File | null>(null)
-const bpmModalOpen = ref(false)
+const pendingFile = ref<File | null>(null);
+const bpmModalOpen = ref(false);
 
 function onLoadFile(file: File) {
   if (deck.value.loopPlaying) {
-    pendingFile.value = file
-    return
+    pendingFile.value = file;
+    return;
   }
-  deck.value.loadTrack(file, () => { bpmModalOpen.value = true })
+  deck.value.loadTrack(file, () => {
+    bpmModalOpen.value = true;
+  });
 }
 
 function onConfirmLoad() {
-  const file = pendingFile.value
-  pendingFile.value = null
-  if (file) deck.value.loadTrack(file, () => { bpmModalOpen.value = true })
+  const file = pendingFile.value;
+  pendingFile.value = null;
+  if (file)
+    deck.value.loadTrack(file, () => {
+      bpmModalOpen.value = true;
+    });
 }
 
 function onBpmModalSubmit(bpm: number) {
-  deck.value.setTrackBpm(bpm)
-  deck.value.mode = 'edit'
-  bpmModalOpen.value = false
+  deck.value.setTrackBpm(bpm);
+  deck.value.mode = 'edit';
+  bpmModalOpen.value = false;
 }
 </script>

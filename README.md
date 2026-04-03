@@ -32,10 +32,10 @@ The phase ring shows position within the current beat. The Lissajous scope plots
 
 ## Keyboard
 
-| Key | Action |
-|-----|--------|
-| A / K | Deck A/B play-pause |
-| S / L | Deck A/B cue |
+| Key       | Action                                 |
+| --------- | -------------------------------------- |
+| A / K     | Deck A/B play-pause                    |
+| S / L     | Deck A/B cue                           |
 | Q W / O P | Deck A/B nudge (pitch bend while held) |
 
 ---
