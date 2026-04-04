@@ -1,15 +1,47 @@
-name: Release
+name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'
-
-permissions:
-  contents: write
+    branches: [main]
 
 jobs:
+  deploy:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: yarn
+
+      - run: yarn install --frozen-lockfile
+      - run: yarn build:web
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist-web
+
+      - uses: actions/deploy-pages@v5
+        id: deployment
+
   build-mac:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
+    permissions:
+      contents: read
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -20,7 +52,6 @@ jobs:
           cache: yarn
 
       - run: yarn install --frozen-lockfile
-
       - run: yarn dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -31,6 +62,9 @@ jobs:
           path: dist/*.dmg
 
   build-win:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +75,6 @@ jobs:
           cache: yarn
 
       - run: yarn install --frozen-lockfile
-
       - run: yarn dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,10 +84,19 @@ jobs:
           name: win
           path: dist/*.exe
 
-  release:
+  publish:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
     needs: [build-mac, build-win]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
+      - name: Get version
+        id: version
+        run: echo "tag=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
@@ -62,6 +104,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2.6.1
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: artifacts/**
           body: |
             ## Install
