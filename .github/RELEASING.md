@@ -8,18 +8,18 @@ Releases are fully automated. To ship a release, add one of these labels to a PR
 | `release:minor` | `0.1.8` -> `0.2.0` (new features) |
 | `release:major` | `0.1.8` -> `1.0.0` (breaking changes) |
 
-When the PR is merged, the `auto-release` workflow will:
-1. Bump the version in `package.json` and push a commit to main
-2. Create and push a `vX.Y.Z` tag
-
-The tag triggers the `release` workflow, which builds the macOS `.dmg` and Windows `.exe` and publishes them as a GitHub Release.
-
 If no release label is added, merging the PR does nothing extra.
 
-## Order of operations
+## What happens when you merge
 
-The release only triggers after the PR is fully merged and all required status checks have passed (branch protection enforces this before the merge is allowed). The sequence is:
+1. `auto-release` fires, bumps `package.json`, and pushes a `chore: release vX.Y.Z` commit plus a `vX.Y.Z` tag to main.
+2. `release` fires from the tag, builds the macOS `.dmg` and Windows `.exe`, and publishes them as a GitHub Release.
+3. `deploy` fires from the main push. It only runs when the commit message starts with `chore: release`, so it deploys to GitHub Pages exactly once per release and never on regular merges.
 
-1. PR checks pass, merge is allowed
-2. `auto-release` fires, bumps version, pushes a commit and tag to main
-3. `release` fires from the tag, builds and publishes the binaries
+## GitHub Pages deploy
+
+The deploy workflow triggers on every push to main but runs only when the commit is a release commit (`chore: release vX.Y.Z`). This is intentional: GitHub Pages environment protection rules require deployments to come from a branch ref, not a tag ref, so the deploy is tied to the release commit on main rather than the tag.
+
+## Secrets required
+
+- `RELEASE_PAT`: a fine-grained PAT with `Contents: write` for this repo. Needed so the bot commit and tag can bypass branch protection rules that require a PR.
