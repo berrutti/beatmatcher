@@ -2,10 +2,10 @@
 
 Releases are fully automated. To ship a release, add one of these labels to a PR before merging:
 
-| Label | Example |
-|---|---|
-| `release:patch` | `0.1.8` -> `0.1.9` (bug fixes) |
-| `release:minor` | `0.1.8` -> `0.2.0` (new features) |
+| Label           | Example                               |
+| --------------- | ------------------------------------- |
+| `release:patch` | `0.1.8` -> `0.1.9` (bug fixes)        |
+| `release:minor` | `0.1.8` -> `0.2.0` (new features)     |
 | `release:major` | `0.1.8` -> `1.0.0` (breaking changes) |
 
 If no release label is added, merging the PR does nothing extra.
