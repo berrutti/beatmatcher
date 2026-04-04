@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: read
@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
