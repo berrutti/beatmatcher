@@ -41,7 +41,7 @@ jobs:
   build-mac:
     if: "startsWith(github.event.head_commit.message, 'chore: release')"
     permissions:
-      contents: read
+      contents: write
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -51,62 +51,17 @@ jobs:
           node-version: 20
           cache: yarn
 
-      - run: yarn install --frozen-lockfile
-      - run: yarn dist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: mac
-          path: dist/*.dmg
-
-  build-win:
-    if: "startsWith(github.event.head_commit.message, 'chore: release')"
-    permissions:
-      contents: read
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 20
-          cache: yarn
+      - uses: dtolnay/rust-toolchain@stable
 
       - run: yarn install --frozen-lockfile
-      - run: yarn dist
+
+      - uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/upload-artifact@v6
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: win
-          path: dist/*.exe
-
-  publish:
-    if: "startsWith(github.event.head_commit.message, 'chore: release')"
-    needs: [build-mac, build-win]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Get version
-        id: version
-        run: echo "tag=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2.6.1
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          files: artifacts/**
-          body: |
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          releaseBody: |
             ## Install
 
             | Platform | Download |
@@ -123,5 +78,28 @@ jobs:
             ---
 
             [Try it in the browser](https://berrutti.github.io/beatmatcher/)
+          releaseDraft: false
+          prerelease: false
+
+  build-win:
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: yarn
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: yarn install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__

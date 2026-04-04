@@ -7,7 +7,13 @@ import prettier from 'eslint-config-prettier';
 
 export default [
   {
-    ignores: ['**/out/**', '**/dist/**', '**/dist-web/**', '**/node_modules/**']
+    ignores: [
+      '**/dist/**',
+      '**/dist-web/**',
+      '**/dist-tauri/**',
+      '**/node_modules/**',
+      'src-tauri/**'
+    ]
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -24,16 +30,6 @@ export default [
         ...globals.browser,
         ...globals.node
       }
-    }
-  },
-  {
-    files: ['scripts/**/*'],
-    languageOptions: {
-      globals: globals.node
-    },
-    rules: {
-      '@typescript-eslint/no-require-imports': 'off',
-      'no-undef': 'off'
     }
   },
   {
