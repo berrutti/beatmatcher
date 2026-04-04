@@ -1,0 +1,39 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Beatmatcher",
+  "version": "0.2.5",
+  "identifier": "com.berrutti.beatmatcher",
+  "build": {
+    "frontendDist": "../dist-tauri",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "yarn vite --config vite.tauri.config.ts",
+    "beforeBuildCommand": "yarn vite build --config vite.tauri.config.ts"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Beatmatcher",
+        "width": 1100,
+        "height": 680,
+        "minWidth": 900,
+        "minHeight": 580,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

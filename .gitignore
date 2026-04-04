@@ -4,10 +4,10 @@ node_modules/
 # build output
 dist/
 dist-web/
-out/
+dist-tauri/
 
-# electron-builder
-release/
+# tauri
+src-tauri/target/
 
 # vite
 *.local

@@ -47,9 +47,18 @@ yarn install
 yarn dev
 ```
 
-Built with Electron + Vue 3 + TypeScript + Vite.
+Built with Tauri + Vue 3 + TypeScript + Vite.
 
 ## Acknowledgements
 
 The BPM detection logic was inspired by this [Joe Sullivan](https://x.com/itsjoesullivan)'s blog post:  
 http://joesul.li/van/beat-detection-using-web-audio/
+
+## License
+
+Beatmatcher - A desktop app for practicing beat matching.  
+Copyright (C) 2026 Matias Berrutti
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+See the [LICENSE](LICENSE) file for the full terms.
