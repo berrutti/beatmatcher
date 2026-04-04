@@ -19,9 +19,6 @@
     "lint": "eslint .",
     "lint:ci": "eslint . --max-warnings=0",
     "preview": "electron-vite preview",
-    "release:major": "tsx scripts/release.ts major",
-    "release:minor": "tsx scripts/release.ts minor",
-    "release": "tsx scripts/release.ts",
     "test:watch": "vitest",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
