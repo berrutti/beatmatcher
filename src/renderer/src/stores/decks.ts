@@ -104,7 +104,6 @@ function createDeck(id: DeckId, accent: string) {
       if (saved) {
         state.loopBeats = saved.beats;
         state.setLoopRegion(saved);
-        state.mode = 'play';
         return;
       }
 

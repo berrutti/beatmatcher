@@ -2,15 +2,12 @@
   <div
     class="waveform"
     :class="{ 'waveform--drag-over': isDragOver }"
-    @dragover.prevent="isDragOver = true"
-    @dragleave="isDragOver = false"
-    @drop.prevent="onDrop"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
   >
     <!-- Empty state -->
     <div v-if="!props.buffer" class="waveform__empty">
-      <div class="waveform__drop-icon">⊕</div>
-      <p class="waveform__drop-hint">Drop audio file here</p>
-      <p class="waveform__drop-hint waveform__drop-hint--sub">or</p>
       <button class="waveform__load-btn" @click="openFileDialog">LOAD TRACK</button>
     </div>
 
@@ -77,6 +74,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import type { LoopRegion } from '@renderer/audio/LoopEngine';
+import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
 
 const props = defineProps<{
   accent: string;
@@ -114,7 +112,9 @@ const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
 const DEFAULT_ZOOM_SEC = 10;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
-const isDragOver = ref(false);
+const { isDragOver, onDragOver, onDragLeave, onDrop, openFileDialog } = useAudioFileDrop((file) =>
+  emit('load', file)
+);
 
 // Raw PCM channel data (kept in memory for high-res zoom)
 let rawChannel: Float32Array | null = null;
@@ -162,24 +162,6 @@ function zoomIn(anchorSec?: number) {
 }
 function zoomOut(anchorSec?: number) {
   setZoomCentered(zoomIdx.value + 1, anchorSec);
-}
-
-// ── File loading ──────────────────────────────────────────────
-
-function onDrop(e: DragEvent) {
-  isDragOver.value = false;
-  const file = e.dataTransfer?.files[0];
-  if (file) emit('load', file);
-}
-
-function openFileDialog() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'audio/*';
-  input.onchange = () => {
-    if (input.files?.[0]) emit('load', input.files[0]);
-  };
-  input.click();
 }
 
 // ── Peak extraction ───────────────────────────────────────────
@@ -359,6 +341,8 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
 // ── Playhead ──────────────────────────────────────────────────
 
 let rafId = 0;
+let lastZoomTime = 0;
+const ZOOM_COOLDOWN_MS = 150;
 
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const sec = props.getTrackPosition();
@@ -518,15 +502,28 @@ function onMouseMoveWindow(e: MouseEvent) {
 
 function onWheel(e: WheelEvent) {
   const canvas = canvasEl.value;
-  if (canvas) {
-    const rect = canvas.getBoundingClientRect();
-    const frac = (e.clientX - rect.left) / rect.width;
-    const anchorSec = viewStartSec.value + frac * (viewEndSec.value - viewStartSec.value);
-    if (e.deltaY < 0) zoomIn(anchorSec);
-    else zoomOut(anchorSec);
-  } else {
-    if (e.deltaY < 0) zoomIn();
-    else zoomOut();
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const frac = (e.clientX - rect.left) / rect.width;
+  const anchorSec = viewStartSec.value + frac * (viewEndSec.value - viewStartSec.value);
+
+  if (Math.abs(e.deltaX) > 2 && Math.abs(e.deltaX) >= Math.abs(e.deltaY)) {
+    // Horizontal swipe: pan
+    const viewSpan = viewEndSec.value - viewStartSec.value;
+    const deltaSec = (e.deltaX / canvas.clientWidth) * viewSpan;
+    const [s, end] = clampView(viewStartSec.value + deltaSec, viewSpan);
+    viewStartSec.value = s;
+    viewEndSec.value = end;
+    drawWaveform();
+  } else if (e.deltaY !== 0) {
+    // Zoom (mouse wheel or pinch): cooldown prevents jumping multiple levels per gesture
+    const now = Date.now();
+    if (now - lastZoomTime > ZOOM_COOLDOWN_MS) {
+      if (e.deltaY < 0) zoomIn(anchorSec);
+      else zoomOut(anchorSec);
+      lastZoomTime = now;
+    }
   }
 }
 
@@ -589,7 +586,7 @@ watch(
 }
 
 .waveform--drag-over {
-  outline: 2px dashed #555;
+  outline: 2px dashed v-bind(accent);
   outline-offset: -4px;
 }
 
@@ -601,22 +598,6 @@ watch(
   justify-content: center;
   gap: 12px;
   color: #444;
-}
-
-.waveform__drop-icon {
-  font-size: 3rem;
-  color: #333;
-}
-
-.waveform__drop-hint {
-  font-size: 0.75rem;
-  letter-spacing: 0.15em;
-  margin: 0;
-  color: #555;
-}
-
-.waveform__drop-hint--sub {
-  color: #333;
 }
 
 .waveform__load-btn {
