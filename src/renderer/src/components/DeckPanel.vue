@@ -5,8 +5,12 @@
       'deck--playing': deck.playing,
       'deck--a': deckId === 'A',
       'deck--b': deckId === 'B',
-      'deck--edit': deck.mode === 'edit'
+      'deck--edit': deck.mode === 'edit',
+      'deck--drag-over': isDragOver && deck.mode === 'play'
     }"
+    @dragover="onDeckDragOver"
+    @dragleave="onDeckDragLeave"
+    @drop="onDeckDrop"
   >
     <ConfirmModal
       :open="pendingFile !== null"
@@ -76,9 +80,11 @@
     </div>
 
     <template v-if="deck.mode === 'play' && !deck.detecting">
-      <div v-if="!deck.trackLoaded" class="deck__no-track">NO TRACK LOADED</div>
+      <div v-if="!deck.trackLoaded" class="deck__drop-zone">
+        <button class="deck__load-btn" @click="openPlayFileDialog">LOAD TRACK</button>
+      </div>
 
-      <div class="deck__bpm-display">
+      <div class="deck__bpm-display" v-if="deck.trackLoaded">
         <input
           v-if="editingBpm"
           ref="bpmInputEl"
@@ -92,7 +98,7 @@
           @keydown.escape="editingBpm = false"
         />
         <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{
-          deck.trackLoaded ? deck.targetBpm.toFixed(1) : '0.0'
+          deck.targetBpm.toFixed(1)
         }}</span>
         <span class="deck__bpm-unit">BPM</span>
         <span class="deck__bpm-inferred" v-if="deck.loopRegion"
@@ -207,6 +213,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from 'vue';
 import { useDecksStore, PITCH_RANGE } from '@renderer/stores/decks';
+import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
 
 const BPM_STEP = 0.1;
 const BPM_STEP_INTERVAL_MS = 80;
@@ -298,6 +305,14 @@ function onTogglePlay() {
 
 const pendingFile = ref<File | null>(null);
 const bpmModalOpen = ref(false);
+
+const {
+  isDragOver,
+  onDragOver: onDeckDragOver,
+  onDragLeave: onDeckDragLeave,
+  onDrop: onDeckDrop,
+  openFileDialog: openPlayFileDialog
+} = useAudioFileDrop((file) => onLoadFile(file));
 
 function onLoadFile(file: File) {
   if (deck.value.loopPlaying) {

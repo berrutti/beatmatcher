@@ -100,6 +100,7 @@ export class LoopEngine {
   }
 
   set targetBpm(value: number) {
+    if (this._playing) this.flushSegment();
     this._targetBpm = value;
     if (this._playing) this.applyPlaybackRate();
   }
@@ -162,6 +163,9 @@ export class LoopEngine {
     }
   }
 
+  // Snapshots elapsed progress at the current rate into accumulatedPhase and bufferAnchorPos,
+  // then resets lastSegmentStart to now. Call before changing any value that affects playbackRate
+  // so that trackPosition and phase stay consistent across the rate change.
   private flushSegment(): void {
     const now = this.ctx.currentTime;
     const dt = now - this.lastSegmentStart;
@@ -229,7 +233,7 @@ export class LoopEngine {
     try {
       this.source?.stop();
     } catch {
-      // fine to ignore these erros
+      // fine to ignore these errors
     }
     this.source?.disconnect();
     this.source = null;
