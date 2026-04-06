@@ -35,7 +35,9 @@ function saveTrack(filename: string, data: SavedTrack) {
 }
 
 function getSavedTrack(filename: string): SavedTrack | null {
-  const raw = loadSavedTracks()[filename] as (SavedTrack & { startSec?: number; endSec?: number; beats?: number; detectedBpm?: number }) | undefined;
+  const raw = loadSavedTracks()[filename] as
+    | (SavedTrack & { startSec?: number; endSec?: number; beats?: number; detectedBpm?: number })
+    | undefined;
   if (!raw) return null;
   // Current format
   if (raw.trackBpm && raw.beatOffset !== undefined && !raw.startSec) return raw as SavedTrack;
@@ -191,7 +193,11 @@ function createDeck(id: DeckId, accent: string) {
           beatOffset: beatOffsetSec,
           cuePoint: beatOffsetSec,
           loopRegion: state.loopRegion
-            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            ? {
+                startSec: state.loopRegion.startSec,
+                endSec: state.loopRegion.endSec,
+                beats: state.loopRegion.beats
+              }
             : undefined
         });
       }
@@ -206,7 +212,11 @@ function createDeck(id: DeckId, accent: string) {
           beatOffset: sec,
           cuePoint: state.cuePoint,
           loopRegion: state.loopRegion
-            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            ? {
+                startSec: state.loopRegion.startSec,
+                endSec: state.loopRegion.endSec,
+                beats: state.loopRegion.beats
+              }
             : undefined
         });
       }
@@ -246,10 +256,11 @@ function createDeck(id: DeckId, accent: string) {
       if (!state.trackLoaded || state.trackBpm === null) return;
       const inSec = quantizeToBeat(loop.position, state.trackBpm, state.beatOffset);
       const barDur = (4 * 60) / state.trackBpm;
-      const outSec = state.loopRegion && state.loopRegion.endSec > inSec + 0.01
-        ? state.loopRegion.endSec
-        : inSec + barDur;
-      const beats = Math.round((outSec - inSec) * state.trackBpm / 60);
+      const outSec =
+        state.loopRegion && state.loopRegion.endSec > inSec + 0.01
+          ? state.loopRegion.endSec
+          : inSec + barDur;
+      const beats = Math.round(((outSec - inSec) * state.trackBpm) / 60);
       if (state.loopActive) {
         state.loopActive = false;
         loop.loopActive = false;
@@ -262,11 +273,9 @@ function createDeck(id: DeckId, accent: string) {
       if (!state.trackLoaded || state.trackBpm === null) return;
       const barDur = (4 * 60) / state.trackBpm;
       const outSec = quantizeToBeat(loop.position, state.trackBpm, state.beatOffset);
-      const inSec = state.loopRegion
-        ? state.loopRegion.startSec
-        : outSec - barDur;
+      const inSec = state.loopRegion ? state.loopRegion.startSec : outSec - barDur;
       if (outSec <= inSec) return;
-      const beats = Math.round((outSec - inSec) * state.trackBpm / 60);
+      const beats = Math.round(((outSec - inSec) * state.trackBpm) / 60);
       state.setLoopRegion({ startSec: inSec, endSec: outSec, beats });
       state.loopActive = true;
       loop.loopActive = true;
@@ -335,7 +344,11 @@ function createDeck(id: DeckId, accent: string) {
           beatOffset: state.beatOffset,
           cuePoint: pos,
           loopRegion: state.loopRegion
-            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            ? {
+                startSec: state.loopRegion.startSec,
+                endSec: state.loopRegion.endSec,
+                beats: state.loopRegion.beats
+              }
             : undefined
         });
       }

@@ -269,7 +269,7 @@ function drawWaveform() {
     ctx.fillStyle = '#ffffff99';
     ctx.font = `bold ${BPM_LABEL_FONT_SIZE}px monospace`;
     const bars = props.trackBpm
-      ? Math.max(1, Math.round((region.endSec - region.startSec) * props.trackBpm / 60 / 4))
+      ? Math.max(1, Math.round(((region.endSec - region.startSec) * props.trackBpm) / 60 / 4))
       : 1;
     const bpmLabel = props.trackBpm ? ` · ${props.trackBpm.toFixed(1)} BPM` : '';
     ctx.fillText(`${bars} bar${bars !== 1 ? 's' : ''}${bpmLabel}`, labelX, 18);
@@ -504,7 +504,9 @@ function applyDrag(clientX: number) {
     const start = Math.min(newRegionAnchorSec, sec);
     const end = Math.max(newRegionAnchorSec, sec);
     if (end - start > MIN_NEW_REGION_SEC) {
-      const beats = props.trackBpm ? Math.max(1, Math.round((end - start) * props.trackBpm / 60)) : 1;
+      const beats = props.trackBpm
+        ? Math.max(1, Math.round(((end - start) * props.trackBpm) / 60))
+        : 1;
       emit('setRegion', { startSec: start, endSec: end, beats });
       dragging.value = sec < newRegionAnchorSec ? 'start' : 'end';
     }
@@ -688,7 +690,6 @@ watch(
   border-top: 1px solid #1e1e1e;
   background: #0d0d0d;
 }
-
 
 .waveform__bpm-readout {
   font-size: 0.85rem;
