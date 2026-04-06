@@ -1,21 +1,26 @@
 import { defineStore } from 'pinia';
 import { reactive } from 'vue';
-import { LoopEngine } from '@renderer/audio/LoopEngine';
-import type { LoopRegion } from '@renderer/audio/LoopEngine';
+import { AudioEngine } from '@renderer/audio/AudioEngine';
+import type { LoopRegion } from '@renderer/audio/AudioEngine';
 import { detectBpm, detectSilenceEnd } from '@renderer/audio/bpmDetect';
 
 export type DeckId = 'A' | 'B';
 export type DeckMode = 'edit' | 'play';
 
-const DEFAULT_BPM = 138;
 const NUDGE_PERCENT = 4;
 const START_LATENCY = 0.05;
 export const PITCH_RANGE = 10;
 
-type SavedRegion = { startSec: number; endSec: number; beats: 16 | 32; detectedBpm: number };
+type SavedTrack = {
+  trackBpm: number;
+  beatOffset: number;
+  cuePoint?: number;
+  loopRegion?: { startSec: number; endSec: number; beats: number };
+};
+
 const STORAGE_KEY = 'beatmatcher:track-regions';
 
-function loadSavedRegions(): Record<string, SavedRegion> {
+function loadSavedTracks(): Record<string, SavedTrack> {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
   } catch {
@@ -23,21 +28,38 @@ function loadSavedRegions(): Record<string, SavedRegion> {
   }
 }
 
-function saveRegion(filename: string, region: SavedRegion) {
-  const all = loadSavedRegions();
-  all[filename] = region;
+function saveTrack(filename: string, data: SavedTrack) {
+  const all = loadSavedTracks();
+  all[filename] = data;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
 }
 
-function getSavedRegion(filename: string): SavedRegion | null {
-  const saved = loadSavedRegions()[filename];
-  if (!saved || !saved.detectedBpm) return null;
-  return saved;
+function getSavedTrack(filename: string): SavedTrack | null {
+  const raw = loadSavedTracks()[filename] as (SavedTrack & { startSec?: number; endSec?: number; beats?: number; detectedBpm?: number }) | undefined;
+  if (!raw) return null;
+  // Current format
+  if (raw.trackBpm && raw.beatOffset !== undefined && !raw.startSec) return raw as SavedTrack;
+  // Migrate old format: { startSec, endSec, beats, trackBpm/detectedBpm, beatOffset }
+  const bpm = raw.trackBpm || raw.detectedBpm;
+  if (!bpm) return null;
+  const beatOffset = raw.beatOffset ?? raw.startSec ?? 0;
+  const result: SavedTrack = { trackBpm: bpm, beatOffset };
+  if (raw.startSec !== undefined && raw.endSec !== undefined && raw.beats) {
+    result.loopRegion = { startSec: raw.startSec, endSec: raw.endSec, beats: raw.beats };
+  }
+  return result;
+}
+
+function quantizeToBeat(sec: number, bpm: number, beatOffset: number): number {
+  if (bpm <= 0) return sec;
+  const beatDur = 60 / bpm;
+  const beatIndex = Math.round((sec - beatOffset) / beatDur);
+  return beatOffset + beatIndex * beatDur;
 }
 
 function createDeck(id: DeckId, accent: string) {
   const audioCtx = new AudioContext();
-  const loop = new LoopEngine(audioCtx);
+  const loop = new AudioEngine(audioCtx);
 
   let currentFilename = '';
 
@@ -52,10 +74,12 @@ function createDeck(id: DeckId, accent: string) {
     detecting: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
-    loopBeats: 16 as 16 | 32,
+    loopActive: false,
 
-    inferredBpm: DEFAULT_BPM,
-    targetBpm: DEFAULT_BPM,
+    trackBpm: null as number | null,
+    beatOffset: 0,
+    cuePoint: 0,
+    targetBpm: null as number | null,
     pitchOffset: 0,
 
     nudging: null as 'back' | 'forward' | null,
@@ -70,16 +94,19 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     setTargetBpm(value: number) {
-      const minBpm = state.inferredBpm * (1 - PITCH_RANGE / 100);
-      const maxBpm = state.inferredBpm * (1 + PITCH_RANGE / 100);
-      state.targetBpm = Math.max(minBpm, Math.min(maxBpm, value));
-      state.pitchOffset = (state.targetBpm / state.inferredBpm - 1) * 100;
-      loop.targetBpm = state.targetBpm;
+      if (state.trackBpm === null) return;
+      const minBpm = state.trackBpm * (1 - PITCH_RANGE / 100);
+      const maxBpm = state.trackBpm * (1 + PITCH_RANGE / 100);
+      const clamped = Math.max(minBpm, Math.min(maxBpm, value));
+      state.targetBpm = clamped;
+      state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
+      loop.targetBpm = clamped;
     },
 
     setPitchOffset(pct: number) {
+      if (state.trackBpm === null) return;
       state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct));
-      state.targetBpm = state.inferredBpm * (1 + state.pitchOffset / 100);
+      state.targetBpm = state.trackBpm * (1 + state.pitchOffset / 100);
       loop.targetBpm = state.targetBpm;
     },
 
@@ -92,18 +119,31 @@ function createDeck(id: DeckId, accent: string) {
       state.nudging = null;
       loop.setNudge(0);
       state.loopRegion = null;
+      state.loopActive = false;
       state.buffer = null;
 
       await loop.loadFile(file);
-      state.buffer = loop.buffer_;
+      state.buffer = loop.bufferData;
       currentFilename = file.name;
       state.trackName = file.name;
       state.trackLoaded = true;
 
-      const saved = getSavedRegion(file.name);
+      const saved = getSavedTrack(file.name);
       if (saved) {
-        state.loopBeats = saved.beats;
-        state.setLoopRegion(saved);
+        state.trackBpm = saved.trackBpm;
+        state.beatOffset = saved.beatOffset;
+        state.cuePoint = saved.cuePoint ?? saved.beatOffset;
+        loop.trackBpm = saved.trackBpm;
+        loop.beatOffset = saved.beatOffset;
+        loop.seekTo(state.cuePoint);
+        state.targetBpm = saved.trackBpm;
+        state.pitchOffset = 0;
+        loop.targetBpm = saved.trackBpm;
+        if (saved.loopRegion) {
+          state.loopRegion = saved.loopRegion;
+          loop.setRegion(saved.loopRegion);
+        }
+        state.mode = 'edit';
         return;
       }
 
@@ -133,20 +173,56 @@ function createDeck(id: DeckId, accent: string) {
       state.mode = 'play';
     },
 
-    setTrackBpm(bpm: number, startSec = state.loopRegion?.startSec ?? 0) {
-      const dur = (state.loopBeats / bpm) * 60;
-      state.setLoopRegion({ startSec, endSec: startSec + dur, beats: state.loopBeats });
+    // Sets the track's native BPM and beat grid offset. No loop region is created
+    // automatically — the grid alone is enough to show beat markers on the waveform.
+    setTrackBpm(bpm: number, beatOffsetSec = state.beatOffset) {
+      state.trackBpm = bpm;
+      state.beatOffset = beatOffsetSec;
+      state.cuePoint = beatOffsetSec;
+      loop.trackBpm = bpm;
+      loop.beatOffset = beatOffsetSec;
+      loop.seekTo(beatOffsetSec);
+      state.targetBpm = bpm;
+      state.pitchOffset = 0;
+      loop.targetBpm = bpm;
+      if (currentFilename) {
+        saveTrack(currentFilename, {
+          trackBpm: bpm,
+          beatOffset: beatOffsetSec,
+          cuePoint: beatOffsetSec,
+          loopRegion: state.loopRegion
+            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            : undefined
+        });
+      }
+    },
+
+    setBeatOffset(sec: number) {
+      state.beatOffset = sec;
+      loop.beatOffset = sec;
+      if (currentFilename && state.trackBpm !== null) {
+        saveTrack(currentFilename, {
+          trackBpm: state.trackBpm,
+          beatOffset: sec,
+          cuePoint: state.cuePoint,
+          loopRegion: state.loopRegion
+            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            : undefined
+        });
+      }
     },
 
     setLoopRegion(region: LoopRegion) {
       state.loopRegion = region;
       loop.setRegion(region);
-      state.inferredBpm = loop.inferredBpm;
-      state.targetBpm = state.inferredBpm;
-      state.pitchOffset = 0;
-      loop.targetBpm = state.targetBpm;
-      if (currentFilename)
-        saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm });
+      if (currentFilename && state.trackBpm !== null) {
+        saveTrack(currentFilename, {
+          trackBpm: state.trackBpm,
+          beatOffset: state.beatOffset,
+          cuePoint: state.cuePoint,
+          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
+        });
+      }
     },
 
     moveLoopRegion(startSec: number) {
@@ -155,22 +231,60 @@ function createDeck(id: DeckId, accent: string) {
       const region = { ...state.loopRegion, startSec, endSec: startSec + dur };
       state.loopRegion = region;
       loop.setRegion(region);
-      if (currentFilename)
-        saveRegion(currentFilename, { ...region, detectedBpm: state.inferredBpm });
+      if (currentFilename && state.trackBpm !== null) {
+        saveTrack(currentFilename, {
+          trackBpm: state.trackBpm,
+          beatOffset: state.beatOffset,
+          cuePoint: state.cuePoint,
+          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
+        });
+      }
     },
 
-    setLoopBeats(beats: 16 | 32) {
-      state.loopBeats = beats;
-      loop.setBeats(beats);
-      const r = loop.region;
-      if (r) {
-        state.loopRegion = r;
-        state.inferredBpm = loop.inferredBpm;
-        state.targetBpm = state.inferredBpm;
-        state.pitchOffset = 0;
-        loop.targetBpm = state.targetBpm;
-        if (currentFilename)
-          saveRegion(currentFilename, { ...r, beats, detectedBpm: state.inferredBpm });
+    // Set loop in-point at the current position, quantized to the nearest beat.
+    setLoopIn() {
+      if (!state.trackLoaded || state.trackBpm === null) return;
+      const inSec = quantizeToBeat(loop.position, state.trackBpm, state.beatOffset);
+      const barDur = (4 * 60) / state.trackBpm;
+      const outSec = state.loopRegion && state.loopRegion.endSec > inSec + 0.01
+        ? state.loopRegion.endSec
+        : inSec + barDur;
+      const beats = Math.round((outSec - inSec) * state.trackBpm / 60);
+      if (state.loopActive) {
+        state.loopActive = false;
+        loop.loopActive = false;
+      }
+      state.setLoopRegion({ startSec: inSec, endSec: outSec, beats });
+    },
+
+    // Set loop out-point at the current position, quantized to the nearest beat, and activate the loop.
+    setLoopOut() {
+      if (!state.trackLoaded || state.trackBpm === null) return;
+      const barDur = (4 * 60) / state.trackBpm;
+      const outSec = quantizeToBeat(loop.position, state.trackBpm, state.beatOffset);
+      const inSec = state.loopRegion
+        ? state.loopRegion.startSec
+        : outSec - barDur;
+      if (outSec <= inSec) return;
+      const beats = Math.round((outSec - inSec) * state.trackBpm / 60);
+      state.setLoopRegion({ startSec: inSec, endSec: outSec, beats });
+      state.loopActive = true;
+      loop.loopActive = true;
+    },
+
+    reloopOrExit() {
+      if (!state.loopRegion) return;
+      if (state.loopActive) {
+        // EXIT: deactivate loop, continue playing from current position
+        state.loopActive = false;
+        loop.loopActive = false;
+      } else {
+        // RELOOP: if playing → jump to loop start and enter loop
+        //         if stopped → park at loop start only
+        loop.reloop();
+        if (state.loopPlaying) {
+          state.loopActive = true;
+        }
       }
     },
 
@@ -184,18 +298,17 @@ function createDeck(id: DeckId, accent: string) {
         loop.stop();
         state.loopPlaying = false;
       } else {
-        const startTime = audioCtx.currentTime + START_LATENCY;
-        loop.startAt(startTime);
+        loop.startAt(audioCtx.currentTime + START_LATENCY);
         state.loopPlaying = true;
       }
     },
 
+    // Hold CUE while stopped: preview from cue point. Release returns to cue point.
     cueStart() {
       if (!state.trackLoaded) return;
       if (state.cueing || state.loopPlaying) return;
       state.cueing = true;
-      const startTime = audioCtx.currentTime + START_LATENCY;
-      loop.startAt(startTime);
+      loop.startAt(audioCtx.currentTime + START_LATENCY, state.cuePoint);
       state.loopPlaying = true;
     },
 
@@ -204,7 +317,28 @@ function createDeck(id: DeckId, accent: string) {
       state.cueing = false;
       loop.stop();
       state.loopPlaying = false;
-      loop.cue();
+      loop.seekTo(state.cuePoint);
+    },
+
+    // Press CUE while playing: set the cue point at the current position and stop there.
+    setCueAndStop() {
+      if (!state.trackLoaded || !state.loopPlaying || state.cueing) return;
+      const pos = loop.trackPosition;
+      if (pos === null) return;
+      state.cuePoint = pos;
+      loop.stop();
+      state.loopPlaying = false;
+      loop.seekTo(pos);
+      if (currentFilename && state.trackBpm !== null) {
+        saveTrack(currentFilename, {
+          trackBpm: state.trackBpm,
+          beatOffset: state.beatOffset,
+          cuePoint: pos,
+          loopRegion: state.loopRegion
+            ? { startSec: state.loopRegion.startSec, endSec: state.loopRegion.endSec, beats: state.loopRegion.beats }
+            : undefined
+        });
+      }
     },
 
     setEq(band: 'low' | 'mid' | 'high', db: number) {
