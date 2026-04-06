@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { reactive } from 'vue';
 import { LoopEngine } from '@renderer/audio/LoopEngine';
 import type { LoopRegion } from '@renderer/audio/LoopEngine';
-import { detectBpm } from '@renderer/audio/bpmDetect';
+import { detectBpm, detectSilenceEnd } from '@renderer/audio/bpmDetect';
 
 export type DeckId = 'A' | 'B';
 export type DeckMode = 'edit' | 'play';
@@ -109,24 +109,33 @@ function createDeck(id: DeckId, accent: string) {
 
       state.detecting = true;
       let detectedBpm = 0;
+      let silenceEnd = 0;
       if (state.buffer) {
         const result = await detectBpm(state.buffer);
         if (result.bpm > 0) detectedBpm = result.bpm;
+        silenceEnd = detectSilenceEnd(state.buffer);
       }
       state.detecting = false;
 
       if (detectedBpm > 0) {
-        state.setTrackBpm(detectedBpm);
+        state.setTrackBpm(detectedBpm, silenceEnd);
         state.mode = 'edit';
       } else {
         onNeedBpmInput();
       }
     },
 
-    setTrackBpm(bpm: number) {
-      const start = state.loopRegion?.startSec ?? 0;
+    setEditMode() {
+      state.mode = 'edit';
+    },
+
+    setPlayMode() {
+      state.mode = 'play';
+    },
+
+    setTrackBpm(bpm: number, startSec = state.loopRegion?.startSec ?? 0) {
       const dur = (state.loopBeats / bpm) * 60;
-      state.setLoopRegion({ startSec: start, endSec: start + dur, beats: state.loopBeats });
+      state.setLoopRegion({ startSec, endSec: startSec + dur, beats: state.loopBeats });
     },
 
     setLoopRegion(region: LoopRegion) {
@@ -227,6 +236,8 @@ function createDeck(id: DeckId, accent: string) {
 
   return state;
 }
+
+export type Deck = ReturnType<typeof createDeck>;
 
 export const useDecksStore = defineStore('decks', () => {
   const deckA = createDeck('A', '#3b82f6');
