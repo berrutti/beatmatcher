@@ -1,19 +1,6 @@
 import { onMounted, onUnmounted } from 'vue';
 import { useDecksStore } from '@renderer/stores/decks';
-
-/**
- * Keyboard layout:
- *
- * Deck A (left)       Deck B (right)
- * ─────────────────   ─────────────────
- * Q  nudge back       O  nudge back
- * W  nudge forward    P  nudge forward
- * A  play/pause       K  play/pause
- * S  cue              L  cue
- *
- * All shortcuts are global — they fire regardless of UI focus or deck mode.
- * Only blocked when typing in an actual text input.
- */
+import { KEYS } from '@renderer/keybindings';
 
 export function useKeyboard() {
   const store = useDecksStore();
@@ -33,40 +20,37 @@ export function useKeyboard() {
     if (e.repeat) return;
 
     const { deckA, deckB } = store;
-    const key = e.key.toLowerCase();
+    const key = e.key.toUpperCase();
 
-    // Deck A
-    if (key === 'a') {
+    if (key === KEYS.deckA.cue) {
       deckA.cueStart();
       return;
     }
-    if (key === 's') {
+    if (key === KEYS.deckA.play) {
       deckA.togglePlay();
       return;
     }
-    if (key === 'q') {
+    if (key === KEYS.deckA.nudgeBack) {
       deckA.nudgeStart('back');
       return;
     }
-    if (key === 'w') {
+    if (key === KEYS.deckA.nudgeForward) {
       deckA.nudgeStart('forward');
       return;
     }
-
-    // Deck B
-    if (key === 'k') {
+    if (key === KEYS.deckB.cue) {
       deckB.cueStart();
       return;
     }
-    if (key === 'l') {
+    if (key === KEYS.deckB.play) {
       deckB.togglePlay();
       return;
     }
-    if (key === 'i') {
+    if (key === KEYS.deckB.nudgeBack) {
       deckB.nudgeStart('back');
       return;
     }
-    if (key === 'o') {
+    if (key === KEYS.deckB.nudgeForward) {
       deckB.nudgeStart('forward');
       return;
     }
@@ -77,12 +61,12 @@ export function useKeyboard() {
     if (isTyping(e)) return;
 
     const { deckA, deckB } = store;
-    const key = e.key.toLowerCase();
+    const key = e.key.toUpperCase();
 
-    if (key === 'q' || key === 'w') deckA.nudgeEnd();
-    if (key === 'i' || key === 'o') deckB.nudgeEnd();
-    if (key === 'a') deckA.cueEnd();
-    if (key === 'k') deckB.cueEnd();
+    if (key === KEYS.deckA.nudgeBack || key === KEYS.deckA.nudgeForward) deckA.nudgeEnd();
+    if (key === KEYS.deckB.nudgeBack || key === KEYS.deckB.nudgeForward) deckB.nudgeEnd();
+    if (key === KEYS.deckA.cue) deckA.cueEnd();
+    if (key === KEYS.deckB.cue) deckB.cueEnd();
   }
 
   onMounted(() => {

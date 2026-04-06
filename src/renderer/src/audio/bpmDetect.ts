@@ -146,3 +146,21 @@ export async function detectBpm(buffer: AudioBuffer): Promise<BpmResult> {
   const filtered = await lowPassFilter(buffer);
   return detectBpmFromSamples(filtered, buffer.sampleRate);
 }
+
+export function detectSilenceEnd(buffer: AudioBuffer, threshold = 0.01): number {
+  if (!buffer.sampleRate) return 0;
+  const data = buffer.getChannelData(0);
+  const windowSize = Math.max(1, Math.round(buffer.sampleRate * 0.05)); // 50ms windows
+
+  for (let i = 0; i < data.length - windowSize; i += windowSize) {
+    let sum = 0;
+    for (let j = i; j < i + windowSize; j++) {
+      sum += data[j] * data[j];
+    }
+    const rms = Math.sqrt(sum / windowSize);
+    if (rms > threshold) {
+      return i / buffer.sampleRate;
+    }
+  }
+  return 0;
+}
