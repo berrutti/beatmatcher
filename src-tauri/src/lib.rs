@@ -29,49 +29,55 @@ async fn load_track(
     state: tauri::State<'_, AppState>,
     deck: String,
     path: String,
+    analyze: bool,
 ) -> Result<TrackInfo, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let device_sample_rate = state.audio.device_sample_rate;
 
     // Run all CPU-heavy work in a single blocking thread.
-    let (resampled, channels, bpm, silence_end, peaks, native_sr) =
+    let (resampled, channels, bpm, silence_end, native_sr) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let (raw_samples, channels, native_sr) =
                 audio::decode_audio(&path).map_err(|e| e.to_string())?;
 
-            let mono: Vec<f32> = if channels == 1 {
-                raw_samples.clone()
+            let (bpm, silence_end) = if analyze {
+                let mono: Vec<f32> = if channels == 1 {
+                    raw_samples.clone()
+                } else {
+                    raw_samples
+                        .chunks(channels)
+                        .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+                        .collect()
+                };
+                (
+                    audio::detect_bpm(&mono, native_sr),
+                    audio::detect_silence_end(&mono, native_sr),
+                )
             } else {
-                raw_samples
-                    .chunks(channels)
-                    .map(|ch| ch.iter().sum::<f32>() / channels as f32)
-                    .collect()
+                log::info!("load_track: skipping analysis (saved data will be used)");
+                (None, 0.0)
             };
-
-            let bpm = audio::detect_bpm(&mono, native_sr);
-            let silence_end = audio::detect_silence_end(&mono, native_sr);
-
-            // Compute peaks at native rate before resampling to avoid an extra pass over
-            // the larger resampled buffer.
-            let peaks = audio::compute_peaks(&raw_samples, channels);
 
             let resampled =
                 audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate);
 
-            Ok((resampled, channels, bpm, silence_end, peaks, native_sr))
+            Ok((resampled, channels, bpm, silence_end, native_sr))
         })
         .await
         .map_err(|e| e.to_string())??;
 
     let total_frames = resampled.len() / channels;
     let duration = total_frames as f64 / device_sample_rate as f64;
-    // Peaks were computed at native_sr, so peaks_per_second uses native_sr.
-    let peaks_per_sec = native_sr as f64 / 256.0; // PEAKS_CHUNK_FRAMES = 256
     let silence_pos = silence_end * device_sample_rate as f64;
+
+    log::info!(
+        "load_track [{}]: analyze={} native_sr={} device_sr={} channels={} duration={:.2}s bpm={:?} silence_end={:.3}s silence_pos={:.0} frames",
+        deck, analyze, native_sr, device_sample_rate, channels, duration, bpm, silence_end, silence_pos
+    );
 
     {
         let mut deck = deck_arc.lock().unwrap();
-        deck.samples = resampled;
+        deck.samples = std::sync::Arc::new(resampled);
         deck.channels = channels;
         deck.device_sample_rate = device_sample_rate;
         deck.total_frames = total_frames;
@@ -89,8 +95,6 @@ async fn load_track(
     Ok(TrackInfo {
         duration,
         sample_rate: device_sample_rate,
-        peaks,
-        peaks_per_second: peaks_per_sec,
         bpm,
         silence_end,
     })
@@ -113,6 +117,7 @@ fn play(
     } else {
         d.cue_pos = d.main_pos;
     }
+    log::info!("play [{}]: from_sec={:?} main_pos={:.0}", deck, from_sec, d.main_pos);
     d.is_playing = true;
     Ok(())
 }
@@ -138,6 +143,7 @@ fn seek(
     let pos = (sec * d.device_sample_rate as f64)
         .max(0.0)
         .min(d.total_frames as f64);
+    log::info!("seek [{}]: {:.3}s -> frame {:.0}", deck, sec, pos);
     d.main_pos = pos;
     d.cue_pos = pos;
     Ok(())
@@ -218,6 +224,32 @@ fn get_position(state: tauri::State<'_, AppState>, deck: String) -> Result<f64, 
 }
 
 #[tauri::command]
+fn get_waveform_region(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    start_sec: f64,
+    end_sec: f64,
+    num_points: usize,
+) -> Result<Vec<f32>, String> {
+    let deck_arc = get_deck(&state, &deck)?;
+    // Clone the Arc and metadata under the lock, then release immediately.
+    // The sample scan happens outside the lock so the audio callback thread
+    // is never blocked by waveform rendering.
+    let (samples, channels, device_sr) = {
+        let d = deck_arc.lock().unwrap();
+        (std::sync::Arc::clone(&d.samples), d.channels, d.device_sample_rate)
+    };
+    Ok(audio::compute_waveform_region(
+        &samples,
+        channels,
+        device_sr,
+        start_sec,
+        end_sec,
+        num_points,
+    ))
+}
+
+#[tauri::command]
 fn set_reloop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
@@ -283,13 +315,11 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -304,6 +334,7 @@ pub fn run() {
             set_nudge,
             set_eq,
             get_position,
+            get_waveform_region,
             set_reloop,
             set_cue_active,
             list_audio_devices,

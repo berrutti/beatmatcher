@@ -15,8 +15,6 @@ export type LoopRegion = {
 export type TrackData = {
   duration: number;
   sampleRate: number;
-  peaks: number[];
-  peaksPerSecond: number;
   bpm: number | null;
   silenceEnd: number;
 };
@@ -178,24 +176,27 @@ function createDeck(id: DeckId, accent: string) {
       state.trackData = null;
       positionCache = 0;
 
-      state.detecting = true;
+      currentFilename = path.split('/').pop() ?? path;
+      const saved = getSavedTrack(currentFilename);
+      const analyze = !saved;
+
+      state.detecting = analyze;
 
       let info: TrackData;
       try {
-        info = await invoke<TrackData>('load_track', { deck: id, path });
+        info = await invoke<TrackData>('load_track', { deck: id, path, analyze });
       } catch (err) {
         state.detecting = false;
         throw err;
       }
 
-      currentFilename = path.split('/').pop() ?? path;
       state.trackName = currentFilename;
       state.trackData = info;
       state.trackLoaded = true;
       state.detecting = false;
 
-      const saved = getSavedTrack(currentFilename);
       if (saved) {
+        console.log(`[deck ${id}] restored saved track: bpm=${saved.trackBpm} cuePoint=${saved.cuePoint ?? saved.beatOffset}`);
         state.trackBpm = saved.trackBpm;
         state.beatOffset = saved.beatOffset;
         state.cuePoint = saved.cuePoint ?? saved.beatOffset;
@@ -216,13 +217,21 @@ function createDeck(id: DeckId, accent: string) {
         return;
       }
 
+      console.log(`[deck ${id}] load_track analysis result:`, {
+        duration: info.duration,
+        bpm: info.bpm,
+        silenceEnd: info.silenceEnd,
+      });
+
       const detectedBpm = info.bpm ?? 0;
       const silenceEnd = info.silenceEnd;
 
       if (detectedBpm > 0) {
+        console.log(`[deck ${id}] using detected bpm=${detectedBpm} silenceEnd=${silenceEnd}s as beat offset`);
         state.setTrackBpm(detectedBpm, silenceEnd);
         state.mode = 'edit';
       } else {
+        console.log(`[deck ${id}] no BPM detected, requesting manual input`);
         onNeedBpmInput();
       }
     },
@@ -412,6 +421,37 @@ function createDeck(id: DeckId, accent: string) {
       }
     },
 
+    async stopAtCue() {
+      if (!state.loopPlaying || state.cueing) return;
+      await invoke('stop', { deck: id });
+      state.loopPlaying = false;
+      stopPolling();
+      positionCache = state.cuePoint;
+      await invoke('seek', { deck: id, sec: state.cuePoint });
+    },
+
+    seekTo(sec: number) {
+      if (state.loopPlaying) return;
+      const clamped = Math.max(0, sec);
+      positionCache = clamped;
+      state.cuePoint = clamped;
+      invoke('seek', { deck: id, sec: clamped });
+      if (currentFilename && state.trackBpm !== null) {
+        saveTrack(currentFilename, {
+          trackBpm: state.trackBpm,
+          beatOffset: state.beatOffset,
+          cuePoint: clamped,
+          loopRegion: state.loopRegion
+            ? {
+                startSec: state.loopRegion.startSec,
+                endSec: state.loopRegion.endSec,
+                beats: state.loopRegion.beats,
+              }
+            : undefined,
+        });
+      }
+    },
+
     setEq(band: 'low' | 'mid' | 'high', db: number) {
       const clamped = Math.max(-EQ_GAIN_LIMIT, Math.min(EQ_GAIN_LIMIT, db));
       state.eq[band] = clamped;
@@ -432,6 +472,10 @@ function createDeck(id: DeckId, accent: string) {
 
     get playing(): boolean {
       return state.loopPlaying && !state.cueing;
+    },
+
+    getWaveformRegion(startSec: number, endSec: number, numPoints: number): Promise<number[]> {
+      return invoke<number[]>('get_waveform_region', { deck: id, startSec, endSec, numPoints });
     },
 
     destroy() {

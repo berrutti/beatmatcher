@@ -19,7 +19,7 @@
 
     <BpmModal
       :open="bpmModalOpen"
-      :current-bpm="props.deck.trackBpm > 0 ? props.deck.trackBpm : null"
+      :current-bpm="!!props.deck.trackBpm && props.deck.trackBpm > 0 ? props.deck.trackBpm : null"
       @submit="onBpmModalSubmit"
       @cancel="bpmModalOpen = false"
     />
@@ -58,16 +58,14 @@
       :accent="props.deck.accent"
       :track-data="props.deck.trackData"
       :is-drag-over="isDragOver"
-      :loop-region="props.deck.loopRegion"
-      :loop-active="props.deck.loopActive"
       :track-bpm="props.deck.trackBpm"
       :beat-offset="props.deck.beatOffset"
       :cue-point="props.deck.cuePoint"
       :get-track-position="() => props.deck.trackPosition"
+      :get-waveform-region="props.deck.getWaveformRegion"
       @open-file-dialog="openFileDialog"
-      @set-region="props.deck.setLoopRegion"
-      @move-region="props.deck.moveLoopRegion"
       @set-beat-offset="props.deck.setBeatOffset"
+      @seek="props.deck.seekTo"
       @request-bpm-input="bpmModalOpen = true"
     />
 
@@ -332,7 +330,7 @@ function onNudgeStart(direction: 'back' | 'forward') {
 function onCueMouseDown() {
   if (!props.deck.trackLoaded) return;
   if (props.deck.playing) {
-    props.deck.setCueAndStop();
+    props.deck.stopAtCue();
   } else {
     props.deck.cueStart();
   }

@@ -41,36 +41,29 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import type { LoopRegion, TrackData } from '@renderer/stores/decks';
+import type { TrackData } from '@renderer/stores/decks';
 
 const props = defineProps<{
   accent: string;
   trackData: TrackData | null;
   isDragOver: boolean;
-  loopRegion: LoopRegion | null;
-  loopActive: boolean;
   trackBpm: number | null;
   beatOffset: number;
   cuePoint: number;
   getTrackPosition: () => number | null;
+  getWaveformRegion: (startSec: number, endSec: number, numPoints: number) => Promise<number[]>;
 }>();
 
 const emit = defineEmits<{
   openFileDialog: [];
-  setRegion: [region: LoopRegion];
-  moveRegion: [startSec: number];
   setBeatOffset: [sec: number];
+  seek: [sec: number];
   requestBpmInput: [];
 }>();
 
 const accent = computed(() => props.accent);
 const HANDLE_W = 8;
-const HANDLE_CIRCLE_RADIUS = 6;
 const WAVEFORM_AMP_SCALE = 0.9;
-const REGION_IN_LOOP_ALPHA = 0.8;
-const BPM_LABEL_FONT_SIZE = 11;
-const MIN_NEW_REGION_SEC = 0.001;
-const MIN_REGION_SEC = 0.01;
 const PLAYHEAD_LINE_WIDTH = 1.5;
 const PLAYHEAD_ALPHA = 0.9;
 const PLAYHEAD_ARROW_HALF = 5;
@@ -82,9 +75,6 @@ const DEFAULT_ZOOM_SEC = 10;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 
-// Downsampled peak data from the Rust backend
-let peaks: number[] | null = null;
-let peaksPerSecond = 0;
 let trackDuration = 0;
 
 // Visible window in seconds
@@ -130,48 +120,54 @@ function zoomOut(anchorSec?: number) {
   setZoomCentered(zoomIdx.value + 1, anchorSec);
 }
 
-// ── Peak extraction ───────────────────────────────────────────
+// ── Peak fetch ────────────────────────────────────────────────
+// Peaks are fetched on-demand from the Rust backend for the exact visible
+// region at the canvas pixel width. This gives full resolution at any zoom
+// level without sending a pre-baked array of fixed chunk size.
 
 let visiblePeaks: Float32Array | null = null;
 let peaksCachedViewStart = NaN;
 let peaksCachedViewEnd = NaN;
 let peaksCachedWidth = 0;
+let isFetching = false;
+let pendingFetch = false;
 
-function initTrack() {
-  if (!props.trackData) return;
-  peaks = props.trackData.peaks;
-  peaksPerSecond = props.trackData.peaksPerSecond;
-  peaksCachedViewStart = NaN; // invalidate cache
-}
+async function fetchVisiblePeaks() {
+  if (isFetching) {
+    pendingFetch = true;
+    return;
+  }
+  const canvas = canvasEl.value;
+  if (!canvas || !props.trackData) return;
+  const w = canvas.clientWidth;
+  if (w === 0) return;
 
-function ensureVisiblePeaks(w: number) {
-  if (!peaks || peaksPerSecond === 0) return;
   const viewStart = viewStartSec.value;
   const viewEnd = viewEndSec.value;
+
   if (
-    visiblePeaks !== null &&
     peaksCachedWidth === w &&
     peaksCachedViewStart === viewStart &&
     peaksCachedViewEnd === viewEnd
   )
     return;
 
-  visiblePeaks = new Float32Array(w);
-  const totalPeaks = peaks.length;
-  for (let x = 0; x < w; x++) {
-    const tStart = viewStart + (x / w) * (viewEnd - viewStart);
-    const tEnd = viewStart + ((x + 1) / w) * (viewEnd - viewStart);
-    const iStart = Math.max(0, Math.floor(tStart * peaksPerSecond));
-    const iEnd = Math.min(totalPeaks - 1, Math.ceil(tEnd * peaksPerSecond));
-    let max = 0;
-    for (let i = iStart; i <= iEnd; i++) {
-      if (peaks[i] > max) max = peaks[i];
+  isFetching = true;
+  pendingFetch = false;
+  try {
+    const result = await props.getWaveformRegion(viewStart, viewEnd, w);
+    // Discard if the view changed while we were waiting
+    if (viewStart === viewStartSec.value && viewEnd === viewEndSec.value) {
+      visiblePeaks = new Float32Array(result);
+      peaksCachedViewStart = viewStart;
+      peaksCachedViewEnd = viewEnd;
+      peaksCachedWidth = w;
     }
-    visiblePeaks[x] = max;
+  } catch {}
+  isFetching = false;
+  if (pendingFetch) {
+    fetchVisiblePeaks();
   }
-  peaksCachedViewStart = viewStart;
-  peaksCachedViewEnd = viewEnd;
-  peaksCachedWidth = w;
 }
 
 // ── Coordinate helpers ────────────────────────────────────────
@@ -193,7 +189,7 @@ function secToPx(sec: number): number {
 
 function drawWaveform() {
   const canvas = canvasEl.value;
-  if (!canvas || !peaks) return;
+  if (!canvas || !props.trackData) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -208,7 +204,7 @@ function drawWaveform() {
     ctx.scale(dpr, dpr);
   }
 
-  ensureVisiblePeaks(w);
+  fetchVisiblePeaks(); // fire-and-forget; draws with current peaks, updates on next frame after fetch
   if (!visiblePeaks) return;
 
   ctx.clearRect(0, 0, w, h);
@@ -224,50 +220,6 @@ function drawWaveform() {
     ctx.fillRect(x, mid - amp, 1, amp * 2);
   }
 
-  // Loop region overlay
-  const region = props.loopRegion;
-  if (region) {
-    const sx = secToPx(region.startSec);
-    const ex = secToPx(region.endSec);
-
-    // Clamp to canvas
-    const visStart = Math.max(0, sx);
-    const visEnd = Math.min(w, ex);
-
-    if (visEnd > visStart) {
-      // Active loop gets a solid tint; inactive shows a dim outline only
-      if (props.loopActive) {
-        ctx.fillStyle = `${props.accent}22`;
-        ctx.fillRect(visStart, 0, visEnd - visStart, h);
-
-        ctx.globalAlpha = REGION_IN_LOOP_ALPHA;
-        for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
-          const amp = visiblePeaks[x] * mid * WAVEFORM_AMP_SCALE;
-          ctx.fillStyle = props.accent;
-          ctx.fillRect(x, mid - amp, 1, amp * 2);
-        }
-        ctx.globalAlpha = 1;
-      } else {
-        ctx.fillStyle = `${props.accent}0a`;
-        ctx.fillRect(visStart, 0, visEnd - visStart, h);
-      }
-    }
-
-    // Handles (always shown regardless of loop active state)
-    if (sx >= -HANDLE_W && sx <= w + HANDLE_W) drawHandle(ctx, sx, h, props.loopActive);
-    if (ex >= -HANDLE_W && ex <= w + HANDLE_W) drawHandle(ctx, ex, h, props.loopActive);
-
-    // BPM label
-    const labelX = Math.max(visStart + 10, 10);
-    ctx.fillStyle = '#ffffff99';
-    ctx.font = `bold ${BPM_LABEL_FONT_SIZE}px monospace`;
-    const bars = props.trackBpm
-      ? Math.max(1, Math.round(((region.endSec - region.startSec) * props.trackBpm) / 60 / 4))
-      : 1;
-    const bpmLabel = props.trackBpm ? ` · ${props.trackBpm.toFixed(1)} BPM` : '';
-    ctx.fillText(`${bars} bar${bars !== 1 ? 's' : ''}${bpmLabel}`, labelX, 18);
-  }
-
   // Beat grid
   drawRuler(ctx, w, h);
   // Downbeat marker (draggable grid start) and cue point
@@ -275,18 +227,6 @@ function drawWaveform() {
   drawCueMarker(ctx, w, h);
   // Playhead
   drawPlayhead(ctx, w, h);
-}
-
-function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number, active: boolean) {
-  ctx.globalAlpha = active ? 1 : 0.4;
-  ctx.fillStyle = props.accent;
-  ctx.fillRect(x - HANDLE_W / 2, 0, HANDLE_W, h);
-  ctx.fillStyle = '#fff';
-  const mid = h / 2;
-  ctx.beginPath();
-  ctx.arc(x, mid, HANDLE_CIRCLE_RADIUS, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
 }
 
 // Index in ZOOM_LEVELS_SEC at which individual beats are hidden (30s and above)
@@ -416,24 +356,16 @@ function rafLoop() {
 
 // ── Drag interaction ──────────────────────────────────────────
 
-type DragHandle = 'start' | 'end' | 'body' | 'pan' | 'new' | 'beatOffset' | null;
+type DragHandle = 'pan' | 'beatOffset' | null;
 const dragging = ref<DragHandle>(null);
-const dragOffsetSec = ref(0);
 const panStartX = ref(0);
 const panStartViewSec = ref(0);
-let newRegionAnchorSec = 0; // start point for a brand-new selection drag
+let mouseDownPx = 0;
+const CLICK_THRESHOLD_PX = 5;
 
 function hitTest(px: number): DragHandle {
-  // Downbeat marker takes priority over loop handles
   const bx = secToPx(props.beatOffset);
   if (Math.abs(px - bx) < HANDLE_W + 4) return 'beatOffset';
-  const region = props.loopRegion;
-  if (!region) return null;
-  const sx = secToPx(region.startSec);
-  const ex = secToPx(region.endSec);
-  if (Math.abs(px - sx) < HANDLE_W + 4) return 'start';
-  if (Math.abs(px - ex) < HANDLE_W + 4) return 'end';
-  if (px > sx && px < ex) return 'body';
   return null;
 }
 
@@ -445,30 +377,19 @@ function canvasPx(clientX: number): number {
 
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX);
+  mouseDownPx = px;
   const hit = hitTest(px);
 
-  if (e.button === 2) {
+  if (hit === 'beatOffset') {
+    dragging.value = 'beatOffset';
+  } else {
     dragging.value = 'pan';
     panStartX.value = px;
     panStartViewSec.value = viewStartSec.value;
-  } else if (hit === 'beatOffset') {
-    dragging.value = 'beatOffset';
-  } else if (hit === 'start' || hit === 'end') {
-    dragging.value = hit;
-  } else if (hit === 'body') {
-    const region = props.loopRegion;
-    if (!region) return;
-    dragging.value = 'body';
-    dragOffsetSec.value = pxToSec(px) - region.startSec;
-  } else {
-    dragging.value = 'new';
-    newRegionAnchorSec = pxToSec(px);
   }
 
-  if (dragging.value) {
-    window.addEventListener('mousemove', onMouseMoveWindow);
-    window.addEventListener('mouseup', onMouseUp);
-  }
+  window.addEventListener('mousemove', onMouseMoveWindow);
+  window.addEventListener('mouseup', onMouseUp);
 }
 
 function applyDrag(clientX: number) {
@@ -491,43 +412,6 @@ function applyDrag(clientX: number) {
     drawWaveform();
     return;
   }
-
-  if (dragging.value === 'new') {
-    const sec = pxToSec(px);
-    const start = Math.min(newRegionAnchorSec, sec);
-    const end = Math.max(newRegionAnchorSec, sec);
-    if (end - start > MIN_NEW_REGION_SEC) {
-      const beats = props.trackBpm
-        ? Math.max(1, Math.round(((end - start) * props.trackBpm) / 60))
-        : 1;
-      emit('setRegion', { startSec: start, endSec: end, beats });
-      dragging.value = sec < newRegionAnchorSec ? 'start' : 'end';
-    }
-    drawWaveform();
-    return;
-  }
-
-  const region = props.loopRegion;
-  if (!region) return;
-  const newRegion: LoopRegion = { ...region };
-
-  if (dragging.value === 'start') {
-    newRegion.startSec = Math.max(0, Math.min(pxToSec(px), region.endSec - MIN_REGION_SEC));
-  } else if (dragging.value === 'end') {
-    newRegion.endSec = Math.min(
-      trackDuration,
-      Math.max(pxToSec(px), region.startSec + MIN_REGION_SEC)
-    );
-  } else if (dragging.value === 'body') {
-    const dur = region.endSec - region.startSec;
-    const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur));
-    emit('moveRegion', newStart);
-    drawWaveform();
-    return;
-  }
-
-  emit('setRegion', newRegion);
-  drawWaveform();
 }
 
 // Canvas hover — only updates cursor when not dragging
@@ -537,12 +421,7 @@ function onMouseMoveCanvas(e: MouseEvent) {
   const hit = hitTest(px);
   const canvas = canvasEl.value;
   if (!canvas) return;
-  canvas.style.cursor =
-    hit === 'beatOffset' || hit === 'start' || hit === 'end'
-      ? 'ew-resize'
-      : hit === 'body'
-        ? 'grab'
-        : 'col-resize';
+  canvas.style.cursor = hit === 'beatOffset' ? 'ew-resize' : 'crosshair';
 }
 
 // Window-level move — fires even when mouse leaves canvas
@@ -578,7 +457,11 @@ function onWheel(e: WheelEvent) {
   }
 }
 
-function onMouseUp() {
+function onMouseUp(e: MouseEvent) {
+  const px = canvasPx(e.clientX);
+  if (dragging.value === 'pan' && Math.abs(px - mouseDownPx) < CLICK_THRESHOLD_PX) {
+    emit('seek', Math.max(0, Math.min(pxToSec(mouseDownPx), trackDuration)));
+  }
   dragging.value = null;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
@@ -611,19 +494,25 @@ watch(
   (data) => {
     if (data) {
       trackDuration = data.duration;
-      initTrack();
+      peaksCachedViewStart = NaN; // invalidate cache so next fetch always runs
       zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC);
       const dur = viewDurationSec();
       viewStartSec.value = 0;
       viewEndSec.value = Math.min(dur, trackDuration);
+      fetchVisiblePeaks();
     } else {
-      peaks = null;
-      peaksPerSecond = 0;
       trackDuration = 0;
       visiblePeaks = null;
+      peaksCachedViewStart = NaN;
     }
   }
 );
+
+// Re-fetch whenever the visible window changes (zoom or pan)
+watch([viewStartSec, viewEndSec], () => {
+  peaksCachedViewStart = NaN;
+  fetchVisiblePeaks();
+});
 </script>
 
 <style scoped>

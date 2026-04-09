@@ -9,10 +9,6 @@ use serde::Serialize;
 pub struct TrackInfo {
     pub duration: f64,
     pub sample_rate: u32,
-    /// Peak amplitude per chunk (one value per PEAKS_CHUNK_FRAMES frames).
-    pub peaks: Vec<f32>,
-    /// How many peaks correspond to one second of audio.
-    pub peaks_per_second: f64,
     pub bpm: Option<f64>,
     pub silence_end: f64,
 }
@@ -164,25 +160,40 @@ impl EqState {
     }
 
     fn set_low(&mut self, db: f32) {
-        let f = Biquad::low_shelf(self.sample_rate, 200.0, db);
-        self.low = [f.clone(), f];
+        let f = Biquad::low_shelf(self.sample_rate, 100.0, db);
+        for ch in &mut self.low {
+            let (s1, s2) = (ch.s1, ch.s2);
+            *ch = f.clone();
+            ch.s1 = s1;
+            ch.s2 = s2;
+        }
     }
 
     fn set_mid(&mut self, db: f32) {
         let f = Biquad::peaking(self.sample_rate, 1000.0, 1.0, db);
-        self.mid = [f.clone(), f];
+        for ch in &mut self.mid {
+            let (s1, s2) = (ch.s1, ch.s2);
+            *ch = f.clone();
+            ch.s1 = s1;
+            ch.s2 = s2;
+        }
     }
 
     fn set_high(&mut self, db: f32) {
         let f = Biquad::high_shelf(self.sample_rate, 8000.0, db);
-        self.high = [f.clone(), f];
+        for ch in &mut self.high {
+            let (s1, s2) = (ch.s1, ch.s2);
+            *ch = f.clone();
+            ch.s1 = s1;
+            ch.s2 = s2;
+        }
     }
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         let l = self.high[0].process(self.mid[0].process(self.low[0].process(l)));
         let r = self.high[1].process(self.mid[1].process(self.low[1].process(r)));
-        (l, r)
+        (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
     }
 }
 
@@ -196,7 +207,7 @@ impl EqState {
 // they stay in sync. Minor drift (sub-ms) is imperceptible for monitoring.
 
 pub struct DeckState {
-    pub samples: Vec<f32>, // interleaved f32 at device_sample_rate
+    pub samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub channels: usize,
     pub device_sample_rate: u32,
     pub total_frames: usize,
@@ -219,7 +230,7 @@ pub struct DeckState {
 impl DeckState {
     pub fn empty(device_sample_rate: u32) -> Self {
         Self {
-            samples: Vec::new(),
+            samples: Arc::new(Vec::new()),
             channels: 2,
             device_sample_rate,
             total_frames: 0,
@@ -563,16 +574,17 @@ pub fn decode_audio(
     let track_id = track.id;
     let codec_params = track.codec_params.clone();
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-    let channels = codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(2)
-        .min(2); // clamp to stereo
 
     let mut decoder =
         symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
     let mut samples: Vec<f32> = Vec::new();
+    // Determined from the first decoded packet spec rather than codec_params,
+    // because codec_params.channels can be None for some formats even when the
+    // audio is mono, which would cause wrong chunk-size when mixing to mono.
+    let mut actual_channels: Option<usize> = None;
+
+    log::info!("decode_audio: opening '{}', native_sr={}", path, sample_rate);
 
     loop {
         let packet = match format.next_packet() {
@@ -594,6 +606,12 @@ pub fn decode_audio(
                 // Capture spec and channel count before consuming decoded
                 let spec = *decoded.spec();
                 let src_channels = spec.channels.count();
+                // Lock in the channel count from the first packet.
+                let out_channels = *actual_channels.get_or_insert_with(|| {
+                    let ch = src_channels.min(2);
+                    log::info!("decode_audio: first packet spec src_channels={} out_channels={}", src_channels, ch);
+                    ch
+                });
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 buf.copy_interleaved_ref(decoded);
                 let src = buf.samples();
@@ -603,7 +621,9 @@ pub fn decode_audio(
                     // More than stereo: keep only L and R
                     for frame in src.chunks(src_channels) {
                         samples.push(frame[0]);
-                        samples.push(frame[1]);
+                        if out_channels > 1 {
+                            samples.push(frame[1]);
+                        }
                     }
                 }
             }
@@ -611,6 +631,15 @@ pub fn decode_audio(
             Err(e) => return Err(e.into()),
         }
     }
+
+    let channels = actual_channels.unwrap_or(1);
+    let total_frames = samples.len() / channels.max(1);
+    log::info!(
+        "decode_audio: done, channels={}, frames={}, duration={:.2}s",
+        channels,
+        total_frames,
+        total_frames as f64 / sample_rate as f64
+    );
 
     Ok((samples, channels, sample_rate))
 }
@@ -651,32 +680,52 @@ pub fn resample_linear(
 
 // ── Waveform peak extraction ──────────────────────────────────────────────────
 
-const PEAKS_CHUNK_FRAMES: usize = 256;
-
-pub fn compute_peaks(samples: &[f32], channels: usize) -> Vec<f32> {
-    if samples.is_empty() || channels == 0 {
-        return Vec::new();
+/// Compute `num_points` peak amplitude values for the region [start_sec, end_sec]
+/// of the (resampled, interleaved) sample buffer at `device_sample_rate`.
+/// Always returns exactly `num_points` values. Resolution adapts to the zoom
+/// level: each point covers (end_sec - start_sec) / num_points seconds of audio,
+/// giving pixel-perfect detail at any zoom without pre-baked resolution limits.
+pub fn compute_waveform_region(
+    samples: &[f32],
+    channels: usize,
+    device_sample_rate: u32,
+    start_sec: f64,
+    end_sec: f64,
+    num_points: usize,
+) -> Vec<f32> {
+    if samples.is_empty() || channels == 0 || num_points == 0 {
+        return vec![0.0; num_points];
     }
     let total_frames = samples.len() / channels;
-    let num_peaks = total_frames.div_ceil(PEAKS_CHUNK_FRAMES);
-    let mut peaks = Vec::with_capacity(num_peaks);
+    let sr = device_sample_rate as f64;
+    let start_frame = (start_sec * sr).max(0.0) as usize;
+    let end_frame = ((end_sec * sr) as usize).min(total_frames);
 
-    for chunk in 0..num_peaks {
-        let start = chunk * PEAKS_CHUNK_FRAMES;
-        let end = ((chunk + 1) * PEAKS_CHUNK_FRAMES).min(total_frames);
-        let mut max_amp = 0.0f32;
-        for frame in start..end {
-            for ch in 0..channels {
-                let amp = samples[frame * channels + ch].abs();
-                if amp > max_amp {
-                    max_amp = amp;
-                }
-            }
-        }
-        peaks.push(max_amp);
+    if start_frame >= end_frame {
+        return vec![0.0; num_points];
     }
 
-    peaks
+    let visible_frames = end_frame - start_frame;
+    let frames_per_point = visible_frames as f64 / num_points as f64;
+
+    (0..num_points)
+        .map(|i| {
+            let f_start = start_frame + (i as f64 * frames_per_point) as usize;
+            let f_end = (start_frame + ((i + 1) as f64 * frames_per_point) as usize)
+                .min(end_frame)
+                .max(f_start + 1);
+            let mut max_amp = 0.0f32;
+            for frame in f_start..f_end {
+                for ch in 0..channels {
+                    let amp = samples[frame * channels + ch].abs();
+                    if amp > max_amp {
+                        max_amp = amp;
+                    }
+                }
+            }
+            max_amp
+        })
+        .collect()
 }
 
 // ── BPM detection ─────────────────────────────────────────────────────────────
@@ -799,15 +848,34 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
     }
 
     clusters.sort_by(|a, b| b.1.cmp(&a.1));
-    clusters.first().map(|(sum, count)| {
+    let result = clusters.first().map(|(sum, count)| {
         let bpm = sum / *count as f64;
         (bpm * 10.0).round() / 10.0
-    })
+    });
+    log::info!(
+        "detect_bpm: peaks={} clusters={} result={:?}",
+        peaks.len(),
+        clusters.len(),
+        result
+    );
+    result
 }
 
 pub fn detect_silence_end(mono: &[f32], sample_rate: u32) -> f64 {
-    let window = ((sample_rate as f64 * 0.05) as usize).max(1);
+    // 20ms window, stepped by 10ms (50% overlap for better time resolution).
+    let window = ((sample_rate as f64 * 0.02) as usize).max(1);
+    let step = (window / 2).max(1);
+    // Threshold: -50 dBFS RMS (~0.003). Low enough to catch quiet track intros
+    // while staying above typical dithered silence (< -90 dBFS).
+    const THRESHOLD: f32 = 0.003;
+    // Require 3 consecutive non-silent windows before committing, to avoid
+    // triggering on a single noise spike in an otherwise silent intro.
+    const CONFIRM_WINDOWS: usize = 3;
+
     let mut i = 0;
+    let mut consecutive = 0usize;
+    let mut candidate_i = 0usize;
+
     while i + window <= mono.len() {
         let rms = (mono[i..i + window]
             .iter()
@@ -815,10 +883,33 @@ pub fn detect_silence_end(mono: &[f32], sample_rate: u32) -> f64 {
             .sum::<f32>()
             / window as f32)
             .sqrt();
-        if rms > 0.01 {
-            return i as f64 / sample_rate as f64;
+
+        if rms > THRESHOLD {
+            if consecutive == 0 {
+                candidate_i = i;
+            }
+            consecutive += 1;
+            if consecutive >= CONFIRM_WINDOWS {
+                let silence_secs = candidate_i as f64 / sample_rate as f64;
+                log::info!(
+                    "detect_silence_end: audio starts at {:.3}s (frame {}, rms at confirm={:.5})",
+                    silence_secs,
+                    candidate_i,
+                    rms
+                );
+                return silence_secs;
+            }
+        } else {
+            consecutive = 0;
         }
-        i += window;
+
+        i += step;
     }
+
+    log::info!(
+        "detect_silence_end: no audio above threshold {:.4} found in {} samples, returning 0.0",
+        THRESHOLD,
+        mono.len()
+    );
     0.0
 }
