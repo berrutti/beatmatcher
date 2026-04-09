@@ -1,18 +1,15 @@
 <template>
   <div
     class="waveform"
-    :class="{ 'waveform--drag-over': isDragOver }"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
-    @drop="onDrop"
+    :class="{ 'waveform--drag-over': props.isDragOver }"
   >
     <!-- Empty state -->
-    <div v-if="!props.buffer" class="waveform__empty">
-      <button class="waveform__load-btn" @click="openFileDialog">LOAD TRACK</button>
+    <div v-if="!props.trackData" class="waveform__empty">
+      <button class="waveform__load-btn" @click="emit('openFileDialog')">LOAD TRACK</button>
     </div>
 
     <!-- Waveform canvas -->
-    <template v-if="props.buffer">
+    <template v-if="props.trackData">
       <canvas
         ref="canvasEl"
         class="waveform__canvas"
@@ -35,7 +32,7 @@
           <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
 
-        <button class="waveform__set-bpm-btn" @click="openFileDialog">LOAD</button>
+        <button class="waveform__set-bpm-btn" @click="emit('openFileDialog')">LOAD</button>
         <button class="waveform__set-bpm-btn" @click="emit('requestBpmInput')">SET BPM</button>
       </div>
     </template>
@@ -44,12 +41,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import type { LoopRegion } from '@renderer/audio/AudioEngine';
-import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
+import type { LoopRegion, TrackData } from '@renderer/stores/decks';
 
 const props = defineProps<{
   accent: string;
-  buffer: AudioBuffer | null;
+  trackData: TrackData | null;
+  isDragOver: boolean;
   loopRegion: LoopRegion | null;
   loopActive: boolean;
   trackBpm: number | null;
@@ -59,7 +56,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  load: [file: File];
+  openFileDialog: [];
   setRegion: [region: LoopRegion];
   moveRegion: [startSec: number];
   setBeatOffset: [sec: number];
@@ -84,13 +81,10 @@ const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
 const DEFAULT_ZOOM_SEC = 10;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
-const { isDragOver, onDragOver, onDragLeave, onDrop, openFileDialog } = useAudioFileDrop((file) =>
-  emit('load', file)
-);
 
-// Raw PCM channel data (kept in memory for high-res zoom)
-let rawChannel: Float32Array | null = null;
-let sampleRate = 0;
+// Downsampled peak data from the Rust backend
+let peaks: number[] | null = null;
+let peaksPerSecond = 0;
 let trackDuration = 0;
 
 // Visible window in seconds
@@ -143,15 +137,15 @@ let peaksCachedViewStart = NaN;
 let peaksCachedViewEnd = NaN;
 let peaksCachedWidth = 0;
 
-function buildFullPeaks() {
-  if (!props.buffer) return;
-  rawChannel = props.buffer.getChannelData(0);
-  sampleRate = props.buffer.sampleRate;
+function initTrack() {
+  if (!props.trackData) return;
+  peaks = props.trackData.peaks;
+  peaksPerSecond = props.trackData.peaksPerSecond;
   peaksCachedViewStart = NaN; // invalidate cache
 }
 
 function ensureVisiblePeaks(w: number) {
-  if (!rawChannel) return;
+  if (!peaks || peaksPerSecond === 0) return;
   const viewStart = viewStartSec.value;
   const viewEnd = viewEndSec.value;
   if (
@@ -163,16 +157,15 @@ function ensureVisiblePeaks(w: number) {
     return;
 
   visiblePeaks = new Float32Array(w);
-  const totalSamples = rawChannel.length;
+  const totalPeaks = peaks.length;
   for (let x = 0; x < w; x++) {
     const tStart = viewStart + (x / w) * (viewEnd - viewStart);
     const tEnd = viewStart + ((x + 1) / w) * (viewEnd - viewStart);
-    const iStart = Math.max(0, Math.floor(tStart * sampleRate));
-    const iEnd = Math.min(totalSamples, Math.ceil(tEnd * sampleRate));
+    const iStart = Math.max(0, Math.floor(tStart * peaksPerSecond));
+    const iEnd = Math.min(totalPeaks - 1, Math.ceil(tEnd * peaksPerSecond));
     let max = 0;
-    for (let i = iStart; i < iEnd; i++) {
-      const abs = Math.abs(rawChannel[i]);
-      if (abs > max) max = abs;
+    for (let i = iStart; i <= iEnd; i++) {
+      if (peaks[i] > max) max = peaks[i];
     }
     visiblePeaks[x] = max;
   }
@@ -200,7 +193,7 @@ function secToPx(sec: number): number {
 
 function drawWaveform() {
   const canvas = canvasEl.value;
-  if (!canvas || !rawChannel) return;
+  if (!canvas || !peaks) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -614,18 +607,18 @@ onUnmounted(() => {
 });
 
 watch(
-  () => props.buffer,
-  (buf) => {
-    if (buf) {
-      trackDuration = buf.duration;
-      buildFullPeaks();
+  () => props.trackData,
+  (data) => {
+    if (data) {
+      trackDuration = data.duration;
+      initTrack();
       zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC);
       const dur = viewDurationSec();
       viewStartSec.value = 0;
       viewEndSec.value = Math.min(dur, trackDuration);
     } else {
-      rawChannel = null;
-      sampleRate = 0;
+      peaks = null;
+      peaksPerSecond = 0;
       trackDuration = 0;
       visiblePeaks = null;
     }

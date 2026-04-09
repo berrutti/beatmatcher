@@ -1,5 +1,6 @@
 <template>
   <div
+    ref="deckEl"
     class="deck"
     :style="{ '--deck-accent': props.deck.accent }"
     :class="{
@@ -7,16 +8,13 @@
       'deck--edit': props.deck.mode === 'edit',
       'deck--drag-over': isDragOver && props.deck.mode === 'play'
     }"
-    @dragover="onDeckDragOver"
-    @dragleave="onDeckDragLeave"
-    @drop="onDeckDrop"
   >
     <ConfirmModal
-      :open="pendingFile !== null"
+      :open="pendingPath !== null"
       title="Load new track?"
       body="Playback will stop and the current track will be replaced."
       @confirm="onConfirmLoad"
-      @cancel="pendingFile = null"
+      @cancel="pendingPath = null"
     />
 
     <BpmModal
@@ -58,14 +56,15 @@
       v-show="props.deck.mode === 'edit' && !props.deck.detecting"
       class="deck__waveform"
       :accent="props.deck.accent"
-      :buffer="props.deck.buffer"
+      :track-data="props.deck.trackData"
+      :is-drag-over="isDragOver"
       :loop-region="props.deck.loopRegion"
       :loop-active="props.deck.loopActive"
       :track-bpm="props.deck.trackBpm"
       :beat-offset="props.deck.beatOffset"
       :cue-point="props.deck.cuePoint"
       :get-track-position="() => props.deck.trackPosition"
-      @load="onLoadFile"
+      @open-file-dialog="openFileDialog"
       @set-region="props.deck.setLoopRegion"
       @move-region="props.deck.moveLoopRegion"
       @set-beat-offset="props.deck.setBeatOffset"
@@ -83,7 +82,7 @@
 
     <template v-if="props.deck.mode === 'play' && !props.deck.detecting">
       <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-        <button class="deck__load-btn" @click="openPlayFileDialog">LOAD TRACK</button>
+        <button class="deck__load-btn" @click="openFileDialog">LOAD TRACK</button>
       </div>
 
       <div class="deck__bpm-display" v-if="props.deck.trackLoaded">
@@ -254,6 +253,8 @@ import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 import BpmModal from '@renderer/components/BpmModal.vue';
 
+const deckEl = ref<HTMLElement | null>(null);
+
 const BPM_STEP = 0.1;
 const BPM_STEP_INTERVAL_MS = 80;
 
@@ -342,32 +343,26 @@ function onTogglePlay() {
   props.deck.togglePlay();
 }
 
-const pendingFile = ref<File | null>(null);
+const pendingPath = ref<string | null>(null);
 const bpmModalOpen = ref(false);
 
-const {
-  isDragOver,
-  onDragOver: onDeckDragOver,
-  onDragLeave: onDeckDragLeave,
-  onDrop: onDeckDrop,
-  openFileDialog: openPlayFileDialog
-} = useAudioFileDrop((file) => onLoadFile(file));
+const { isDragOver, openFileDialog } = useAudioFileDrop(deckEl, (path) => onLoadFile(path));
 
-function onLoadFile(file: File) {
+function onLoadFile(path: string) {
   if (props.deck.loopPlaying) {
-    pendingFile.value = file;
+    pendingPath.value = path;
     return;
   }
-  props.deck.loadTrack(file, () => {
+  props.deck.loadTrack(path, () => {
     bpmModalOpen.value = true;
   });
 }
 
 function onConfirmLoad() {
-  const file = pendingFile.value;
-  pendingFile.value = null;
-  if (file)
-    props.deck.loadTrack(file, () => {
+  const path = pendingPath.value;
+  pendingPath.value = null;
+  if (path)
+    props.deck.loadTrack(path, () => {
       bpmModalOpen.value = true;
     });
 }
