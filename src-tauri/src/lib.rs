@@ -142,9 +142,6 @@ fn seek(
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
-    if d.is_playing {
-        return Ok(());
-    }
     let pos = (sec * d.device_sample_rate as f64)
         .max(0.0)
         .min(d.total_frames as f64);

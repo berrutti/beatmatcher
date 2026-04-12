@@ -1,10 +1,6 @@
 # Beatmatcher
 
-A desktop app for practicing beat matching. Two independent decks that loop local audio. It has some animations for a visual representation of how accurate the beatmatching is.
-
-**[Try it in the browser](https://berrutti.github.io/beatmatcher/)**
-
----
+A desktop app for practicing beat matching. Two independent decks to play local audio. It has animations for a visual representation of how accurate the beatmatching is.
 
 ## Download
 
@@ -24,8 +20,7 @@ Then the app should open without problems.
 
 ## How it works
 
-There are two decks, and each can load a track. When loading a track, the BPM will be auto-detected. If auto-detection fails, you will be promped to introduce the track's BPM. This is important and the program wont work unless the proper BPM of the track is determined.
-You can also mark a region on the waveform and declare how many beats it contains. In that case, BPM is inferred from the duration. Playback rate adjusts automatically to match the target BPM.
+There are two decks, and each can load a track. When loading a track, the BPM will be auto-detected. If auto-detection fails, you will be promped to introduce the track's BPM. This is important, as you wont be able to properly beatmatch if the BPM of the track is not correct.
 
 Animations:
 The phase ring shows position within the current beat. The Lissajous scope plots both decks' phases against each other. A straight diagonal means they are in sync.

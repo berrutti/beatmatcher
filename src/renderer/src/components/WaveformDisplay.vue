@@ -14,7 +14,6 @@
         ref="canvasEl"
         class="waveform__canvas"
         @mousedown="onMouseDown"
-        @mousemove="onMouseMoveCanvas"
         @wheel.prevent="onWheel"
         @contextmenu.prevent
       />
@@ -51,6 +50,7 @@ const props = defineProps<{
   beatOffset: number;
   cuePoint: number;
   getTrackPosition: () => number | null;
+  getPlayheadPosition: () => number;
   getWaveformRegion: (startSec: number, endSec: number, numPoints: number) => Promise<number[]>;
 }>();
 
@@ -62,7 +62,6 @@ const emit = defineEmits<{
 }>();
 
 const accent = computed(() => props.accent);
-const HANDLE_W = 8;
 const WAVEFORM_AMP_SCALE = 0.9;
 const PLAYHEAD_LINE_WIDTH = 1.5;
 const PLAYHEAD_ALPHA = 0.9;
@@ -281,19 +280,20 @@ let lastZoomTime = 0;
 const ZOOM_COOLDOWN_MS = 150;
 
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const sec = props.getTrackPosition();
-  if (sec === null) return;
+  const sec = props.getPlayheadPosition();
   const x = secToPx(sec);
   if (x < 0 || x > w) return;
+  const isPlaying = props.getTrackPosition() !== null;
+  const color = isPlaying ? '#ffffff' : '#ef4444';
   ctx.save();
-  ctx.strokeStyle = '#ffffff';
+  ctx.strokeStyle = color;
   ctx.lineWidth = PLAYHEAD_LINE_WIDTH;
   ctx.globalAlpha = PLAYHEAD_ALPHA;
   ctx.beginPath();
   ctx.moveTo(x, 0);
   ctx.lineTo(x, h);
   ctx.stroke();
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(x - PLAYHEAD_ARROW_HALF, 0);
   ctx.lineTo(x + PLAYHEAD_ARROW_HALF, 0);
@@ -332,18 +332,12 @@ function drawCueMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const x = secToPx(props.cuePoint);
   if (x < -MARKER_TRI_W || x > w + MARKER_TRI_W) return;
   ctx.save();
-  ctx.strokeStyle = '#eab308';
   ctx.fillStyle = '#eab308';
   ctx.globalAlpha = 0.9;
-  ctx.lineWidth = MARKER_LINE_WIDTH;
   ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, h);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x - MARKER_TRI_W, 0);
-  ctx.lineTo(x + MARKER_TRI_W, 0);
-  ctx.lineTo(x, MARKER_TRI_H);
+  ctx.moveTo(x - MARKER_TRI_W, h);
+  ctx.lineTo(x + MARKER_TRI_W, h);
+  ctx.lineTo(x, h - MARKER_TRI_H);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -356,18 +350,12 @@ function rafLoop() {
 
 // ── Drag interaction ──────────────────────────────────────────
 
-type DragHandle = 'pan' | 'beatOffset' | null;
-const dragging = ref<DragHandle>(null);
+type DragMode = 'pan' | null;
+const dragging = ref<DragMode>(null);
 const panStartX = ref(0);
 const panStartViewSec = ref(0);
 let mouseDownPx = 0;
 const CLICK_THRESHOLD_PX = 5;
-
-function hitTest(px: number): DragHandle {
-  const bx = secToPx(props.beatOffset);
-  if (Math.abs(px - bx) < HANDLE_W + 4) return 'beatOffset';
-  return null;
-}
 
 function canvasPx(clientX: number): number {
   const canvas = canvasEl.value;
@@ -378,50 +366,24 @@ function canvasPx(clientX: number): number {
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX);
   mouseDownPx = px;
-  const hit = hitTest(px);
-
-  if (hit === 'beatOffset') {
-    dragging.value = 'beatOffset';
-  } else {
-    dragging.value = 'pan';
-    panStartX.value = px;
-    panStartViewSec.value = viewStartSec.value;
-  }
+  dragging.value = 'pan';
+  panStartX.value = px;
+  panStartViewSec.value = viewStartSec.value;
 
   window.addEventListener('mousemove', onMouseMoveWindow);
   window.addEventListener('mouseup', onMouseUp);
 }
 
 function applyDrag(clientX: number) {
+  if (dragging.value !== 'pan') return;
   const px = canvasPx(clientX);
-
-  if (dragging.value === 'pan') {
-    const viewSpan = viewEndSec.value - viewStartSec.value;
-    const w = canvasEl.value!.clientWidth;
-    const deltaSec = -((px - panStartX.value) / w) * viewSpan;
-    const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan);
-    viewStartSec.value = s;
-    viewEndSec.value = e;
-    drawWaveform();
-    return;
-  }
-
-  if (dragging.value === 'beatOffset') {
-    const sec = Math.max(0, Math.min(pxToSec(px), trackDuration));
-    emit('setBeatOffset', sec);
-    drawWaveform();
-    return;
-  }
-}
-
-// Canvas hover — only updates cursor when not dragging
-function onMouseMoveCanvas(e: MouseEvent) {
-  if (dragging.value) return;
-  const px = canvasPx(e.clientX);
-  const hit = hitTest(px);
-  const canvas = canvasEl.value;
-  if (!canvas) return;
-  canvas.style.cursor = hit === 'beatOffset' ? 'ew-resize' : 'crosshair';
+  const viewSpan = viewEndSec.value - viewStartSec.value;
+  const w = canvasEl.value!.clientWidth;
+  const deltaSec = -((px - panStartX.value) / w) * viewSpan;
+  const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan);
+  viewStartSec.value = s;
+  viewEndSec.value = e;
+  drawWaveform();
 }
 
 // Window-level move — fires even when mouse leaves canvas

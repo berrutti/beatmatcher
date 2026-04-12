@@ -380,6 +380,26 @@ function createDeck(id: DeckId, accent: string) {
 
     async cueStart() {
       if (!state.trackLoaded || state.cueing || state.loopPlaying) return;
+      // playhead is not at the cue point: move cue to playhead, do not start playback
+      if (Math.abs(positionCache - state.cuePoint) > 0.001) {
+        state.cuePoint = positionCache;
+        if (currentFilename && state.trackBpm !== null) {
+          saveTrack(currentFilename, {
+            trackBpm: state.trackBpm,
+            beatOffset: state.beatOffset,
+            cuePoint: positionCache,
+            loopRegion: state.loopRegion
+              ? {
+                  startSec: state.loopRegion.startSec,
+                  endSec: state.loopRegion.endSec,
+                  beats: state.loopRegion.beats,
+                }
+              : undefined,
+          });
+        }
+        return;
+      }
+      // playhead is at the cue point: momentary playback while button is held
       state.cueing = true;
       state.loopPlaying = true;
       await invoke('play', { deck: id, fromSec: state.cuePoint });
@@ -431,25 +451,13 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     seekTo(sec: number) {
-      if (state.loopPlaying) return;
       const clamped = Math.max(0, sec);
       positionCache = clamped;
-      state.cuePoint = clamped;
       invoke('seek', { deck: id, sec: clamped });
-      if (currentFilename && state.trackBpm !== null) {
-        saveTrack(currentFilename, {
-          trackBpm: state.trackBpm,
-          beatOffset: state.beatOffset,
-          cuePoint: clamped,
-          loopRegion: state.loopRegion
-            ? {
-                startSec: state.loopRegion.startSec,
-                endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats,
-              }
-            : undefined,
-        });
-      }
+    },
+
+    getPlayheadPosition(): number {
+      return positionCache;
     },
 
     setEq(band: 'low' | 'mid' | 'high', db: number) {

@@ -62,6 +62,7 @@
       :beat-offset="props.deck.beatOffset"
       :cue-point="props.deck.cuePoint"
       :get-track-position="() => props.deck.trackPosition"
+      :get-playhead-position="props.deck.getPlayheadPosition"
       :get-waveform-region="props.deck.getWaveformRegion"
       @open-file-dialog="openFileDialog"
       @set-beat-offset="props.deck.setBeatOffset"
@@ -102,7 +103,7 @@
         <span class="deck__bpm-unit">BPM</span>
         <span
           class="deck__bpm-inferred"
-          v-if="props.deck.loopRegion && props.deck.trackBpm !== null"
+          v-if="props.deck.trackBpm !== null"
           >({{ props.deck.trackBpm.toFixed(1) }})</span
         >
       </div>
@@ -210,6 +211,7 @@
           <span class="deck__btn-key">{{ props.keybindings.play }}</span>
           <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
         </button>
+        <!-- loop buttons hidden until loop feature is complete
         <button
           class="deck__btn deck__btn--loop-in"
           :disabled="!props.deck.trackLoaded"
@@ -236,6 +238,7 @@
         >
           <span class="deck__btn-label">{{ props.deck.loopActive ? 'EXIT' : 'RELOOP' }}</span>
         </button>
+        -->
       </div>
     </template>
   </div>
