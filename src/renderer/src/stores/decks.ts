@@ -159,7 +159,7 @@ function createDeck(id: DeckId, accent: string) {
       state.targetBpm = state.trackBpm * (1 + state.pitchOffset / 100);
       invoke('set_playback_rate', {
         deck: id,
-        rate: state.targetBpm / state.trackBpm,
+        rate: state.targetBpm / state.trackBpm
       });
     },
 
@@ -196,7 +196,9 @@ function createDeck(id: DeckId, accent: string) {
       state.detecting = false;
 
       if (saved) {
-        console.log(`[deck ${id}] restored saved track: bpm=${saved.trackBpm} cuePoint=${saved.cuePoint ?? saved.beatOffset}`);
+        console.log(
+          `[deck ${id}] restored saved track: bpm=${saved.trackBpm} cuePoint=${saved.cuePoint ?? saved.beatOffset}`
+        );
         state.trackBpm = saved.trackBpm;
         state.beatOffset = saved.beatOffset;
         state.cuePoint = saved.cuePoint ?? saved.beatOffset;
@@ -210,7 +212,7 @@ function createDeck(id: DeckId, accent: string) {
           await invoke('set_loop_region', {
             deck: id,
             startSec: saved.loopRegion.startSec,
-            endSec: saved.loopRegion.endSec,
+            endSec: saved.loopRegion.endSec
           });
         }
         state.mode = 'edit';
@@ -220,14 +222,16 @@ function createDeck(id: DeckId, accent: string) {
       console.log(`[deck ${id}] load_track analysis result:`, {
         duration: info.duration,
         bpm: info.bpm,
-        silenceEnd: info.silenceEnd,
+        silenceEnd: info.silenceEnd
       });
 
       const detectedBpm = info.bpm ?? 0;
       const silenceEnd = info.silenceEnd;
 
       if (detectedBpm > 0) {
-        console.log(`[deck ${id}] using detected bpm=${detectedBpm} silenceEnd=${silenceEnd}s as beat offset`);
+        console.log(
+          `[deck ${id}] using detected bpm=${detectedBpm} silenceEnd=${silenceEnd}s as beat offset`
+        );
         state.setTrackBpm(detectedBpm, silenceEnd);
         state.mode = 'edit';
       } else {
@@ -262,9 +266,9 @@ function createDeck(id: DeckId, accent: string) {
             ? {
                 startSec: state.loopRegion.startSec,
                 endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats,
+                beats: state.loopRegion.beats
               }
-            : undefined,
+            : undefined
         });
       }
     },
@@ -280,9 +284,9 @@ function createDeck(id: DeckId, accent: string) {
             ? {
                 startSec: state.loopRegion.startSec,
                 endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats,
+                beats: state.loopRegion.beats
               }
-            : undefined,
+            : undefined
         });
       }
     },
@@ -292,14 +296,14 @@ function createDeck(id: DeckId, accent: string) {
       invoke('set_loop_region', {
         deck: id,
         startSec: region.startSec,
-        endSec: region.endSec,
+        endSec: region.endSec
       });
       if (currentFilename && state.trackBpm !== null) {
         saveTrack(currentFilename, {
           trackBpm: state.trackBpm,
           beatOffset: state.beatOffset,
           cuePoint: state.cuePoint,
-          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats },
+          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
         });
       }
     },
@@ -315,7 +319,7 @@ function createDeck(id: DeckId, accent: string) {
           trackBpm: state.trackBpm,
           beatOffset: state.beatOffset,
           cuePoint: state.cuePoint,
-          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats },
+          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
         });
       }
     },
@@ -392,9 +396,9 @@ function createDeck(id: DeckId, accent: string) {
               ? {
                   startSec: state.loopRegion.startSec,
                   endSec: state.loopRegion.endSec,
-                  beats: state.loopRegion.beats,
+                  beats: state.loopRegion.beats
                 }
-              : undefined,
+              : undefined
           });
         }
         return;
@@ -434,9 +438,9 @@ function createDeck(id: DeckId, accent: string) {
             ? {
                 startSec: state.loopRegion.startSec,
                 endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats,
+                beats: state.loopRegion.beats
               }
-            : undefined,
+            : undefined
         });
       }
     },
@@ -489,7 +493,7 @@ function createDeck(id: DeckId, accent: string) {
     destroy() {
       stopPolling();
       invoke('stop', { deck: id }).catch(() => {});
-    },
+    }
   });
 
   return state;

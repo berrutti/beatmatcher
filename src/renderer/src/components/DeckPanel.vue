@@ -101,9 +101,7 @@
           props.deck.targetBpm?.toFixed(1) ?? '--.-'
         }}</span>
         <span class="deck__bpm-unit">BPM</span>
-        <span
-          class="deck__bpm-inferred"
-          v-if="props.deck.trackBpm !== null"
+        <span class="deck__bpm-inferred" v-if="props.deck.trackBpm !== null"
           >({{ props.deck.trackBpm.toFixed(1) }})</span
         >
       </div>

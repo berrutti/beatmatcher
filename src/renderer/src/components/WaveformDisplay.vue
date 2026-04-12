@@ -1,8 +1,5 @@
 <template>
-  <div
-    class="waveform"
-    :class="{ 'waveform--drag-over': props.isDragOver }"
-  >
+  <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
     <!-- Empty state -->
     <div v-if="!props.trackData" class="waveform__empty">
       <button class="waveform__load-btn" @click="emit('openFileDialog')">LOAD TRACK</button>
