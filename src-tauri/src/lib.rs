@@ -41,25 +41,30 @@ async fn load_track(
                 audio::decode_audio(&path).map_err(|e| e.to_string())?;
 
             let (bpm, silence_end) = if analyze {
-                let mono: Vec<f32> = if channels == 1 {
-                    raw_samples.clone()
+                let mono_owned: Vec<f32>;
+                let mono: &[f32] = if channels == 1 {
+                    &raw_samples
                 } else {
-                    raw_samples
+                    mono_owned = raw_samples
                         .chunks(channels)
-                        .map(|ch| ch.iter().sum::<f32>() / channels as f32)
-                        .collect()
+                        .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+                        .collect();
+                    &mono_owned
                 };
                 (
-                    audio::detect_bpm(&mono, native_sr),
-                    audio::detect_silence_end(&mono, native_sr),
+                    audio::detect_bpm(mono, native_sr),
+                    audio::detect_silence_end(mono, native_sr),
                 )
             } else {
                 log::info!("load_track: skipping analysis (saved data will be used)");
                 (None, 0.0)
             };
 
-            let resampled =
-                audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate);
+            let resampled = if native_sr == device_sample_rate {
+                raw_samples
+            } else {
+                audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
+            };
 
             Ok((resampled, channels, bpm, silence_end, native_sr))
         })
@@ -180,7 +185,7 @@ fn set_volume(
     deck: String,
     gain: f32,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().gain = gain.max(0.0).min(1.0);
+    get_deck(&state, &deck)?.lock().unwrap().gain = gain.clamp(0.0, 1.0);
     Ok(())
 }
 

@@ -23,7 +23,7 @@ pub struct DeviceInfo {
 //
 // Coefficients follow the Audio EQ Cookbook (Robert Bristow-Johnson).
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 struct Biquad {
     b0: f32,
     b1: f32,
@@ -160,32 +160,32 @@ impl EqState {
     }
 
     fn set_low(&mut self, db: f32) {
-        let f = Biquad::low_shelf(self.sample_rate, 100.0, db);
-        for ch in &mut self.low {
-            let (s1, s2) = (ch.s1, ch.s2);
-            *ch = f.clone();
-            ch.s1 = s1;
-            ch.s2 = s2;
+        let new_filter = Biquad::low_shelf(self.sample_rate, 100.0, db);
+        for channel in &mut self.low {
+            let (s1, s2) = (channel.s1, channel.s2);
+            *channel = new_filter;
+            channel.s1 = s1;
+            channel.s2 = s2;
         }
     }
 
     fn set_mid(&mut self, db: f32) {
-        let f = Biquad::peaking(self.sample_rate, 1000.0, 1.0, db);
-        for ch in &mut self.mid {
-            let (s1, s2) = (ch.s1, ch.s2);
-            *ch = f.clone();
-            ch.s1 = s1;
-            ch.s2 = s2;
+        let new_filter = Biquad::peaking(self.sample_rate, 1000.0, 1.0, db);
+        for channel in &mut self.mid {
+            let (s1, s2) = (channel.s1, channel.s2);
+            *channel = new_filter;
+            channel.s1 = s1;
+            channel.s2 = s2;
         }
     }
 
     fn set_high(&mut self, db: f32) {
-        let f = Biquad::high_shelf(self.sample_rate, 8000.0, db);
-        for ch in &mut self.high {
-            let (s1, s2) = (ch.s1, ch.s2);
-            *ch = f.clone();
-            ch.s1 = s1;
-            ch.s2 = s2;
+        let new_filter = Biquad::high_shelf(self.sample_rate, 8000.0, db);
+        for channel in &mut self.high {
+            let (s1, s2) = (channel.s1, channel.s2);
+            *channel = new_filter;
+            channel.s1 = s1;
+            channel.s2 = s2;
         }
     }
 
@@ -293,22 +293,22 @@ impl DeckState {
     }
 
     fn read_at(&self, pos: f64) -> (f32, f32) {
-        let frame = pos as usize;
-        let frac = (pos - frame as f64) as f32;
+        let frame_index = pos as usize;
+        let interp_factor = (pos - frame_index as f64) as f32;
 
-        let f0 = frame.min(self.total_frames.saturating_sub(1));
-        let f1 = (frame + 1).min(self.total_frames.saturating_sub(1));
+        let lo_frame = frame_index.min(self.total_frames.saturating_sub(1));
+        let hi_frame = (frame_index + 1).min(self.total_frames.saturating_sub(1));
 
         if self.channels == 1 {
-            let s0 = self.samples[f0];
-            let s1 = self.samples[f1];
-            let s = s0 + frac * (s1 - s0);
+            let lo_sample = self.samples[lo_frame];
+            let hi_sample = self.samples[hi_frame];
+            let s = lo_sample + interp_factor * (hi_sample - lo_sample);
             (s, s)
         } else {
-            let i0 = f0 * 2;
-            let i1 = f1 * 2;
-            let l = self.samples[i0] + frac * (self.samples[i1] - self.samples[i0]);
-            let r = self.samples[i0 + 1] + frac * (self.samples[i1 + 1] - self.samples[i0 + 1]);
+            let lo_idx = lo_frame * self.channels;
+            let hi_idx = hi_frame * self.channels;
+            let l = self.samples[lo_idx] + interp_factor * (self.samples[hi_idx] - self.samples[lo_idx]);
+            let r = self.samples[lo_idx + 1] + interp_factor * (self.samples[hi_idx + 1] - self.samples[lo_idx + 1]);
             (l, r)
         }
     }
@@ -498,9 +498,7 @@ fn fill_output(
     deck_b: &Arc<Mutex<DeckState>>,
     is_cue: bool,
 ) {
-    for s in data.iter_mut() {
-        *s = 0.0;
-    }
+    data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
 
     {
@@ -518,8 +516,8 @@ fn fill_output(
         }
     }
 
-    for s in data.iter_mut() {
-        *s = s.clamp(-1.0, 1.0);
+    for sample in data.iter_mut() {
+        *sample = sample.clamp(-1.0, 1.0);
     }
 }
 
@@ -578,7 +576,8 @@ pub fn decode_audio(
     let mut decoder =
         symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
-    let mut samples: Vec<f32> = Vec::new();
+    let capacity = codec_params.n_frames.map(|n| n as usize * 2).unwrap_or(0);
+    let mut samples: Vec<f32> = Vec::with_capacity(capacity);
     // Determined from the first decoded packet spec rather than codec_params,
     // because codec_params.channels can be None for some formats even when the
     // audio is mono, which would cause wrong chunk-size when mixing to mono.
@@ -652,26 +651,22 @@ pub fn resample_linear(
     in_rate: u32,
     out_rate: u32,
 ) -> Vec<f32> {
-    if in_rate == out_rate {
-        return input.to_vec();
-    }
-
     let in_frames = input.len() / in_channels;
     let ratio = in_rate as f64 / out_rate as f64;
     let out_frames = (in_frames as f64 / ratio).ceil() as usize;
     let mut output = Vec::with_capacity(out_frames * in_channels);
 
     for out_frame in 0..out_frames {
-        let in_pos = out_frame as f64 * ratio;
-        let lo = in_pos as usize;
-        let frac = (in_pos - lo as f64) as f32;
-        let lo_clamped = lo.min(in_frames.saturating_sub(1));
-        let hi_clamped = (lo + 1).min(in_frames.saturating_sub(1));
+        let src_pos = out_frame as f64 * ratio;
+        let src_frame = src_pos as usize;
+        let interp_factor = (src_pos - src_frame as f64) as f32;
+        let lo_frame = src_frame.min(in_frames.saturating_sub(1));
+        let hi_frame = (src_frame + 1).min(in_frames.saturating_sub(1));
 
         for ch in 0..in_channels {
-            let s0 = input[lo_clamped * in_channels + ch];
-            let s1 = input[hi_clamped * in_channels + ch];
-            output.push(s0 + frac * (s1 - s0));
+            let lo_sample = input[lo_frame * in_channels + ch];
+            let hi_sample = input[hi_frame * in_channels + ch];
+            output.push(lo_sample + interp_factor * (hi_sample - lo_sample));
         }
     }
 
@@ -697,9 +692,9 @@ pub fn compute_waveform_region(
         return vec![0.0; num_points];
     }
     let total_frames = samples.len() / channels;
-    let sr = device_sample_rate as f64;
-    let start_frame = (start_sec * sr).max(0.0) as usize;
-    let end_frame = ((end_sec * sr) as usize).min(total_frames);
+    let sample_rate = device_sample_rate as f64;
+    let start_frame = (start_sec * sample_rate).max(0.0) as usize;
+    let end_frame = ((end_sec * sample_rate) as usize).min(total_frames);
 
     if start_frame >= end_frame {
         return vec![0.0; num_points];
@@ -709,21 +704,21 @@ pub fn compute_waveform_region(
     let frames_per_point = visible_frames as f64 / num_points as f64;
 
     (0..num_points)
-        .map(|i| {
-            let f_start = start_frame + (i as f64 * frames_per_point) as usize;
-            let f_end = (start_frame + ((i + 1) as f64 * frames_per_point) as usize)
+        .map(|point_index| {
+            let bin_start = start_frame + (point_index as f64 * frames_per_point) as usize;
+            let bin_end = (start_frame + ((point_index + 1) as f64 * frames_per_point) as usize)
                 .min(end_frame)
-                .max(f_start + 1);
-            let mut max_amp = 0.0f32;
-            for frame in f_start..f_end {
+                .max(bin_start + 1);
+            let mut max_amplitude = 0.0f32;
+            for frame in bin_start..bin_end {
                 for ch in 0..channels {
-                    let amp = samples[frame * channels + ch].abs();
-                    if amp > max_amp {
-                        max_amp = amp;
+                    let amplitude = samples[frame * channels + ch].abs();
+                    if amplitude > max_amplitude {
+                        max_amplitude = amplitude;
                     }
                 }
             }
-            max_amp
+            max_amplitude
         })
         .collect()
 }
@@ -754,15 +749,15 @@ fn lowpass_biquad(input: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
     let a0 = 1.0 + alpha;
     let a1 = -2.0 * cos_w0;
     let a2 = 1.0 - alpha;
-    let mut output = vec![0.0f32; input.len()];
+    let mut output = Vec::with_capacity(input.len());
     let mut x1 = 0.0f64;
     let mut x2 = 0.0f64;
     let mut y1 = 0.0f64;
     let mut y2 = 0.0f64;
-    for (i, &x) in input.iter().enumerate() {
-        let x0 = x as f64;
+    for &in_sample in input {
+        let x0 = in_sample as f64;
         let y = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
-        output[i] = y as f32;
+        output.push(y as f32);
         x2 = x1;
         x1 = x0;
         y2 = y1;
@@ -788,24 +783,15 @@ fn interval_to_bpm(interval: usize, sample_rate: u32) -> Option<f64> {
     if interval == 0 {
         return None;
     }
-    let mut bpm = 60.0 / (interval as f64 / sample_rate as f64);
-    for _ in 0..10 {
-        if bpm >= BPM_MIN {
-            break;
-        }
-        bpm *= 2.0;
-    }
-    for _ in 0..10 {
-        if bpm <= BPM_MAX {
-            break;
-        }
-        bpm /= 2.0;
-    }
-    if bpm >= BPM_MIN && bpm <= BPM_MAX {
-        Some(bpm)
-    } else {
-        None
-    }
+    let mut bpm = 60.0 * sample_rate as f64 / interval as f64;
+    while bpm < BPM_MIN { bpm *= 2.0; }
+    while bpm > BPM_MAX { bpm /= 2.0; }
+    if bpm >= BPM_MIN && bpm <= BPM_MAX { Some(bpm) } else { None }
+}
+
+struct BpmCluster {
+    weighted_bpm_sum: f64,
+    count: usize,
 }
 
 pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
@@ -823,39 +809,38 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
         return None;
     }
 
-    let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut interval_counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for i in 0..peaks.len() {
         let limit = (i + NEIGHBOR_COUNT + 1).min(peaks.len());
         for j in (i + 1)..limit {
             let interval = peaks[j] - peaks[i];
-            *counts.entry(interval).or_insert(0) += 1;
+            *interval_counts.entry(interval).or_insert(0) += 1;
         }
     }
 
-    // (bpm_weighted_sum, total_count)
-    let mut clusters: Vec<(f64, usize)> = Vec::new();
+    let mut clusters: Vec<BpmCluster> = Vec::new();
 
-    for (&interval, &count) in &counts {
+    for (&interval, &count) in &interval_counts {
         if let Some(bpm) = interval_to_bpm(interval, sample_rate) {
             let mut merged = false;
-            for (sum, c) in &mut clusters {
-                let avg = *sum / *c as f64;
-                if (avg - bpm).abs() <= CLUSTER_TOLERANCE {
-                    *sum += bpm * count as f64;
-                    *c += count;
+            for cluster in &mut clusters {
+                let cluster_avg = cluster.weighted_bpm_sum / cluster.count as f64;
+                if (cluster_avg - bpm).abs() <= CLUSTER_TOLERANCE {
+                    cluster.weighted_bpm_sum += bpm * count as f64;
+                    cluster.count += count;
                     merged = true;
                     break;
                 }
             }
             if !merged {
-                clusters.push((bpm * count as f64, count));
+                clusters.push(BpmCluster { weighted_bpm_sum: bpm * count as f64, count });
             }
         }
     }
 
-    clusters.sort_by(|a, b| b.1.cmp(&a.1));
-    let result = clusters.first().map(|(sum, count)| {
-        let bpm = sum / *count as f64;
+    clusters.sort_by(|a, b| b.count.cmp(&a.count));
+    let result = clusters.first().map(|cluster| {
+        let bpm = cluster.weighted_bpm_sum / cluster.count as f64;
         (bpm * 10.0).round() / 10.0
     });
     log::info!(
@@ -868,48 +853,30 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
 }
 
 pub fn detect_silence_end(mono: &[f32], sample_rate: u32) -> f64 {
-    // 20ms window, stepped by 10ms (50% overlap for better time resolution).
-    let window = ((sample_rate as f64 * 0.02) as usize).max(1);
-    let step = (window / 2).max(1);
-    // Threshold: -50 dBFS RMS (~0.003). Low enough to catch quiet track intros
-    // while staying above typical dithered silence (< -90 dBFS).
-    const THRESHOLD: f32 = 0.003;
-    // Require 3 consecutive non-silent windows before committing, to avoid
-    // triggering on a single noise spike in an otherwise silent intro.
-    const CONFIRM_WINDOWS: usize = 3;
+    const THRESHOLD: f32 = 0.01;
+    let window_frames = (sample_rate as usize / 20).max(1); // 50ms = sample_rate / 20
 
-    let mut i = 0;
-    let mut consecutive = 0usize;
-    let mut candidate_i = 0usize;
-
-    while i + window <= mono.len() {
-        let rms = (mono[i..i + window]
+    let mut frame = 0;
+    while frame + window_frames <= mono.len() {
+        let rms = (mono[frame..frame + window_frames]
             .iter()
             .map(|&x| x * x)
             .sum::<f32>()
-            / window as f32)
+            / window_frames as f32)
             .sqrt();
 
         if rms > THRESHOLD {
-            if consecutive == 0 {
-                candidate_i = i;
-            }
-            consecutive += 1;
-            if consecutive >= CONFIRM_WINDOWS {
-                let silence_secs = candidate_i as f64 / sample_rate as f64;
-                log::info!(
-                    "detect_silence_end: audio starts at {:.3}s (frame {}, rms at confirm={:.5})",
-                    silence_secs,
-                    candidate_i,
-                    rms
-                );
-                return silence_secs;
-            }
-        } else {
-            consecutive = 0;
+            let silence_end_secs = frame as f64 / sample_rate as f64;
+            log::info!(
+                "detect_silence_end: audio starts at {:.3}s (frame {}, rms={:.5})",
+                silence_end_secs,
+                frame,
+                rms
+            );
+            return silence_end_secs;
         }
 
-        i += step;
+        frame += window_frames;
     }
 
     log::info!(
