@@ -1,5 +1,6 @@
 <template>
   <div
+    ref="deckEl"
     class="deck"
     :style="{ '--deck-accent': props.deck.accent }"
     :class="{
@@ -7,21 +8,18 @@
       'deck--edit': props.deck.mode === 'edit',
       'deck--drag-over': isDragOver && props.deck.mode === 'play'
     }"
-    @dragover="onDeckDragOver"
-    @dragleave="onDeckDragLeave"
-    @drop="onDeckDrop"
   >
     <ConfirmModal
-      :open="pendingFile !== null"
+      :open="pendingPath !== null"
       title="Load new track?"
-      body="Playback will stop and the current region will be replaced."
+      body="Playback will stop and the current track will be replaced."
       @confirm="onConfirmLoad"
-      @cancel="pendingFile = null"
+      @cancel="pendingPath = null"
     />
 
     <BpmModal
       :open="bpmModalOpen"
-      :current-bpm="props.deck.loopRegion ? props.deck.inferredBpm : null"
+      :current-bpm="!!props.deck.trackBpm && props.deck.trackBpm > 0 ? props.deck.trackBpm : null"
       @submit="onBpmModalSubmit"
       @cancel="bpmModalOpen = false"
     />
@@ -58,29 +56,32 @@
       v-show="props.deck.mode === 'edit' && !props.deck.detecting"
       class="deck__waveform"
       :accent="props.deck.accent"
-      :buffer="props.deck.buffer"
-      :loop-region="props.deck.loopRegion"
-      :loop-beats="props.deck.loopBeats"
-      :inferred-bpm="props.deck.inferredBpm"
+      :track-data="props.deck.trackData"
+      :is-drag-over="isDragOver"
+      :track-bpm="props.deck.trackBpm"
+      :beat-offset="props.deck.beatOffset"
+      :cue-point="props.deck.cuePoint"
       :get-track-position="() => props.deck.trackPosition"
-      @load="onLoadFile"
-      @set-region="props.deck.setLoopRegion"
-      @move-region="props.deck.moveLoopRegion"
-      @set-beats="props.deck.setLoopBeats"
+      :get-playhead-position="props.deck.getPlayheadPosition"
+      :get-waveform-region="props.deck.getWaveformRegion"
+      @open-file-dialog="openFileDialog"
+      @set-beat-offset="props.deck.setBeatOffset"
+      @seek="props.deck.seekTo"
       @request-bpm-input="bpmModalOpen = true"
     />
 
     <div v-show="props.deck.mode === 'play' && !props.deck.detecting" class="phase-ring-wrapper">
       <PhaseRing
         :accent="props.deck.accent"
-        :loop-region="props.deck.loopRegion"
+        :track-bpm="props.deck.trackBpm"
+        :beat-offset="props.deck.beatOffset"
         :get-track-position="() => props.deck.trackPosition"
       />
     </div>
 
     <template v-if="props.deck.mode === 'play' && !props.deck.detecting">
       <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-        <button class="deck__load-btn" @click="openPlayFileDialog">LOAD TRACK</button>
+        <button class="deck__load-btn" @click="openFileDialog">LOAD TRACK</button>
       </div>
 
       <div class="deck__bpm-display" v-if="props.deck.trackLoaded">
@@ -91,17 +92,17 @@
           type="number"
           min="20"
           step="0.1"
-          :value="props.deck.targetBpm.toFixed(1)"
+          :value="props.deck.targetBpm?.toFixed(1) ?? ''"
           @blur="onBpmInputBlur"
           @keydown.enter="onBpmInputBlur"
           @keydown.escape="editingBpm = false"
         />
         <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{
-          props.deck.targetBpm.toFixed(1)
+          props.deck.targetBpm?.toFixed(1) ?? '--.-'
         }}</span>
         <span class="deck__bpm-unit">BPM</span>
-        <span class="deck__bpm-inferred" v-if="props.deck.loopRegion"
-          >({{ props.deck.inferredBpm.toFixed(1) }})</span
+        <span class="deck__bpm-inferred" v-if="props.deck.trackBpm !== null"
+          >({{ props.deck.trackBpm.toFixed(1) }})</span
         >
       </div>
 
@@ -191,7 +192,7 @@
           :class="{ 'deck__btn--cueing': props.deck.cueing }"
           :disabled="!props.deck.trackLoaded"
           :tabindex="-1"
-          @mousedown.prevent="onCueStart()"
+          @mousedown.prevent="onCueMouseDown()"
           @mouseup="props.deck.cueEnd()"
           @mouseleave="props.deck.cueEnd()"
         >
@@ -208,6 +209,34 @@
           <span class="deck__btn-key">{{ props.keybindings.play }}</span>
           <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
         </button>
+        <!-- loop buttons hidden until loop feature is complete
+        <button
+          class="deck__btn deck__btn--loop-in"
+          :disabled="!props.deck.trackLoaded"
+          :tabindex="-1"
+          @click="props.deck.setLoopIn()"
+        >
+          <span class="deck__btn-label">IN</span>
+        </button>
+        <button
+          class="deck__btn deck__btn--loop-out"
+          :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
+          :disabled="!props.deck.trackLoaded"
+          :tabindex="-1"
+          @click="props.deck.setLoopOut()"
+        >
+          <span class="deck__btn-label">OUT</span>
+        </button>
+        <button
+          class="deck__btn deck__btn--reloop"
+          :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
+          :disabled="!props.deck.loopRegion"
+          :tabindex="-1"
+          @click="props.deck.reloopOrExit()"
+        >
+          <span class="deck__btn-label">{{ props.deck.loopActive ? 'EXIT' : 'RELOOP' }}</span>
+        </button>
+        -->
       </div>
     </template>
   </div>
@@ -222,6 +251,8 @@ import PhaseRing from '@renderer/components/PhaseRing.vue';
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 import BpmModal from '@renderer/components/BpmModal.vue';
+
+const deckEl = ref<HTMLElement | null>(null);
 
 const BPM_STEP = 0.1;
 const BPM_STEP_INTERVAL_MS = 80;
@@ -277,9 +308,10 @@ function onEqDblClick(band: 'low' | 'mid' | 'high') {
 let stepInterval: ReturnType<typeof setInterval> | null = null;
 
 function onBpmStepMouseDown(dir: 1 | -1) {
-  if (!props.deck.trackLoaded) return;
+  if (!props.deck.trackLoaded || props.deck.targetBpm === null) return;
   props.deck.setTargetBpm(props.deck.targetBpm + dir * BPM_STEP);
   stepInterval = setInterval(() => {
+    if (props.deck.targetBpm === null) return;
     props.deck.setTargetBpm(props.deck.targetBpm + dir * BPM_STEP);
   }, BPM_STEP_INTERVAL_MS);
 }
@@ -296,9 +328,13 @@ function onNudgeStart(direction: 'back' | 'forward') {
   props.deck.nudgeStart(direction);
 }
 
-function onCueStart() {
+function onCueMouseDown() {
   if (!props.deck.trackLoaded) return;
-  props.deck.cueStart();
+  if (props.deck.playing) {
+    props.deck.stopAtCue();
+  } else {
+    props.deck.cueStart();
+  }
 }
 
 function onTogglePlay() {
@@ -306,32 +342,26 @@ function onTogglePlay() {
   props.deck.togglePlay();
 }
 
-const pendingFile = ref<File | null>(null);
+const pendingPath = ref<string | null>(null);
 const bpmModalOpen = ref(false);
 
-const {
-  isDragOver,
-  onDragOver: onDeckDragOver,
-  onDragLeave: onDeckDragLeave,
-  onDrop: onDeckDrop,
-  openFileDialog: openPlayFileDialog
-} = useAudioFileDrop((file) => onLoadFile(file));
+const { isDragOver, openFileDialog } = useAudioFileDrop(deckEl, (path) => onLoadFile(path));
 
-function onLoadFile(file: File) {
+function onLoadFile(path: string) {
   if (props.deck.loopPlaying) {
-    pendingFile.value = file;
+    pendingPath.value = path;
     return;
   }
-  props.deck.loadTrack(file, () => {
+  props.deck.loadTrack(path, () => {
     bpmModalOpen.value = true;
   });
 }
 
 function onConfirmLoad() {
-  const file = pendingFile.value;
-  pendingFile.value = null;
-  if (file)
-    props.deck.loadTrack(file, () => {
+  const path = pendingPath.value;
+  pendingPath.value = null;
+  if (path)
+    props.deck.loadTrack(path, () => {
       bpmModalOpen.value = true;
     });
 }
@@ -615,6 +645,10 @@ function onBpmModalSubmit(bpm: number) {
 .deck__btn-icon {
   font-size: 0.9em;
 }
+.deck__btn-label {
+  font-size: 0.6em;
+  letter-spacing: 0.15em;
+}
 
 .deck__btn--nudge.deck__btn--active {
   background: color-mix(in srgb, var(--color-nudge) 20%, transparent);
@@ -639,6 +673,26 @@ function onBpmModalSubmit(bpm: number) {
   border-color: var(--color-play);
   color: var(--color-play);
   background: color-mix(in srgb, var(--color-play) 8%, transparent);
+}
+.deck__btn--loop-in:hover:not(:disabled),
+.deck__btn--loop-out:hover:not(:disabled) {
+  border-color: var(--deck-accent);
+  color: var(--deck-accent);
+}
+.deck__btn--loop-out.deck__btn--loop-active {
+  border-color: var(--deck-accent);
+  color: var(--deck-accent);
+  background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
+}
+.deck__btn--reloop:hover:not(:disabled) {
+  border-color: var(--deck-accent);
+  color: var(--deck-accent);
+}
+.deck__btn--reloop.deck__btn--loop-active {
+  border-color: var(--deck-accent);
+  color: var(--deck-accent);
+  background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
+  box-shadow: 0 0 0.8em color-mix(in srgb, var(--deck-accent) 25%, transparent);
 }
 
 .deck__eq-row {

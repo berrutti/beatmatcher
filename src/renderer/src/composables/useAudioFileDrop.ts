@@ -1,37 +1,74 @@
-import { ref } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
+import type { Ref } from 'vue';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
-export function useAudioFileDrop(onFile: (file: File) => void) {
+type DragDropPayload = {
+  paths: string[];
+  position: { x: number; y: number };
+};
+
+type DragOverPayload = {
+  position: { x: number; y: number };
+};
+
+function tauriReady(): Promise<void> {
+  return new Promise((resolve) => {
+    function check() {
+      if ((window as Record<string, unknown>).__TAURI_INTERNALS__) {
+        resolve();
+      } else {
+        setTimeout(check, 25);
+      }
+    }
+    check();
+  });
+}
+
+function hitTest(el: HTMLElement | null, x: number, y: number): boolean {
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+export function useAudioFileDrop(
+  elRef: Ref<HTMLElement | null>,
+  onFilePath: (path: string) => void
+) {
   const isDragOver = ref(false);
+  const unlisteners: Array<() => void> = [];
 
-  function onDragOver(e: DragEvent) {
-    e.preventDefault();
-    isDragOver.value = true;
+  onMounted(async () => {
+    await tauriReady();
+
+    const unOver = await listen<DragOverPayload>('tauri://drag-over', ({ payload }) => {
+      isDragOver.value = hitTest(elRef.value, payload.position.x, payload.position.y);
+    });
+
+    const unLeave = await listen('tauri://drag-leave', () => {
+      isDragOver.value = false;
+    });
+
+    const unDrop = await listen<DragDropPayload>('tauri://drag-drop', ({ payload }) => {
+      isDragOver.value = false;
+      if (!payload.paths.length) return;
+      if (hitTest(elRef.value, payload.position.x, payload.position.y)) {
+        onFilePath(payload.paths[0]);
+      }
+    });
+
+    unlisteners.push(unOver, unLeave, unDrop);
+  });
+
+  onUnmounted(() => {
+    for (const u of unlisteners) u();
+  });
+
+  async function openFileDialog() {
+    await tauriReady();
+    const path = await invoke<string | null>('open_file_dialog');
+    if (path) onFilePath(path);
   }
 
-  function onDragLeave() {
-    isDragOver.value = false;
-  }
-
-  function onDrop(e: DragEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    isDragOver.value = false;
-    const file = e.dataTransfer?.files[0];
-    if (file) onFile(file);
-  }
-
-  function openFileDialog() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'audio/*';
-    input.style.display = 'none';
-    document.body.appendChild(input);
-    input.onchange = () => {
-      document.body.removeChild(input);
-      if (input.files?.[0]) onFile(input.files[0]);
-    };
-    input.click();
-  }
-
-  return { isDragOver, onDragLeave, onDragOver, onDrop, openFileDialog };
+  return { isDragOver, openFileDialog };
 }

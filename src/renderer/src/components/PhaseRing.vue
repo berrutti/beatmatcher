@@ -4,11 +4,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import type { LoopRegion } from '@renderer/audio/LoopEngine';
 
 const props = defineProps<{
   accent: string;
-  loopRegion: LoopRegion | null;
+  trackBpm: number | null;
+  beatOffset: number;
   getTrackPosition: () => number | null;
 }>();
 
@@ -53,17 +53,12 @@ function draw() {
   let beatFrac = 0;
   let playing = false;
 
-  if (props.loopRegion) {
-    const positionSec = props.getTrackPosition();
-    if (positionSec !== null) {
-      playing = true;
-      const loopDur = props.loopRegion.endSec - props.loopRegion.startSec;
-      const beatDur = loopDur / props.loopRegion.beats;
-      const posInLoop = positionSec - props.loopRegion.startSec;
-      const currentBeat = posInLoop / beatDur;
-      beatFrac = currentBeat % 1;
-      phase4 = (currentBeat % 4) / 4;
-    }
+  const positionSec = props.getTrackPosition();
+  if (positionSec !== null && props.trackBpm > 0) {
+    playing = true;
+    const currentBeat = ((positionSec - props.beatOffset) * props.trackBpm) / 60;
+    beatFrac = ((currentBeat % 1) + 1) % 1;
+    phase4 = (((currentBeat % 4) + 4) % 4) / 4;
   }
 
   if (playing && prevBeatFrac > BEAT_CROSSING_HIGH && beatFrac < BEAT_CROSSING_LOW) {

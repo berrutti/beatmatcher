@@ -23,7 +23,8 @@ export function useKeyboard() {
     const key = e.key.toUpperCase();
 
     if (key === KEYS.deckA.cue) {
-      deckA.cueStart();
+      if (deckA.playing) deckA.stopAtCue();
+      else deckA.cueStart();
       return;
     }
     if (key === KEYS.deckA.play) {
@@ -39,7 +40,8 @@ export function useKeyboard() {
       return;
     }
     if (key === KEYS.deckB.cue) {
-      deckB.cueStart();
+      if (deckB.playing) deckB.stopAtCue();
+      else deckB.cueStart();
       return;
     }
     if (key === KEYS.deckB.play) {

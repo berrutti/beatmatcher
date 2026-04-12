@@ -1,60 +1,24 @@
 <template>
-  <div
-    class="waveform"
-    :class="{ 'waveform--drag-over': isDragOver }"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
-    @drop="onDrop"
-  >
+  <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
     <!-- Empty state -->
-    <div v-if="!props.buffer" class="waveform__empty">
-      <button class="waveform__load-btn" @click="openFileDialog">LOAD TRACK</button>
+    <div v-if="!props.trackData" class="waveform__empty">
+      <button class="waveform__load-btn" @click="emit('openFileDialog')">LOAD TRACK</button>
     </div>
 
     <!-- Waveform canvas -->
-    <template v-if="props.buffer">
+    <template v-if="props.trackData">
       <canvas
         ref="canvasEl"
         class="waveform__canvas"
         @mousedown="onMouseDown"
-        @mousemove="onMouseMoveCanvas"
         @wheel.prevent="onWheel"
         @contextmenu.prevent
       />
 
       <!-- Controls bar -->
       <div class="waveform__controls">
-        <span class="waveform__ctrl-label">LOOP</span>
-        <button
-          class="waveform__beat-btn"
-          :class="{ 'waveform__beat-btn--active': props.loopBeats === 16 }"
-          @click="emit('setBeats', 16)"
-        >
-          16
-        </button>
-        <button
-          class="waveform__beat-btn"
-          :class="{ 'waveform__beat-btn--active': props.loopBeats === 32 }"
-          @click="emit('setBeats', 32)"
-        >
-          32
-        </button>
-
-        <button
-          class="waveform__lock-btn"
-          :class="{ 'waveform__lock-btn--unlocked': !regionLocked }"
-          @click="regionLocked = !regionLocked"
-          :title="
-            regionLocked
-              ? 'Region locked. Click to unlock and resize.'
-              : 'Region unlocked. Click to lock.'
-          "
-        >
-          {{ regionLocked ? '🔒' : '🔓' }}
-        </button>
-
-        <span class="waveform__bpm-readout" v-if="props.loopRegion">
-          {{ props.inferredBpm.toFixed(1) }} BPM
+        <span class="waveform__bpm-readout" v-if="props.trackBpm">
+          {{ props.trackBpm.toFixed(1) }} BPM
         </span>
 
         <!-- Zoom controls -->
@@ -64,7 +28,7 @@
           <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
 
-        <button class="waveform__set-bpm-btn" @click="openFileDialog">LOAD</button>
+        <button class="waveform__set-bpm-btn" @click="emit('openFileDialog')">LOAD</button>
         <button class="waveform__set-bpm-btn" @click="emit('requestBpmInput')">SET BPM</button>
       </div>
     </template>
@@ -73,35 +37,29 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import type { LoopRegion } from '@renderer/audio/LoopEngine';
-import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
+import type { TrackData } from '@renderer/stores/decks';
 
 const props = defineProps<{
   accent: string;
-  buffer: AudioBuffer | null;
-  loopRegion: LoopRegion | null;
-  loopBeats: 16 | 32;
-  inferredBpm: number;
+  trackData: TrackData | null;
+  isDragOver: boolean;
+  trackBpm: number | null;
+  beatOffset: number;
+  cuePoint: number;
   getTrackPosition: () => number | null;
+  getPlayheadPosition: () => number;
+  getWaveformRegion: (startSec: number, endSec: number, numPoints: number) => Promise<number[]>;
 }>();
 
 const emit = defineEmits<{
-  load: [file: File];
-  setRegion: [region: LoopRegion];
-  moveRegion: [startSec: number];
-  setBeats: [beats: 16 | 32];
+  openFileDialog: [];
+  setBeatOffset: [sec: number];
+  seek: [sec: number];
   requestBpmInput: [];
 }>();
 
 const accent = computed(() => props.accent);
-const regionLocked = ref(true);
-const HANDLE_W = 8;
-const HANDLE_CIRCLE_RADIUS = 6;
 const WAVEFORM_AMP_SCALE = 0.9;
-const REGION_IN_LOOP_ALPHA = 0.8;
-const BPM_LABEL_FONT_SIZE = 11;
-const MIN_NEW_REGION_SEC = 0.001;
-const MIN_REGION_SEC = 0.01;
 const PLAYHEAD_LINE_WIDTH = 1.5;
 const PLAYHEAD_ALPHA = 0.9;
 const PLAYHEAD_ARROW_HALF = 5;
@@ -112,13 +70,7 @@ const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
 const DEFAULT_ZOOM_SEC = 10;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
-const { isDragOver, onDragOver, onDragLeave, onDrop, openFileDialog } = useAudioFileDrop((file) =>
-  emit('load', file)
-);
 
-// Raw PCM channel data (kept in memory for high-res zoom)
-let rawChannel: Float32Array | null = null;
-let sampleRate = 0;
 let trackDuration = 0;
 
 // Visible window in seconds
@@ -164,49 +116,56 @@ function zoomOut(anchorSec?: number) {
   setZoomCentered(zoomIdx.value + 1, anchorSec);
 }
 
-// ── Peak extraction ───────────────────────────────────────────
+// ── Peak fetch ────────────────────────────────────────────────
+// Peaks are fetched on-demand from the Rust backend for the exact visible
+// region at the canvas pixel width. This gives full resolution at any zoom
+// level without sending a pre-baked array of fixed chunk size.
 
 let visiblePeaks: Float32Array | null = null;
 let peaksCachedViewStart = NaN;
 let peaksCachedViewEnd = NaN;
 let peaksCachedWidth = 0;
+let isFetching = false;
+let pendingFetch = false;
 
-function buildFullPeaks() {
-  if (!props.buffer) return;
-  rawChannel = props.buffer.getChannelData(0);
-  sampleRate = props.buffer.sampleRate;
-  peaksCachedViewStart = NaN; // invalidate cache
-}
+async function fetchVisiblePeaks() {
+  if (isFetching) {
+    pendingFetch = true;
+    return;
+  }
+  const canvas = canvasEl.value;
+  if (!canvas || !props.trackData) return;
+  const w = canvas.clientWidth;
+  if (w === 0) return;
 
-function ensureVisiblePeaks(w: number) {
-  if (!rawChannel) return;
   const viewStart = viewStartSec.value;
   const viewEnd = viewEndSec.value;
+
   if (
-    visiblePeaks !== null &&
     peaksCachedWidth === w &&
     peaksCachedViewStart === viewStart &&
     peaksCachedViewEnd === viewEnd
   )
     return;
 
-  visiblePeaks = new Float32Array(w);
-  const totalSamples = rawChannel.length;
-  for (let x = 0; x < w; x++) {
-    const tStart = viewStart + (x / w) * (viewEnd - viewStart);
-    const tEnd = viewStart + ((x + 1) / w) * (viewEnd - viewStart);
-    const iStart = Math.max(0, Math.floor(tStart * sampleRate));
-    const iEnd = Math.min(totalSamples, Math.ceil(tEnd * sampleRate));
-    let max = 0;
-    for (let i = iStart; i < iEnd; i++) {
-      const abs = Math.abs(rawChannel[i]);
-      if (abs > max) max = abs;
+  isFetching = true;
+  pendingFetch = false;
+  try {
+    const result = await props.getWaveformRegion(viewStart, viewEnd, w);
+    // Discard if the view changed while we were waiting
+    if (viewStart === viewStartSec.value && viewEnd === viewEndSec.value) {
+      visiblePeaks = new Float32Array(result);
+      peaksCachedViewStart = viewStart;
+      peaksCachedViewEnd = viewEnd;
+      peaksCachedWidth = w;
     }
-    visiblePeaks[x] = max;
+  } catch {
+    // We can ignore
   }
-  peaksCachedViewStart = viewStart;
-  peaksCachedViewEnd = viewEnd;
-  peaksCachedWidth = w;
+  isFetching = false;
+  if (pendingFetch) {
+    fetchVisiblePeaks();
+  }
 }
 
 // ── Coordinate helpers ────────────────────────────────────────
@@ -228,7 +187,7 @@ function secToPx(sec: number): number {
 
 function drawWaveform() {
   const canvas = canvasEl.value;
-  if (!canvas || !rawChannel) return;
+  if (!canvas || !props.trackData) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -243,7 +202,7 @@ function drawWaveform() {
     ctx.scale(dpr, dpr);
   }
 
-  ensureVisiblePeaks(w);
+  fetchVisiblePeaks(); // fire-and-forget; draws with current peaks, updates on next frame after fetch
   if (!visiblePeaks) return;
 
   ctx.clearRect(0, 0, w, h);
@@ -259,82 +218,57 @@ function drawWaveform() {
     ctx.fillRect(x, mid - amp, 1, amp * 2);
   }
 
-  // Loop region overlay
-  const region = props.loopRegion;
-  if (region) {
-    const sx = secToPx(region.startSec);
-    const ex = secToPx(region.endSec);
-
-    // Clamp to canvas
-    const visStart = Math.max(0, sx);
-    const visEnd = Math.min(w, ex);
-
-    if (visEnd > visStart) {
-      // Tinted overlay
-      ctx.fillStyle = `${props.accent}22`;
-      ctx.fillRect(visStart, 0, visEnd - visStart, h);
-
-      // Bright waveform inside loop
-      ctx.globalAlpha = REGION_IN_LOOP_ALPHA;
-      for (let x = Math.floor(visStart); x < Math.ceil(visEnd); x++) {
-        const amp = visiblePeaks[x] * mid * WAVEFORM_AMP_SCALE;
-        ctx.fillStyle = props.accent;
-        ctx.fillRect(x, mid - amp, 1, amp * 2);
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    // Handles (only if visible)
-    if (sx >= -HANDLE_W && sx <= w + HANDLE_W) drawHandle(ctx, sx, h);
-    if (ex >= -HANDLE_W && ex <= w + HANDLE_W) drawHandle(ctx, ex, h);
-
-    // BPM label
-    const labelX = Math.max(visStart + 10, 10);
-    ctx.fillStyle = '#ffffff99';
-    ctx.font = `bold ${BPM_LABEL_FONT_SIZE}px monospace`;
-    ctx.fillText(`${props.loopBeats} beats · ${props.inferredBpm.toFixed(1)} BPM`, labelX, 18);
-  }
-
-  // Time ruler
+  // Beat grid
   drawRuler(ctx, w, h);
-
+  // Downbeat marker (draggable grid start) and cue point
+  drawDownbeatMarker(ctx, w, h);
+  drawCueMarker(ctx, w, h);
   // Playhead
   drawPlayhead(ctx, w, h);
 }
 
-function drawHandle(ctx: CanvasRenderingContext2D, x: number, h: number) {
-  ctx.fillStyle = props.accent;
-  ctx.fillRect(x - HANDLE_W / 2, 0, HANDLE_W, h);
-  ctx.fillStyle = '#fff';
-  const mid = h / 2;
-  ctx.beginPath();
-  ctx.arc(x, mid, HANDLE_CIRCLE_RADIUS, 0, Math.PI * 2);
-  ctx.fill();
-}
+// Index in ZOOM_LEVELS_SEC at which individual beats are hidden (30s and above)
+const BEAT_HIDE_ZOOM_IDX = ZOOM_LEVELS_SEC.indexOf(30);
 
 function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const region = props.loopRegion;
-  if (!region) return;
+  if (!props.trackBpm || props.trackBpm <= 0) return;
+  const beatDurSec = 60 / props.trackBpm;
+  const beatOffset = props.beatOffset;
+  const zoomedOut = zoomIdx.value >= BEAT_HIDE_ZOOM_IDX;
 
-  // Draw a line every 4 beats inside the loop region only.
-  // beat 0 = region start, so lines at beat 4, 8, 12 (not at 0 or 16 — those are the handles).
-  const totalBeats = region.beats;
-  const dur = region.endSec - region.startSec;
-  if (dur <= 0) return;
+  const firstBeat = Math.ceil((viewStartSec.value - beatOffset) / beatDurSec);
+  const lastBeat = Math.floor((viewEndSec.value - beatOffset) / beatDurSec);
 
-  const beatDur = dur / totalBeats;
+  for (let b = firstBeat; b <= lastBeat; b++) {
+    const isPhrase = b % 16 === 0;
+    const isBar = b % 4 === 0;
 
-  ctx.strokeStyle = '#ffffff40';
-  ctx.lineWidth = 1;
+    // At 30s+ zoom, skip individual beats
+    if (zoomedOut && !isBar) continue;
 
-  for (let b = 4; b < totalBeats; b += 4) {
-    const t = region.startSec + b * beatDur;
+    const t = beatOffset + b * beatDurSec;
     const x = secToPx(t);
     if (x < 0 || x > w) continue;
+
+    if (isPhrase) {
+      ctx.strokeStyle = props.accent;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1;
+    } else if (isBar) {
+      ctx.strokeStyle = props.accent;
+      ctx.globalAlpha = 0.25;
+      ctx.lineWidth = 1;
+    } else {
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.12;
+      ctx.lineWidth = 0.5;
+    }
+
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
     ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -345,23 +279,64 @@ let lastZoomTime = 0;
 const ZOOM_COOLDOWN_MS = 150;
 
 function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const sec = props.getTrackPosition();
-  if (sec === null) return;
+  const sec = props.getPlayheadPosition();
   const x = secToPx(sec);
   if (x < 0 || x > w) return;
+  const isPlaying = props.getTrackPosition() !== null;
+  const color = isPlaying ? '#ffffff' : '#ef4444';
   ctx.save();
-  ctx.strokeStyle = '#ffffff';
+  ctx.strokeStyle = color;
   ctx.lineWidth = PLAYHEAD_LINE_WIDTH;
   ctx.globalAlpha = PLAYHEAD_ALPHA;
   ctx.beginPath();
   ctx.moveTo(x, 0);
   ctx.lineTo(x, h);
   ctx.stroke();
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(x - PLAYHEAD_ARROW_HALF, 0);
   ctx.lineTo(x + PLAYHEAD_ARROW_HALF, 0);
   ctx.lineTo(x, PLAYHEAD_ARROW_HEIGHT);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+const MARKER_TRI_W = 7;
+const MARKER_TRI_H = 11;
+const MARKER_LINE_WIDTH = 1.5;
+
+function drawDownbeatMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const x = secToPx(props.beatOffset);
+  if (x < -MARKER_TRI_W || x > w + MARKER_TRI_W) return;
+  ctx.save();
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = MARKER_LINE_WIDTH;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, h);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - MARKER_TRI_W, 0);
+  ctx.lineTo(x + MARKER_TRI_W, 0);
+  ctx.lineTo(x, MARKER_TRI_H);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCueMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const x = secToPx(props.cuePoint);
+  if (x < -MARKER_TRI_W || x > w + MARKER_TRI_W) return;
+  ctx.save();
+  ctx.fillStyle = '#eab308';
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.moveTo(x - MARKER_TRI_W, h);
+  ctx.lineTo(x + MARKER_TRI_W, h);
+  ctx.lineTo(x, h - MARKER_TRI_H);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -374,23 +349,12 @@ function rafLoop() {
 
 // ── Drag interaction ──────────────────────────────────────────
 
-type DragHandle = 'start' | 'end' | 'body' | 'pan' | 'new' | null;
-const dragging = ref<DragHandle>(null);
-const dragOffsetSec = ref(0);
+type DragMode = 'pan' | null;
+const dragging = ref<DragMode>(null);
 const panStartX = ref(0);
 const panStartViewSec = ref(0);
-let newRegionAnchorSec = 0; // start point for a brand-new selection drag
-
-function hitTest(px: number): DragHandle {
-  const region = props.loopRegion;
-  if (!region) return null;
-  const sx = secToPx(region.startSec);
-  const ex = secToPx(region.endSec);
-  if (Math.abs(px - sx) < HANDLE_W + 4) return 'start';
-  if (Math.abs(px - ex) < HANDLE_W + 4) return 'end';
-  if (px > sx && px < ex) return 'body';
-  return null;
-}
+let mouseDownPx = 0;
+const CLICK_THRESHOLD_PX = 5;
 
 function canvasPx(clientX: number): number {
   const canvas = canvasEl.value;
@@ -400,98 +364,25 @@ function canvasPx(clientX: number): number {
 
 function onMouseDown(e: MouseEvent) {
   const px = canvasPx(e.clientX);
-  const hit = hitTest(px);
-  const locked = regionLocked.value;
+  mouseDownPx = px;
+  dragging.value = 'pan';
+  panStartX.value = px;
+  panStartViewSec.value = viewStartSec.value;
 
-  if (e.button === 2) {
-    dragging.value = 'pan';
-    panStartX.value = px;
-    panStartViewSec.value = viewStartSec.value;
-  } else if ((hit === 'start' || hit === 'end') && !locked) {
-    dragging.value = hit;
-  } else if (hit === 'body') {
-    const region = props.loopRegion;
-    if (!region) return;
-    dragging.value = 'body';
-    dragOffsetSec.value = pxToSec(px) - region.startSec;
-  } else if (!locked) {
-    dragging.value = 'new';
-    newRegionAnchorSec = pxToSec(px);
-  }
-
-  if (dragging.value) {
-    window.addEventListener('mousemove', onMouseMoveWindow);
-    window.addEventListener('mouseup', onMouseUp);
-  }
+  window.addEventListener('mousemove', onMouseMoveWindow);
+  window.addEventListener('mouseup', onMouseUp);
 }
 
 function applyDrag(clientX: number) {
+  if (dragging.value !== 'pan') return;
   const px = canvasPx(clientX);
-
-  if (dragging.value === 'pan') {
-    const viewSpan = viewEndSec.value - viewStartSec.value;
-    const w = canvasEl.value!.clientWidth;
-    const deltaSec = -((px - panStartX.value) / w) * viewSpan;
-    const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan);
-    viewStartSec.value = s;
-    viewEndSec.value = e;
-    drawWaveform();
-    return;
-  }
-
-  if (dragging.value === 'new') {
-    const sec = pxToSec(px);
-    const start = Math.min(newRegionAnchorSec, sec);
-    const end = Math.max(newRegionAnchorSec, sec);
-    if (end - start > MIN_NEW_REGION_SEC) {
-      emit('setRegion', { startSec: start, endSec: end, beats: props.loopBeats });
-      dragging.value = sec < newRegionAnchorSec ? 'start' : 'end';
-    }
-    drawWaveform();
-    return;
-  }
-
-  const region = props.loopRegion;
-  if (!region) return;
-  const newRegion: LoopRegion = { ...region };
-
-  if (dragging.value === 'start') {
-    newRegion.startSec = Math.max(0, Math.min(pxToSec(px), region.endSec - MIN_REGION_SEC));
-  } else if (dragging.value === 'end') {
-    newRegion.endSec = Math.min(
-      trackDuration,
-      Math.max(pxToSec(px), region.startSec + MIN_REGION_SEC)
-    );
-  } else if (dragging.value === 'body') {
-    const dur = region.endSec - region.startSec;
-    const newStart = Math.max(0, Math.min(pxToSec(px) - dragOffsetSec.value, trackDuration - dur));
-    emit('moveRegion', newStart);
-    drawWaveform();
-    return;
-  }
-
-  emit('setRegion', newRegion);
+  const viewSpan = viewEndSec.value - viewStartSec.value;
+  const w = canvasEl.value!.clientWidth;
+  const deltaSec = -((px - panStartX.value) / w) * viewSpan;
+  const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan);
+  viewStartSec.value = s;
+  viewEndSec.value = e;
   drawWaveform();
-}
-
-// Canvas hover — only updates cursor when not dragging
-function onMouseMoveCanvas(e: MouseEvent) {
-  if (dragging.value) return;
-  const px = canvasPx(e.clientX);
-  const hit = hitTest(px);
-  const locked = regionLocked.value;
-  const canvas = canvasEl.value;
-  if (!canvas) return;
-  canvas.style.cursor =
-    hit === 'start' || hit === 'end'
-      ? locked
-        ? 'not-allowed'
-        : 'ew-resize'
-      : hit === 'body'
-        ? 'grab'
-        : locked
-          ? 'default'
-          : 'col-resize';
 }
 
 // Window-level move — fires even when mouse leaves canvas
@@ -527,7 +418,11 @@ function onWheel(e: WheelEvent) {
   }
 }
 
-function onMouseUp() {
+function onMouseUp(e: MouseEvent) {
+  const px = canvasPx(e.clientX);
+  if (dragging.value === 'pan' && Math.abs(px - mouseDownPx) < CLICK_THRESHOLD_PX) {
+    emit('seek', Math.max(0, Math.min(pxToSec(mouseDownPx), trackDuration)));
+  }
   dragging.value = null;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
@@ -556,23 +451,29 @@ onUnmounted(() => {
 });
 
 watch(
-  () => props.buffer,
-  (buf) => {
-    if (buf) {
-      trackDuration = buf.duration;
-      buildFullPeaks();
+  () => props.trackData,
+  (data) => {
+    if (data) {
+      trackDuration = data.duration;
+      peaksCachedViewStart = NaN; // invalidate cache so next fetch always runs
       zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC);
       const dur = viewDurationSec();
       viewStartSec.value = 0;
       viewEndSec.value = Math.min(dur, trackDuration);
+      fetchVisiblePeaks();
     } else {
-      rawChannel = null;
-      sampleRate = 0;
       trackDuration = 0;
       visiblePeaks = null;
+      peaksCachedViewStart = NaN;
     }
   }
 );
+
+// Re-fetch whenever the visible window changes (zoom or pan)
+watch([viewStartSec, viewEndSec], () => {
+  peaksCachedViewStart = NaN;
+  fetchVisiblePeaks();
+});
 </script>
 
 <style scoped>
@@ -631,46 +532,6 @@ watch(
   padding: 8px 12px;
   border-top: 1px solid #1e1e1e;
   background: #0d0d0d;
-}
-
-.waveform__ctrl-label {
-  font-size: 0.6rem;
-  letter-spacing: 0.2em;
-  color: #555;
-}
-
-.waveform__beat-btn {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  color: #777;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 4px 12px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.waveform__beat-btn--active {
-  border-color: v-bind(accent);
-  color: v-bind(accent);
-}
-
-.waveform__lock-btn {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  font-size: 0.75rem;
-  padding: 4px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.waveform__lock-btn:hover {
-  border-color: #555;
-}
-
-.waveform__lock-btn--unlocked {
-  border-color: v-bind(accent);
 }
 
 .waveform__bpm-readout {

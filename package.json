@@ -7,9 +7,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:web": "vite build --config vite.web.config.ts",
     "dev": "tauri dev",
-    "dev:web": "vite --config vite.web.config.ts",
     "dist": "tauri build",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
