@@ -20,7 +20,7 @@
 
       <!-- Controls bar -->
       <div class="waveform__controls">
-        <span class="waveform__bpm-readout" v-if="props.trackBpm > 0">
+        <span class="waveform__bpm-readout" v-if="props.trackBpm">
           {{ props.trackBpm.toFixed(1) }} BPM
         </span>
 
@@ -162,7 +162,9 @@ async function fetchVisiblePeaks() {
       peaksCachedViewEnd = viewEnd;
       peaksCachedWidth = w;
     }
-  } catch {}
+  } catch {
+    // We can ignore
+  }
   isFetching = false;
   if (pendingFetch) {
     fetchVisiblePeaks();
