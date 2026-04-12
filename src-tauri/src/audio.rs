@@ -741,15 +741,32 @@ const CLUSTER_TOLERANCE: f64 = 1.0;
 const THRESHOLDS: &[f32] = &[0.9, 0.8, 0.7];
 const MIN_PEAKS: usize = 15;
 
-fn lowpass_iir(input: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
-    let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff_hz);
-    let dt = 1.0 / sample_rate as f32;
-    let alpha = dt / (rc + dt);
+// 2nd-order Butterworth lowpass matching Web Audio BiquadFilterNode (type='lowpass', default Q=1/sqrt(2)).
+fn lowpass_biquad(input: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
+    use std::f64::consts::PI;
+    let w0 = 2.0 * PI * cutoff_hz as f64 / sample_rate as f64;
+    let cos_w0 = w0.cos();
+    // alpha = sin(w0) / (2*Q), Q = 1/sqrt(2)  =>  alpha = sin(w0) / sqrt(2)
+    let alpha = w0.sin() / std::f64::consts::SQRT_2;
+    let b0 = (1.0 - cos_w0) / 2.0;
+    let b1 = 1.0 - cos_w0;
+    let b2 = (1.0 - cos_w0) / 2.0;
+    let a0 = 1.0 + alpha;
+    let a1 = -2.0 * cos_w0;
+    let a2 = 1.0 - alpha;
     let mut output = vec![0.0f32; input.len()];
-    let mut prev = 0.0f32;
+    let mut x1 = 0.0f64;
+    let mut x2 = 0.0f64;
+    let mut y1 = 0.0f64;
+    let mut y2 = 0.0f64;
     for (i, &x) in input.iter().enumerate() {
-        prev += alpha * (x - prev);
-        output[i] = prev;
+        let x0 = x as f64;
+        let y = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+        output[i] = y as f32;
+        x2 = x1;
+        x1 = x0;
+        y2 = y1;
+        y1 = y;
     }
     output
 }
@@ -792,22 +809,11 @@ fn interval_to_bpm(interval: usize, sample_rate: u32) -> Option<f64> {
 }
 
 pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
-    // Downsample 8x and cap at 60 s to keep analysis fast even in debug builds
-    const DOWNSAMPLE: usize = 8;
-    const MAX_SECS: usize = 60;
-    let max_in = (sample_rate as usize * MAX_SECS).min(mono.len());
-    let ds_rate = (sample_rate / DOWNSAMPLE as u32).max(1);
-    let downsampled: Vec<f32> = mono[..max_in]
-        .chunks(DOWNSAMPLE)
-        .map(|c| c.iter().copied().sum::<f32>() / c.len() as f32)
-        .collect();
-
-    let filtered = lowpass_iir(&downsampled, ds_rate, 150.0);
-    let peak_skip = (PEAK_SKIP_SAMPLES / DOWNSAMPLE).max(1);
+    let filtered = lowpass_biquad(mono, sample_rate, 150.0);
 
     let mut peaks = Vec::new();
     for &threshold in THRESHOLDS {
-        peaks = find_peaks(&filtered, threshold, peak_skip);
+        peaks = find_peaks(&filtered, threshold, PEAK_SKIP_SAMPLES);
         if peaks.len() >= MIN_PEAKS {
             break;
         }
