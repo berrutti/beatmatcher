@@ -289,8 +289,18 @@ fn list_audio_devices(state: tauri::State<'_, AppState>) -> Vec<DeviceInfo> {
 fn set_cue_device(
     state: tauri::State<'_, AppState>,
     device_id: String,
+    channel_offset: usize,
 ) -> Result<(), String> {
-    state.audio.set_cue_device(&device_id)
+    state.audio.set_cue_device(&device_id, channel_offset)
+}
+
+#[tauri::command]
+fn set_main_device(
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+    channel_offset: usize,
+) -> Result<(), String> {
+    state.audio.set_main_device(&device_id, channel_offset)
 }
 
 #[tauri::command]
@@ -341,6 +351,7 @@ pub fn run() {
             set_cue_active,
             list_audio_devices,
             set_cue_device,
+            set_main_device,
             open_file_dialog,
         ])
         .run(tauri::generate_context!())

@@ -14,9 +14,12 @@ pub struct TrackInfo {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub id: String,
     pub name: String,
+    pub is_default: bool,
+    pub channels: usize,
 }
 
 // ── Biquad filter (Direct Form II Transposed) ─────────────────────────────────
@@ -160,7 +163,7 @@ impl EqState {
     }
 
     fn set_low(&mut self, db: f32) {
-        let new_filter = Biquad::low_shelf(self.sample_rate, 100.0, db);
+        let new_filter = Biquad::low_shelf(self.sample_rate, 70.0, db);
         for channel in &mut self.low {
             let (s1, s2) = (channel.s1, channel.s2);
             *channel = new_filter;
@@ -180,7 +183,7 @@ impl EqState {
     }
 
     fn set_high(&mut self, db: f32) {
-        let new_filter = Biquad::high_shelf(self.sample_rate, 8000.0, db);
+        let new_filter = Biquad::high_shelf(self.sample_rate, 13000.0, db);
         for channel in &mut self.high {
             let (s1, s2) = (channel.s1, channel.s2);
             *channel = new_filter;
@@ -193,7 +196,7 @@ impl EqState {
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         let l = self.high[0].process(self.mid[0].process(self.low[0].process(l)));
         let r = self.high[1].process(self.mid[1].process(self.low[1].process(r)));
-        (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+        (l.tanh(), r.tanh())
     }
 }
 
@@ -225,6 +228,7 @@ pub struct DeckState {
     pub cue_active: bool,
 
     eq: EqState,
+    eq_cue: EqState,
 }
 
 impl DeckState {
@@ -246,6 +250,7 @@ impl DeckState {
             gain: 1.0,
             cue_active: false,
             eq: EqState::new(device_sample_rate as f32),
+            eq_cue: EqState::new(device_sample_rate as f32),
         }
     }
 
@@ -258,9 +263,9 @@ impl DeckState {
 
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
         match band {
-            "low" => self.eq.set_low(db),
-            "mid" => self.eq.set_mid(db),
-            "high" => self.eq.set_high(db),
+            "low" => { self.eq.set_low(db); self.eq_cue.set_low(db); }
+            "mid" => { self.eq.set_mid(db); self.eq_cue.set_mid(db); }
+            "high" => { self.eq.set_high(db); self.eq_cue.set_high(db); }
             _ => {}
         }
     }
@@ -279,17 +284,18 @@ impl DeckState {
         (l, r)
     }
 
-    // Called by the cue output stream callback. Advances cue_pos without EQ.
+    // Called by the cue output stream callback. Pre-fader: gain is not applied.
+    // cue_pos and eq_cue always advance while playing so they stay in sync with
+    // the main path; only the output is silenced when cue_active is false.
     #[inline]
     pub fn cue_tick(&mut self) -> (f32, f32) {
-        if !self.is_playing || !self.cue_active || self.samples.is_empty() {
+        if !self.is_playing || self.samples.is_empty() {
             return (0.0, 0.0);
         }
         let (l, r) = self.read_at(self.cue_pos);
-        let l = l * self.gain;
-        let r = r * self.gain;
+        let (l, r) = self.eq_cue.process(l, r);
         self.cue_pos = self.next_pos(self.cue_pos, false);
-        (l, r)
+        if self.cue_active { (l, r) } else { (0.0, 0.0) }
     }
 
     fn read_at(&self, pos: f64) -> (f32, f32) {
@@ -355,7 +361,13 @@ pub struct AppAudio {
     pub deck_b: Arc<Mutex<DeckState>>,
     pub device_sample_rate: u32,
     pub device_channels: usize,
-    _main_stream: SendStream,
+    default_device_id: String,
+    // Current routing state — updated by set_main_device / set_cue_device
+    current_main_id: Mutex<String>,
+    current_main_offset: Mutex<usize>,
+    current_cue_id: Mutex<String>,   // empty string = no cue device configured
+    current_cue_offset: Mutex<usize>,
+    _main_stream: Mutex<SendStream>,
     _cue_stream: Mutex<Option<SendStream>>,
 }
 
@@ -369,6 +381,7 @@ impl AppAudio {
         let device = host
             .default_output_device()
             .ok_or("no default output device")?;
+        let default_device_id = device.name().unwrap_or_default();
         let config = device.default_output_config()?;
         let device_sample_rate = config.sample_rate().0;
         let device_channels = config.channels() as usize;
@@ -383,6 +396,7 @@ impl AppAudio {
             Arc::clone(&deck_b),
             device_channels,
             false,
+            0,
         )?;
         main_stream.play()?;
 
@@ -391,7 +405,12 @@ impl AppAudio {
             deck_b,
             device_sample_rate,
             device_channels,
-            _main_stream: SendStream(main_stream),
+            current_main_id: Mutex::new(default_device_id.clone()),
+            current_main_offset: Mutex::new(0),
+            current_cue_id: Mutex::new(String::new()),
+            current_cue_offset: Mutex::new(0),
+            default_device_id,
+            _main_stream: Mutex::new(SendStream(main_stream)),
             _cue_stream: Mutex::new(None),
         })
     }
@@ -406,14 +425,27 @@ impl AppAudio {
 
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
         let host = cpal::default_host();
-        host.output_devices()
+        // Use all devices (not just output_devices()) because output_devices()
+        // filters by max_output_channels() > 0, which excludes inactive devices
+        // (e.g. Bluetooth or USB audio not currently set as system output on macOS).
+        // supported_output_configs() queries registered driver-level formats and
+        // succeeds even for inactive devices, so we use that as the output check.
+        host.devices()
             .map(|devices| {
                 devices
                     .filter_map(|d| {
                         let name = d.name().ok()?;
+                        let configs: Vec<_> = d.supported_output_configs().ok()?.collect();
+                        if configs.is_empty() {
+                            return None;
+                        }
+                        let max_channels = configs.iter().map(|c| c.channels() as usize).max().unwrap_or(2);
+                        let is_default = name == self.default_device_id;
                         Some(DeviceInfo {
                             id: name.clone(),
                             name,
+                            is_default,
+                            channels: max_channels,
                         })
                     })
                     .collect()
@@ -421,33 +453,192 @@ impl AppAudio {
             .unwrap_or_default()
     }
 
-    pub fn set_cue_device(&self, device_id: &str) -> Result<(), String> {
-        let host = cpal::default_host();
-        let device = host
-            .output_devices()
-            .map_err(|e| e.to_string())?
-            .find(|d| d.name().map(|n| n == device_id).unwrap_or(false))
-            .ok_or_else(|| format!("device not found: {}", device_id))?;
+    pub fn set_cue_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
+        log::info!("set_cue_device: id='{}' channel_offset={}", device_id, channel_offset);
+        *self.current_cue_id.lock().unwrap() = device_id.to_string();
+        *self.current_cue_offset.lock().unwrap() = channel_offset;
+        self.rebuild_streams()
+    }
 
-        let config = device
-            .default_output_config()
-            .map_err(|e| e.to_string())?;
+    pub fn set_main_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
+        let effective_id = if device_id.is_empty() { self.default_device_id.as_str() } else { device_id };
+        log::info!("set_main_device: id='{}' channel_offset={}", effective_id, channel_offset);
+        *self.current_main_id.lock().unwrap() = effective_id.to_string();
+        *self.current_main_offset.lock().unwrap() = channel_offset;
+        self.rebuild_streams()
+    }
 
-        let channels = config.channels() as usize;
-        let stream = build_stream(
-            &device,
-            &config,
-            Arc::clone(&self.deck_a),
-            Arc::clone(&self.deck_b),
-            channels,
-            true,
-        )
-        .map_err(|e| e.to_string())?;
-        stream.play().map_err(|e| e.to_string())?;
+    // Inspect the current main/cue routing and build either a single combined
+    // stream (when both are on the same device) or two separate streams.
+    //
+    // Using one combined callback when main and cue share a device prevents the
+    // two separate CoreAudio render callbacks from interfering: a cue callback
+    // that writes zeros doesn't blank out the main output buffer.
+    fn rebuild_streams(&self) -> Result<(), String> {
+        let main_id  = self.current_main_id.lock().unwrap().clone();
+        let main_off = *self.current_main_offset.lock().unwrap();
+        let cue_id   = self.current_cue_id.lock().unwrap().clone();
+        let cue_off  = *self.current_cue_offset.lock().unwrap();
 
-        *self._cue_stream.lock().unwrap() = Some(SendStream(stream));
+        log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={}", main_id, main_off, cue_id, cue_off);
+
+        if !cue_id.is_empty() && cue_id == main_id {
+            // Same device — one combined stream handles both master (ch main_off/main_off+1)
+            // and cue (ch cue_off/cue_off+1) in a single callback.
+            let device  = find_output_device(&main_id)?;
+            let min_ch  = (main_off + 2).max(cue_off + 2);
+            let config  = best_output_config(&device, min_ch, self.device_sample_rate)?;
+            log::info!("rebuild_streams: combined config ch={} sr={} fmt={:?}",
+                config.channels(), config.sample_rate().0, config.sample_format());
+            let channels = config.channels() as usize;
+            let stream = build_combined_stream(
+                &device, &config,
+                Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
+                channels, main_off, cue_off,
+            ).map_err(|e| e.to_string())?;
+
+            // Pause all old streams, sync positions, then start the new combined stream.
+            self._main_stream.lock().unwrap().0.pause().ok();
+            {
+                let mut guard = self._cue_stream.lock().unwrap();
+                if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
+                *guard = None;
+            }
+            { let mut a = self.deck_a.lock().unwrap(); a.cue_pos = a.main_pos; }
+            { let mut b = self.deck_b.lock().unwrap(); b.cue_pos = b.main_pos; }
+            {
+                let mut guard = self._main_stream.lock().unwrap();
+                *guard = SendStream(stream);
+                guard.0.play().map_err(|e| e.to_string())?;
+            }
+            log::info!("rebuild_streams: combined stream playing");
+        } else {
+            // Different devices (or no cue configured) — two independent streams.
+            // Build all new streams before pausing anything so the gap is minimal.
+            let main_device = find_output_device(&main_id)?;
+            let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
+            log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
+                main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
+            let main_stream = build_stream(
+                &main_device, &main_cfg,
+                Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
+                main_cfg.channels() as usize, false, main_off,
+            ).map_err(|e| e.to_string())?;
+
+            let new_cue_stream = if !cue_id.is_empty() {
+                let cue_device = find_output_device(&cue_id)?;
+                let cue_cfg    = best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
+                log::info!("rebuild_streams: cue config ch={} sr={} fmt={:?}",
+                    cue_cfg.channels(), cue_cfg.sample_rate().0, cue_cfg.sample_format());
+                Some(build_stream(
+                    &cue_device, &cue_cfg,
+                    Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
+                    cue_cfg.channels() as usize, true, cue_off,
+                ).map_err(|e| e.to_string())?)
+            } else {
+                None
+            };
+
+            // Pause all old streams, then sync cue_pos to main_pos so both new
+            // streams start from the same position.
+            self._main_stream.lock().unwrap().0.pause().ok();
+            {
+                let mut guard = self._cue_stream.lock().unwrap();
+                if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
+            }
+            { let mut a = self.deck_a.lock().unwrap(); a.cue_pos = a.main_pos; }
+            { let mut b = self.deck_b.lock().unwrap(); b.cue_pos = b.main_pos; }
+
+            // Start all new streams.
+            {
+                let mut guard = self._main_stream.lock().unwrap();
+                *guard = SendStream(main_stream);
+                guard.0.play().map_err(|e| e.to_string())?;
+            }
+            {
+                let mut guard = self._cue_stream.lock().unwrap();
+                match new_cue_stream {
+                    Some(s) => {
+                        *guard = Some(SendStream(s));
+                        guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
+                    }
+                    None => *guard = None,
+                }
+            }
+            log::info!("rebuild_streams: separate streams playing");
+        }
+
         Ok(())
     }
+}
+
+fn find_output_device(device_id: &str) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    host.devices()
+        .map_err(|e| e.to_string())?
+        .filter(|d| {
+            d.supported_output_configs()
+                .map(|mut c| c.next().is_some())
+                .unwrap_or(false)
+        })
+        .find(|d| d.name().map(|n| n == device_id).unwrap_or(false))
+        .ok_or_else(|| format!("device not found: {}", device_id))
+}
+
+// Find the supported output config with the fewest channels that still satisfies
+// min_channels, preferring configs whose sample-rate range includes preferred_sr.
+fn best_output_config(
+    device: &cpal::Device,
+    min_channels: usize,
+    preferred_sr: u32,
+) -> Result<cpal::SupportedStreamConfig, String> {
+    let min_ch = min_channels as u16;
+    let target_sr = cpal::SampleRate(preferred_sr);
+
+    let all: Vec<_> = device
+        .supported_output_configs()
+        .map_err(|e| e.to_string())?
+        .collect();
+
+    log::info!(
+        "best_output_config: device='{}' min_channels={} preferred_sr={} | supported=[{}]",
+        device.name().unwrap_or_default(),
+        min_channels,
+        preferred_sr,
+        all.iter()
+            .map(|c| format!("{}ch/{}-{}Hz", c.channels(), c.min_sample_rate().0, c.max_sample_rate().0))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // Prefer configs that include the current sample rate so loaded tracks play
+    // at the right pitch. Fall back to any config with enough channels.
+    if let Some(range) = all.iter()
+        .filter(|c| c.channels() >= min_ch && c.min_sample_rate() <= target_sr && c.max_sample_rate() >= target_sr)
+        .min_by_key(|c| c.channels())
+    {
+        let cfg = range.clone().with_sample_rate(target_sr);
+        log::info!("best_output_config: chose {}ch @ {}Hz (sr match)", cfg.channels(), cfg.sample_rate().0);
+        return Ok(cfg);
+    }
+
+    if let Some(range) = all.iter()
+        .filter(|c| c.channels() >= min_ch)
+        .min_by_key(|c| c.channels())
+    {
+        let cfg = range.clone().with_max_sample_rate();
+        log::info!("best_output_config: chose {}ch @ {}Hz (no sr match)", cfg.channels(), cfg.sample_rate().0);
+        return Ok(cfg);
+    }
+
+    // Device has no config with enough channels — fall back to default and let
+    // mix_frame clamp gracefully (audio will be silent for out-of-range offsets).
+    let cfg = device.default_output_config().map_err(|e| e.to_string())?;
+    log::warn!(
+        "best_output_config: no config with >={} channels, falling back to default ({}ch)",
+        min_channels, cfg.channels()
+    );
+    Ok(cfg)
 }
 
 fn build_stream(
@@ -457,15 +648,30 @@ fn build_stream(
     deck_b: Arc<Mutex<DeckState>>,
     output_channels: usize,
     is_cue: bool,
+    channel_offset: usize,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
     let stream_config: cpal::StreamConfig = config.clone().into();
+    let label = if is_cue { "cue" } else { "main" };
+    log::info!(
+        "build_stream [{}]: output_channels={} channel_offset={} format={:?} sample_rate={}",
+        label, output_channels, channel_offset, config.sample_format(), config.sample_rate().0
+    );
 
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
+            let mut fired = false;
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output(data, output_channels, &deck_a, &deck_b, is_cue);
+                    if !fired {
+                        fired = true;
+                        log::info!("fill_output [{}]: first callback, buf_len={} output_channels={} channel_offset={}", label, data.len(), output_channels, channel_offset);
+                        {
+                            let a = deck_a.lock().unwrap();
+                            log::info!("fill_output [{}]: deck_a is_playing={} samples_len={} gain={}", label, a.is_playing, a.samples.len(), a.gain);
+                        }
+                    }
+                    fill_output(data, output_channels, &deck_a, &deck_b, is_cue, channel_offset);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -477,7 +683,7 @@ fn build_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     let mut buf = vec![0.0f32; data.len()];
-                    fill_output(&mut buf, output_channels, &deck_a, &deck_b, is_cue);
+                    fill_output(&mut buf, output_channels, &deck_a, &deck_b, is_cue, channel_offset);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -497,22 +703,24 @@ fn fill_output(
     deck_a: &Arc<Mutex<DeckState>>,
     deck_b: &Arc<Mutex<DeckState>>,
     is_cue: bool,
+    channel_offset: usize,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
+    let tick: fn(&mut DeckState) -> (f32, f32) = if is_cue { DeckState::cue_tick } else { DeckState::main_tick };
 
     {
         let mut deck = deck_a.lock().unwrap();
         for i in 0..frames {
-            let (l, r) = if is_cue { deck.cue_tick() } else { deck.main_tick() };
-            mix_frame(data, i, output_channels, l, r);
+            let (l, r) = tick(&mut deck);
+            mix_frame(data, i, output_channels, channel_offset, l, r);
         }
     }
     {
         let mut deck = deck_b.lock().unwrap();
         for i in 0..frames {
-            let (l, r) = if is_cue { deck.cue_tick() } else { deck.main_tick() };
-            mix_frame(data, i, output_channels, l, r);
+            let (l, r) = tick(&mut deck);
+            mix_frame(data, i, output_channels, channel_offset, l, r);
         }
     }
 
@@ -522,12 +730,97 @@ fn fill_output(
 }
 
 #[inline]
-fn mix_frame(data: &mut [f32], frame: usize, channels: usize, l: f32, r: f32) {
-    if channels == 1 {
-        data[frame] += (l + r) * 0.5;
-    } else {
-        data[frame * channels] += l;
-        data[frame * channels + 1] += r;
+fn mix_frame(data: &mut [f32], frame: usize, channels: usize, channel_offset: usize, l: f32, r: f32) {
+    let base = frame * channels + channel_offset;
+    let remaining = channels.saturating_sub(channel_offset);
+    if remaining == 0 {
+        return;
+    }
+    if remaining == 1 {
+        if base < data.len() {
+            data[base] += (l + r) * 0.5;
+        }
+    } else if base + 1 < data.len() {
+        data[base] += l;
+        data[base + 1] += r;
+    }
+}
+
+fn build_combined_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    deck_a: Arc<Mutex<DeckState>>,
+    deck_b: Arc<Mutex<DeckState>>,
+    output_channels: usize,
+    main_offset: usize,
+    cue_offset: usize,
+) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
+    let stream_config: cpal::StreamConfig = config.clone().into();
+    log::info!(
+        "build_combined_stream: output_channels={} main_offset={} cue_offset={} format={:?} sr={}",
+        output_channels, main_offset, cue_offset, config.sample_format(), config.sample_rate().0
+    );
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let stream = device.build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _| {
+                    fill_output_combined(data, output_channels, &deck_a, &deck_b, main_offset, cue_offset);
+                },
+                |e| eprintln!("audio stream error: {:?}", e),
+                None,
+            )?;
+            Ok(stream)
+        }
+        cpal::SampleFormat::I16 => {
+            let stream = device.build_output_stream(
+                &stream_config,
+                move |data: &mut [i16], _| {
+                    let mut buf = vec![0.0f32; data.len()];
+                    fill_output_combined(&mut buf, output_channels, &deck_a, &deck_b, main_offset, cue_offset);
+                    for (d, s) in data.iter_mut().zip(buf.iter()) {
+                        *d = (*s * i16::MAX as f32) as i16;
+                    }
+                },
+                |e| eprintln!("audio stream error: {:?}", e),
+                None,
+            )?;
+            Ok(stream)
+        }
+        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
+    }
+}
+
+fn fill_output_combined(
+    data: &mut [f32],
+    output_channels: usize,
+    deck_a: &Arc<Mutex<DeckState>>,
+    deck_b: &Arc<Mutex<DeckState>>,
+    main_offset: usize,
+    cue_offset: usize,
+) {
+    data.fill(0.0);
+    let frames = data.len() / output_channels.max(1);
+    {
+        let mut deck = deck_a.lock().unwrap();
+        for i in 0..frames {
+            let (ml, mr) = deck.main_tick();
+            let (cl, cr) = deck.cue_tick();
+            mix_frame(data, i, output_channels, main_offset, ml, mr);
+            mix_frame(data, i, output_channels, cue_offset, cl, cr);
+        }
+    }
+    {
+        let mut deck = deck_b.lock().unwrap();
+        for i in 0..frames {
+            let (ml, mr) = deck.main_tick();
+            let (cl, cr) = deck.cue_tick();
+            mix_frame(data, i, output_channels, main_offset, ml, mr);
+            mix_frame(data, i, output_channels, cue_offset, cl, cr);
+        }
+    }
+    for s in data.iter_mut() {
+        *s = s.clamp(-1.0, 1.0);
     }
 }
 
