@@ -16,6 +16,8 @@ export const useMixerStore = defineStore('mixer', () => {
 
   const volume = reactive<Record<DeckId, number>>({ A: 1, B: 1 });
   const cueActive = reactive<Record<DeckId, boolean>>({ A: false, B: false });
+  const filter = reactive<Record<DeckId, number>>({ A: 0, B: 0 });
+  const filterEnabled = reactive<Record<DeckId, boolean>>({ A: true, B: true });
 
   function setVolume(deckId: DeckId, v: number) {
     volume[deckId] = Math.max(0, Math.min(1, v));
@@ -25,6 +27,16 @@ export const useMixerStore = defineStore('mixer', () => {
   function setCueActive(deckId: DeckId, active: boolean) {
     cueActive[deckId] = active;
     invoke('set_cue_active', { deck: deckId, active });
+  }
+
+  function setFilter(deckId: DeckId, v: number) {
+    filter[deckId] = Math.max(-1, Math.min(1, v));
+    invoke('set_filter', { deck: deckId, value: filterEnabled[deckId] ? filter[deckId] : 0 });
+  }
+
+  function toggleFilter(deckId: DeckId) {
+    filterEnabled[deckId] = !filterEnabled[deckId];
+    invoke('set_filter', { deck: deckId, value: filterEnabled[deckId] ? filter[deckId] : 0 });
   }
 
   async function loadOutputDevices(): Promise<void> {
@@ -63,8 +75,12 @@ export const useMixerStore = defineStore('mixer', () => {
   return {
     volume,
     cueActive,
+    filter,
+    filterEnabled,
     setVolume,
     setCueActive,
+    setFilter,
+    toggleFilter,
     outputDevices,
     devicesLoaded,
     mainDeviceId,

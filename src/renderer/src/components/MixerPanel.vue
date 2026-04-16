@@ -3,6 +3,28 @@
     <div class="mixer__channels">
       <div class="mixer__channel">
         <span class="mixer__channel-label" :style="{ color: decks.deckA.accent }">A</span>
+        <div class="mixer__filter">
+          <button
+            class="mixer__filter-btn"
+            :class="{ 'mixer__filter-btn--active': mixer.filterEnabled.A }"
+            :style="{ '--fader-accent': decks.deckA.accent }"
+            @click="mixer.toggleFilter('A')"
+          >
+            F
+          </button>
+          <input
+            type="range"
+            class="mixer__filter-slider"
+            min="-1"
+            max="1"
+            step="0.01"
+            :value="mixer.filter.A"
+            :style="{ '--fader-accent': decks.deckA.accent }"
+            @input="(e) => mixer.setFilter('A', parseFloat((e.target as HTMLInputElement).value))"
+            @dblclick="mixer.setFilter('A', 0)"
+          />
+          <span class="mixer__filter-label">FLT</span>
+        </div>
         <input
           type="range"
           class="mixer__fader"
@@ -25,6 +47,28 @@
 
       <div class="mixer__channel">
         <span class="mixer__channel-label" :style="{ color: decks.deckB.accent }">B</span>
+        <div class="mixer__filter">
+          <input
+            type="range"
+            class="mixer__filter-slider"
+            min="-1"
+            max="1"
+            step="0.01"
+            :value="mixer.filter.B"
+            :style="{ '--fader-accent': decks.deckB.accent }"
+            @input="(e) => mixer.setFilter('B', parseFloat((e.target as HTMLInputElement).value))"
+            @dblclick="mixer.setFilter('B', 0)"
+          />
+          <button
+            class="mixer__filter-btn"
+            :class="{ 'mixer__filter-btn--active': mixer.filterEnabled.B }"
+            :style="{ '--fader-accent': decks.deckB.accent }"
+            @click="mixer.toggleFilter('B')"
+          >
+            F
+          </button>
+          <span class="mixer__filter-label">FLT</span>
+        </div>
         <input
           type="range"
           class="mixer__fader"
@@ -175,6 +219,49 @@ onMounted(() => {
   height: 6em;
   cursor: pointer;
   accent-color: var(--fader-accent);
+}
+
+.mixer__filter {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.mixer__filter-slider {
+  width: 4em;
+  cursor: pointer;
+  accent-color: var(--fader-accent);
+}
+
+.mixer__filter-label {
+  display: none;
+}
+
+.mixer__filter-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 0.55em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 0.25em 0.45em;
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+.mixer__filter-btn:hover {
+  border-color: var(--fader-accent);
+  color: var(--fader-accent);
+}
+.mixer__filter-btn--active {
+  border-color: var(--fader-accent);
+  color: var(--fader-accent);
+  background: color-mix(in srgb, var(--fader-accent) 15%, transparent);
 }
 
 .mixer__cue-btn {

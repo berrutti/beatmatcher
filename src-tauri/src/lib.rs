@@ -222,6 +222,16 @@ fn set_eq(
 }
 
 #[tauri::command]
+fn set_filter(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    value: f32,
+) -> Result<(), String> {
+    get_strip(&state, &deck)?.lock().unwrap().set_filter(value);
+    Ok(())
+}
+
+#[tauri::command]
 fn get_position(state: tauri::State<'_, AppState>, deck: String) -> Result<f64, String> {
     Ok(get_deck(&state, &deck)?.lock().unwrap().position_sec())
 }
@@ -346,6 +356,7 @@ pub fn run() {
             set_playback_rate,
             set_nudge,
             set_eq,
+            set_filter,
             get_position,
             get_waveform_region,
             set_reloop,

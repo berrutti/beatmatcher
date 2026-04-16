@@ -25,7 +25,15 @@ pub struct DeviceInfo {
 
 // ── Biquad filter (Direct Form II Transposed) ─────────────────────────────────
 //
+// Implements H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)
 // Coefficients follow the Audio EQ Cookbook (Robert Bristow-Johnson).
+//
+// b0/b1/b2  — feedforward: how much of the current and past INPUT samples
+//             contribute to the output. Together they shape the frequency
+//             response (e.g. low-pass attenuates high-frequency input).
+// a1/a2     — feedback: how much of the past OUTPUT samples feed back into
+//             the filter. This creates resonance/poles in the response.
+// delay1/2  — the two internal memory cells that carry state between samples.
 
 #[derive(Copy, Clone)]
 struct Biquad {
@@ -34,8 +42,8 @@ struct Biquad {
     b2: f32,
     a1: f32,
     a2: f32,
-    s1: f32,
-    s2: f32,
+    delay1: f32,
+    delay2: f32,
 }
 
 impl Biquad {
@@ -46,16 +54,16 @@ impl Biquad {
             b2: 0.0,
             a1: 0.0,
             a2: 0.0,
-            s1: 0.0,
-            s2: 0.0,
+            delay1: 0.0,
+            delay2: 0.0,
         }
     }
 
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.s1;
-        self.s1 = self.b1 * x - self.a1 * y + self.s2;
-        self.s2 = self.b2 * x - self.a2 * y;
+        let y = self.b0 * x + self.delay1;
+        self.delay1 = self.b1 * x - self.a1 * y + self.delay2;
+        self.delay2 = self.b2 * x - self.a2 * y;
         y
     }
 
@@ -83,8 +91,8 @@ impl Biquad {
             b2: b2 / a0,
             a1: a1 / a0,
             a2: a2 / a0,
-            s1: 0.0,
-            s2: 0.0,
+            delay1: 0.0,
+            delay2: 0.0,
         }
     }
 
@@ -110,8 +118,54 @@ impl Biquad {
             b2: b2 / a0,
             a1: a1 / a0,
             a2: a2 / a0,
-            s1: 0.0,
-            s2: 0.0,
+            delay1: 0.0,
+            delay2: 0.0,
+        }
+    }
+
+    fn low_pass(sr: f32, freq: f32, q: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let cos_w = w0.cos();
+        let alpha = w0.sin() / (2.0 * q);
+
+        let b0 = (1.0 - cos_w) / 2.0;
+        let b1 = 1.0 - cos_w;
+        let b2 = (1.0 - cos_w) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            delay1: 0.0,
+            delay2: 0.0,
+        }
+    }
+
+    fn high_pass(sr: f32, freq: f32, q: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let cos_w = w0.cos();
+        let alpha = w0.sin() / (2.0 * q);
+
+        let b0 = (1.0 + cos_w) / 2.0;
+        let b1 = -(1.0 + cos_w);
+        let b2 = (1.0 + cos_w) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            delay1: 0.0,
+            delay2: 0.0,
         }
     }
 
@@ -138,66 +192,172 @@ impl Biquad {
             b2: b2 / a0,
             a1: a1 / a0,
             a2: a2 / a0,
-            s1: 0.0,
-            s2: 0.0,
+            delay1: 0.0,
+            delay2: 0.0,
         }
     }
 }
 
 // ── 3-band EQ (2 channels) ────────────────────────────────────────────────────
+//
+// Low and high use two cascaded 2nd-order shelves (= 4th-order total) so the
+// rolloff is steep enough to decisively kill bass and treble. Mid uses a single
+// wide-Q peaking filter to cover the full vocal/instrument range.
+
+const EQ_LOW_SHELF_HZ: f32 = 70.0;
+const EQ_MID_PEAK_HZ: f32 = 1000.0;
+const EQ_MID_Q: f32 = 0.5;
+const EQ_HIGH_SHELF_HZ: f32 = 13_000.0;
 
 struct EqState {
     sample_rate: f32,
-    low: [Biquad; 2],
-    mid: [Biquad; 2],
-    high: [Biquad; 2],
+    low_stage1:  [Biquad; 2],
+    low_stage2:  [Biquad; 2],
+    mid:         [Biquad; 2],
+    high_stage1: [Biquad; 2],
+    high_stage2: [Biquad; 2],
 }
 
 impl EqState {
     fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
-            low: [Biquad::identity(), Biquad::identity()],
-            mid: [Biquad::identity(), Biquad::identity()],
-            high: [Biquad::identity(), Biquad::identity()],
+            low_stage1:  [Biquad::identity(), Biquad::identity()],
+            low_stage2:  [Biquad::identity(), Biquad::identity()],
+            mid:         [Biquad::identity(), Biquad::identity()],
+            high_stage1: [Biquad::identity(), Biquad::identity()],
+            high_stage2: [Biquad::identity(), Biquad::identity()],
         }
     }
 
     fn set_low(&mut self, db: f32) {
-        let new_filter = Biquad::low_shelf(self.sample_rate, 70.0, db);
-        for channel in &mut self.low {
-            let (s1, s2) = (channel.s1, channel.s2);
-            *channel = new_filter;
-            channel.s1 = s1;
-            channel.s2 = s2;
+        let stage = Biquad::low_shelf(self.sample_rate, EQ_LOW_SHELF_HZ, db / 2.0);
+        for (first, second) in self.low_stage1.iter_mut().zip(self.low_stage2.iter_mut()) {
+            let (prev_delay1, prev_delay2) = (first.delay1, first.delay2);
+            *first = stage;
+            first.delay1 = prev_delay1;
+            first.delay2 = prev_delay2;
+            let (prev_delay1, prev_delay2) = (second.delay1, second.delay2);
+            *second = stage;
+            second.delay1 = prev_delay1;
+            second.delay2 = prev_delay2;
         }
     }
 
     fn set_mid(&mut self, db: f32) {
-        let new_filter = Biquad::peaking(self.sample_rate, 1000.0, 1.0, db);
-        for channel in &mut self.mid {
-            let (s1, s2) = (channel.s1, channel.s2);
-            *channel = new_filter;
-            channel.s1 = s1;
-            channel.s2 = s2;
+        let filter = Biquad::peaking(self.sample_rate, EQ_MID_PEAK_HZ, EQ_MID_Q, db);
+        for ch in &mut self.mid {
+            let (prev_delay1, prev_delay2) = (ch.delay1, ch.delay2);
+            *ch = filter;
+            ch.delay1 = prev_delay1;
+            ch.delay2 = prev_delay2;
         }
     }
 
     fn set_high(&mut self, db: f32) {
-        let new_filter = Biquad::high_shelf(self.sample_rate, 13000.0, db);
-        for channel in &mut self.high {
-            let (s1, s2) = (channel.s1, channel.s2);
-            *channel = new_filter;
-            channel.s1 = s1;
-            channel.s2 = s2;
+        let stage = Biquad::high_shelf(self.sample_rate, EQ_HIGH_SHELF_HZ, db / 2.0);
+        for (first, second) in self.high_stage1.iter_mut().zip(self.high_stage2.iter_mut()) {
+            let (prev_delay1, prev_delay2) = (first.delay1, first.delay2);
+            *first = stage;
+            first.delay1 = prev_delay1;
+            first.delay2 = prev_delay2;
+            let (prev_delay1, prev_delay2) = (second.delay1, second.delay2);
+            *second = stage;
+            second.delay1 = prev_delay1;
+            second.delay2 = prev_delay2;
         }
     }
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let l = self.high[0].process(self.mid[0].process(self.low[0].process(l)));
-        let r = self.high[1].process(self.mid[1].process(self.low[1].process(r)));
-        (l.tanh(), r.tanh())
+        let l = self.low_stage2[0].process(self.low_stage1[0].process(l));
+        let r = self.low_stage2[1].process(self.low_stage1[1].process(r));
+        let l = self.mid[0].process(l);
+        let r = self.mid[1].process(r);
+        let l = self.high_stage2[0].process(self.high_stage1[0].process(l));
+        let r = self.high_stage2[1].process(self.high_stage1[1].process(r));
+        (l, r)
+    }
+}
+
+// HPF/LPF filter
+//   v = 0:  bypass (small dead zone around center)
+//   v < 0:  LPF, cutoff sweeps from 20 kHz down to 20 Hz as v -> -1
+//   v > 0:  HPF, cutoff sweeps from 20 Hz up to 20 kHz as v -> +1
+//
+// Serial signal path.
+// Fixed Q for clean, musical filtering.
+// Current_v is smoothed per-sample; coefficients are refreshed every
+// FILTER_COEF_REFRESH samples to keep the DSP inner loop tight.
+
+const FILTER_MIN_FREQ_HZ: f32 = 20.0;
+const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
+const FILTER_RESONANCE_Q: f32 = 2.0;
+const FILTER_CENTER_DEAD_ZONE: f32 = 0.05;
+const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
+const FILTER_COEFF_REFRESH_INTERVAL: u32 = 16;
+
+struct FilterState {
+    sample_rate: f32,
+    target_knob: f32,
+    current_knob: f32,
+    smoothing_coeff: f32,
+    coeff_refresh_counter: u32,
+    filters: [Biquad; 2],
+}
+
+impl FilterState {
+    fn new(sample_rate: f32) -> Self {
+        let smoothing_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_SMOOTHING_TAU_SEC)).exp();
+        Self {
+            sample_rate,
+            target_knob: 0.0,
+            current_knob: 0.0,
+            smoothing_coeff,
+            coeff_refresh_counter: 0,
+            filters: [Biquad::identity(), Biquad::identity()],
+        }
+    }
+
+    fn set(&mut self, v: f32) {
+        self.target_knob = v.clamp(-1.0, 1.0);
+    }
+
+    fn update_filters(&mut self) {
+        let knob = self.current_knob;
+        let abs_knob = knob.abs();
+
+        let new_filter = if abs_knob <= FILTER_CENTER_DEAD_ZONE {
+            Biquad::identity()
+        } else {
+            let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
+            if knob < 0.0 {
+                let cutoff = FILTER_MAX_FREQ_HZ * (FILTER_MIN_FREQ_HZ / FILTER_MAX_FREQ_HZ).powf(sweep);
+                Biquad::low_pass(self.sample_rate, cutoff, FILTER_RESONANCE_Q)
+            } else {
+                let cutoff = FILTER_MIN_FREQ_HZ * (FILTER_MAX_FREQ_HZ / FILTER_MIN_FREQ_HZ).powf(sweep);
+                Biquad::high_pass(self.sample_rate, cutoff, FILTER_RESONANCE_Q)
+            }
+        };
+
+        for ch in &mut self.filters {
+            let (prev_delay1, prev_delay2) = (ch.delay1, ch.delay2);
+            *ch = new_filter;
+            ch.delay1 = prev_delay1;
+            ch.delay2 = prev_delay2;
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.current_knob += (self.target_knob - self.current_knob) * self.smoothing_coeff;
+
+        if self.coeff_refresh_counter == 0 {
+            self.update_filters();
+        }
+        self.coeff_refresh_counter = (self.coeff_refresh_counter + 1) % FILTER_COEFF_REFRESH_INTERVAL;
+
+        (self.filters[0].process(l), self.filters[1].process(r))
     }
 }
 
@@ -209,6 +369,8 @@ pub struct ChannelStrip {
     pub cue_active: bool,
     eq: EqState,
     eq_cue: EqState,
+    filter: FilterState,
+    filter_cue: FilterState,
 }
 
 impl ChannelStrip {
@@ -218,6 +380,8 @@ impl ChannelStrip {
             cue_active: false,
             eq: EqState::new(sample_rate),
             eq_cue: EqState::new(sample_rate),
+            filter: FilterState::new(sample_rate),
+            filter_cue: FilterState::new(sample_rate),
         }
     }
 
@@ -230,19 +394,26 @@ impl ChannelStrip {
         }
     }
 
-    // Applied to the master output path: EQ then fader gain.
+    pub fn set_filter(&mut self, v: f32) {
+        self.filter.set(v);
+        self.filter_cue.set(v);
+    }
+
+    // Applied to the master output path: EQ, filter, then fader gain.
     #[inline]
     pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = self.eq.process(l, r);
+        let (l, r) = self.filter.process(l, r);
         (l * self.gain, r * self.gain)
     }
 
-    // Applied to the cue output path: EQ only (pre-fader), gated by cue_active.
-    // Always called so the filter state stays in sync; output is silenced when
-    // cue_active is false.
+    // Applied to the cue output path: EQ then filter (pre-fader), gated by
+    // cue_active. Always called so filter state stays in sync; output is
+    // silenced when cue_active is false.
     #[inline]
     pub fn process_cue(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = self.eq_cue.process(l, r);
+        let (l, r) = self.filter_cue.process(l, r);
         if self.cue_active { (l, r) } else { (0.0, 0.0) }
     }
 }
