@@ -62,13 +62,15 @@
           v-if="mainDevice && mainDevice.channels > 2"
           class="mixer__device-select mixer__device-select--channels"
           :value="mixer.mainChannelOffset"
-          @change="(e) => mixer.setMainOutputDevice(mixer.mainDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+          @change="
+            (e) =>
+              mixer.setMainOutputDevice(
+                mixer.mainDeviceId,
+                parseInt((e.target as HTMLSelectElement).value)
+              )
+          "
         >
-          <option
-            v-for="offset in channelPairs(mainDevice.channels)"
-            :key="offset"
-            :value="offset"
-          >
+          <option v-for="offset in channelPairs(mainDevice.channels)" :key="offset" :value="offset">
             Ch {{ offset + 1 }}-{{ offset + 2 }}
           </option>
         </select>
@@ -89,20 +91,20 @@
           v-if="cueDevice && cueDevice.channels > 2"
           class="mixer__device-select mixer__device-select--channels"
           :value="mixer.cueChannelOffset"
-          @change="(e) => mixer.setCueOutputDevice(mixer.cueDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+          @change="
+            (e) =>
+              mixer.setCueOutputDevice(
+                mixer.cueDeviceId,
+                parseInt((e.target as HTMLSelectElement).value)
+              )
+          "
         >
-          <option
-            v-for="offset in channelPairs(cueDevice.channels)"
-            :key="offset"
-            :value="offset"
-          >
+          <option v-for="offset in channelPairs(cueDevice.channels)" :key="offset" :value="offset">
             Ch {{ offset + 1 }}-{{ offset + 2 }}
           </option>
         </select>
       </div>
-      <button class="mixer__refresh-btn" @click="mixer.loadOutputDevices()">
-        REFRESH DEVICES
-      </button>
+      <button class="mixer__refresh-btn" @click="mixer.loadOutputDevices()">REFRESH DEVICES</button>
       <p v-if="mixer.deviceError" class="mixer__error">{{ mixer.deviceError }}</p>
     </div>
   </div>
@@ -116,8 +118,12 @@ import { useMixerStore } from '@renderer/stores/mixer';
 const decks = useDecksStore();
 const mixer = useMixerStore();
 
-const mainDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null);
-const cueDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.cueDeviceId) ?? null);
+const mainDevice = computed(
+  () => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null
+);
+const cueDevice = computed(
+  () => mixer.outputDevices.find((d) => d.id === mixer.cueDeviceId) ?? null
+);
 
 function channelPairs(totalChannels: number): number[] {
   const offsets: number[] = [];
@@ -249,7 +255,9 @@ onMounted(() => {
   border-radius: 3px;
   cursor: pointer;
   align-self: center;
-  transition: border-color 0.1s, color 0.1s;
+  transition:
+    border-color 0.1s,
+    color 0.1s;
 }
 .mixer__refresh-btn:hover {
   border-color: var(--color-text);

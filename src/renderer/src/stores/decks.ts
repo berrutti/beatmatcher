@@ -471,7 +471,6 @@ function createDeck(id: DeckId, accent: string) {
       invoke('set_eq', { deck: id, band, db: clamped });
     },
 
-
     nudgeStart(direction: 'back' | 'forward') {
       if (!state.trackLoaded) return;
       state.nudging = direction;
@@ -515,7 +514,9 @@ export const useDecksStore = defineStore('decks', () => {
   }
 
   return {
-    deckA, deckB, decks,
-    destroy,
+    deckA,
+    deckB,
+    decks,
+    destroy
   };
 });

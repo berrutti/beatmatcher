@@ -61,10 +61,19 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   return {
-    volume, cueActive, setVolume, setCueActive,
-    outputDevices, devicesLoaded, mainDeviceId, cueDeviceId,
-    mainChannelOffset, cueChannelOffset,
+    volume,
+    cueActive,
+    setVolume,
+    setCueActive,
+    outputDevices,
+    devicesLoaded,
+    mainDeviceId,
+    cueDeviceId,
+    mainChannelOffset,
+    cueChannelOffset,
     deviceError,
-    loadOutputDevices, setMainOutputDevice, setCueOutputDevice,
+    loadOutputDevices,
+    setMainOutputDevice,
+    setCueOutputDevice
   };
 });
