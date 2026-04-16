@@ -2,67 +2,67 @@
   <div class="mixer">
     <div class="mixer__channels">
       <div class="mixer__channel">
-        <span class="mixer__channel-label" :style="{ color: store.deckA.accent }">A</span>
+        <span class="mixer__channel-label" :style="{ color: decks.deckA.accent }">A</span>
         <input
           type="range"
           class="mixer__fader"
           min="0"
           max="1"
           step="0.01"
-          :value="store.volume.A"
+          :value="mixer.volume.A"
           orient="vertical"
-          :style="{ '--fader-accent': store.deckA.accent }"
-          @input="(e) => store.setVolume('A', parseFloat((e.target as HTMLInputElement).value))"
+          :style="{ '--fader-accent': decks.deckA.accent }"
+          @input="(e) => mixer.setVolume('A', parseFloat((e.target as HTMLInputElement).value))"
         />
         <button
           class="mixer__cue-btn"
-          :class="{ 'mixer__cue-btn--active': store.cueActive.A }"
-          @click="store.setCueActive('A', !store.cueActive.A)"
+          :class="{ 'mixer__cue-btn--active': mixer.cueActive.A }"
+          @click="mixer.setCueActive('A', !mixer.cueActive.A)"
         >
           CUE
         </button>
       </div>
 
       <div class="mixer__channel">
-        <span class="mixer__channel-label" :style="{ color: store.deckB.accent }">B</span>
+        <span class="mixer__channel-label" :style="{ color: decks.deckB.accent }">B</span>
         <input
           type="range"
           class="mixer__fader"
           min="0"
           max="1"
           step="0.01"
-          :value="store.volume.B"
+          :value="mixer.volume.B"
           orient="vertical"
-          :style="{ '--fader-accent': store.deckB.accent }"
-          @input="(e) => store.setVolume('B', parseFloat((e.target as HTMLInputElement).value))"
+          :style="{ '--fader-accent': decks.deckB.accent }"
+          @input="(e) => mixer.setVolume('B', parseFloat((e.target as HTMLInputElement).value))"
         />
         <button
           class="mixer__cue-btn"
-          :class="{ 'mixer__cue-btn--active': store.cueActive.B }"
-          @click="store.setCueActive('B', !store.cueActive.B)"
+          :class="{ 'mixer__cue-btn--active': mixer.cueActive.B }"
+          @click="mixer.setCueActive('B', !mixer.cueActive.B)"
         >
           CUE
         </button>
       </div>
     </div>
 
-    <div v-if="store.devicesLoaded" class="mixer__devices">
+    <div v-if="mixer.devicesLoaded" class="mixer__devices">
       <div class="mixer__device-row">
         <span class="mixer__device-label">MASTER OUT</span>
         <select
           class="mixer__device-select"
-          :value="store.mainDeviceId"
-          @change="(e) => store.setMainOutputDevice((e.target as HTMLSelectElement).value, 0)"
+          :value="mixer.mainDeviceId"
+          @change="(e) => mixer.setMainOutputDevice((e.target as HTMLSelectElement).value, 0)"
         >
-          <option v-for="d in store.outputDevices" :key="d.id" :value="d.id">
+          <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">
             {{ d.name }}
           </option>
         </select>
         <select
           v-if="mainDevice && mainDevice.channels > 2"
           class="mixer__device-select mixer__device-select--channels"
-          :value="store.mainChannelOffset"
-          @change="(e) => store.setMainOutputDevice(store.mainDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+          :value="mixer.mainChannelOffset"
+          @change="(e) => mixer.setMainOutputDevice(mixer.mainDeviceId, parseInt((e.target as HTMLSelectElement).value))"
         >
           <option
             v-for="offset in channelPairs(mainDevice.channels)"
@@ -77,19 +77,19 @@
         <span class="mixer__device-label">CUE OUT</span>
         <select
           class="mixer__device-select"
-          :value="store.cueDeviceId"
-          @change="(e) => store.setCueOutputDevice((e.target as HTMLSelectElement).value, 0)"
+          :value="mixer.cueDeviceId"
+          @change="(e) => mixer.setCueOutputDevice((e.target as HTMLSelectElement).value, 0)"
         >
           <option value="">Not configured</option>
-          <option v-for="d in store.outputDevices" :key="d.id" :value="d.id">
+          <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">
             {{ d.name }}
           </option>
         </select>
         <select
           v-if="cueDevice && cueDevice.channels > 2"
           class="mixer__device-select mixer__device-select--channels"
-          :value="store.cueChannelOffset"
-          @change="(e) => store.setCueOutputDevice(store.cueDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+          :value="mixer.cueChannelOffset"
+          @change="(e) => mixer.setCueOutputDevice(mixer.cueDeviceId, parseInt((e.target as HTMLSelectElement).value))"
         >
           <option
             v-for="offset in channelPairs(cueDevice.channels)"
@@ -100,10 +100,10 @@
           </option>
         </select>
       </div>
-      <button class="mixer__refresh-btn" @click="store.loadOutputDevices()">
+      <button class="mixer__refresh-btn" @click="mixer.loadOutputDevices()">
         REFRESH DEVICES
       </button>
-      <p v-if="store.deviceError" class="mixer__error">{{ store.deviceError }}</p>
+      <p v-if="mixer.deviceError" class="mixer__error">{{ mixer.deviceError }}</p>
     </div>
   </div>
 </template>
@@ -111,11 +111,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
 import { useDecksStore } from '@renderer/stores/decks';
+import { useMixerStore } from '@renderer/stores/mixer';
 
-const store = useDecksStore();
+const decks = useDecksStore();
+const mixer = useMixerStore();
 
-const mainDevice = computed(() => store.outputDevices.find((d) => d.id === store.mainDeviceId) ?? null);
-const cueDevice = computed(() => store.outputDevices.find((d) => d.id === store.cueDeviceId) ?? null);
+const mainDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null);
+const cueDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.cueDeviceId) ?? null);
 
 function channelPairs(totalChannels: number): number[] {
   const offsets: number[] = [];
@@ -126,7 +128,7 @@ function channelPairs(totalChannels: number): number[] {
 }
 
 onMounted(() => {
-  store.loadOutputDevices();
+  mixer.loadOutputDevices();
 });
 </script>
 

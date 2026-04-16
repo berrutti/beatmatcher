@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
@@ -200,10 +201,56 @@ impl EqState {
     }
 }
 
+// ── Channel strip ──────────────────────────────────────────────────────────────
+// Mixer concerns: EQ, fader gain, and cue routing.
+
+pub struct ChannelStrip {
+    pub gain: f32,
+    pub cue_active: bool,
+    eq: EqState,
+    eq_cue: EqState,
+}
+
+impl ChannelStrip {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            gain: 1.0,
+            cue_active: false,
+            eq: EqState::new(sample_rate),
+            eq_cue: EqState::new(sample_rate),
+        }
+    }
+
+    pub fn set_eq_band(&mut self, band: &str, db: f32) {
+        match band {
+            "low"  => { self.eq.set_low(db);  self.eq_cue.set_low(db); }
+            "mid"  => { self.eq.set_mid(db);  self.eq_cue.set_mid(db); }
+            "high" => { self.eq.set_high(db); self.eq_cue.set_high(db); }
+            _ => {}
+        }
+    }
+
+    // Applied to the master output path: EQ then fader gain.
+    #[inline]
+    pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let (l, r) = self.eq.process(l, r);
+        (l * self.gain, r * self.gain)
+    }
+
+    // Applied to the cue output path: EQ only (pre-fader), gated by cue_active.
+    // Always called so the filter state stays in sync; output is silenced when
+    // cue_active is false.
+    #[inline]
+    pub fn process_cue(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let (l, r) = self.eq_cue.process(l, r);
+        if self.cue_active { (l, r) } else { (0.0, 0.0) }
+    }
+}
+
 // ── Deck state ─────────────────────────────────────────────────────────────────
 //
 // Two positions are tracked independently:
-//   main_pos: advanced by the main output stream callback (source of truth)
+//   main_pos: advanced by the master output stream callback (source of truth)
 //   cue_pos:  advanced by the cue output stream callback
 //
 // Both start from the same point on play() and advance at the same rate, so
@@ -224,11 +271,6 @@ pub struct DeckState {
     pub loop_end: f64,   // in frames
     pub playback_rate: f64,
     pub nudge_factor: f64, // 1 + nudge_percent/100
-    pub gain: f32,
-    pub cue_active: bool,
-
-    eq: EqState,
-    eq_cue: EqState,
 }
 
 impl DeckState {
@@ -247,10 +289,6 @@ impl DeckState {
             loop_end: 0.0,
             playback_rate: 1.0,
             nudge_factor: 1.0,
-            gain: 1.0,
-            cue_active: false,
-            eq: EqState::new(device_sample_rate as f32),
-            eq_cue: EqState::new(device_sample_rate as f32),
         }
     }
 
@@ -261,41 +299,27 @@ impl DeckState {
         self.main_pos / self.device_sample_rate as f64
     }
 
-    pub fn set_eq_band(&mut self, band: &str, db: f32) {
-        match band {
-            "low" => { self.eq.set_low(db); self.eq_cue.set_low(db); }
-            "mid" => { self.eq.set_mid(db); self.eq_cue.set_mid(db); }
-            "high" => { self.eq.set_high(db); self.eq_cue.set_high(db); }
-            _ => {}
-        }
-    }
-
-    // Called by the main output stream callback. Advances main_pos and applies EQ.
+    // Reads the next master output sample and advances main_pos.
     #[inline]
     pub fn main_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
             return (0.0, 0.0);
         }
         let (l, r) = self.read_at(self.main_pos);
-        let (l, r) = self.eq.process(l, r);
-        let l = l * self.gain;
-        let r = r * self.gain;
         self.main_pos = self.next_pos(self.main_pos, true);
         (l, r)
     }
 
-    // Called by the cue output stream callback. Pre-fader: gain is not applied.
-    // cue_pos and eq_cue always advance while playing so they stay in sync with
-    // the main path; only the output is silenced when cue_active is false.
+    // Reads the next cue sample and advances cue_pos. cue_pos always advances
+    // while playing so it stays in sync with main_pos regardless of cue_active.
     #[inline]
     pub fn cue_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
             return (0.0, 0.0);
         }
         let (l, r) = self.read_at(self.cue_pos);
-        let (l, r) = self.eq_cue.process(l, r);
         self.cue_pos = self.next_pos(self.cue_pos, false);
-        if self.cue_active { (l, r) } else { (0.0, 0.0) }
+        (l, r)
     }
 
     fn read_at(&self, pos: f64) -> (f32, f32) {
@@ -357,12 +381,10 @@ unsafe impl Sync for SendStream {}
 // ── Audio engine ───────────────────────────────────────────────────────────────
 
 pub struct AppAudio {
-    pub deck_a: Arc<Mutex<DeckState>>,
-    pub deck_b: Arc<Mutex<DeckState>>,
     pub device_sample_rate: u32,
-    pub device_channels: usize,
+    decks: HashMap<String, Arc<Mutex<DeckState>>>,
+    strips: HashMap<String, Arc<Mutex<ChannelStrip>>>,
     default_device_id: String,
-    // Current routing state — updated by set_main_device / set_cue_device
     current_main_id: Mutex<String>,
     current_main_offset: Mutex<usize>,
     current_cue_id: Mutex<String>,   // empty string = no cue device configured
@@ -384,27 +406,22 @@ impl AppAudio {
         let default_device_id = device.name().unwrap_or_default();
         let config = device.default_output_config()?;
         let device_sample_rate = config.sample_rate().0;
-        let device_channels = config.channels() as usize;
 
-        let deck_a = Arc::new(Mutex::new(DeckState::empty(device_sample_rate)));
-        let deck_b = Arc::new(Mutex::new(DeckState::empty(device_sample_rate)));
+        let mut decks = HashMap::new();
+        let mut strips = HashMap::new();
+        for id in ["A", "B"] {
+            decks.insert(id.to_string(), Arc::new(Mutex::new(DeckState::empty(device_sample_rate))));
+            strips.insert(id.to_string(), Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))));
+        }
 
-        let main_stream = build_stream(
-            &device,
-            &config,
-            Arc::clone(&deck_a),
-            Arc::clone(&deck_b),
-            device_channels,
-            false,
-            0,
-        )?;
+        let channels = channel_pairs(&decks, &strips);
+        let main_stream = build_stream(&device, &config, channels, false, 0)?;
         main_stream.play()?;
 
         Ok(Self {
-            deck_a,
-            deck_b,
             device_sample_rate,
-            device_channels,
+            decks,
+            strips,
             current_main_id: Mutex::new(default_device_id.clone()),
             current_main_offset: Mutex::new(0),
             current_cue_id: Mutex::new(String::new()),
@@ -416,11 +433,11 @@ impl AppAudio {
     }
 
     pub fn deck(&self, id: &str) -> Option<Arc<Mutex<DeckState>>> {
-        match id {
-            "A" => Some(Arc::clone(&self.deck_a)),
-            "B" => Some(Arc::clone(&self.deck_b)),
-            _ => None,
-        }
+        self.decks.get(id).cloned()
+    }
+
+    pub fn strip(&self, id: &str) -> Option<Arc<Mutex<ChannelStrip>>> {
+        self.strips.get(id).cloned()
     }
 
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
@@ -482,20 +499,18 @@ impl AppAudio {
 
         log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={}", main_id, main_off, cue_id, cue_off);
 
+        let ch = channel_pairs(&self.decks, &self.strips);
+
         if !cue_id.is_empty() && cue_id == main_id {
             // Same device — one combined stream handles both master (ch main_off/main_off+1)
             // and cue (ch cue_off/cue_off+1) in a single callback.
-            let device  = find_output_device(&main_id)?;
-            let min_ch  = (main_off + 2).max(cue_off + 2);
-            let config  = best_output_config(&device, min_ch, self.device_sample_rate)?;
+            let device = find_output_device(&main_id)?;
+            let min_ch = (main_off + 2).max(cue_off + 2);
+            let config = best_output_config(&device, min_ch, self.device_sample_rate)?;
             log::info!("rebuild_streams: combined config ch={} sr={} fmt={:?}",
                 config.channels(), config.sample_rate().0, config.sample_format());
-            let channels = config.channels() as usize;
-            let stream = build_combined_stream(
-                &device, &config,
-                Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
-                channels, main_off, cue_off,
-            ).map_err(|e| e.to_string())?;
+            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off)
+                .map_err(|e| e.to_string())?;
 
             // Pause all old streams, sync positions, then start the new combined stream.
             self._main_stream.lock().unwrap().0.pause().ok();
@@ -504,8 +519,7 @@ impl AppAudio {
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
                 *guard = None;
             }
-            { let mut a = self.deck_a.lock().unwrap(); a.cue_pos = a.main_pos; }
-            { let mut b = self.deck_b.lock().unwrap(); b.cue_pos = b.main_pos; }
+            self.sync_cue_positions();
             {
                 let mut guard = self._main_stream.lock().unwrap();
                 *guard = SendStream(stream);
@@ -519,37 +533,28 @@ impl AppAudio {
             let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
             log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
                 main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
-            let main_stream = build_stream(
-                &main_device, &main_cfg,
-                Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
-                main_cfg.channels() as usize, false, main_off,
-            ).map_err(|e| e.to_string())?;
+            let main_stream = build_stream(&main_device, &main_cfg, ch.clone(), false, main_off)
+                .map_err(|e| e.to_string())?;
 
             let new_cue_stream = if !cue_id.is_empty() {
                 let cue_device = find_output_device(&cue_id)?;
                 let cue_cfg    = best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
                 log::info!("rebuild_streams: cue config ch={} sr={} fmt={:?}",
                     cue_cfg.channels(), cue_cfg.sample_rate().0, cue_cfg.sample_format());
-                Some(build_stream(
-                    &cue_device, &cue_cfg,
-                    Arc::clone(&self.deck_a), Arc::clone(&self.deck_b),
-                    cue_cfg.channels() as usize, true, cue_off,
-                ).map_err(|e| e.to_string())?)
+                Some(build_stream(&cue_device, &cue_cfg, ch, true, cue_off)
+                    .map_err(|e| e.to_string())?)
             } else {
                 None
             };
 
-            // Pause all old streams, then sync cue_pos to main_pos so both new
-            // streams start from the same position.
+            // Pause all old streams, sync cue_pos to main_pos, then start new streams.
             self._main_stream.lock().unwrap().0.pause().ok();
             {
-                let mut guard = self._cue_stream.lock().unwrap();
+                let guard = self._cue_stream.lock().unwrap();
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
             }
-            { let mut a = self.deck_a.lock().unwrap(); a.cue_pos = a.main_pos; }
-            { let mut b = self.deck_b.lock().unwrap(); b.cue_pos = b.main_pos; }
+            self.sync_cue_positions();
 
-            // Start all new streams.
             {
                 let mut guard = self._main_stream.lock().unwrap();
                 *guard = SendStream(main_stream);
@@ -570,6 +575,29 @@ impl AppAudio {
 
         Ok(())
     }
+
+    fn sync_cue_positions(&self) {
+        for deck_arc in self.decks.values() {
+            let mut deck = deck_arc.lock().unwrap();
+            deck.cue_pos = deck.main_pos;
+        }
+    }
+}
+
+// Build a paired list of (deck, strip) in a consistent order for use in stream callbacks.
+fn channel_pairs(
+    decks: &HashMap<String, Arc<Mutex<DeckState>>>,
+    strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>,
+) -> Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)> {
+    let mut ids: Vec<&String> = decks.keys().collect();
+    ids.sort();
+    ids.into_iter()
+        .filter_map(|id| {
+            let deck = decks.get(id)?;
+            let strip = strips.get(id)?;
+            Some((Arc::clone(deck), Arc::clone(strip)))
+        })
+        .collect()
 }
 
 fn find_output_device(device_id: &str) -> Result<cpal::Device, String> {
@@ -644,14 +672,13 @@ fn best_output_config(
 fn build_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    deck_a: Arc<Mutex<DeckState>>,
-    deck_b: Arc<Mutex<DeckState>>,
-    output_channels: usize,
+    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
     is_cue: bool,
     channel_offset: usize,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
     let stream_config: cpal::StreamConfig = config.clone().into();
-    let label = if is_cue { "cue" } else { "main" };
+    let output_channels = config.channels() as usize;
+    let label = if is_cue { "cue" } else { "master" };
     log::info!(
         "build_stream [{}]: output_channels={} channel_offset={} format={:?} sample_rate={}",
         label, output_channels, channel_offset, config.sample_format(), config.sample_rate().0
@@ -659,19 +686,10 @@ fn build_stream(
 
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
-            let mut fired = false;
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    if !fired {
-                        fired = true;
-                        log::info!("fill_output [{}]: first callback, buf_len={} output_channels={} channel_offset={}", label, data.len(), output_channels, channel_offset);
-                        {
-                            let a = deck_a.lock().unwrap();
-                            log::info!("fill_output [{}]: deck_a is_playing={} samples_len={} gain={}", label, a.is_playing, a.samples.len(), a.gain);
-                        }
-                    }
-                    fill_output(data, output_channels, &deck_a, &deck_b, is_cue, channel_offset);
+                    fill_output(data, output_channels, &channels, is_cue, channel_offset);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -683,7 +701,7 @@ fn build_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     let mut buf = vec![0.0f32; data.len()];
-                    fill_output(&mut buf, output_channels, &deck_a, &deck_b, is_cue, channel_offset);
+                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -700,26 +718,21 @@ fn build_stream(
 fn fill_output(
     data: &mut [f32],
     output_channels: usize,
-    deck_a: &Arc<Mutex<DeckState>>,
-    deck_b: &Arc<Mutex<DeckState>>,
+    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
     is_cue: bool,
     channel_offset: usize,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    let tick: fn(&mut DeckState) -> (f32, f32) = if is_cue { DeckState::cue_tick } else { DeckState::main_tick };
+    let deck_tick: fn(&mut DeckState) -> (f32, f32) = if is_cue { DeckState::cue_tick } else { DeckState::main_tick };
+    let strip_process: fn(&mut ChannelStrip, f32, f32) -> (f32, f32) = if is_cue { ChannelStrip::process_cue } else { ChannelStrip::process_main };
 
-    {
-        let mut deck = deck_a.lock().unwrap();
+    for (deck_arc, strip_arc) in channels {
+        let mut deck = deck_arc.lock().unwrap();
+        let mut strip = strip_arc.lock().unwrap();
         for i in 0..frames {
-            let (l, r) = tick(&mut deck);
-            mix_frame(data, i, output_channels, channel_offset, l, r);
-        }
-    }
-    {
-        let mut deck = deck_b.lock().unwrap();
-        for i in 0..frames {
-            let (l, r) = tick(&mut deck);
+            let (l, r) = deck_tick(&mut deck);
+            let (l, r) = strip_process(&mut strip, l, r);
             mix_frame(data, i, output_channels, channel_offset, l, r);
         }
     }
@@ -749,8 +762,7 @@ fn mix_frame(data: &mut [f32], frame: usize, channels: usize, channel_offset: us
 fn build_combined_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    deck_a: Arc<Mutex<DeckState>>,
-    deck_b: Arc<Mutex<DeckState>>,
+    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
     output_channels: usize,
     main_offset: usize,
     cue_offset: usize,
@@ -765,7 +777,7 @@ fn build_combined_stream(
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output_combined(data, output_channels, &deck_a, &deck_b, main_offset, cue_offset);
+                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -777,7 +789,7 @@ fn build_combined_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     let mut buf = vec![0.0f32; data.len()];
-                    fill_output_combined(&mut buf, output_channels, &deck_a, &deck_b, main_offset, cue_offset);
+                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -794,28 +806,21 @@ fn build_combined_stream(
 fn fill_output_combined(
     data: &mut [f32],
     output_channels: usize,
-    deck_a: &Arc<Mutex<DeckState>>,
-    deck_b: &Arc<Mutex<DeckState>>,
+    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
     main_offset: usize,
     cue_offset: usize,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    {
-        let mut deck = deck_a.lock().unwrap();
+    for (deck_arc, strip_arc) in channels {
+        let mut deck = deck_arc.lock().unwrap();
+        let mut strip = strip_arc.lock().unwrap();
         for i in 0..frames {
-            let (ml, mr) = deck.main_tick();
-            let (cl, cr) = deck.cue_tick();
+            let (l, r) = deck.main_tick();
+            let (ml, mr) = strip.process_main(l, r);
             mix_frame(data, i, output_channels, main_offset, ml, mr);
-            mix_frame(data, i, output_channels, cue_offset, cl, cr);
-        }
-    }
-    {
-        let mut deck = deck_b.lock().unwrap();
-        for i in 0..frames {
-            let (ml, mr) = deck.main_tick();
-            let (cl, cr) = deck.cue_tick();
-            mix_frame(data, i, output_channels, main_offset, ml, mr);
+            let (l, r) = deck.cue_tick();
+            let (cl, cr) = strip.process_cue(l, r);
             mix_frame(data, i, output_channels, cue_offset, cl, cr);
         }
     }
@@ -968,11 +973,10 @@ pub fn resample_linear(
 
 // ── Waveform peak extraction ──────────────────────────────────────────────────
 
-/// Compute `num_points` peak amplitude values for the region [start_sec, end_sec]
-/// of the (resampled, interleaved) sample buffer at `device_sample_rate`.
-/// Always returns exactly `num_points` values. Resolution adapts to the zoom
-/// level: each point covers (end_sec - start_sec) / num_points seconds of audio,
-/// giving pixel-perfect detail at any zoom without pre-baked resolution limits.
+// Compute `num_points` peak amplitude values for the region [start_sec, end_sec]
+// of the (resampled, interleaved) sample buffer at `device_sample_rate`.
+// Always returns exactly `num_points` values. Resolution adapts to the zoom
+// level: each point covers (end_sec - start_sec) / num_points seconds of audio,
 pub fn compute_waveform_region(
     samples: &[f32],
     channels: usize,
@@ -1017,9 +1021,6 @@ pub fn compute_waveform_region(
 }
 
 // ── BPM detection ─────────────────────────────────────────────────────────────
-//
-// Algorithm mirrors the existing bpmDetect.ts logic: lowpass filter, peak
-// finding, interval counting, BPM clustering.
 
 const BPM_MIN: f64 = 90.0;
 const BPM_MAX: f64 = 180.0;

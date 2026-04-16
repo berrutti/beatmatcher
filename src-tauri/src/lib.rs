@@ -1,6 +1,6 @@
 mod audio;
 
-use audio::{AppAudio, DeviceInfo, TrackInfo};
+use audio::{AppAudio, ChannelStrip, DeviceInfo, TrackInfo};
 use std::sync::Arc;
 
 pub struct AppState {
@@ -16,10 +16,14 @@ fn get_deck(
     state: &tauri::State<'_, AppState>,
     deck: &str,
 ) -> Result<std::sync::Arc<std::sync::Mutex<audio::DeckState>>, String> {
-    state
-        .audio
-        .deck(deck)
-        .ok_or_else(|| format!("unknown deck: {}", deck))
+    state.audio.deck(deck).ok_or_else(|| format!("unknown deck: {}", deck))
+}
+
+fn get_strip(
+    state: &tauri::State<'_, AppState>,
+    deck: &str,
+) -> Result<std::sync::Arc<std::sync::Mutex<ChannelStrip>>, String> {
+    state.audio.strip(deck).ok_or_else(|| format!("unknown deck: {}", deck))
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -182,7 +186,7 @@ fn set_volume(
     deck: String,
     gain: f32,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().gain = gain.clamp(0.0, 1.0);
+    get_strip(&state, &deck)?.lock().unwrap().gain = gain.clamp(0.0, 1.0);
     Ok(())
 }
 
@@ -213,10 +217,7 @@ fn set_eq(
     band: String,
     db: f32,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?
-        .lock()
-        .unwrap()
-        .set_eq_band(&band, db);
+    get_strip(&state, &deck)?.lock().unwrap().set_eq_band(&band, db);
     Ok(())
 }
 
@@ -276,7 +277,7 @@ fn set_cue_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().cue_active = active;
+    get_strip(&state, &deck)?.lock().unwrap().cue_active = active;
     Ok(())
 }
 
