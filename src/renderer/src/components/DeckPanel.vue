@@ -146,8 +146,8 @@
           <input
             type="range"
             class="deck__slider deck__slider--eq"
-            min="-12"
-            max="12"
+            :min="EQ_MIN_DB"
+            :max="EQ_MAX_DB"
             step="0.5"
             :value="props.deck.eq[band]"
             orient="vertical"
@@ -244,7 +244,7 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue';
-import { PITCH_RANGE } from '@renderer/stores/decks';
+import { PITCH_RANGE, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/decks';
 import type { Deck } from '@renderer/stores/decks';
 import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
@@ -437,7 +437,7 @@ function onBpmModalSubmit(bpm: number) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 0.6em;
   padding: 0.5em 0;
 }
 .deck__load-btn {
@@ -447,7 +447,7 @@ function onBpmModalSubmit(bpm: number) {
   font-family: var(--font);
   font-size: 0.65em;
   letter-spacing: 0.15em;
-  padding: 6px 16px;
+  padding: 0.4em 1em;
   border-radius: 4px;
   cursor: pointer;
 }

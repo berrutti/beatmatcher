@@ -4,12 +4,15 @@
       <main class="app__decks">
         <DeckPanel :deck="store.deckA" :keybindings="KEYS.deckA" />
         <div class="app__center">
-          <LissajousScope
-            :sources="[
-              { getPhase: () => store.deckA.phase, accent: store.deckA.accent, label: 'A' },
-              { getPhase: () => store.deckB.phase, accent: store.deckB.accent, label: 'B' }
-            ]"
-          />
+          <div class="app__scope">
+            <LissajousScope
+              :sources="[
+                { getPhase: () => store.deckA.phase, accent: store.deckA.accent, label: 'A' },
+                { getPhase: () => store.deckB.phase, accent: store.deckB.accent, label: 'B' }
+              ]"
+            />
+          </div>
+          <MixerPanel />
         </div>
         <DeckPanel :deck="store.deckB" :keybindings="KEYS.deckB" />
       </main>
@@ -24,6 +27,7 @@ import { useKeyboard } from '@renderer/composables/useKeyboard';
 import { KEYS } from '@renderer/keybindings';
 import DeckPanel from '@renderer/components/DeckPanel.vue';
 import LissajousScope from '@renderer/components/LissajousScope.vue';
+import MixerPanel from '@renderer/components/MixerPanel.vue';
 
 useKeyboard();
 
@@ -59,9 +63,16 @@ onUnmounted(() => store.destroy());
   width: 18em;
   flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
   border-left: 1px solid var(--color-border);
   border-right: 1px solid var(--color-border);
+}
+
+.app__scope {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 </style>

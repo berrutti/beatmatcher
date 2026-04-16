@@ -22,7 +22,8 @@ export type TrackData = {
 export const PITCH_RANGE = 10;
 
 const NUDGE_PERCENT = 4;
-const EQ_GAIN_LIMIT = 12;
+export const EQ_MIN_DB = -26;
+export const EQ_MAX_DB = 6;
 
 type SavedTrack = {
   trackBpm: number;
@@ -465,7 +466,7 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     setEq(band: 'low' | 'mid' | 'high', db: number) {
-      const clamped = Math.max(-EQ_GAIN_LIMIT, Math.min(EQ_GAIN_LIMIT, db));
+      const clamped = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
       state.eq[band] = clamped;
       invoke('set_eq', { deck: id, band, db: clamped });
     },
@@ -512,5 +513,10 @@ export const useDecksStore = defineStore('decks', () => {
     deckB.destroy();
   }
 
-  return { deckA, deckB, decks, destroy };
+  return {
+    deckA,
+    deckB,
+    decks,
+    destroy
+  };
 });
