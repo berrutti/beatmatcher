@@ -9,7 +9,9 @@
             :class="{ 'mixer__filter-btn--active': mixer.filterEnabled.A }"
             :style="{ '--fader-accent': decks.deckA.accent }"
             @click="mixer.toggleFilter('A')"
-          >F</button>
+          >
+            F
+          </button>
           <input
             type="range"
             class="mixer__filter-slider"
@@ -62,7 +64,9 @@
             :class="{ 'mixer__filter-btn--active': mixer.filterEnabled.B }"
             :style="{ '--fader-accent': decks.deckB.accent }"
             @click="mixer.toggleFilter('B')"
-          >F</button>
+          >
+            F
+          </button>
           <span class="mixer__filter-label">FLT</span>
         </div>
         <input
