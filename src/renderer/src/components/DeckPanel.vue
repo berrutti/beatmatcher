@@ -6,8 +6,11 @@
     :class="{
       'deck--playing': props.deck.playing,
       'deck--edit': props.deck.mode === 'edit',
-      'deck--drag-over': isDragOver && props.deck.mode === 'play'
+      'deck--drag-over': (isDragOver || isDragOverCollection) && props.deck.mode === 'play'
     }"
+    @dragover="onDeckDragOver"
+    @dragleave="onDeckDragLeave"
+    @drop="onDeckDrop"
   >
     <ConfirmModal
       :open="pendingPath !== null"
@@ -247,6 +250,7 @@ import { ref, nextTick } from 'vue';
 import { PITCH_RANGE, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/decks';
 import type { Deck } from '@renderer/stores/decks';
 import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
+import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
@@ -346,6 +350,29 @@ const pendingPath = ref<string | null>(null);
 const bpmModalOpen = ref(false);
 
 const { isDragOver, openFileDialog } = useAudioFileDrop(deckEl, (path) => onLoadFile(path));
+
+const collectionStore = useCollectionStore();
+const isDragOverCollection = ref(false);
+
+function onDeckDragOver(e: DragEvent) {
+  if (collectionStore.draggingPath) {
+    e.preventDefault();
+    isDragOverCollection.value = true;
+  }
+}
+
+function onDeckDragLeave() {
+  isDragOverCollection.value = false;
+}
+
+function onDeckDrop(e: DragEvent) {
+  isDragOverCollection.value = false;
+  if (collectionStore.draggingPath) {
+    e.preventDefault();
+    e.stopPropagation();
+    onLoadFile(collectionStore.draggingPath);
+  }
+}
 
 function onLoadFile(path: string) {
   if (props.deck.loopPlaying) {

@@ -326,6 +326,40 @@ async fn open_file_dialog() -> Option<String> {
     result.map(|f| f.path().to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+fn read_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn analyze_track(path: String) -> Result<TrackInfo, String> {
+    tokio::task::spawn_blocking(move || -> Result<TrackInfo, String> {
+        let (raw_samples, channels, native_sr) =
+            audio::decode_audio(&path).map_err(|e| e.to_string())?;
+
+        let total_frames = raw_samples.len() / channels;
+        let duration = total_frames as f64 / native_sr as f64;
+
+        let mono_owned: Vec<f32>;
+        let mono: &[f32] = if channels == 1 {
+            &raw_samples
+        } else {
+            mono_owned = raw_samples
+                .chunks(channels)
+                .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+                .collect();
+            &mono_owned
+        };
+
+        let bpm = audio::detect_bpm(mono, native_sr);
+        let silence_end = audio::detect_silence_end(mono, native_sr);
+
+        Ok(TrackInfo { duration, sample_rate: native_sr, bpm, silence_end })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -337,6 +371,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -365,6 +400,8 @@ pub fn run() {
             set_cue_device,
             set_main_device,
             open_file_dialog,
+            read_file,
+            analyze_track,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
