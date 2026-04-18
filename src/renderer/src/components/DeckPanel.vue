@@ -2,29 +2,20 @@
   <div
     ref="deckEl"
     class="deck"
+    :data-deck-id="props.deck.id"
     :style="{ '--deck-accent': props.deck.accent }"
     :class="{
       'deck--playing': props.deck.playing,
       'deck--edit': props.deck.mode === 'edit',
-      'deck--drag-over': (isDragOver || isDragOverCollection) && props.deck.mode === 'play'
+      'deck--drag-over': isDragOverCollection && props.deck.mode === 'play'
     }"
-    @dragover="onDeckDragOver"
-    @dragleave="onDeckDragLeave"
-    @drop="onDeckDrop"
   >
     <ConfirmModal
-      :open="pendingPath !== null"
+      :open="pendingLoad !== null"
       title="Load new track?"
       body="Playback will stop and the current track will be replaced."
       @confirm="onConfirmLoad"
-      @cancel="pendingPath = null"
-    />
-
-    <BpmModal
-      :open="bpmModalOpen"
-      :current-bpm="!!props.deck.trackBpm && props.deck.trackBpm > 0 ? props.deck.trackBpm : null"
-      @submit="onBpmModalSubmit"
-      @cancel="bpmModalOpen = false"
+      @cancel="pendingLoad = null"
     />
 
     <div class="deck__header">
@@ -51,29 +42,23 @@
       </div>
     </div>
 
-    <div v-if="props.deck.detecting" class="deck__detecting">
-      <span class="deck__detecting-text">Detecting BPM...</span>
-    </div>
-
     <WaveformDisplay
-      v-show="props.deck.mode === 'edit' && !props.deck.detecting"
+      v-show="props.deck.mode === 'edit'"
       class="deck__waveform"
       :accent="props.deck.accent"
       :track-data="props.deck.trackData"
-      :is-drag-over="isDragOver"
+      :is-drag-over="false"
       :track-bpm="props.deck.trackBpm"
       :beat-offset="props.deck.beatOffset"
       :cue-point="props.deck.cuePoint"
       :get-track-position="() => props.deck.trackPosition"
       :get-playhead-position="props.deck.getPlayheadPosition"
       :get-waveform-region="props.deck.getWaveformRegion"
-      @open-file-dialog="openFileDialog"
       @set-beat-offset="props.deck.setBeatOffset"
       @seek="props.deck.seekTo"
-      @request-bpm-input="bpmModalOpen = true"
     />
 
-    <div v-show="props.deck.mode === 'play' && !props.deck.detecting" class="phase-ring-wrapper">
+    <div v-show="props.deck.mode === 'play'" class="phase-ring-wrapper">
       <PhaseRing
         :accent="props.deck.accent"
         :track-bpm="props.deck.trackBpm"
@@ -82,9 +67,9 @@
       />
     </div>
 
-    <template v-if="props.deck.mode === 'play' && !props.deck.detecting">
+    <template v-if="props.deck.mode === 'play'">
       <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-        <button class="deck__load-btn" @click="openFileDialog">LOAD TRACK</button>
+        <span class="deck__drop-hint">Drag a track from the collection</span>
       </div>
 
       <div class="deck__bpm-display" v-if="props.deck.trackLoaded">
@@ -246,15 +231,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { PITCH_RANGE, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/decks';
-import type { Deck } from '@renderer/stores/decks';
-import { useAudioFileDrop } from '@renderer/composables/useAudioFileDrop';
+import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
-import BpmModal from '@renderer/components/BpmModal.vue';
 
 const deckEl = ref<HTMLElement | null>(null);
 
@@ -346,57 +329,64 @@ function onTogglePlay() {
   props.deck.togglePlay();
 }
 
-const pendingPath = ref<string | null>(null);
-const bpmModalOpen = ref(false);
-
-const { isDragOver, openFileDialog } = useAudioFileDrop(deckEl, (path) => onLoadFile(path));
+const pendingLoad = ref<LoadableTrack | null>(null);
 
 const collectionStore = useCollectionStore();
 const isDragOverCollection = ref(false);
 
-function onDeckDragOver(e: DragEvent) {
-  if (collectionStore.draggingPath) {
-    e.preventDefault();
-    isDragOverCollection.value = true;
-  }
+function onWindowPointerMove(e: PointerEvent) {
+  if (!deckEl.value) return;
+  const rect = deckEl.value.getBoundingClientRect();
+  isDragOverCollection.value =
+    e.clientX >= rect.left &&
+    e.clientX <= rect.right &&
+    e.clientY >= rect.top &&
+    e.clientY <= rect.bottom;
 }
 
-function onDeckDragLeave() {
-  isDragOverCollection.value = false;
+watch(
+  () => collectionStore.draggingPath,
+  (path) => {
+    if (path) {
+      window.addEventListener('pointermove', onWindowPointerMove);
+    } else {
+      window.removeEventListener('pointermove', onWindowPointerMove);
+      isDragOverCollection.value = false;
+    }
+  },
+);
+
+function buildLoadable(path: string): LoadableTrack | null {
+  const data = collectionStore.getLoadable(path);
+  if (!data) return null;
+  return {
+    ...data,
+    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec }),
+  };
 }
 
-function onDeckDrop(e: DragEvent) {
-  isDragOverCollection.value = false;
-  if (collectionStore.draggingPath) {
-    e.preventDefault();
-    e.stopPropagation();
-    onLoadFile(collectionStore.draggingPath);
-  }
-}
-
-function onLoadFile(path: string) {
+function onCollectionDrop(e: Event) {
+  const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
+  if (deckId !== props.deck.id) return;
+  const loadable = buildLoadable(path);
+  if (!loadable) return;
   if (props.deck.loopPlaying) {
-    pendingPath.value = path;
+    pendingLoad.value = loadable;
     return;
   }
-  props.deck.loadTrack(path, () => {
-    bpmModalOpen.value = true;
-  });
+  props.deck.loadTrack(loadable);
 }
+
+onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
+onUnmounted(() => {
+  window.removeEventListener('bm:collection-drop', onCollectionDrop);
+  window.removeEventListener('pointermove', onWindowPointerMove);
+});
 
 function onConfirmLoad() {
-  const path = pendingPath.value;
-  pendingPath.value = null;
-  if (path)
-    props.deck.loadTrack(path, () => {
-      bpmModalOpen.value = true;
-    });
-}
-
-function onBpmModalSubmit(bpm: number) {
-  props.deck.setTrackBpm(bpm);
-  props.deck.setEditMode();
-  bpmModalOpen.value = false;
+  const loadable = pendingLoad.value;
+  pendingLoad.value = null;
+  if (loadable) props.deck.loadTrack(loadable);
 }
 </script>
 
@@ -433,27 +423,6 @@ function onBpmModalSubmit(bpm: number) {
   min-height: 0;
 }
 
-.deck__detecting {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.deck__detecting-text {
-  font-size: 1em;
-  opacity: 0.6;
-  animation: pulse-fade 1.2s ease-in-out infinite;
-}
-@keyframes pulse-fade {
-  0%,
-  100% {
-    opacity: 0.3;
-  }
-  50% {
-    opacity: 0.8;
-  }
-}
-
 .deck--drag-over {
   outline: 2px dashed var(--deck-accent);
   outline-offset: -4px;
@@ -467,20 +436,11 @@ function onBpmModalSubmit(bpm: number) {
   gap: 0.6em;
   padding: 0.5em 0;
 }
-.deck__load-btn {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+.deck__drop-hint {
   color: var(--color-muted);
-  font-family: var(--font);
   font-size: 0.65em;
-  letter-spacing: 0.15em;
-  padding: 0.4em 1em;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.deck__load-btn:hover {
-  border-color: #555;
-  color: var(--color-text);
+  letter-spacing: 0.1em;
+  opacity: 0.6;
 }
 
 .deck__header {

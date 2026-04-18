@@ -35,13 +35,11 @@
           :key="track.id"
           class="collection__item"
           :class="`collection__item--${track.status}`"
-          :draggable="track.file !== null"
-          @dragstart="onItemDragStart($event, track)"
-          @dragend="store.endDrag()"
+          @pointerdown="onItemPointerDown($event, track)"
         >
           <span class="collection__item-name" :title="track.name">{{ displayName(track.name) }}</span>
-          <span v-if="track.bpm !== null" class="collection__item-bpm">
-            {{ track.bpm.toFixed(1) }} BPM
+          <span v-if="store.bpmFor(track) !== null" class="collection__item-bpm">
+            {{ store.bpmFor(track)!.toFixed(1) }} BPM
           </span>
           <span v-else-if="track.status === 'analyzing'" class="collection__item-tag">
             detecting...
@@ -62,12 +60,25 @@
           >
             ANALYZE
           </button>
+          <button
+            v-if="track.status === 'error'"
+            class="collection__item-btn"
+            @click.stop="openBpmModal(track.id)"
+          >
+            SET BPM
+          </button>
           <button class="collection__item-remove" @click.stop="store.removeTrack(track.id)">
             ✕
           </button>
         </div>
       </div>
     </div>
+    <BpmModal
+      :open="bpmModalTrackId !== null"
+      :current-bpm="null"
+      @submit="onBpmSubmit"
+      @cancel="bpmModalTrackId = null"
+    />
   </div>
 </template>
 
@@ -75,10 +86,21 @@
 import { ref } from 'vue';
 import { useCollectionStore } from '@renderer/stores/collection';
 import type { CollectionEntry } from '@renderer/stores/collection';
+import BpmModal from '@renderer/components/BpmModal.vue';
 
 const store = useCollectionStore();
 const isDragOver = ref(false);
+const bpmModalTrackId = ref<string | null>(null);
 const isTauri = '__TAURI_INTERNALS__' in window;
+
+function openBpmModal(id: string) {
+  bpmModalTrackId.value = id;
+}
+
+function onBpmSubmit(bpm: number) {
+  if (bpmModalTrackId.value) store.setBpm(bpmModalTrackId.value, bpm);
+  bpmModalTrackId.value = null;
+}
 
 function isAudio(file: File): boolean {
   return file.type.startsWith('audio/') || /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i.test(file.name);
@@ -133,11 +155,56 @@ async function onDrop(e: DragEvent) {
   if (files.length > 0) store.addFiles(files);
 }
 
-function onItemDragStart(e: DragEvent, track: CollectionEntry) {
-  if (!track.file) return;
-  store.startDrag(track.file, track.path);
-  e.dataTransfer!.effectAllowed = 'copy';
-  e.dataTransfer!.setData('text/plain', track.id);
+const DRAG_THRESHOLD = 5;
+
+function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
+  if (e.button !== 0 || track.status !== 'ready' || !track.file || !track.path) return;
+  if ((e.target as HTMLElement).closest('button')) return;
+
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const file = track.file;
+  const path = track.path;
+  let active = false;
+
+  function onMove(ev: PointerEvent) {
+    if (!active) {
+      if (Math.abs(ev.clientX - startX) < DRAG_THRESHOLD && Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return;
+      active = true;
+      store.startDrag(file, path);
+      document.body.style.cursor = 'grabbing';
+    }
+  }
+
+  function cleanup() {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+  }
+
+  function onUp(ev: PointerEvent) {
+    cleanup();
+    if (!active) return;
+    document.body.style.cursor = '';
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const deckEl = el?.closest('[data-deck-id]') as HTMLElement | null;
+    const deckId = deckEl?.dataset.deckId;
+    if (deckId) {
+      window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path } }));
+    }
+    store.endDrag();
+  }
+
+  function onCancel() {
+    cleanup();
+    if (!active) return;
+    document.body.style.cursor = '';
+    store.endDrag();
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
 }
 
 async function openFileDialog() {
@@ -294,14 +361,17 @@ async function openFileDialog() {
   padding: 0 1em;
   height: 32px;
   border-bottom: 1px solid var(--color-border);
-  cursor: grab;
+  cursor: default;
   transition: background 0.1s;
   font-size: 0.7em;
 }
 .collection__item:hover {
   background: var(--color-surface);
 }
-.collection__item:active {
+.collection__item--ready {
+  cursor: grab;
+}
+.collection__item--ready:active {
   cursor: grabbing;
 }
 

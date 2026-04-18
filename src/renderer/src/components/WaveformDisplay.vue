@@ -2,7 +2,7 @@
   <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
     <!-- Empty state -->
     <div v-if="!props.trackData" class="waveform__empty">
-      <button class="waveform__load-btn" @click="emit('openFileDialog')">LOAD TRACK</button>
+      <span class="waveform__empty-text">No track loaded</span>
     </div>
 
     <!-- Waveform canvas -->
@@ -27,9 +27,6 @@
           <span class="waveform__zoom-label">{{ zoomLabel }}</span>
           <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
-
-        <button class="waveform__set-bpm-btn" @click="emit('openFileDialog')">LOAD</button>
-        <button class="waveform__set-bpm-btn" @click="emit('requestBpmInput')">SET BPM</button>
       </div>
     </template>
   </div>
@@ -52,10 +49,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  openFileDialog: [];
   setBeatOffset: [sec: number];
   seek: [sec: number];
-  requestBpmInput: [];
 }>();
 
 const accent = computed(() => props.accent);
@@ -501,21 +496,11 @@ watch([viewStartSec, viewEndSec], () => {
   color: #444;
 }
 
-.waveform__load-btn {
-  background: #1a1a1a;
-  border: 1px solid #333;
-  color: #aaa;
-  font-family: var(--font-mono);
+.waveform__empty-text {
+  color: var(--color-muted);
   font-size: 0.7rem;
-  letter-spacing: 0.15em;
-  padding: 8px 20px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.waveform__load-btn:hover {
-  border-color: #555;
-  color: #eee;
+  letter-spacing: 0.12em;
+  opacity: 0.6;
 }
 
 .waveform__canvas {
@@ -583,20 +568,4 @@ watch([viewStartSec, viewEndSec], () => {
   text-align: center;
 }
 
-.waveform__set-bpm-btn {
-  background: transparent;
-  border: 1px solid #333;
-  color: #777;
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  letter-spacing: 0.15em;
-  padding: 4px 10px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.waveform__set-bpm-btn:hover {
-  border-color: #555;
-  color: #aaa;
-}
 </style>

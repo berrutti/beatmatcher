@@ -11,7 +11,6 @@ export type LoopRegion = {
   beats: number;
 };
 
-// Shape of data returned by the Rust load_track command
 export type TrackData = {
   duration: number;
   sampleRate: number;
@@ -19,50 +18,20 @@ export type TrackData = {
   silenceEnd: number;
 };
 
+export type LoadableTrack = {
+  path: string;
+  name: string;
+  bpm: number;
+  silenceEnd: number;
+  beatOffset: number;
+  onBeatOffsetChange: (sec: number) => void;
+};
+
 export const PITCH_RANGE = 10;
 
 const NUDGE_PERCENT = 4;
 export const EQ_MIN_DB = -26;
 export const EQ_MAX_DB = 6;
-
-type SavedTrack = {
-  trackBpm: number;
-  beatOffset: number;
-  cuePoint?: number;
-  loopRegion?: { startSec: number; endSec: number; beats: number };
-};
-
-const STORAGE_KEY = 'beatmatcher:track-regions';
-
-function loadSavedTracks(): Record<string, SavedTrack> {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
-function saveTrack(filename: string, data: SavedTrack) {
-  const all = loadSavedTracks();
-  all[filename] = data;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
-}
-
-function getSavedTrack(filename: string): SavedTrack | null {
-  const raw = loadSavedTracks()[filename] as
-    | (SavedTrack & { startSec?: number; endSec?: number; beats?: number; detectedBpm?: number })
-    | undefined;
-  if (!raw) return null;
-  if (raw.trackBpm && raw.beatOffset !== undefined && !raw.startSec) return raw as SavedTrack;
-  const bpm = raw.trackBpm || raw.detectedBpm;
-  if (!bpm) return null;
-  const beatOffset = raw.beatOffset ?? raw.startSec ?? 0;
-  const result: SavedTrack = { trackBpm: bpm, beatOffset };
-  if (raw.startSec !== undefined && raw.endSec !== undefined && raw.beats) {
-    result.loopRegion = { startSec: raw.startSec, endSec: raw.endSec, beats: raw.beats };
-  }
-  return result;
-}
 
 function quantizeToBeat(sec: number, bpm: number, beatOffset: number): number {
   if (bpm <= 0) return sec;
@@ -75,7 +44,7 @@ function createDeck(id: DeckId, accent: string) {
   let positionCache = 0;
   let rafId: number | null = null;
   let pollInFlight = false;
-  let currentFilename = '';
+  let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
 
   function startPolling() {
     if (rafId !== null) return;
@@ -116,7 +85,6 @@ function createDeck(id: DeckId, accent: string) {
     trackName: '',
     trackLoaded: false,
     trackData: null as TrackData | null,
-    detecting: false,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
     loopActive: false,
@@ -164,7 +132,7 @@ function createDeck(id: DeckId, accent: string) {
       });
     },
 
-    async loadTrack(path: string, onNeedBpmInput: () => void) {
+    async loadTrack(data: LoadableTrack) {
       if (state.loopPlaying) {
         await invoke('stop', { deck: id });
         state.loopPlaying = false;
@@ -177,68 +145,26 @@ function createDeck(id: DeckId, accent: string) {
       state.trackData = null;
       positionCache = 0;
 
-      currentFilename = path.split('/').pop() ?? path;
-      const saved = getSavedTrack(currentFilename);
-      const analyze = !saved;
+      onBeatOffsetChangeCb = data.onBeatOffsetChange;
 
-      state.detecting = analyze;
-
-      let info: TrackData;
-      try {
-        info = await invoke<TrackData>('load_track', { deck: id, path, analyze });
-      } catch (err) {
-        state.detecting = false;
-        throw err;
-      }
-
-      state.trackName = currentFilename;
-      state.trackData = info;
-      state.trackLoaded = true;
-      state.detecting = false;
-
-      if (saved) {
-        console.log(
-          `[deck ${id}] restored saved track: bpm=${saved.trackBpm} cuePoint=${saved.cuePoint ?? saved.beatOffset}`
-        );
-        state.trackBpm = saved.trackBpm;
-        state.beatOffset = saved.beatOffset;
-        state.cuePoint = saved.cuePoint ?? saved.beatOffset;
-        state.targetBpm = saved.trackBpm;
-        state.pitchOffset = 0;
-        positionCache = state.cuePoint;
-        await invoke('set_playback_rate', { deck: id, rate: 1.0 });
-        await invoke('seek', { deck: id, sec: state.cuePoint });
-        if (saved.loopRegion) {
-          state.loopRegion = saved.loopRegion;
-          await invoke('set_loop_region', {
-            deck: id,
-            startSec: saved.loopRegion.startSec,
-            endSec: saved.loopRegion.endSec
-          });
-        }
-        state.mode = 'edit';
-        return;
-      }
-
-      console.log(`[deck ${id}] load_track analysis result:`, {
-        duration: info.duration,
-        bpm: info.bpm,
-        silenceEnd: info.silenceEnd
+      const info = await invoke<TrackData>('load_track', {
+        deck: id,
+        path: data.path,
+        analyze: false,
       });
 
-      const detectedBpm = info.bpm ?? 0;
-      const silenceEnd = info.silenceEnd;
+      state.trackName = data.name;
+      state.trackData = info;
+      state.trackLoaded = true;
 
-      if (detectedBpm > 0) {
-        console.log(
-          `[deck ${id}] using detected bpm=${detectedBpm} silenceEnd=${silenceEnd}s as beat offset`
-        );
-        state.setTrackBpm(detectedBpm, silenceEnd);
-        state.mode = 'edit';
-      } else {
-        console.log(`[deck ${id}] no BPM detected, requesting manual input`);
-        onNeedBpmInput();
-      }
+      state.trackBpm = data.bpm;
+      state.beatOffset = data.beatOffset;
+      state.cuePoint = data.beatOffset;
+      state.targetBpm = data.bpm;
+      state.pitchOffset = 0;
+      positionCache = data.beatOffset;
+      await invoke('set_playback_rate', { deck: id, rate: 1.0 });
+      await invoke('seek', { deck: id, sec: data.beatOffset });
     },
 
     setEditMode() {
@@ -249,47 +175,9 @@ function createDeck(id: DeckId, accent: string) {
       state.mode = 'play';
     },
 
-    setTrackBpm(bpm: number, beatOffsetSec = state.beatOffset) {
-      state.trackBpm = bpm;
-      state.beatOffset = beatOffsetSec;
-      state.cuePoint = beatOffsetSec;
-      state.targetBpm = bpm;
-      state.pitchOffset = 0;
-      positionCache = beatOffsetSec;
-      invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      invoke('seek', { deck: id, sec: beatOffsetSec });
-      if (currentFilename) {
-        saveTrack(currentFilename, {
-          trackBpm: bpm,
-          beatOffset: beatOffsetSec,
-          cuePoint: beatOffsetSec,
-          loopRegion: state.loopRegion
-            ? {
-                startSec: state.loopRegion.startSec,
-                endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats
-              }
-            : undefined
-        });
-      }
-    },
-
     setBeatOffset(sec: number) {
       state.beatOffset = sec;
-      if (currentFilename && state.trackBpm !== null) {
-        saveTrack(currentFilename, {
-          trackBpm: state.trackBpm,
-          beatOffset: sec,
-          cuePoint: state.cuePoint,
-          loopRegion: state.loopRegion
-            ? {
-                startSec: state.loopRegion.startSec,
-                endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats
-              }
-            : undefined
-        });
-      }
+      onBeatOffsetChangeCb?.(sec);
     },
 
     setLoopRegion(region: LoopRegion) {
@@ -299,14 +187,6 @@ function createDeck(id: DeckId, accent: string) {
         startSec: region.startSec,
         endSec: region.endSec
       });
-      if (currentFilename && state.trackBpm !== null) {
-        saveTrack(currentFilename, {
-          trackBpm: state.trackBpm,
-          beatOffset: state.beatOffset,
-          cuePoint: state.cuePoint,
-          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
-        });
-      }
     },
 
     moveLoopRegion(startSec: number) {
@@ -315,14 +195,6 @@ function createDeck(id: DeckId, accent: string) {
       const region = { ...state.loopRegion, startSec, endSec: startSec + dur };
       state.loopRegion = region;
       invoke('set_loop_region', { deck: id, startSec, endSec: startSec + dur });
-      if (currentFilename && state.trackBpm !== null) {
-        saveTrack(currentFilename, {
-          trackBpm: state.trackBpm,
-          beatOffset: state.beatOffset,
-          cuePoint: state.cuePoint,
-          loopRegion: { startSec: region.startSec, endSec: region.endSec, beats: region.beats }
-        });
-      }
     },
 
     setLoopIn() {
@@ -388,20 +260,6 @@ function createDeck(id: DeckId, accent: string) {
       // playhead is not at the cue point: move cue to playhead, do not start playback
       if (Math.abs(positionCache - state.cuePoint) > 0.001) {
         state.cuePoint = positionCache;
-        if (currentFilename && state.trackBpm !== null) {
-          saveTrack(currentFilename, {
-            trackBpm: state.trackBpm,
-            beatOffset: state.beatOffset,
-            cuePoint: positionCache,
-            loopRegion: state.loopRegion
-              ? {
-                  startSec: state.loopRegion.startSec,
-                  endSec: state.loopRegion.endSec,
-                  beats: state.loopRegion.beats
-                }
-              : undefined
-          });
-        }
         return;
       }
       // playhead is at the cue point: momentary playback while button is held
@@ -430,20 +288,6 @@ function createDeck(id: DeckId, accent: string) {
       await invoke('stop', { deck: id });
       positionCache = pos;
       await invoke('seek', { deck: id, sec: pos });
-      if (currentFilename && state.trackBpm !== null) {
-        saveTrack(currentFilename, {
-          trackBpm: state.trackBpm,
-          beatOffset: state.beatOffset,
-          cuePoint: pos,
-          loopRegion: state.loopRegion
-            ? {
-                startSec: state.loopRegion.startSec,
-                endSec: state.loopRegion.endSec,
-                beats: state.loopRegion.beats
-              }
-            : undefined
-        });
-      }
     },
 
     async stopAtCue() {

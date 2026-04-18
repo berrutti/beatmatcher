@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia';
 import { reactive, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { saveRegion, getSavedRegion } from '@renderer/stores/trackRegions';
+import { useSavedTracksStore } from '@renderer/stores/savedTracks';
+import type { LoadableTrack } from '@renderer/stores/decks';
 
 export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
@@ -12,10 +13,10 @@ export type CollectionEntry = {
   size: number;
   path: string | null;
   status: CollectionEntryStatus;
-  bpm: number | null;
+  silenceEnd: number;
 };
 
-type PersistedEntry = { name: string; size: number; path: string | null; bpm: number | null };
+type PersistedEntry = { name: string; size: number; path: string | null };
 
 const COLLECTION_KEY = 'beatmatcher:collection';
 const isTauri = '__TAURI_INTERNALS__' in window;
@@ -33,30 +34,34 @@ function persist(entries: CollectionEntry[]) {
     name: t.name,
     size: t.size,
     path: t.path,
-    bpm: t.bpm,
   }));
   localStorage.setItem(COLLECTION_KEY, JSON.stringify(data));
 }
 
-async function reloadFile(entry: CollectionEntry) {
+async function reloadFile(entry: CollectionEntry, hasSaved: boolean) {
   if (!entry.path) return;
   try {
     const bytes = await invoke<number[]>('read_file', { path: entry.path });
     const file = new File([new Uint8Array(bytes)], entry.name);
     entry.file = file;
-    entry.status = entry.bpm !== null ? 'ready' : 'idle';
+    entry.status = hasSaved ? 'ready' : 'idle';
   } catch {
     // stays missing
   }
 }
 
 export const useCollectionStore = defineStore('collection', () => {
+  const savedTracks = useSavedTracksStore();
   const isOpen = ref(false);
   const tracks = reactive<CollectionEntry[]>([]);
   const draggingFile = ref<File | null>(null);
   const draggingPath = ref<string | null>(null);
 
   const hasPending = computed(() => tracks.some((t) => t.status === 'idle'));
+
+  function bpmFor(entry: CollectionEntry): number | null {
+    return entry.path ? savedTracks.get(entry.path)?.bpm ?? null : null;
+  }
 
   for (const p of loadPersisted()) {
     const entry: CollectionEntry = {
@@ -66,14 +71,15 @@ export const useCollectionStore = defineStore('collection', () => {
       size: p.size,
       path: p.path,
       status: 'missing',
-      bpm: p.bpm,
+      silenceEnd: 0,
     };
     tracks.push(entry);
-    if (isTauri) reloadFile(entry);
+    const hasSaved = p.path !== null && savedTracks.get(p.path) !== null;
+    if (isTauri) reloadFile(entry, hasSaved);
   }
 
   watch(
-    () => tracks.map((t) => ({ name: t.name, size: t.size, path: t.path, bpm: t.bpm })),
+    () => tracks.map((t) => ({ name: t.name, size: t.size, path: t.path })),
     () => persist(tracks),
     { deep: true },
   );
@@ -94,15 +100,15 @@ export const useCollectionStore = defineStore('collection', () => {
           return;
         }
         const file = new File([new Uint8Array(bytes)], name);
-        const saved = getSavedRegion(file);
+        const hasSaved = savedTracks.get(path) !== null;
         tracks.push({
           id: `${name}-${Math.random().toString(36).slice(2)}`,
           file,
           name,
           size: file.size,
           path,
-          status: saved !== null ? 'ready' : 'idle',
-          bpm: saved?.detectedBpm ?? null,
+          status: hasSaved ? 'ready' : 'idle',
+          silenceEnd: 0,
         });
       }),
     );
@@ -116,19 +122,20 @@ export const useCollectionStore = defineStore('collection', () => {
         if (existing.status === 'missing') {
           existing.file = file;
           existing.path = path ?? existing.path;
-          existing.status = existing.bpm !== null ? 'ready' : 'idle';
+          const hasSaved = existing.path !== null && savedTracks.get(existing.path) !== null;
+          existing.status = hasSaved ? 'ready' : 'idle';
         }
         continue;
       }
-      const saved = getSavedRegion(file);
+      const hasSaved = path !== null && savedTracks.get(path) !== null;
       tracks.push({
         id: `${file.name}-${Math.random().toString(36).slice(2)}`,
         file,
         name: file.name,
         size: file.size,
         path,
-        status: saved !== null ? 'ready' : 'idle',
-        bpm: saved?.detectedBpm ?? null,
+        status: hasSaved ? 'ready' : 'idle',
+        silenceEnd: 0,
       });
     }
   }
@@ -150,15 +157,15 @@ export const useCollectionStore = defineStore('collection', () => {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
         path: entry.path,
       });
+      entry.silenceEnd = result.silenceEnd;
       if (result.bpm !== null && result.bpm > 0) {
-        const dur = (16 / result.bpm) * 60;
-        saveRegion(entry.file, {
-          startSec: result.silenceEnd,
-          endSec: result.silenceEnd + dur,
-          beats: 16,
-          detectedBpm: result.bpm,
+        savedTracks.save({
+          path: entry.path,
+          name: entry.name,
+          bpm: result.bpm,
+          silenceEnd: result.silenceEnd,
+          beatOffset: result.silenceEnd,
         });
-        entry.bpm = result.bpm;
         entry.status = 'ready';
       } else {
         entry.status = 'error';
@@ -172,6 +179,37 @@ export const useCollectionStore = defineStore('collection', () => {
     for (const t of tracks.filter((t) => t.status === 'idle')) {
       analyzeTrack(t.id);
     }
+  }
+
+  function setBpm(id: string, bpm: number) {
+    const entry = tracks.find((t) => t.id === id);
+    if (!entry || !entry.path || bpm <= 0) return;
+    savedTracks.save({
+      path: entry.path,
+      name: entry.name,
+      bpm,
+      silenceEnd: entry.silenceEnd,
+      beatOffset: entry.silenceEnd,
+    });
+    entry.status = 'ready';
+  }
+
+  function updateTrack(path: string, patch: { beatOffset?: number }) {
+    savedTracks.update(path, patch);
+  }
+
+  function getLoadable(
+    path: string,
+  ): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
+    const saved = savedTracks.get(path);
+    if (!saved) return null;
+    return {
+      path,
+      name: saved.name,
+      bpm: saved.bpm,
+      silenceEnd: saved.silenceEnd,
+      beatOffset: saved.beatOffset,
+    };
   }
 
   function startDrag(file: File, path: string | null = null) {
@@ -190,6 +228,7 @@ export const useCollectionStore = defineStore('collection', () => {
     draggingFile,
     draggingPath,
     hasPending,
+    bpmFor,
     toggle,
     addFiles,
     addFilesFromPaths,
@@ -197,6 +236,9 @@ export const useCollectionStore = defineStore('collection', () => {
     clearAll,
     analyzeTrack,
     analyzeAll,
+    setBpm,
+    updateTrack,
+    getLoadable,
     startDrag,
     endDrag,
   };
