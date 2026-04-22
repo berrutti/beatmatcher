@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia';
-import { reactive } from 'vue';
+import { reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
-export type DeckId = 'A' | 'B';
-export type DeckMode = 'edit' | 'play';
+export type DeckId = 'A' | 'B' | 'E';
 
 export type LoopRegion = {
   startSec: number;
@@ -33,6 +33,12 @@ const NUDGE_PERCENT = 4;
 export const EQ_MIN_DB = -26;
 export const EQ_MAX_DB = 6;
 
+// Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
+// typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
+// of Float32 data; for 10 minutes ~2.1 MB. Anything zoomed deeper than the
+// rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
+const DENSE_LOD_PTS_PER_SEC = 250;
+
 function quantizeToBeat(sec: number, bpm: number, beatOffset: number): number {
   if (bpm <= 0) return sec;
   const beatDur = 60 / bpm;
@@ -42,49 +48,54 @@ function quantizeToBeat(sec: number, bpm: number, beatOffset: number): number {
 
 function createDeck(id: DeckId, accent: string) {
   let positionCache = 0;
-  let rafId: number | null = null;
-  let pollInFlight = false;
+  let clockAtPlay = 0;   // performance.now() when playback started or position was last anchored
+  let localRate = 1.0;   // effective playback rate (pitch + nudge) for interpolation
   let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
+  let bandsReadyUnlisten: (() => void) | null = null;
 
-  function startPolling() {
-    if (rafId !== null) return;
-    function tick() {
-      if (!state.loopPlaying) {
-        rafId = null;
-        return;
-      }
-      if (!pollInFlight) {
-        pollInFlight = true;
-        invoke<number>('get_position', { deck: id })
-          .then((pos) => {
-            positionCache = pos;
-            pollInFlight = false;
-          })
-          .catch(() => {
-            pollInFlight = false;
-          });
-      }
-      rafId = requestAnimationFrame(tick);
+  // Re-anchor positionCache to now so rate changes don't cause a position jump.
+  function syncPosition() {
+    if (state.loopPlaying) {
+      positionCache += (performance.now() - clockAtPlay) / 1000 * localRate;
+      clockAtPlay = performance.now();
     }
-    rafId = requestAnimationFrame(tick);
   }
 
-  function stopPolling() {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
+  function interpolatedPosition(): number {
+    let pos = positionCache;
+    if (state.loopPlaying) {
+      pos += (performance.now() - clockAtPlay) / 1000 * localRate;
     }
-    pollInFlight = false;
+    if (state.loopActive && state.loopRegion) {
+      const { startSec, endSec } = state.loopRegion;
+      const loopDur = endSec - startSec;
+      if (loopDur > 0 && pos >= endSec) {
+        pos = startSec + ((pos - startSec) % loopDur);
+      }
+    }
+    if (state.trackData && pos > state.trackData.duration) {
+      pos = state.trackData.duration;
+    }
+    return pos;
   }
 
   const state = reactive({
     id,
     accent,
-    mode: 'play' as DeckMode,
 
     trackName: '',
     trackLoaded: false,
     trackData: null as TrackData | null,
+    // Low-rate overview covering the whole track (few points per second).
+    // Used by the overview strip and by WaveformDisplay as a first-paint
+    // fallback while the dense LOD is still loading.
+    fullSpectralData: null as Float32Array | null,
+    // Higher-rate LOD covering the whole track. WaveformDisplay slices this
+    // directly in JS for any zoom level the rate can satisfy, avoiding IPC
+    // round-trips on pan/zoom. Deeper zoom levels fall back to on-demand
+    // fetches; see WaveformDisplay for the switching logic.
+    denseSpectralData: null as Float32Array | null,
+    denseSpectralRate: 0,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
     loopActive: false,
@@ -100,12 +111,12 @@ function createDeck(id: DeckId, accent: string) {
     eq: { low: 0, mid: 0, high: 0 },
 
     get trackPosition(): number | null {
-      return state.loopPlaying ? positionCache : null;
+      return state.loopPlaying ? interpolatedPosition() : null;
     },
 
     get phase(): number {
       if (state.trackBpm === null || !state.loopPlaying) return 0;
-      const pos = positionCache;
+      const pos = interpolatedPosition();
       const beats = ((pos - state.beatOffset) * state.trackBpm) / 60;
       return ((beats % 1) + 1) % 1;
     },
@@ -117,32 +128,35 @@ function createDeck(id: DeckId, accent: string) {
       const clamped = Math.max(minBpm, Math.min(maxBpm, value));
       state.targetBpm = clamped;
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
-      if (state.trackBpm !== null) {
-        invoke('set_playback_rate', { deck: id, rate: clamped / state.trackBpm });
-      }
+      syncPosition();
+      localRate = clamped / state.trackBpm;
+      invoke('set_playback_rate', { deck: id, rate: localRate });
     },
 
     setPitchOffset(pct: number) {
       if (state.trackBpm === null) return;
       state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct));
       state.targetBpm = state.trackBpm * (1 + state.pitchOffset / 100);
-      invoke('set_playback_rate', {
-        deck: id,
-        rate: state.targetBpm / state.trackBpm
-      });
+      syncPosition();
+      localRate = state.targetBpm / state.trackBpm;
+      invoke('set_playback_rate', { deck: id, rate: localRate });
     },
 
     async loadTrack(data: LoadableTrack) {
+      bandsReadyUnlisten?.();
+      bandsReadyUnlisten = null;
       if (state.loopPlaying) {
         await invoke('stop', { deck: id });
         state.loopPlaying = false;
-        stopPolling();
       }
       state.cueing = false;
       state.nudging = null;
       state.loopRegion = null;
       state.loopActive = false;
       state.trackData = null;
+      state.fullSpectralData = null;
+      state.denseSpectralData = null;
+      state.denseSpectralRate = 0;
       positionCache = 0;
 
       onBeatOffsetChangeCb = data.onBeatOffsetChange;
@@ -163,16 +177,35 @@ function createDeck(id: DeckId, accent: string) {
       state.targetBpm = data.bpm;
       state.pitchOffset = 0;
       positionCache = data.beatOffset;
+      clockAtPlay = performance.now();
+      localRate = 1.0;
       await invoke('set_playback_rate', { deck: id, rate: 1.0 });
       await invoke('seek', { deck: id, sec: data.beatOffset });
-    },
 
-    setEditMode() {
-      state.mode = 'edit';
-    },
-
-    setPlayMode() {
-      state.mode = 'play';
+      // Spectral bands are computed in the background by Rust. Listen for
+      // bands-ready, then fetch both the low-rate overview and the dense
+      // LOD once bands are available. Fetched in parallel: the overview
+      // lands first (smaller), the dense LOD follows once its pass through
+      // the bands buffers completes.
+      const overviewPoints = Math.min(2000, Math.max(256, Math.ceil(info.duration * 4)));
+      const densePoints = Math.max(256, Math.ceil(info.duration * DENSE_LOD_PTS_PER_SEC));
+      const unlisten = await listen<string>('bands-ready', (event) => {
+        if (event.payload !== id) return;
+        bandsReadyUnlisten = null;
+        unlisten();
+        invoke<number[]>('get_spectral_waveform_region', {
+          deck: id, startSec: 0, endSec: info.duration, numPoints: overviewPoints,
+        }).then(result => {
+          state.fullSpectralData = new Float32Array(result);
+        }).catch(() => {});
+        invoke<number[]>('get_spectral_waveform_region', {
+          deck: id, startSec: 0, endSec: info.duration, numPoints: densePoints,
+        }).then(result => {
+          state.denseSpectralData = new Float32Array(result);
+          state.denseSpectralRate = densePoints / info.duration;
+        }).catch(() => {});
+      });
+      bandsReadyUnlisten = unlisten;
     },
 
     setBeatOffset(sec: number) {
@@ -199,7 +232,7 @@ function createDeck(id: DeckId, accent: string) {
 
     setLoopIn() {
       if (!state.trackLoaded || state.trackBpm === null) return;
-      const inSec = quantizeToBeat(positionCache, state.trackBpm, state.beatOffset);
+      const inSec = quantizeToBeat(interpolatedPosition(), state.trackBpm, state.beatOffset);
       const barDur = (4 * 60) / state.trackBpm;
       const outSec =
         state.loopRegion && state.loopRegion.endSec > inSec + 0.01
@@ -216,7 +249,7 @@ function createDeck(id: DeckId, accent: string) {
     setLoopOut() {
       if (!state.trackLoaded || state.trackBpm === null) return;
       const barDur = (4 * 60) / state.trackBpm;
-      const outSec = quantizeToBeat(positionCache, state.trackBpm, state.beatOffset);
+      const outSec = quantizeToBeat(interpolatedPosition(), state.trackBpm, state.beatOffset);
       const inSec = state.loopRegion ? state.loopRegion.startSec : outSec - barDur;
       if (outSec <= inSec) return;
       const beats = Math.round(((outSec - inSec) * state.trackBpm) / 60);
@@ -245,48 +278,47 @@ function createDeck(id: DeckId, accent: string) {
         return;
       }
       if (state.loopPlaying) {
+        syncPosition();
         await invoke('stop', { deck: id });
         state.loopPlaying = false;
-        stopPolling();
       } else {
         await invoke('play', { deck: id });
         state.loopPlaying = true;
-        startPolling();
+        clockAtPlay = performance.now();
       }
     },
 
     async cueStart() {
       if (!state.trackLoaded || state.cueing || state.loopPlaying) return;
-      // playhead is not at the cue point: move cue to playhead, do not start playback
       if (Math.abs(positionCache - state.cuePoint) > 0.001) {
         state.cuePoint = positionCache;
         return;
       }
-      // playhead is at the cue point: momentary playback while button is held
       state.cueing = true;
       state.loopPlaying = true;
       await invoke('play', { deck: id, fromSec: state.cuePoint });
-      startPolling();
+      clockAtPlay = performance.now();
     },
 
     async cueEnd() {
       if (!state.cueing) return;
       state.cueing = false;
       state.loopPlaying = false;
-      stopPolling();
       await invoke('stop', { deck: id });
       positionCache = state.cuePoint;
+      clockAtPlay = performance.now();
       await invoke('seek', { deck: id, sec: state.cuePoint });
     },
 
     async setCueAndStop() {
       if (!state.trackLoaded || !state.loopPlaying || state.cueing) return;
+      syncPosition();
       const pos = positionCache;
       state.cuePoint = pos;
       state.loopPlaying = false;
-      stopPolling();
       await invoke('stop', { deck: id });
       positionCache = pos;
+      clockAtPlay = performance.now();
       await invoke('seek', { deck: id, sec: pos });
     },
 
@@ -294,19 +326,20 @@ function createDeck(id: DeckId, accent: string) {
       if (!state.loopPlaying || state.cueing) return;
       await invoke('stop', { deck: id });
       state.loopPlaying = false;
-      stopPolling();
       positionCache = state.cuePoint;
+      clockAtPlay = performance.now();
       await invoke('seek', { deck: id, sec: state.cuePoint });
     },
 
     seekTo(sec: number) {
       const clamped = Math.max(0, sec);
       positionCache = clamped;
+      clockAtPlay = performance.now();
       invoke('seek', { deck: id, sec: clamped });
     },
 
     getPlayheadPosition(): number {
-      return positionCache;
+      return interpolatedPosition();
     },
 
     setEq(band: 'low' | 'mid' | 'high', db: number) {
@@ -319,11 +352,18 @@ function createDeck(id: DeckId, accent: string) {
       if (!state.trackLoaded) return;
       state.nudging = direction;
       const offset = direction === 'forward' ? NUDGE_PERCENT : -NUDGE_PERCENT;
+      syncPosition();
+      const baseRate = state.targetBpm !== null && state.trackBpm !== null
+        ? state.targetBpm / state.trackBpm : 1.0;
+      localRate = baseRate * (1 + offset / 100);
       invoke('set_nudge', { deck: id, percent: offset });
     },
 
     nudgeEnd() {
       state.nudging = null;
+      syncPosition();
+      localRate = state.targetBpm !== null && state.trackBpm !== null
+        ? state.targetBpm / state.trackBpm : 1.0;
       invoke('set_nudge', { deck: id, percent: 0 });
     },
 
@@ -331,12 +371,12 @@ function createDeck(id: DeckId, accent: string) {
       return state.loopPlaying && !state.cueing;
     },
 
-    getWaveformRegion(startSec: number, endSec: number, numPoints: number): Promise<number[]> {
-      return invoke<number[]>('get_waveform_region', { deck: id, startSec, endSec, numPoints });
+    getSpectralWaveformRegion(startSec: number, endSec: number, numPoints: number): Promise<number[]> {
+      return invoke<number[]>('get_spectral_waveform_region', { deck: id, startSec, endSec, numPoints });
     },
 
     destroy() {
-      stopPolling();
+      bandsReadyUnlisten?.();
       invoke('stop', { deck: id }).catch(() => {});
     }
   });
@@ -349,18 +389,23 @@ export type Deck = ReturnType<typeof createDeck>;
 export const useDecksStore = defineStore('decks', () => {
   const deckA = createDeck('A', '#3b82f6');
   const deckB = createDeck('B', '#f97316');
+  const deckE = createDeck('E', '#a855f7');
 
-  const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB };
+  const decks: Record<DeckId, ReturnType<typeof createDeck>> = { A: deckA, B: deckB, E: deckE };
+  const editMode = ref(false);
 
   function destroy() {
     deckA.destroy();
     deckB.destroy();
+    deckE.destroy();
   }
 
   return {
     deckA,
     deckB,
+    deckE,
     decks,
+    editMode,
     destroy
   };
 });

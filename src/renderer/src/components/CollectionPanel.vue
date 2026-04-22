@@ -135,7 +135,7 @@ async function readEntry(entry: FileSystemEntry): Promise<File[]> {
 }
 
 function onDragOver(e: DragEvent) {
-  if (store.draggingFile) return;
+  if (store.draggingPath) return;
   e.preventDefault();
   isDragOver.value = true;
 }
@@ -145,7 +145,7 @@ function onDragLeave() {
 }
 
 async function onDrop(e: DragEvent) {
-  if (store.draggingFile) return;
+  if (store.draggingPath) return;
   e.preventDefault();
   e.stopPropagation();
   isDragOver.value = false;
@@ -158,12 +158,11 @@ async function onDrop(e: DragEvent) {
 const DRAG_THRESHOLD = 5;
 
 function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
-  if (e.button !== 0 || track.status !== 'ready' || !track.file || !track.path) return;
+  if (e.button !== 0 || track.status !== 'ready' || !track.path) return;
   if ((e.target as HTMLElement).closest('button')) return;
 
   const startX = e.clientX;
   const startY = e.clientY;
-  const file = track.file;
   const path = track.path;
   let active = false;
 
@@ -171,7 +170,7 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
     if (!active) {
       if (Math.abs(ev.clientX - startX) < DRAG_THRESHOLD && Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return;
       active = true;
-      store.startDrag(file, path);
+      store.startDrag(path);
       document.body.style.cursor = 'grabbing';
     }
   }
