@@ -1,9 +1,11 @@
 import { onMounted, onUnmounted } from 'vue';
 import { useDecksStore } from '@renderer/stores/decks';
+import { useCollectionStore } from '@renderer/stores/collection';
 import { KEYS } from '@renderer/keybindings';
 
 export function useKeyboard() {
   const store = useDecksStore();
+  const collection = useCollectionStore();
 
   function isTyping(e: KeyboardEvent): boolean {
     const el = e.target as HTMLInputElement;
@@ -18,6 +20,12 @@ export function useKeyboard() {
   function onKeyDown(e: KeyboardEvent) {
     if (isTyping(e)) return;
     if (e.repeat) return;
+
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      collection.toggle();
+      return;
+    }
 
     const { deckA, deckB } = store;
     const key = e.key.toUpperCase();
@@ -59,7 +67,6 @@ export function useKeyboard() {
   }
 
   function onKeyUp(e: KeyboardEvent) {
-    if (e.key === 'Tab') e.preventDefault();
     if (isTyping(e)) return;
 
     const { deckA, deckB } = store;

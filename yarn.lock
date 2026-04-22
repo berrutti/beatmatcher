@@ -790,7 +790,7 @@
     "@tailwindcss/oxide" "4.2.1"
     tailwindcss "4.2.1"
 
-"@tauri-apps/api@^2":
+"@tauri-apps/api@^2", "@tauri-apps/api@^2.10.1":
   version "2.10.1"
   resolved "https://registry.yarnpkg.com/@tauri-apps/api/-/api-2.10.1.tgz#57c1bae6114ec33d977eb2b50dfefc25fa84fc93"
   integrity sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw==
@@ -866,6 +866,13 @@
     "@tauri-apps/cli-win32-arm64-msvc" "2.10.1"
     "@tauri-apps/cli-win32-ia32-msvc" "2.10.1"
     "@tauri-apps/cli-win32-x64-msvc" "2.10.1"
+
+"@tauri-apps/plugin-dialog@^2.7.0":
+  version "2.7.0"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-dialog/-/plugin-dialog-2.7.0.tgz#b510ecd42d9900725eaf51f42ec98523c40d29b4"
+  integrity sha512-4nS/hfGMGCXiAS3LtVjH9AgsSAPJeG/7R+q8agTFqytjnMa4Zq95Bq8WzVDkckpanX+yyRHXnRtrKXkANKDHvw==
+  dependencies:
+    "@tauri-apps/api" "^2.10.1"
 
 "@tybys/wasm-util@^0.10.1":
   version "0.10.1"
