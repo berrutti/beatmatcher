@@ -442,6 +442,14 @@ pub struct DeckState {
     pub loop_end: f64,   // in frames
     pub playback_rate: f64,
     pub nudge_factor: f64, // 1 + nudge_percent/100
+
+    // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
+    pub bass_band: Arc<Vec<f32>>,
+    pub mid_band: Arc<Vec<f32>>,
+    pub high_band: Arc<Vec<f32>>,
+    pub bass_scale: f32,
+    pub mid_scale: f32,
+    pub high_scale: f32,
 }
 
 impl DeckState {
@@ -460,6 +468,12 @@ impl DeckState {
             loop_end: 0.0,
             playback_rate: 1.0,
             nudge_factor: 1.0,
+            bass_band: Arc::new(Vec::new()),
+            mid_band: Arc::new(Vec::new()),
+            high_band: Arc::new(Vec::new()),
+            bass_scale: 1.0,
+            mid_scale: 1.0,
+            high_scale: 1.0,
         }
     }
 
@@ -580,7 +594,7 @@ impl AppAudio {
 
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
-        for id in ["A", "B"] {
+        for id in ["A", "B", "E"] {
             decks.insert(id.to_string(), Arc::new(Mutex::new(DeckState::empty(device_sample_rate))));
             strips.insert(id.to_string(), Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))));
         }
@@ -1189,6 +1203,153 @@ pub fn compute_waveform_region(
             max_amplitude
         })
         .collect()
+}
+
+// ── Spectral band analysis ────────────────────────────────────────────────────
+
+// Downmix to mono and split into bass/mid/high via two Butterworth lowpass filters.
+// Bass:  signal below 250 Hz
+// Mid:   signal between 250 Hz and 2000 Hz
+// High:  signal above 2000 Hz
+// Returns three mono buffers, one sample per input frame.
+pub fn compute_spectral_bands(
+    samples: &[f32],
+    channels: usize,
+    sample_rate: u32,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    if samples.is_empty() || channels == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    let n = samples.len() / channels;
+    let sr = sample_rate as f32;
+    let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
+
+    let mut lp_bass = Biquad::low_pass(sr, 250.0, butterworth_q);
+    let mut lp_bass_mid = Biquad::low_pass(sr, 2000.0, butterworth_q);
+
+    let mut bass = Vec::with_capacity(n);
+    let mut mid = Vec::with_capacity(n);
+    let mut high = Vec::with_capacity(n);
+
+    for frame in 0..n {
+        let mono = if channels == 1 {
+            samples[frame]
+        } else {
+            let sum: f32 = (0..channels).map(|ch| samples[frame * channels + ch]).sum();
+            sum / channels as f32
+        };
+        let b = lp_bass.process(mono);
+        let bm = lp_bass_mid.process(mono);
+        bass.push(b);
+        mid.push(bm - b);
+        high.push(mono - bm);
+    }
+
+    (bass, mid, high)
+}
+
+// Compute per-pixel spectral color data for the region [start_sec, end_sec].
+// Returns a flat Vec of length num_points * 4: [r, g, b, amplitude, ...] per pixel.
+//
+// Design choices (each one tuned from experiment — revisit together if any
+// change):
+//
+// Bar height uses RMS energy (sqrt of mean square) rather than peak amplitude.
+// Peak saturates: for any well-mastered track, nearly every bin contains a
+// sample near |1.0|, so peak-based heights collapse to a nearly-uniform tall
+// block and the waveform loses all shape. RMS tracks sustained energy and
+// preserves the visible envelope (quiet passages stay small, transients stand
+// out).
+//
+// Each colour channel is driven by its own band's RMS energy directly, scaled
+// by the per-band normalization. We deliberately do NOT renormalize r/g/b to
+// sum-to-1: that ties every bin to unit chroma, which washes contrast out
+// because typical mixes hold near-constant bass/mid/high ratios across the
+// track. Letting the channels ride with band energy means quiet moments look
+// dim and bass hits visibly redden.
+//
+// No perceptual gamma on brightness (previously max_amp.powf(0.4)): gamma
+// compression of that shape makes quiet and loud look similar and is the main
+// reason the display looked flat. A small linear boost (BAND_DISPLAY_BOOST,
+// AMP_DISPLAY_BOOST) compensates for the fact that RMS is numerically smaller
+// than the peak-based scales the bands were normalized against.
+// No pre-boost: storing raw normalized RMS allows the JS display layer to apply
+// a sqrt curve that spreads the full dynamic range across screen height. A
+// pre-boost here clips mastered music (raw RMS ~0.4–0.6) to 1.0, which kills
+// height variation when the JS aggregates many bins for wide zoom levels.
+const AMP_DISPLAY_BOOST: f32 = 1.0;
+const BAND_DISPLAY_BOOST: f32 = 1.0;
+
+pub fn compute_spectral_waveform_region(
+    samples: &[f32],
+    channels: usize,
+    bass: &[f32],
+    mid: &[f32],
+    high: &[f32],
+    sample_rate: u32,
+    bass_scale: f32,
+    mid_scale: f32,
+    high_scale: f32,
+    start_sec: f64,
+    end_sec: f64,
+    num_points: usize,
+) -> Vec<f32> {
+    if bass.is_empty() || num_points == 0 {
+        return vec![0.0; num_points * 4];
+    }
+    let total_frames = bass.len();
+    let sr = sample_rate as f64;
+    let start_frame = (start_sec * sr).max(0.0) as usize;
+    let end_frame = ((end_sec * sr) as usize).min(total_frames);
+
+    if start_frame >= end_frame {
+        return vec![0.0; num_points * 4];
+    }
+
+    let visible_frames = end_frame - start_frame;
+    let frames_per_point = visible_frames as f64 / num_points as f64;
+
+    let mut result = Vec::with_capacity(num_points * 4);
+
+    for point_index in 0..num_points {
+        let bin_start = start_frame + (point_index as f64 * frames_per_point) as usize;
+        let bin_end = (start_frame + ((point_index + 1) as f64 * frames_per_point) as usize)
+            .min(end_frame)
+            .max(bin_start + 1);
+
+        let mut sum_bass_sq = 0.0f32;
+        let mut sum_mid_sq = 0.0f32;
+        let mut sum_high_sq = 0.0f32;
+        let mut sum_sample_sq = 0.0f32;
+        let count = (bin_end - bin_start) as f32;
+
+        for frame in bin_start..bin_end {
+            sum_bass_sq += bass[frame] * bass[frame];
+            sum_mid_sq += mid[frame] * mid[frame];
+            sum_high_sq += high[frame] * high[frame];
+            for ch in 0..channels {
+                let s = samples[frame * channels + ch];
+                sum_sample_sq += s * s;
+            }
+        }
+
+        let rms_amp = (sum_sample_sq / (count * channels as f32)).sqrt();
+        let rms_bass = (sum_bass_sq / count).sqrt();
+        let rms_mid = (sum_mid_sq / count).sqrt();
+        let rms_high = (sum_high_sq / count).sqrt();
+
+        let r = (rms_bass * bass_scale * BAND_DISPLAY_BOOST).min(1.0);
+        let g = (rms_mid * mid_scale * BAND_DISPLAY_BOOST).min(1.0);
+        let b = (rms_high * high_scale * BAND_DISPLAY_BOOST).min(1.0);
+        let amp = (rms_amp * AMP_DISPLAY_BOOST).min(1.0);
+
+        result.push(r);
+        result.push(g);
+        result.push(b);
+        result.push(amp);
+    }
+
+    result
 }
 
 // ── BPM detection ─────────────────────────────────────────────────────────────

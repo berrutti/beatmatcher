@@ -27,6 +27,8 @@ export function useKeyboard() {
       return;
     }
 
+    if (store.editMode) return;
+
     const { deckA, deckB } = store;
     const key = e.key.toUpperCase();
 
@@ -68,6 +70,7 @@ export function useKeyboard() {
 
   function onKeyUp(e: KeyboardEvent) {
     if (isTyping(e)) return;
+    if (store.editMode) return;
 
     const { deckA, deckB } = store;
     const key = e.key.toUpperCase();

@@ -6,8 +6,7 @@
     :style="{ '--deck-accent': props.deck.accent }"
     :class="{
       'deck--playing': props.deck.playing,
-      'deck--edit': props.deck.mode === 'edit',
-      'deck--drag-over': isDragOverCollection && props.deck.mode === 'play'
+      'deck--drag-over': isDragOverCollection
     }"
   >
     <ConfirmModal
@@ -24,59 +23,11 @@
       <span v-if="props.deck.trackName" class="deck__track-name" :title="props.deck.trackName">{{
         props.deck.trackName
       }}</span>
-      <div class="deck__mode-tabs">
-        <button
-          class="deck__mode-tab"
-          :class="{ 'deck__mode-tab--active': props.deck.mode === 'edit' }"
-          @click="props.deck.setEditMode()"
-        >
-          EDIT
-        </button>
-        <button
-          class="deck__mode-tab"
-          :class="{ 'deck__mode-tab--active': props.deck.mode === 'play' }"
-          @click="props.deck.setPlayMode()"
-        >
-          PLAY
-        </button>
-      </div>
-    </div>
-
-    <WaveformDisplay
-      v-show="props.deck.mode === 'edit'"
-      class="deck__waveform"
-      :accent="props.deck.accent"
-      :track-data="props.deck.trackData"
-      :is-drag-over="false"
-      :track-bpm="props.deck.trackBpm"
-      :beat-offset="props.deck.beatOffset"
-      :cue-point="props.deck.cuePoint"
-      :get-track-position="() => props.deck.trackPosition"
-      :get-playhead-position="props.deck.getPlayheadPosition"
-      :get-waveform-region="props.deck.getWaveformRegion"
-      @set-beat-offset="props.deck.setBeatOffset"
-      @seek="props.deck.seekTo"
-    />
-
-    <div v-show="props.deck.mode === 'play'" class="phase-ring-wrapper">
-      <PhaseRing
-        :accent="props.deck.accent"
-        :track-bpm="props.deck.trackBpm"
-        :beat-offset="props.deck.beatOffset"
-        :get-track-position="() => props.deck.trackPosition"
-      />
-    </div>
-
-    <template v-if="props.deck.mode === 'play'">
-      <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-        <span class="deck__drop-hint">Drag a track from the collection</span>
-      </div>
-
-      <div class="deck__bpm-display" v-if="props.deck.trackLoaded">
+      <div v-if="props.deck.trackLoaded" class="deck__bpm-header">
         <input
           v-if="editingBpm"
           ref="bpmInputEl"
-          class="deck__bpm-input"
+          class="deck__bpm-input-header"
           type="number"
           min="20"
           step="0.1"
@@ -85,146 +36,145 @@
           @keydown.enter="onBpmInputBlur"
           @keydown.escape="editingBpm = false"
         />
-        <span v-else class="deck__bpm-value" @click="onBpmValueClick">{{
+        <span v-else class="deck__bpm-value-header" @click="onBpmValueClick">{{
           props.deck.targetBpm?.toFixed(1) ?? '--.-'
         }}</span>
-        <span class="deck__bpm-unit">BPM</span>
-        <span class="deck__bpm-inferred" v-if="props.deck.trackBpm !== null"
-          >({{ props.deck.trackBpm.toFixed(1) }})</span
-        >
+        <span class="deck__bpm-unit-header">BPM</span>
       </div>
+    </div>
 
-      <div class="deck__slider-wrapper">
-        <button
-          class="deck__bpm-step"
-          :disabled="!props.deck.trackLoaded"
-          @mousedown.prevent="onBpmStepMouseDown(1)"
-          @mouseup="stopBpmStep"
-          @mouseleave="stopBpmStep"
-        >
-          ▲
-        </button>
-        <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
-        <input
-          type="range"
-          class="deck__slider"
-          :min="-PITCH_RANGE"
-          :max="PITCH_RANGE"
-          step="0.1"
-          :value="props.deck.pitchOffset"
-          orient="vertical"
-          :disabled="!props.deck.trackLoaded"
-          @input="onSliderInput"
-          @dblclick="onPitchDblClick"
-        />
-        <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
-        <button
-          class="deck__bpm-step"
-          :disabled="!props.deck.trackLoaded"
-          @mousedown.prevent="onBpmStepMouseDown(-1)"
-          @mouseup="stopBpmStep"
-          @mouseleave="stopBpmStep"
-        >
-          ▼
-        </button>
-      </div>
+    <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
+      <span class="deck__drop-hint">Drag a track from the collection</span>
+    </div>
 
-      <div class="deck__eq-row">
-        <div v-for="band in ['low', 'mid', 'high'] as const" :key="band" class="deck__eq-band">
+    <template v-if="props.deck.trackLoaded">
+      <OverviewWaveform
+        class="deck__overview"
+        :accent="props.deck.accent"
+        :track-data="props.deck.trackData"
+        :get-playhead-position="props.deck.getPlayheadPosition"
+        :full-spectral-data="props.deck.fullSpectralData"
+        @seek="props.deck.seekTo"
+      />
+
+      <div class="deck__controls">
+        <div class="deck__phase-ring">
+          <PhaseRing
+            :accent="props.deck.accent"
+            :track-bpm="props.deck.trackBpm"
+            :beat-offset="props.deck.beatOffset"
+            :get-track-position="() => props.deck.trackPosition"
+          />
+        </div>
+
+        <div class="deck__transport-cluster">
+          <div class="deck__btn-row">
+            <button
+              class="deck__btn deck__btn--nudge"
+              :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @mousedown="onNudgeStart('back')"
+              @mouseup="props.deck.nudgeEnd()"
+              @mouseleave="props.deck.nudgeEnd()"
+            >
+              <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.nudgeBack }}</span>
+              <span class="deck__btn-icon">◀◀</span>
+            </button>
+            <button
+              class="deck__btn deck__btn--nudge"
+              :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @mousedown="onNudgeStart('forward')"
+              @mouseup="props.deck.nudgeEnd()"
+              @mouseleave="props.deck.nudgeEnd()"
+            >
+              <span class="deck__btn-key">{{ props.keybindings.nudgeForward }}</span>
+              <span class="deck__btn-icon">▶▶</span>
+            </button>
+          </div>
+
+          <div class="deck__btn-row">
+            <button
+              class="deck__btn deck__btn--cue"
+              :class="{ 'deck__btn--cueing': props.deck.cueing }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @mousedown.prevent="onCueMouseDown()"
+              @mouseup="props.deck.cueEnd()"
+              @mouseleave="props.deck.cueEnd()"
+            >
+              <span class="deck__btn-key">{{ props.keybindings.cue }}</span>
+              <span>CUE</span>
+            </button>
+            <button
+              class="deck__btn deck__btn--play"
+              :class="{ 'deck__btn--playing': props.deck.playing }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="onTogglePlay()"
+            >
+              <span class="deck__btn-key">{{ props.keybindings.play }}</span>
+              <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
+            </button>
+          </div>
+
+          <div class="deck__btn-row">
+            <button
+              class="deck__btn deck__btn--loop-in"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="props.deck.setLoopIn()"
+            >
+              <span class="deck__btn-icon">IN</span>
+            </button>
+            <button
+              class="deck__btn deck__btn--loop-out"
+              :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="props.deck.setLoopOut()"
+            >
+              <span class="deck__btn-icon">OUT</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="deck__pitch-wrapper">
+          <button
+            class="deck__bpm-step"
+            :disabled="!props.deck.trackLoaded"
+            @mousedown.prevent="onBpmStepMouseDown(1)"
+            @mouseup="stopBpmStep"
+            @mouseleave="stopBpmStep"
+          >
+            ▲
+          </button>
+          <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
           <input
             type="range"
-            class="deck__slider deck__slider--eq"
-            :min="EQ_MIN_DB"
-            :max="EQ_MAX_DB"
-            step="0.5"
-            :value="props.deck.eq[band]"
+            class="deck__slider"
+            :min="-PITCH_RANGE"
+            :max="PITCH_RANGE"
+            step="0.1"
+            :value="props.deck.pitchOffset"
             orient="vertical"
             :disabled="!props.deck.trackLoaded"
-            @input="(e) => onEqInput(band, e)"
-            @dblclick="onEqDblClick(band)"
+            @input="onSliderInput"
+            @dblclick="onPitchDblClick"
           />
-          <span class="deck__slider-label">{{ band.toUpperCase() }}</span>
+          <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
+          <button
+            class="deck__bpm-step"
+            :disabled="!props.deck.trackLoaded"
+            @mousedown.prevent="onBpmStepMouseDown(-1)"
+            @mouseup="stopBpmStep"
+            @mouseleave="stopBpmStep"
+          >
+            ▼
+          </button>
         </div>
-      </div>
-
-      <div class="deck__nudge-row">
-        <button
-          class="deck__btn deck__btn--nudge"
-          :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @mousedown="onNudgeStart('back')"
-          @mouseup="props.deck.nudgeEnd()"
-          @mouseleave="props.deck.nudgeEnd()"
-        >
-          <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.nudgeBack }}</span>
-          <span class="deck__btn-icon">◀◀</span>
-        </button>
-        <button
-          class="deck__btn deck__btn--nudge"
-          :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @mousedown="onNudgeStart('forward')"
-          @mouseup="props.deck.nudgeEnd()"
-          @mouseleave="props.deck.nudgeEnd()"
-        >
-          <span class="deck__btn-key">{{ props.keybindings.nudgeForward }}</span>
-          <span class="deck__btn-icon">▶▶</span>
-        </button>
-      </div>
-
-      <div class="deck__transport-row">
-        <button
-          class="deck__btn deck__btn--cue"
-          :class="{ 'deck__btn--cueing': props.deck.cueing }"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @mousedown.prevent="onCueMouseDown()"
-          @mouseup="props.deck.cueEnd()"
-          @mouseleave="props.deck.cueEnd()"
-        >
-          <span class="deck__btn-key">{{ props.keybindings.cue }}</span>
-          <span>CUE</span>
-        </button>
-        <button
-          class="deck__btn deck__btn--play"
-          :class="{ 'deck__btn--playing': props.deck.playing }"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @click="onTogglePlay()"
-        >
-          <span class="deck__btn-key">{{ props.keybindings.play }}</span>
-          <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
-        </button>
-        <!-- loop buttons hidden until loop feature is complete
-        <button
-          class="deck__btn deck__btn--loop-in"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @click="props.deck.setLoopIn()"
-        >
-          <span class="deck__btn-label">IN</span>
-        </button>
-        <button
-          class="deck__btn deck__btn--loop-out"
-          :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-          :disabled="!props.deck.trackLoaded"
-          :tabindex="-1"
-          @click="props.deck.setLoopOut()"
-        >
-          <span class="deck__btn-label">OUT</span>
-        </button>
-        <button
-          class="deck__btn deck__btn--reloop"
-          :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-          :disabled="!props.deck.loopRegion"
-          :tabindex="-1"
-          @click="props.deck.reloopOrExit()"
-        >
-          <span class="deck__btn-label">{{ props.deck.loopActive ? 'EXIT' : 'RELOOP' }}</span>
-        </button>
-        -->
       </div>
     </template>
   </div>
@@ -232,11 +182,11 @@
 
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import { PITCH_RANGE, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/decks';
+import { PITCH_RANGE } from '@renderer/stores/decks';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
-import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
+import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 
 const deckEl = ref<HTMLElement | null>(null);
@@ -249,7 +199,6 @@ const props = defineProps<{
   keybindings: { cue: string; play: string; nudgeBack: string; nudgeForward: string };
 }>();
 
-// BPM text editing
 const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
 
@@ -281,17 +230,6 @@ function onPitchDblClick() {
   props.deck.setPitchOffset(0);
 }
 
-function onEqInput(band: 'low' | 'mid' | 'high', e: Event) {
-  if (!props.deck.trackLoaded) return;
-  props.deck.setEq(band, parseFloat((e.target as HTMLInputElement).value));
-}
-
-function onEqDblClick(band: 'low' | 'mid' | 'high') {
-  if (!props.deck.trackLoaded) return;
-  props.deck.setEq(band, 0);
-}
-
-// Step buttons adjust targetBpm by 0.1
 let stepInterval: ReturnType<typeof setInterval> | null = null;
 
 function onBpmStepMouseDown(dir: 1 | -1) {
@@ -396,10 +334,7 @@ function onConfirmLoad() {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 0.3em 1.5em;
-  gap: 0.45em;
+  align-items: stretch;
   transition: background 0.2s;
 }
 
@@ -407,14 +342,9 @@ function onConfirmLoad() {
   background: color-mix(in srgb, var(--deck-accent) 4%, transparent);
 }
 
-.deck--edit {
-  padding: 0;
-  justify-content: flex-start;
-}
-.deck--edit .deck__header {
-  padding: 0.6em 1em;
-  width: 100%;
-  border-bottom: 1px solid var(--color-border);
+.deck--drag-over {
+  outline: 2px dashed var(--deck-accent);
+  outline-offset: -4px;
 }
 
 .deck__waveform {
@@ -423,31 +353,14 @@ function onConfirmLoad() {
   min-height: 0;
 }
 
-.deck--drag-over {
-  outline: 2px dashed var(--deck-accent);
-  outline-offset: -4px;
-}
-
-.deck__drop-zone {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.6em;
-  padding: 0.5em 0;
-}
-.deck__drop-hint {
-  color: var(--color-muted);
-  font-size: 0.65em;
-  letter-spacing: 0.1em;
-  opacity: 0.6;
-}
-
 .deck__header {
   display: flex;
   align-items: center;
   gap: 0.6em;
   width: 100%;
+  padding: 0.5em 0.8em;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .deck__label {
@@ -455,6 +368,7 @@ function onConfirmLoad() {
   font-weight: 700;
   letter-spacing: 0.25em;
   color: var(--deck-accent);
+  flex-shrink: 0;
 }
 
 .deck__status-dot {
@@ -462,6 +376,7 @@ function onConfirmLoad() {
   height: 0.5em;
   border-radius: 50%;
   background: var(--color-border);
+  flex-shrink: 0;
   transition:
     background 0.1s,
     box-shadow 0.1s;
@@ -477,124 +392,87 @@ function onConfirmLoad() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 12em;
+  flex: 1;
+  min-width: 0;
 }
 
-.deck__mode-tabs {
-  display: flex;
-  gap: 0.3em;
-  margin-left: auto;
-}
-.deck__mode-tab {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 0.65em;
-  letter-spacing: 0.15em;
-  padding: 0.25em 0.7em;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.deck__mode-tab--active {
-  border-color: currentColor;
-  color: var(--deck-accent);
-}
-
-.phase-ring-wrapper {
-  width: 8em;
-  flex-shrink: 0;
-}
-
-.deck__bpm-display {
+.deck__bpm-header {
   display: flex;
   align-items: baseline;
-  gap: 0.3em;
+  gap: 0.25em;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
-.deck__bpm-value {
-  font-size: 3em;
+.deck__bpm-value-header {
+  font-size: 0.85em;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1;
   font-variant-numeric: tabular-nums;
-  cursor: text;
   color: var(--deck-accent);
+  cursor: text;
+  letter-spacing: -0.01em;
 }
 
-.deck__bpm-input {
-  font-size: 3em;
+.deck__bpm-input-header {
+  font-size: 0.85em;
   font-weight: 700;
   font-family: var(--font);
-  letter-spacing: -0.02em;
-  line-height: 1;
   font-variant-numeric: tabular-nums;
   background: transparent;
   border: none;
-  border-bottom: 2px solid currentColor;
+  border-bottom: 1px solid currentColor;
   color: var(--deck-accent);
   width: 5ch;
   padding: 0;
   outline: none;
 }
 
-.deck__bpm-unit {
-  font-size: 0.9em;
+.deck__bpm-unit-header {
+  font-size: 0.6em;
   color: var(--color-muted);
   letter-spacing: 0.1em;
 }
-.deck__bpm-inferred {
-  font-size: 0.7em;
-  color: var(--color-muted);
-  opacity: 0.6;
-}
 
-.deck__slider-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25em;
-  width: 3em;
-}
-
-.deck__slider-label {
-  font-size: 0.65em;
-  color: var(--color-muted);
-}
-
-.deck__bpm-step {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-size: 0.65em;
-  width: 2.2em;
-  height: 1.4em;
-  border-radius: 3px;
-  cursor: pointer;
+.deck__drop-zone {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  user-select: none;
 }
-.deck__bpm-step:hover {
-  border-color: #555;
-  color: var(--color-text);
+.deck__drop-hint {
+  color: var(--color-muted);
+  font-size: 0.65em;
+  letter-spacing: 0.1em;
+  opacity: 0.6;
 }
 
-.deck__slider {
-  -webkit-appearance: slider-vertical;
-  appearance: auto;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 28px;
+.deck__overview {
+  padding: 0.5em 0.8em 0;
+}
+
+.deck__controls {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0.5em 0.8em 0.8em;
+  gap: 0.5em;
+  min-height: 0;
+}
+
+.deck__phase-ring {
+  width: 7em;
   height: 7em;
-  cursor: pointer;
-  accent-color: var(--deck-accent);
+  flex-shrink: 0;
 }
 
-.deck__nudge-row,
-.deck__transport-row {
+.deck__transport-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+
+.deck__btn-row {
   display: flex;
   gap: 0.5em;
 }
@@ -605,8 +483,8 @@ function onConfirmLoad() {
   align-items: center;
   justify-content: center;
   gap: 0.25em;
-  width: 5.5em;
-  height: 4.5em;
+  width: 5em;
+  height: 4em;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface);
@@ -623,6 +501,10 @@ function onConfirmLoad() {
   border-color: #444;
   background: #1e1e1e;
 }
+.deck__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 
 .deck__btn-key {
   font-size: 0.6em;
@@ -630,11 +512,7 @@ function onConfirmLoad() {
   letter-spacing: 0.15em;
 }
 .deck__btn-icon {
-  font-size: 0.9em;
-}
-.deck__btn-label {
-  font-size: 0.6em;
-  letter-spacing: 0.15em;
+  font-size: 0.85em;
 }
 
 .deck__btn--nudge.deck__btn--active {
@@ -671,29 +549,48 @@ function onConfirmLoad() {
   color: var(--deck-accent);
   background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
 }
-.deck__btn--reloop:hover:not(:disabled) {
-  border-color: var(--deck-accent);
-  color: var(--deck-accent);
-}
-.deck__btn--reloop.deck__btn--loop-active {
-  border-color: var(--deck-accent);
-  color: var(--deck-accent);
-  background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
-  box-shadow: 0 0 0.8em color-mix(in srgb, var(--deck-accent) 25%, transparent);
-}
 
-.deck__eq-row {
-  display: flex;
-  gap: 1.2em;
-}
-.deck__eq-band {
+.deck__pitch-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.25em;
+  gap: 0.2em;
+  flex-shrink: 0;
 }
-.deck__slider--eq {
-  height: 4em;
-  width: 22px;
+
+.deck__slider-label {
+  font-size: 0.6em;
+  color: var(--color-muted);
+}
+
+.deck__bpm-step {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-size: 0.65em;
+  width: 2.2em;
+  height: 1.4em;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  user-select: none;
+}
+.deck__bpm-step:hover {
+  border-color: #555;
+  color: var(--color-text);
+}
+
+.deck__slider {
+  -webkit-appearance: slider-vertical;
+  appearance: auto;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 28px;
+  height: 7em;
+  cursor: pointer;
+  accent-color: var(--deck-accent);
 }
 </style>

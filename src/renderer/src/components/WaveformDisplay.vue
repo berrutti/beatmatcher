@@ -1,11 +1,9 @@
 <template>
   <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
-    <!-- Empty state -->
     <div v-if="!props.trackData" class="waveform__empty">
       <span class="waveform__empty-text">No track loaded</span>
     </div>
 
-    <!-- Waveform canvas -->
     <template v-if="props.trackData">
       <canvas
         ref="canvasEl"
@@ -15,13 +13,11 @@
         @contextmenu.prevent
       />
 
-      <!-- Controls bar -->
       <div class="waveform__controls">
         <span class="waveform__bpm-readout" v-if="props.trackBpm">
           {{ props.trackBpm.toFixed(1) }} BPM
         </span>
 
-        <!-- Zoom controls -->
         <div class="waveform__zoom">
           <button class="waveform__zoom-btn" @click="() => zoomOut()">−</button>
           <span class="waveform__zoom-label">{{ zoomLabel }}</span>
@@ -33,8 +29,12 @@
 </template>
 
 <script setup lang="ts">
+// Rendering approach inspired by Mixxx (https://github.com/mixxxdj/mixxx):
+// mean-in-window pixel aggregation with an overscan bitmap cache for
+// stable, LOD-aware display across all zoom levels.
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
+import { buildWaveformImageData } from '@renderer/utils/waveformImage';
 
 const props = defineProps<{
   accent: string;
@@ -43,9 +43,15 @@ const props = defineProps<{
   trackBpm: number | null;
   beatOffset: number;
   cuePoint: number;
+  denseSpectralData: Float32Array | null;
+  denseSpectralRate: number;
   getTrackPosition: () => number | null;
   getPlayheadPosition: () => number;
-  getWaveformRegion: (startSec: number, endSec: number, numPoints: number) => Promise<number[]>;
+  getSpectralWaveformRegion: (
+    startSec: number,
+    endSec: number,
+    numPoints: number
+  ) => Promise<number[]>;
 }>();
 
 const emit = defineEmits<{
@@ -60,7 +66,6 @@ const PLAYHEAD_ALPHA = 0.9;
 const PLAYHEAD_ARROW_HALF = 5;
 const PLAYHEAD_ARROW_HEIGHT = 8;
 
-// Zoom levels in seconds of visible track
 const ZOOM_LEVELS_SEC = [0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
 const DEFAULT_ZOOM_SEC = 10;
 
@@ -68,11 +73,12 @@ const canvasEl = ref<HTMLCanvasElement | null>(null);
 
 let trackDuration = 0;
 
-// Visible window in seconds
-const viewStartSec = ref(0);
-const viewEndSec = ref(0);
+// Visible window in seconds. Plain vars (not refs) because they're only read
+// by the rAF canvas draw loop; reactivity would add per-mousemove overhead
+// during drag for no benefit.
+let viewStartSec = 0;
+let viewEndSec = 0;
 
-// Current zoom index
 const zoomIdx = ref(ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC));
 
 const zoomLabel = computed(() => {
@@ -96,14 +102,13 @@ function setZoomCentered(idx: number, anchorSec?: number) {
   if (newZoom === zoomIdx.value) return;
   zoomIdx.value = newZoom;
   const dur = viewDurationSec();
-  const center = anchorSec ?? (viewStartSec.value + viewEndSec.value) / 2;
+  const center = anchorSec ?? (viewStartSec + viewEndSec) / 2;
   const [s, e] = clampView(center - dur / 2, dur);
-  viewStartSec.value = s;
-  viewEndSec.value = e;
-  drawWaveform();
+  viewStartSec = s;
+  viewEndSec = e;
+  ensurePeaks();
 }
 
-// Lower index = fewer seconds = more detail = zoom in
 function zoomIn(anchorSec?: number) {
   setZoomCentered(zoomIdx.value - 1, anchorSec);
 }
@@ -111,74 +116,164 @@ function zoomOut(anchorSec?: number) {
   setZoomCentered(zoomIdx.value + 1, anchorSec);
 }
 
-// ── Peak fetch ────────────────────────────────────────────────
-// Peaks are fetched on-demand from the Rust backend for the exact visible
-// region at the canvas pixel width. This gives full resolution at any zoom
-// level without sending a pre-baked array of fixed chunk size.
+const OVERSCAN_FACTOR = 1.0;
+const MAX_BITMAP_PX = 8192;
 
-let visiblePeaks: Float32Array | null = null;
-let peaksCachedViewStart = NaN;
-let peaksCachedViewEnd = NaN;
-let peaksCachedWidth = 0;
+let cachedPeaks: Float32Array | null = null;
+let cachedStartSec = NaN;
+let cachedEndSec = NaN;
+let cachedPtsPerSec = 0;
+
+let waveImgBitmap: ImageBitmap | null = null;
+let bitmapForPeaks: Float32Array | null = null;
+let bitmapCanvasH = 0;
+let bitmapPixelW = 0;
+let bitmapBuildInFlight = false;
+
+function requiredPtsPerSec(): number {
+  const canvas = canvasEl.value;
+  const zoomSec = viewEndSec - viewStartSec;
+  if (!canvas || zoomSec <= 0) return 0;
+  // Use physical pixels (canvas.width = clientWidth * dpr) so that on Retina
+  // displays, zoom levels that need finer data than the dense LOD provides
+  // correctly fall through to on-demand fetches instead of serving blurry data.
+  return canvas.width / zoomSec;
+}
+
+function cacheCoversView(): boolean {
+  if (!cachedPeaks) return false;
+  const required = requiredPtsPerSec();
+  return (
+    cachedStartSec <= viewStartSec + 1e-6 &&
+    cachedEndSec >= viewEndSec - 1e-6 &&
+    cachedPtsPerSec >= required * 0.9
+  );
+}
+
+function ensureCachedFromDense(): boolean {
+  if (cacheCoversView() && cachedPtsPerSec === props.denseSpectralRate) return true;
+  const dense = props.denseSpectralData;
+  const denseRate = props.denseSpectralRate;
+  if (!dense || denseRate <= 0) return false;
+  if (denseRate < requiredPtsPerSec() * 0.9) return false;
+
+  const viewSpan = viewEndSec - viewStartSec;
+  const pad = viewSpan * OVERSCAN_FACTOR;
+  const rStart = Math.max(0, viewStartSec - pad);
+  const rEnd = Math.min(trackDuration, viewEndSec + pad);
+  const totalPoints = (dense.length / 4) | 0;
+  const startIdx = Math.max(0, Math.floor(rStart * denseRate));
+  const endIdx = Math.min(totalPoints, Math.ceil(rEnd * denseRate));
+  if (endIdx <= startIdx) return false;
+
+  cachedPeaks = dense.subarray(startIdx * 4, endIdx * 4);
+  cachedStartSec = startIdx / denseRate;
+  cachedEndSec = endIdx / denseRate;
+  cachedPtsPerSec = denseRate;
+  return true;
+}
+
 let isFetching = false;
 let pendingFetch = false;
+let fetchDebounceTimer = 0;
 
-async function fetchVisiblePeaks() {
+async function doFetchOnDemand() {
+  if (!props.trackData) return;
+  isFetching = true;
+  const viewSpan = viewEndSec - viewStartSec;
+  const pad = viewSpan * OVERSCAN_FACTOR;
+  const rStart = Math.max(0, viewStartSec - pad);
+  const rEnd = Math.min(trackDuration, viewEndSec + pad);
+  const rate = requiredPtsPerSec();
+  if (rate <= 0 || rEnd <= rStart) {
+    isFetching = false;
+    return;
+  }
+  const numPoints = Math.max(64, Math.ceil((rEnd - rStart) * rate));
+  try {
+    const result = await props.getSpectralWaveformRegion(rStart, rEnd, numPoints);
+    // Only apply if this fetch still covers the current view — a later
+    // pan/zoom might have moved us outside the fetched range.
+    if (rStart <= viewStartSec + 1e-6 && rEnd >= viewEndSec - 1e-6) {
+      cachedPeaks = new Float32Array(result);
+      cachedStartSec = rStart;
+      cachedEndSec = rEnd;
+      cachedPtsPerSec = rate;
+    }
+  } catch (err) {
+    console.error('[WaveformDisplay] spectral fetch failed:', err);
+  }
+  isFetching = false;
+  if (pendingFetch) {
+    pendingFetch = false;
+    // Re-check: dense LOD may have arrived, or the view may have moved
+    // back inside the current cache — in either case we skip the IPC.
+    if (!cacheCoversView() && !ensureCachedFromDense()) {
+      doFetchOnDemand();
+    }
+  }
+}
+
+function ensurePeaks() {
+  if (ensureCachedFromDense()) return;
+  if (cacheCoversView()) return;
+  if (props.denseSpectralRate <= 0) return;
   if (isFetching) {
     pendingFetch = true;
     return;
   }
-  const canvas = canvasEl.value;
-  if (!canvas || !props.trackData) return;
-  const w = canvas.clientWidth;
-  if (w === 0) return;
-
-  const viewStart = viewStartSec.value;
-  const viewEnd = viewEndSec.value;
-
-  if (
-    peaksCachedWidth === w &&
-    peaksCachedViewStart === viewStart &&
-    peaksCachedViewEnd === viewEnd
-  )
-    return;
-
-  isFetching = true;
-  pendingFetch = false;
-  try {
-    const result = await props.getWaveformRegion(viewStart, viewEnd, w);
-    // Discard if the view changed while we were waiting
-    if (viewStart === viewStartSec.value && viewEnd === viewEndSec.value) {
-      visiblePeaks = new Float32Array(result);
-      peaksCachedViewStart = viewStart;
-      peaksCachedViewEnd = viewEnd;
-      peaksCachedWidth = w;
-    }
-  } catch {
-    // We can ignore
-  }
-  isFetching = false;
-  if (pendingFetch) {
-    fetchVisiblePeaks();
-  }
+  clearTimeout(fetchDebounceTimer);
+  fetchDebounceTimer = window.setTimeout(() => {
+    if (cacheCoversView() || ensureCachedFromDense()) return;
+    doFetchOnDemand();
+  }, 80);
 }
 
-// ── Coordinate helpers ────────────────────────────────────────
+function ensureBitmap(canvasW: number, canvasH: number) {
+  if (!cachedPeaks) return;
+  const cacheSpan = cachedEndSec - cachedStartSec;
+  const viewSpan = viewEndSec - viewStartSec;
+  if (cacheSpan <= 0 || viewSpan <= 0 || canvasW <= 0 || canvasH <= 0) return;
+
+  const screenPxPerSec = canvasW / viewSpan;
+  const dataPts = (cachedPeaks.length / 4) | 0;
+  let bitmapW = Math.ceil(cacheSpan * screenPxPerSec);
+  bitmapW = Math.min(bitmapW, dataPts, MAX_BITMAP_PX);
+  if (bitmapW < 1) return;
+
+  const sameSource = bitmapForPeaks === cachedPeaks;
+  const sameSize = bitmapCanvasH === canvasH;
+  const closeWidth = sameSize && Math.abs(bitmapPixelW - bitmapW) <= bitmapW * 0.15;
+  if (sameSource && sameSize && closeWidth) return;
+  if (bitmapBuildInFlight) return;
+
+  bitmapForPeaks = cachedPeaks;
+  bitmapCanvasH = canvasH;
+  bitmapPixelW = bitmapW;
+  bitmapBuildInFlight = true;
+  const imgData = buildWaveformImageData(bitmapW, canvasH, cachedPeaks, WAVEFORM_AMP_SCALE);
+  createImageBitmap(imgData)
+    .then((bmp) => {
+      waveImgBitmap = bmp;
+    })
+    .catch(() => {})
+    .finally(() => {
+      bitmapBuildInFlight = false;
+    });
+}
 
 function pxToSec(px: number): number {
   const canvas = canvasEl.value;
   if (!canvas) return 0;
-  return viewStartSec.value + (px / canvas.clientWidth) * (viewEndSec.value - viewStartSec.value);
+  return viewStartSec + (px / canvas.clientWidth) * (viewEndSec - viewStartSec);
 }
 
 function secToPx(sec: number): number {
   const canvas = canvasEl.value;
   if (!canvas) return 0;
-  const span = viewEndSec.value - viewStartSec.value;
-  return ((sec - viewStartSec.value) / span) * canvas.clientWidth;
+  const span = viewEndSec - viewStartSec;
+  return ((sec - viewStartSec) / span) * canvas.clientWidth;
 }
-
-// ── Canvas drawing ────────────────────────────────────────────
 
 function drawWaveform() {
   const canvas = canvasEl.value;
@@ -197,53 +292,53 @@ function drawWaveform() {
     ctx.scale(dpr, dpr);
   }
 
-  fetchVisiblePeaks(); // fire-and-forget; draws with current peaks, updates on next frame after fetch
-  if (!visiblePeaks) return;
+  ensureBitmap(canvas.width, canvas.height);
 
-  ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, w, h);
-
-  const mid = h / 2;
-
-  // Waveform (dim, outside loop)
-  for (let x = 0; x < w; x++) {
-    const amp = visiblePeaks[x] * mid * WAVEFORM_AMP_SCALE;
-    ctx.fillStyle = '#333';
-    ctx.fillRect(x, mid - amp, 1, amp * 2);
+  if (waveImgBitmap && !isNaN(cachedStartSec)) {
+    const bitmapLeftPx = secToPx(cachedStartSec);
+    const bitmapRightPx = secToPx(cachedEndSec);
+    const bitmapWidthPx = bitmapRightPx - bitmapLeftPx;
+    if (bitmapWidthPx > 0) {
+      ctx.drawImage(waveImgBitmap, bitmapLeftPx, 0, bitmapWidthPx, h);
+    }
   }
 
-  // Beat grid
   drawRuler(ctx, w, h);
-  // Downbeat marker (draggable grid start) and cue point
   drawDownbeatMarker(ctx, w, h);
   drawCueMarker(ctx, w, h);
-  // Playhead
   drawPlayhead(ctx, w, h);
 }
 
-// Index in ZOOM_LEVELS_SEC at which individual beats are hidden (30s and above)
-const BEAT_HIDE_ZOOM_IDX = ZOOM_LEVELS_SEC.indexOf(30);
+const MIN_LINE_SPACING_PX = 6;
 
 function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
   if (!props.trackBpm || props.trackBpm <= 0) return;
   const beatDurSec = 60 / props.trackBpm;
-  const beatOffset = props.beatOffset;
-  const zoomedOut = zoomIdx.value >= BEAT_HIDE_ZOOM_IDX;
+  const viewSpan = viewEndSec - viewStartSec;
+  const pxPerBeat = (beatDurSec / viewSpan) * w;
 
-  const firstBeat = Math.ceil((viewStartSec.value - beatOffset) / beatDurSec);
-  const lastBeat = Math.floor((viewEndSec.value - beatOffset) / beatDurSec);
+  // Find the coarsest subdivision that puts lines at least MIN_LINE_SPACING_PX apart.
+  // Steps: 1 beat → 4 beats (bar) → 16 beats (phrase) → 64 → ...
+  let step = 1;
+  while (pxPerBeat * step < MIN_LINE_SPACING_PX) {
+    step *= 4;
+  }
+  if (pxPerBeat * step < 1) return;
+
+  const beatOffset = props.beatOffset;
+  const firstBeat = Math.ceil((viewStartSec - beatOffset) / beatDurSec);
+  const lastBeat = Math.floor((viewEndSec - beatOffset) / beatDurSec);
 
   for (let b = firstBeat; b <= lastBeat; b++) {
-    const isPhrase = b % 16 === 0;
-    const isBar = b % 4 === 0;
-
-    // At 30s+ zoom, skip individual beats
-    if (zoomedOut && !isBar) continue;
-
+    if (b % step !== 0) continue;
     const t = beatOffset + b * beatDurSec;
     const x = secToPx(t);
     if (x < 0 || x > w) continue;
+
+    const isPhrase = b % 16 === 0;
+    const isBar = b % 4 === 0;
 
     if (isPhrase) {
       ctx.strokeStyle = props.accent;
@@ -266,8 +361,6 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
     ctx.globalAlpha = 1;
   }
 }
-
-// ── Playhead ──────────────────────────────────────────────────
 
 let rafId = 0;
 let lastZoomTime = 0;
@@ -338,52 +431,56 @@ function drawCueMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
 }
 
 function rafLoop() {
+  applyPendingDrag();
+  // Sync path only: keeps the dense-LOD slice up to date as the user drags
+  // past the current cache range. On-demand fetches (IPC) are reserved for
+  // explicit events so we don't flood the backend during a fast drag.
+  ensureCachedFromDense();
   drawWaveform();
   rafId = requestAnimationFrame(rafLoop);
 }
 
-// ── Drag interaction ──────────────────────────────────────────
-
-type DragMode = 'pan' | null;
-const dragging = ref<DragMode>(null);
-const panStartX = ref(0);
-const panStartViewSec = ref(0);
+// mousemove is batched to rAF: only the latest clientX is stored per frame.
+// Avoids redundant work when mousemove fires faster than display refresh (trackpads at 120 Hz).
+let dragging: 'pan' | null = null;
+let panStartX = 0;
+let panStartViewSec = 0;
 let mouseDownPx = 0;
+let dragRectLeft = 0;
+let dragRectWidth = 0;
+let pendingDragX: number | null = null;
 const CLICK_THRESHOLD_PX = 5;
 
-function canvasPx(clientX: number): number {
-  const canvas = canvasEl.value;
-  if (!canvas) return 0;
-  return clientX - canvas.getBoundingClientRect().left;
-}
-
 function onMouseDown(e: MouseEvent) {
-  const px = canvasPx(e.clientX);
+  const canvas = canvasEl.value;
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  dragRectLeft = rect.left;
+  dragRectWidth = rect.width;
+  const px = e.clientX - dragRectLeft;
   mouseDownPx = px;
-  dragging.value = 'pan';
-  panStartX.value = px;
-  panStartViewSec.value = viewStartSec.value;
+  dragging = 'pan';
+  panStartX = px;
+  panStartViewSec = viewStartSec;
 
   window.addEventListener('mousemove', onMouseMoveWindow);
   window.addEventListener('mouseup', onMouseUp);
 }
 
-function applyDrag(clientX: number) {
-  if (dragging.value !== 'pan') return;
-  const px = canvasPx(clientX);
-  const viewSpan = viewEndSec.value - viewStartSec.value;
-  const w = canvasEl.value!.clientWidth;
-  const deltaSec = -((px - panStartX.value) / w) * viewSpan;
-  const [s, e] = clampView(panStartViewSec.value + deltaSec, viewSpan);
-  viewStartSec.value = s;
-  viewEndSec.value = e;
-  drawWaveform();
+function applyPendingDrag() {
+  if (pendingDragX === null || dragging !== 'pan' || dragRectWidth === 0) return;
+  const px = pendingDragX - dragRectLeft;
+  const viewSpan = viewEndSec - viewStartSec;
+  const deltaSec = -((px - panStartX) / dragRectWidth) * viewSpan;
+  const [s, e] = clampView(panStartViewSec + deltaSec, viewSpan);
+  viewStartSec = s;
+  viewEndSec = e;
+  pendingDragX = null;
 }
 
-// Window-level move — fires even when mouse leaves canvas
 function onMouseMoveWindow(e: MouseEvent) {
-  if (!dragging.value) return;
-  applyDrag(e.clientX);
+  if (!dragging) return;
+  pendingDragX = e.clientX;
 }
 
 function onWheel(e: WheelEvent) {
@@ -392,18 +489,16 @@ function onWheel(e: WheelEvent) {
 
   const rect = canvas.getBoundingClientRect();
   const frac = (e.clientX - rect.left) / rect.width;
-  const anchorSec = viewStartSec.value + frac * (viewEndSec.value - viewStartSec.value);
+  const anchorSec = viewStartSec + frac * (viewEndSec - viewStartSec);
 
   if (Math.abs(e.deltaX) > 2 && Math.abs(e.deltaX) >= Math.abs(e.deltaY)) {
-    // Horizontal swipe: pan
-    const viewSpan = viewEndSec.value - viewStartSec.value;
-    const deltaSec = (e.deltaX / canvas.clientWidth) * viewSpan;
-    const [s, end] = clampView(viewStartSec.value + deltaSec, viewSpan);
-    viewStartSec.value = s;
-    viewEndSec.value = end;
-    drawWaveform();
+    const viewSpan = viewEndSec - viewStartSec;
+    const deltaSec = (e.deltaX / rect.width) * viewSpan;
+    const [s, end] = clampView(viewStartSec + deltaSec, viewSpan);
+    viewStartSec = s;
+    viewEndSec = end;
+    ensurePeaks();
   } else if (e.deltaY !== 0) {
-    // Zoom (mouse wheel or pinch): cooldown prevents jumping multiple levels per gesture
     const now = Date.now();
     if (now - lastZoomTime > ZOOM_COOLDOWN_MS) {
       if (e.deltaY < 0) zoomIn(anchorSec);
@@ -414,23 +509,26 @@ function onWheel(e: WheelEvent) {
 }
 
 function onMouseUp(e: MouseEvent) {
-  const px = canvasPx(e.clientX);
-  if (dragging.value === 'pan' && Math.abs(px - mouseDownPx) < CLICK_THRESHOLD_PX) {
-    emit('seek', Math.max(0, Math.min(pxToSec(mouseDownPx), trackDuration)));
-  }
-  dragging.value = null;
+  pendingDragX = null;
+  const px = e.clientX - dragRectLeft;
+  const wasDragging = dragging === 'pan';
+  const moved = Math.abs(px - mouseDownPx) >= CLICK_THRESHOLD_PX;
+  dragging = null;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
+  if (wasDragging && !moved) {
+    emit('seek', Math.max(0, Math.min(pxToSec(mouseDownPx), trackDuration)));
+  } else if (wasDragging) {
+    ensurePeaks();
+  }
 }
-
-// ── Resize handling ───────────────────────────────────────────
 
 let resizeObserver: ResizeObserver | null = null;
 
 watch(canvasEl, (el) => {
   if (el && !resizeObserver) {
     resizeObserver = new ResizeObserver(() => {
-      drawWaveform();
+      ensurePeaks();
     });
     resizeObserver.observe(el.parentElement!);
   }
@@ -443,6 +541,7 @@ onMounted(() => {
 onUnmounted(() => {
   resizeObserver?.disconnect();
   cancelAnimationFrame(rafId);
+  clearTimeout(fetchDebounceTimer);
 });
 
 watch(
@@ -450,25 +549,36 @@ watch(
   (data) => {
     if (data) {
       trackDuration = data.duration;
-      peaksCachedViewStart = NaN; // invalidate cache so next fetch always runs
       zoomIdx.value = ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC);
       const dur = viewDurationSec();
-      viewStartSec.value = 0;
-      viewEndSec.value = Math.min(dur, trackDuration);
-      fetchVisiblePeaks();
+      viewStartSec = 0;
+      viewEndSec = Math.min(dur, trackDuration);
+      cachedPeaks = null;
+      cachedStartSec = NaN;
+      cachedEndSec = NaN;
+      cachedPtsPerSec = 0;
+      bitmapForPeaks = null;
+      waveImgBitmap = null;
+      ensurePeaks();
     } else {
       trackDuration = 0;
-      visiblePeaks = null;
-      peaksCachedViewStart = NaN;
+      cachedPeaks = null;
+      cachedStartSec = NaN;
+      cachedEndSec = NaN;
+      cachedPtsPerSec = 0;
+      bitmapForPeaks = null;
+      waveImgBitmap = null;
     }
-  }
+  },
+  { immediate: true }
 );
 
-// Re-fetch whenever the visible window changes (zoom or pan)
-watch([viewStartSec, viewEndSec], () => {
-  peaksCachedViewStart = NaN;
-  fetchVisiblePeaks();
-});
+watch(
+  () => props.denseSpectralData,
+  (data) => {
+    if (data) ensurePeaks();
+  }
+);
 </script>
 
 <style scoped>

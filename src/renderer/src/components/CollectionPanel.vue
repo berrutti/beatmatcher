@@ -8,13 +8,6 @@
   >
     <div class="collection__header">
       <span class="collection__title">COLLECTION</span>
-      <span v-if="!isTauri" class="collection__web-info">
-        ℹ
-        <span class="collection__web-tooltip"
-          >You are running BeatMatcher in the browser. Files added to your collection need to be
-          re-added after a page refresh.</span
-        >
-      </span>
       <span v-if="store.tracks.length > 0" class="collection__count">{{
         store.tracks.length
       }}</span>
@@ -101,7 +94,6 @@ import BpmModal from '@renderer/components/BpmModal.vue';
 const store = useCollectionStore();
 const isDragOver = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
-const isTauri = '__TAURI_INTERNALS__' in window;
 
 function openBpmModal(id: string) {
   bpmModalTrackId.value = id;
@@ -145,7 +137,7 @@ async function readEntry(entry: FileSystemEntry): Promise<File[]> {
 }
 
 function onDragOver(e: DragEvent) {
-  if (store.draggingFile) return;
+  if (store.draggingPath) return;
   e.preventDefault();
   isDragOver.value = true;
 }
@@ -155,7 +147,7 @@ function onDragLeave() {
 }
 
 async function onDrop(e: DragEvent) {
-  if (store.draggingFile) return;
+  if (store.draggingPath) return;
   e.preventDefault();
   e.stopPropagation();
   isDragOver.value = false;
@@ -168,12 +160,11 @@ async function onDrop(e: DragEvent) {
 const DRAG_THRESHOLD = 5;
 
 function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
-  if (e.button !== 0 || track.status !== 'ready' || !track.file || !track.path) return;
+  if (e.button !== 0 || track.status !== 'ready' || !track.path) return;
   if ((e.target as HTMLElement).closest('button')) return;
 
   const startX = e.clientX;
   const startY = e.clientY;
-  const file = track.file;
   const path = track.path;
   let active = false;
 
@@ -185,7 +176,7 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
       )
         return;
       active = true;
-      store.startDrag(file, path);
+      store.startDrag(path);
       document.body.style.cursor = 'grabbing';
     }
   }
@@ -222,31 +213,17 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
 }
 
 async function openFileDialog() {
-  if (isTauri) {
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    const result = await open({
-      multiple: true,
-      filters: [
-        { name: 'Audio', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'aif', 'aiff'] }
-      ]
-    });
-    if (result) {
-      const paths = Array.isArray(result) ? result : [result];
-      store.addFilesFromPaths(paths);
-    }
-    return;
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const result = await open({
+    multiple: true,
+    filters: [
+      { name: 'Audio', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'aif', 'aiff'] }
+    ]
+  });
+  if (result) {
+    const paths = Array.isArray(result) ? result : [result];
+    store.addFilesFromPaths(paths);
   }
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'audio/*';
-  input.multiple = true;
-  input.style.display = 'none';
-  document.body.appendChild(input);
-  input.onchange = () => {
-    document.body.removeChild(input);
-    if (input.files) store.addFiles(Array.from(input.files).filter(isAudio));
-  };
-  input.click();
 }
 </script>
 
@@ -286,37 +263,6 @@ async function openFileDialog() {
   font-size: 0.65em;
   color: var(--color-muted);
   opacity: 0.6;
-}
-
-.collection__web-info {
-  position: relative;
-  font-size: 0.65em;
-  color: var(--color-muted);
-  opacity: 0.5;
-  cursor: default;
-}
-.collection__web-info:hover {
-  opacity: 1;
-}
-.collection__web-tooltip {
-  display: none;
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  font-size: 1.2em;
-  letter-spacing: 0.03em;
-  padding: 0.5em 0.8em;
-  border-radius: 4px;
-  width: 22em;
-  line-height: 1.5;
-  z-index: 10;
-  pointer-events: none;
-}
-.collection__web-info:hover .collection__web-tooltip {
-  display: block;
 }
 
 .collection__header-btn {

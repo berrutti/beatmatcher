@@ -2,6 +2,7 @@ mod audio;
 
 use audio::{AppAudio, ChannelStrip, DeviceInfo, TrackInfo};
 use std::sync::Arc;
+use tauri::Emitter;
 
 pub struct AppState {
     pub audio: Arc<AppAudio>,
@@ -30,6 +31,7 @@ fn get_strip(
 
 #[tauri::command]
 async fn load_track(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     deck: String,
     path: String,
@@ -39,7 +41,7 @@ async fn load_track(
     let device_sample_rate = state.audio.device_sample_rate;
 
     // Run all CPU-heavy work in a single blocking thread.
-    let (resampled, channels, bpm, silence_end, native_sr) =
+    let (samples, channels, bpm, silence_end, native_sr) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let (raw_samples, channels, native_sr) =
                 audio::decode_audio(&path).map_err(|e| e.to_string())?;
@@ -70,12 +72,12 @@ async fn load_track(
                 audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
             };
 
-            Ok((resampled, channels, bpm, silence_end, native_sr))
+            Ok((std::sync::Arc::new(resampled), channels, bpm, silence_end, native_sr))
         })
         .await
         .map_err(|e| e.to_string())??;
 
-    let total_frames = resampled.len() / channels;
+    let total_frames = samples.len() / channels;
     let duration = total_frames as f64 / device_sample_rate as f64;
     let silence_pos = silence_end * device_sample_rate as f64;
 
@@ -85,21 +87,63 @@ async fn load_track(
     );
 
     {
-        let mut deck = deck_arc.lock().unwrap();
-        deck.samples = std::sync::Arc::new(resampled);
-        deck.channels = channels;
-        deck.device_sample_rate = device_sample_rate;
-        deck.total_frames = total_frames;
-        deck.duration = duration;
-        deck.is_playing = false;
-        deck.main_pos = silence_pos;
-        deck.cue_pos = silence_pos;
-        deck.loop_active = false;
-        deck.loop_start = 0.0;
-        deck.loop_end = 0.0;
-        deck.playback_rate = 1.0;
-        deck.nudge_factor = 1.0;
+        let mut d = deck_arc.lock().unwrap();
+        d.samples = Arc::clone(&samples);
+        d.channels = channels;
+        d.device_sample_rate = device_sample_rate;
+        d.total_frames = total_frames;
+        d.duration = duration;
+        d.is_playing = false;
+        d.main_pos = silence_pos;
+        d.cue_pos = silence_pos;
+        d.loop_active = false;
+        d.loop_start = 0.0;
+        d.loop_end = 0.0;
+        d.playback_rate = 1.0;
+        d.nudge_factor = 1.0;
+        d.bass_band = Arc::new(Vec::new());
+        d.mid_band = Arc::new(Vec::new());
+        d.high_band = Arc::new(Vec::new());
+        d.bass_scale = 1.0;
+        d.mid_scale = 1.0;
+        d.high_scale = 1.0;
     }
+
+    // Compute spectral bands in background; emit "bands-ready" when done so the
+    // frontend can fetch waveform data without blocking track load.
+    let deck_id = deck.clone();
+    tokio::spawn(async move {
+        let (bass_band, mid_band, high_band) = tokio::task::spawn_blocking(move || {
+            audio::compute_spectral_bands(&*samples, channels, device_sample_rate)
+        })
+        .await
+        .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
+
+        let bass_scale = {
+            let m = bass_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
+            if m > 0.0 { 1.0 / m } else { 1.0 }
+        };
+        let mid_scale = {
+            let m = mid_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
+            if m > 0.0 { 1.0 / m } else { 1.0 }
+        };
+        let high_scale = {
+            let m = high_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
+            if m > 0.0 { 1.0 / m } else { 1.0 }
+        };
+
+        {
+            let mut d = deck_arc.lock().unwrap();
+            d.bass_band = Arc::new(bass_band);
+            d.mid_band = Arc::new(mid_band);
+            d.high_band = Arc::new(high_band);
+            d.bass_scale = bass_scale;
+            d.mid_scale = mid_scale;
+            d.high_scale = high_scale;
+        }
+
+        app.emit("bands-ready", deck_id).ok();
+    });
 
     Ok(TrackInfo {
         duration,
@@ -262,6 +306,39 @@ fn get_waveform_region(
     ))
 }
 
+// Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points.
+// Each band value is normalized by its per-band global max so colors reflect
+// spectral balance rather than absolute amplitude.
+#[tauri::command]
+fn get_spectral_waveform_region(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    start_sec: f64,
+    end_sec: f64,
+    num_points: usize,
+) -> Result<Vec<f32>, String> {
+    let deck_arc = get_deck(&state, &deck)?;
+    let (samples, channels, bass, mid, high, bass_scale, mid_scale, high_scale, device_sr) = {
+        let d = deck_arc.lock().unwrap();
+        (
+            std::sync::Arc::clone(&d.samples),
+            d.channels,
+            std::sync::Arc::clone(&d.bass_band),
+            std::sync::Arc::clone(&d.mid_band),
+            std::sync::Arc::clone(&d.high_band),
+            d.bass_scale,
+            d.mid_scale,
+            d.high_scale,
+            d.device_sample_rate,
+        )
+    };
+    Ok(audio::compute_spectral_waveform_region(
+        &samples, channels, &bass, &mid, &high,
+        device_sr, bass_scale, mid_scale, high_scale,
+        start_sec, end_sec, num_points,
+    ))
+}
+
 #[tauri::command]
 fn set_reloop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
@@ -327,8 +404,11 @@ async fn open_file_dialog() -> Option<String> {
 }
 
 #[tauri::command]
-fn read_file(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| e.to_string())
+fn files_info(paths: Vec<String>) -> Vec<Option<u64>> {
+    paths
+        .into_iter()
+        .map(|p| std::fs::metadata(&p).ok().map(|m| m.len()))
+        .collect()
 }
 
 #[tauri::command]
@@ -394,13 +474,14 @@ pub fn run() {
             set_filter,
             get_position,
             get_waveform_region,
+            get_spectral_waveform_region,
             set_reloop,
             set_cue_active,
             list_audio_devices,
             set_cue_device,
             set_main_device,
             open_file_dialog,
-            read_file,
+            files_info,
             analyze_track,
         ])
         .run(tauri::generate_context!())

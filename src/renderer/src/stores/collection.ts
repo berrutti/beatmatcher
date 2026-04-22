@@ -8,7 +8,6 @@ export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | '
 
 export type CollectionEntry = {
   id: string;
-  file: File | null;
   name: string;
   size: number;
   path: string | null;
@@ -19,7 +18,6 @@ export type CollectionEntry = {
 type PersistedEntry = { name: string; size: number; path: string | null };
 
 const COLLECTION_KEY = 'beatmatcher:collection';
-const isTauri = '__TAURI_INTERNALS__' in window;
 
 function loadPersisted(): PersistedEntry[] {
   try {
@@ -38,23 +36,10 @@ function persist(entries: CollectionEntry[]) {
   localStorage.setItem(COLLECTION_KEY, JSON.stringify(data));
 }
 
-async function reloadFile(entry: CollectionEntry, hasSaved: boolean) {
-  if (!entry.path) return;
-  try {
-    const bytes = await invoke<number[]>('read_file', { path: entry.path });
-    const file = new File([new Uint8Array(bytes)], entry.name);
-    entry.file = file;
-    entry.status = hasSaved ? 'ready' : 'idle';
-  } catch {
-    // stays missing
-  }
-}
-
 export const useCollectionStore = defineStore('collection', () => {
   const savedTracks = useSavedTracksStore();
   const isOpen = ref(false);
   const tracks = reactive<CollectionEntry[]>([]);
-  const draggingFile = ref<File | null>(null);
   const draggingPath = ref<string | null>(null);
 
   const hasPending = computed(() => tracks.some((t) => t.status === 'idle'));
@@ -64,18 +49,34 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   for (const p of loadPersisted()) {
-    const entry: CollectionEntry = {
+    tracks.push({
       id: `${p.name}-${Math.random().toString(36).slice(2)}`,
-      file: null,
       name: p.name,
       size: p.size,
       path: p.path,
       status: 'missing',
       silenceEnd: 0
-    };
-    tracks.push(entry);
-    const hasSaved = p.path !== null && savedTracks.get(p.path) !== null;
-    if (isTauri) reloadFile(entry, hasSaved);
+    });
+  }
+
+  if (tracks.length > 0) {
+    const pathsWithIdx = tracks
+      .map((t, i) => (t.path ? { path: t.path, i } : null))
+      .filter((x): x is { path: string; i: number } => x !== null);
+    if (pathsWithIdx.length > 0) {
+      invoke<(number | null)[]>('files_info', { paths: pathsWithIdx.map((x) => x.path) })
+        .then((sizes) => {
+          pathsWithIdx.forEach(({ path, i }, k) => {
+            const size = sizes[k];
+            if (size === null || size === undefined) return;
+            const entry = tracks[i];
+            const hasSaved = savedTracks.get(path) !== null;
+            entry.size = size;
+            entry.status = hasSaved ? 'ready' : 'idle';
+          });
+        })
+        .catch(() => {});
+    }
   }
 
   watch(
@@ -89,29 +90,23 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   async function addFilesFromPaths(paths: string[]) {
-    await Promise.all(
-      paths.map(async (path) => {
-        if (tracks.some((t) => t.path === path)) return;
-        const name = path.split('/').pop() ?? path;
-        let bytes: number[];
-        try {
-          bytes = await invoke<number[]>('read_file', { path });
-        } catch {
-          return;
-        }
-        const file = new File([new Uint8Array(bytes)], name);
-        const hasSaved = savedTracks.get(path) !== null;
-        tracks.push({
-          id: `${name}-${Math.random().toString(36).slice(2)}`,
-          file,
-          name,
-          size: file.size,
-          path,
-          status: hasSaved ? 'ready' : 'idle',
-          silenceEnd: 0
-        });
-      })
-    );
+    const newPaths = paths.filter((p) => !tracks.some((t) => t.path === p));
+    if (newPaths.length === 0) return;
+    const sizes = await invoke<(number | null)[]>('files_info', { paths: newPaths });
+    newPaths.forEach((path, i) => {
+      const size = sizes[i];
+      if (size === null || size === undefined) return;
+      const name = path.split('/').pop() ?? path;
+      const hasSaved = savedTracks.get(path) !== null;
+      tracks.push({
+        id: `${name}-${Math.random().toString(36).slice(2)}`,
+        name,
+        size,
+        path,
+        status: hasSaved ? 'ready' : 'idle',
+        silenceEnd: 0
+      });
+    });
   }
 
   function addFiles(files: File[]) {
@@ -120,7 +115,6 @@ export const useCollectionStore = defineStore('collection', () => {
       const existing = tracks.find((t) => t.name === file.name && t.size === file.size);
       if (existing) {
         if (existing.status === 'missing') {
-          existing.file = file;
           existing.path = path ?? existing.path;
           const hasSaved = existing.path !== null && savedTracks.get(existing.path) !== null;
           existing.status = hasSaved ? 'ready' : 'idle';
@@ -130,7 +124,6 @@ export const useCollectionStore = defineStore('collection', () => {
       const hasSaved = path !== null && savedTracks.get(path) !== null;
       tracks.push({
         id: `${file.name}-${Math.random().toString(36).slice(2)}`,
-        file,
         name: file.name,
         size: file.size,
         path,
@@ -151,7 +144,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   async function analyzeTrack(id: string) {
     const entry = tracks.find((t) => t.id === id);
-    if (!entry || !entry.file || !entry.path || entry.status === 'analyzing') return;
+    if (!entry || !entry.path || entry.status === 'analyzing' || entry.status === 'missing') return;
     entry.status = 'analyzing';
     try {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
@@ -210,20 +203,17 @@ export const useCollectionStore = defineStore('collection', () => {
     };
   }
 
-  function startDrag(file: File, path: string | null = null) {
-    draggingFile.value = file;
+  function startDrag(path: string) {
     draggingPath.value = path;
   }
 
   function endDrag() {
-    draggingFile.value = null;
     draggingPath.value = null;
   }
 
   return {
     isOpen,
     tracks,
-    draggingFile,
     draggingPath,
     hasPending,
     bpmFor,
