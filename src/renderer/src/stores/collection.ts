@@ -18,7 +18,6 @@ export type CollectionEntry = {
 type PersistedEntry = { name: string; size: number; path: string | null };
 
 const COLLECTION_KEY = 'beatmatcher:collection';
-const isTauri = '__TAURI_INTERNALS__' in window;
 
 function loadPersisted(): PersistedEntry[] {
   try {
@@ -60,7 +59,7 @@ export const useCollectionStore = defineStore('collection', () => {
     });
   }
 
-  if (isTauri && tracks.length > 0) {
+  if (tracks.length > 0) {
     const pathsWithIdx = tracks
       .map((t, i) => (t.path ? { path: t.path, i } : null))
       .filter((x): x is { path: string; i: number } => x !== null);

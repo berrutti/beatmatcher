@@ -178,4 +178,36 @@ function onConfirmEditMode() {
   flex-shrink: 0;
   overflow: hidden;
 }
+
+.app__collection-bar {
+  width: 100%;
+  height: var(--collection-bar-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  cursor: pointer;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  color: var(--color-muted);
+  user-select: none;
+  flex-shrink: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
+.app__collection-bar:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.app__collection {
+  width: 100%;
+  height: var(--collection-panel-h);
+  flex-shrink: 0;
+  overflow: hidden;
+}
 </style>
