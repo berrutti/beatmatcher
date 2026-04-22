@@ -567,5 +567,4 @@ watch([viewStartSec, viewEndSec], () => {
   min-width: 24px;
   text-align: center;
 }
-
 </style>

@@ -150,7 +150,7 @@ function createDeck(id: DeckId, accent: string) {
       const info = await invoke<TrackData>('load_track', {
         deck: id,
         path: data.path,
-        analyze: false,
+        analyze: false
       });
 
       state.trackName = data.name;

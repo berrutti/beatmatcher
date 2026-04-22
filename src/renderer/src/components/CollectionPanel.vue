@@ -10,9 +10,14 @@
       <span class="collection__title">COLLECTION</span>
       <span v-if="!isTauri" class="collection__web-info">
         ℹ
-        <span class="collection__web-tooltip">You are running BeatMatcher in the browser. Files added to your collection need to be re-added after a page refresh.</span>
+        <span class="collection__web-tooltip"
+          >You are running BeatMatcher in the browser. Files added to your collection need to be
+          re-added after a page refresh.</span
+        >
       </span>
-      <span v-if="store.tracks.length > 0" class="collection__count">{{ store.tracks.length }}</span>
+      <span v-if="store.tracks.length > 0" class="collection__count">{{
+        store.tracks.length
+      }}</span>
       <button v-if="store.hasPending" class="collection__header-btn" @click="store.analyzeAll()">
         ANALYZE ALL
       </button>
@@ -37,7 +42,9 @@
           :class="`collection__item--${track.status}`"
           @pointerdown="onItemPointerDown($event, track)"
         >
-          <span class="collection__item-name" :title="track.name">{{ displayName(track.name) }}</span>
+          <span class="collection__item-name" :title="track.name">{{
+            displayName(track.name)
+          }}</span>
           <span v-if="store.bpmFor(track) !== null" class="collection__item-bpm">
             {{ store.bpmFor(track)!.toFixed(1) }} BPM
           </span>
@@ -50,7 +57,10 @@
           >
             error
           </span>
-          <span v-if="track.status === 'missing'" class="collection__item-tag collection__item-tag--missing">
+          <span
+            v-if="track.status === 'missing'"
+            class="collection__item-tag collection__item-tag--missing"
+          >
             missing
           </span>
           <button
@@ -115,7 +125,7 @@ async function readEntry(entry: FileSystemEntry): Promise<File[]> {
     return new Promise((resolve) => {
       (entry as FileSystemFileEntry).file(
         (f) => resolve(isAudio(f) ? [f] : []),
-        () => resolve([]),
+        () => resolve([])
       );
     });
   }
@@ -169,7 +179,11 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
 
   function onMove(ev: PointerEvent) {
     if (!active) {
-      if (Math.abs(ev.clientX - startX) < DRAG_THRESHOLD && Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return;
+      if (
+        Math.abs(ev.clientX - startX) < DRAG_THRESHOLD &&
+        Math.abs(ev.clientY - startY) < DRAG_THRESHOLD
+      )
+        return;
       active = true;
       store.startDrag(file, path);
       document.body.style.cursor = 'grabbing';
@@ -212,7 +226,9 @@ async function openFileDialog() {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const result = await open({
       multiple: true,
-      filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'aif', 'aiff'] }],
+      filters: [
+        { name: 'Audio', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'aif', 'aiff'] }
+      ]
     });
     if (result) {
       const paths = Array.isArray(result) ? result : [result];
@@ -232,7 +248,6 @@ async function openFileDialog() {
   };
   input.click();
 }
-
 </script>
 
 <style scoped>
@@ -330,7 +345,6 @@ async function openFileDialog() {
 .collection__header-btn--muted:hover {
   opacity: 1;
 }
-
 
 .collection__body {
   flex: 1;

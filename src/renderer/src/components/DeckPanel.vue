@@ -353,7 +353,7 @@ watch(
       window.removeEventListener('pointermove', onWindowPointerMove);
       isDragOverCollection.value = false;
     }
-  },
+  }
 );
 
 function buildLoadable(path: string): LoadableTrack | null {
@@ -361,7 +361,7 @@ function buildLoadable(path: string): LoadableTrack | null {
   if (!data) return null;
   return {
     ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec }),
+    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
   };
 }
 

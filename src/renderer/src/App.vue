@@ -71,10 +71,7 @@ onUnmounted(() => store.destroy());
 
 .app__stage {
   position: relative;
-  width: min(
-    100vw,
-    calc((100vh - var(--collection-bar-h) - var(--collection-panel-h)) * 16 / 9)
-  );
+  width: min(100vw, calc((100vh - var(--collection-bar-h) - var(--collection-panel-h)) * 16 / 9));
   height: min(
     calc(100vh - var(--collection-bar-h) - var(--collection-panel-h)),
     calc(100vw * 9 / 16)
@@ -82,10 +79,8 @@ onUnmounted(() => store.destroy());
   aspect-ratio: 16 / 9;
   overflow: hidden;
   font-size: calc(
-    min(
-        calc(100vh - var(--collection-bar-h) - var(--collection-panel-h)),
-        calc(100vw * 9 / 16)
-      ) / 45
+    min(calc(100vh - var(--collection-bar-h) - var(--collection-panel-h)), calc(100vw * 9 / 16)) /
+      45
   );
 }
 
