@@ -103,7 +103,8 @@ function updateTimes() {
   if (!trackDuration) return;
   const pos = props.getPlayheadPosition();
   if (elapsedEl.value) elapsedEl.value.textContent = formatSec(pos);
-  if (remainingEl.value) remainingEl.value.textContent = '-' + formatSec(Math.max(0, trackDuration - pos));
+  if (remainingEl.value)
+    remainingEl.value.textContent = '-' + formatSec(Math.max(0, trackDuration - pos));
 }
 
 function onCanvasClick(e: MouseEvent) {
@@ -166,5 +167,4 @@ watch(
   font-variant-numeric: tabular-nums;
   padding: 0 0.2em;
 }
-
 </style>

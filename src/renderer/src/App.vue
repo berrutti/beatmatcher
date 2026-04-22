@@ -7,7 +7,9 @@
       @confirm="onConfirmEditMode"
       @cancel="enterEditPending = false"
     >
-      <p class="app__modal-body">Playback is running. You can still hear the decks while in Edit mode.</p>
+      <p class="app__modal-body">
+        Playback is running. You can still hear the decks while in Edit mode.
+      </p>
     </Modal>
 
     <TopStrip :edit-mode="editMode" @toggle-edit="tryToggleEditMode" />
@@ -50,7 +52,12 @@ const store = useDecksStore();
 const collectionStore = useCollectionStore();
 onUnmounted(() => store.destroy());
 
-const editMode = computed({ get: () => store.editMode, set: (v) => { store.editMode = v; } });
+const editMode = computed({
+  get: () => store.editMode,
+  set: (v) => {
+    store.editMode = v;
+  }
+});
 const enterEditPending = ref(false);
 
 function tryToggleEditMode() {
@@ -119,7 +126,8 @@ function onConfirmEditMode() {
     min(
         calc(100vh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)),
         calc(100vw * 9 / 16)
-      ) / 45
+      ) /
+      45
   );
 }
 

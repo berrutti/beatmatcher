@@ -44,139 +44,139 @@
     </div>
 
     <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-        <span class="deck__drop-hint">Drag a track from the collection</span>
-      </div>
+      <span class="deck__drop-hint">Drag a track from the collection</span>
+    </div>
 
-      <template v-if="props.deck.trackLoaded">
-        <OverviewWaveform
-          class="deck__overview"
-          :accent="props.deck.accent"
-          :track-data="props.deck.trackData"
-          :get-playhead-position="props.deck.getPlayheadPosition"
-          :full-spectral-data="props.deck.fullSpectralData"
-          @seek="props.deck.seekTo"
-        />
+    <template v-if="props.deck.trackLoaded">
+      <OverviewWaveform
+        class="deck__overview"
+        :accent="props.deck.accent"
+        :track-data="props.deck.trackData"
+        :get-playhead-position="props.deck.getPlayheadPosition"
+        :full-spectral-data="props.deck.fullSpectralData"
+        @seek="props.deck.seekTo"
+      />
 
-        <div class="deck__controls">
-          <div class="deck__phase-ring">
-            <PhaseRing
-              :accent="props.deck.accent"
-              :track-bpm="props.deck.trackBpm"
-              :beat-offset="props.deck.beatOffset"
-              :get-track-position="() => props.deck.trackPosition"
-            />
-          </div>
+      <div class="deck__controls">
+        <div class="deck__phase-ring">
+          <PhaseRing
+            :accent="props.deck.accent"
+            :track-bpm="props.deck.trackBpm"
+            :beat-offset="props.deck.beatOffset"
+            :get-track-position="() => props.deck.trackPosition"
+          />
+        </div>
 
-          <div class="deck__transport-cluster">
-            <div class="deck__btn-row">
-              <button
-                class="deck__btn deck__btn--nudge"
-                :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @mousedown="onNudgeStart('back')"
-                @mouseup="props.deck.nudgeEnd()"
-                @mouseleave="props.deck.nudgeEnd()"
-              >
-                <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.nudgeBack }}</span>
-                <span class="deck__btn-icon">◀◀</span>
-              </button>
-              <button
-                class="deck__btn deck__btn--nudge"
-                :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @mousedown="onNudgeStart('forward')"
-                @mouseup="props.deck.nudgeEnd()"
-                @mouseleave="props.deck.nudgeEnd()"
-              >
-                <span class="deck__btn-key">{{ props.keybindings.nudgeForward }}</span>
-                <span class="deck__btn-icon">▶▶</span>
-              </button>
-            </div>
-
-            <div class="deck__btn-row">
-              <button
-                class="deck__btn deck__btn--cue"
-                :class="{ 'deck__btn--cueing': props.deck.cueing }"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @mousedown.prevent="onCueMouseDown()"
-                @mouseup="props.deck.cueEnd()"
-                @mouseleave="props.deck.cueEnd()"
-              >
-                <span class="deck__btn-key">{{ props.keybindings.cue }}</span>
-                <span>CUE</span>
-              </button>
-              <button
-                class="deck__btn deck__btn--play"
-                :class="{ 'deck__btn--playing': props.deck.playing }"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @click="onTogglePlay()"
-              >
-                <span class="deck__btn-key">{{ props.keybindings.play }}</span>
-                <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
-              </button>
-            </div>
-
-            <div class="deck__btn-row">
-              <button
-                class="deck__btn deck__btn--loop-in"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @click="props.deck.setLoopIn()"
-              >
-                <span class="deck__btn-icon">IN</span>
-              </button>
-              <button
-                class="deck__btn deck__btn--loop-out"
-                :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-                :disabled="!props.deck.trackLoaded"
-                :tabindex="-1"
-                @click="props.deck.setLoopOut()"
-              >
-                <span class="deck__btn-icon">OUT</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="deck__pitch-wrapper">
+        <div class="deck__transport-cluster">
+          <div class="deck__btn-row">
             <button
-              class="deck__bpm-step"
+              class="deck__btn deck__btn--nudge"
+              :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
               :disabled="!props.deck.trackLoaded"
-              @mousedown.prevent="onBpmStepMouseDown(1)"
-              @mouseup="stopBpmStep"
-              @mouseleave="stopBpmStep"
+              :tabindex="-1"
+              @mousedown="onNudgeStart('back')"
+              @mouseup="props.deck.nudgeEnd()"
+              @mouseleave="props.deck.nudgeEnd()"
             >
-              ▲
+              <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.nudgeBack }}</span>
+              <span class="deck__btn-icon">◀◀</span>
             </button>
-            <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
-            <input
-              type="range"
-              class="deck__slider"
-              :min="-PITCH_RANGE"
-              :max="PITCH_RANGE"
-              step="0.1"
-              :value="props.deck.pitchOffset"
-              orient="vertical"
-              :disabled="!props.deck.trackLoaded"
-              @input="onSliderInput"
-              @dblclick="onPitchDblClick"
-            />
-            <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
             <button
-              class="deck__bpm-step"
+              class="deck__btn deck__btn--nudge"
+              :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
               :disabled="!props.deck.trackLoaded"
-              @mousedown.prevent="onBpmStepMouseDown(-1)"
-              @mouseup="stopBpmStep"
-              @mouseleave="stopBpmStep"
+              :tabindex="-1"
+              @mousedown="onNudgeStart('forward')"
+              @mouseup="props.deck.nudgeEnd()"
+              @mouseleave="props.deck.nudgeEnd()"
             >
-              ▼
+              <span class="deck__btn-key">{{ props.keybindings.nudgeForward }}</span>
+              <span class="deck__btn-icon">▶▶</span>
+            </button>
+          </div>
+
+          <div class="deck__btn-row">
+            <button
+              class="deck__btn deck__btn--cue"
+              :class="{ 'deck__btn--cueing': props.deck.cueing }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @mousedown.prevent="onCueMouseDown()"
+              @mouseup="props.deck.cueEnd()"
+              @mouseleave="props.deck.cueEnd()"
+            >
+              <span class="deck__btn-key">{{ props.keybindings.cue }}</span>
+              <span>CUE</span>
+            </button>
+            <button
+              class="deck__btn deck__btn--play"
+              :class="{ 'deck__btn--playing': props.deck.playing }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="onTogglePlay()"
+            >
+              <span class="deck__btn-key">{{ props.keybindings.play }}</span>
+              <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
+            </button>
+          </div>
+
+          <div class="deck__btn-row">
+            <button
+              class="deck__btn deck__btn--loop-in"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="props.deck.setLoopIn()"
+            >
+              <span class="deck__btn-icon">IN</span>
+            </button>
+            <button
+              class="deck__btn deck__btn--loop-out"
+              :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
+              :disabled="!props.deck.trackLoaded"
+              :tabindex="-1"
+              @click="props.deck.setLoopOut()"
+            >
+              <span class="deck__btn-icon">OUT</span>
             </button>
           </div>
         </div>
-      </template>
+
+        <div class="deck__pitch-wrapper">
+          <button
+            class="deck__bpm-step"
+            :disabled="!props.deck.trackLoaded"
+            @mousedown.prevent="onBpmStepMouseDown(1)"
+            @mouseup="stopBpmStep"
+            @mouseleave="stopBpmStep"
+          >
+            ▲
+          </button>
+          <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
+          <input
+            type="range"
+            class="deck__slider"
+            :min="-PITCH_RANGE"
+            :max="PITCH_RANGE"
+            step="0.1"
+            :value="props.deck.pitchOffset"
+            orient="vertical"
+            :disabled="!props.deck.trackLoaded"
+            @input="onSliderInput"
+            @dblclick="onPitchDblClick"
+          />
+          <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
+          <button
+            class="deck__bpm-step"
+            :disabled="!props.deck.trackLoaded"
+            @mousedown.prevent="onBpmStepMouseDown(-1)"
+            @mouseup="stopBpmStep"
+            @mouseleave="stopBpmStep"
+          >
+            ▼
+          </button>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -291,7 +291,7 @@ watch(
       window.removeEventListener('pointermove', onWindowPointerMove);
       isDragOverCollection.value = false;
     }
-  },
+  }
 );
 
 function buildLoadable(path: string): LoadableTrack | null {
@@ -299,7 +299,7 @@ function buildLoadable(path: string): LoadableTrack | null {
   if (!data) return null;
   return {
     ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec }),
+    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
   };
 }
 
@@ -377,7 +377,9 @@ function onConfirmLoad() {
   border-radius: 50%;
   background: var(--color-border);
   flex-shrink: 0;
-  transition: background 0.1s, box-shadow 0.1s;
+  transition:
+    background 0.1s,
+    box-shadow 0.1s;
 }
 .deck__status-dot--on {
   background: var(--color-play);
@@ -490,7 +492,10 @@ function onConfirmLoad() {
   font-family: var(--font);
   font-size: 1em;
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s, box-shadow 0.1s;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 .deck__btn:hover {
   border-color: #444;

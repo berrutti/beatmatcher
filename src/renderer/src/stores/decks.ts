@@ -48,15 +48,15 @@ function quantizeToBeat(sec: number, bpm: number, beatOffset: number): number {
 
 function createDeck(id: DeckId, accent: string) {
   let positionCache = 0;
-  let clockAtPlay = 0;   // performance.now() when playback started or position was last anchored
-  let localRate = 1.0;   // effective playback rate (pitch + nudge) for interpolation
+  let clockAtPlay = 0; // performance.now() when playback started or position was last anchored
+  let localRate = 1.0; // effective playback rate (pitch + nudge) for interpolation
   let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
   let bandsReadyUnlisten: (() => void) | null = null;
 
   // Re-anchor positionCache to now so rate changes don't cause a position jump.
   function syncPosition() {
     if (state.loopPlaying) {
-      positionCache += (performance.now() - clockAtPlay) / 1000 * localRate;
+      positionCache += ((performance.now() - clockAtPlay) / 1000) * localRate;
       clockAtPlay = performance.now();
     }
   }
@@ -64,7 +64,7 @@ function createDeck(id: DeckId, accent: string) {
   function interpolatedPosition(): number {
     let pos = positionCache;
     if (state.loopPlaying) {
-      pos += (performance.now() - clockAtPlay) / 1000 * localRate;
+      pos += ((performance.now() - clockAtPlay) / 1000) * localRate;
     }
     if (state.loopActive && state.loopRegion) {
       const { startSec, endSec } = state.loopRegion;
@@ -164,7 +164,7 @@ function createDeck(id: DeckId, accent: string) {
       const info = await invoke<TrackData>('load_track', {
         deck: id,
         path: data.path,
-        analyze: false,
+        analyze: false
       });
 
       state.trackName = data.name;
@@ -194,16 +194,26 @@ function createDeck(id: DeckId, accent: string) {
         bandsReadyUnlisten = null;
         unlisten();
         invoke<number[]>('get_spectral_waveform_region', {
-          deck: id, startSec: 0, endSec: info.duration, numPoints: overviewPoints,
-        }).then(result => {
-          state.fullSpectralData = new Float32Array(result);
-        }).catch(() => {});
+          deck: id,
+          startSec: 0,
+          endSec: info.duration,
+          numPoints: overviewPoints
+        })
+          .then((result) => {
+            state.fullSpectralData = new Float32Array(result);
+          })
+          .catch(() => {});
         invoke<number[]>('get_spectral_waveform_region', {
-          deck: id, startSec: 0, endSec: info.duration, numPoints: densePoints,
-        }).then(result => {
-          state.denseSpectralData = new Float32Array(result);
-          state.denseSpectralRate = densePoints / info.duration;
-        }).catch(() => {});
+          deck: id,
+          startSec: 0,
+          endSec: info.duration,
+          numPoints: densePoints
+        })
+          .then((result) => {
+            state.denseSpectralData = new Float32Array(result);
+            state.denseSpectralRate = densePoints / info.duration;
+          })
+          .catch(() => {});
       });
       bandsReadyUnlisten = unlisten;
     },
@@ -353,8 +363,10 @@ function createDeck(id: DeckId, accent: string) {
       state.nudging = direction;
       const offset = direction === 'forward' ? NUDGE_PERCENT : -NUDGE_PERCENT;
       syncPosition();
-      const baseRate = state.targetBpm !== null && state.trackBpm !== null
-        ? state.targetBpm / state.trackBpm : 1.0;
+      const baseRate =
+        state.targetBpm !== null && state.trackBpm !== null
+          ? state.targetBpm / state.trackBpm
+          : 1.0;
       localRate = baseRate * (1 + offset / 100);
       invoke('set_nudge', { deck: id, percent: offset });
     },
@@ -362,8 +374,10 @@ function createDeck(id: DeckId, accent: string) {
     nudgeEnd() {
       state.nudging = null;
       syncPosition();
-      localRate = state.targetBpm !== null && state.trackBpm !== null
-        ? state.targetBpm / state.trackBpm : 1.0;
+      localRate =
+        state.targetBpm !== null && state.trackBpm !== null
+          ? state.targetBpm / state.trackBpm
+          : 1.0;
       invoke('set_nudge', { deck: id, percent: 0 });
     },
 
@@ -371,8 +385,17 @@ function createDeck(id: DeckId, accent: string) {
       return state.loopPlaying && !state.cueing;
     },
 
-    getSpectralWaveformRegion(startSec: number, endSec: number, numPoints: number): Promise<number[]> {
-      return invoke<number[]>('get_spectral_waveform_region', { deck: id, startSec, endSec, numPoints });
+    getSpectralWaveformRegion(
+      startSec: number,
+      endSec: number,
+      numPoints: number
+    ): Promise<number[]> {
+      return invoke<number[]>('get_spectral_waveform_region', {
+        deck: id,
+        startSec,
+        endSec,
+        numPoints
+      });
     },
 
     destroy() {

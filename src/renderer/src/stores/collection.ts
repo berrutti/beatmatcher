@@ -32,7 +32,7 @@ function persist(entries: CollectionEntry[]) {
   const data: PersistedEntry[] = entries.map((t) => ({
     name: t.name,
     size: t.size,
-    path: t.path,
+    path: t.path
   }));
   localStorage.setItem(COLLECTION_KEY, JSON.stringify(data));
 }
@@ -46,7 +46,7 @@ export const useCollectionStore = defineStore('collection', () => {
   const hasPending = computed(() => tracks.some((t) => t.status === 'idle'));
 
   function bpmFor(entry: CollectionEntry): number | null {
-    return entry.path ? savedTracks.get(entry.path)?.bpm ?? null : null;
+    return entry.path ? (savedTracks.get(entry.path)?.bpm ?? null) : null;
   }
 
   for (const p of loadPersisted()) {
@@ -56,7 +56,7 @@ export const useCollectionStore = defineStore('collection', () => {
       size: p.size,
       path: p.path,
       status: 'missing',
-      silenceEnd: 0,
+      silenceEnd: 0
     });
   }
 
@@ -83,7 +83,7 @@ export const useCollectionStore = defineStore('collection', () => {
   watch(
     () => tracks.map((t) => ({ name: t.name, size: t.size, path: t.path })),
     () => persist(tracks),
-    { deep: true },
+    { deep: true }
   );
 
   function toggle() {
@@ -105,7 +105,7 @@ export const useCollectionStore = defineStore('collection', () => {
         size,
         path,
         status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0,
+        silenceEnd: 0
       });
     });
   }
@@ -129,7 +129,7 @@ export const useCollectionStore = defineStore('collection', () => {
         size: file.size,
         path,
         status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0,
+        silenceEnd: 0
       });
     }
   }
@@ -149,7 +149,7 @@ export const useCollectionStore = defineStore('collection', () => {
     entry.status = 'analyzing';
     try {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
-        path: entry.path,
+        path: entry.path
       });
       entry.silenceEnd = result.silenceEnd;
       if (result.bpm !== null && result.bpm > 0) {
@@ -158,7 +158,7 @@ export const useCollectionStore = defineStore('collection', () => {
           name: entry.name,
           bpm: result.bpm,
           silenceEnd: result.silenceEnd,
-          beatOffset: result.silenceEnd,
+          beatOffset: result.silenceEnd
         });
         entry.status = 'ready';
       } else {
@@ -183,7 +183,7 @@ export const useCollectionStore = defineStore('collection', () => {
       name: entry.name,
       bpm,
       silenceEnd: entry.silenceEnd,
-      beatOffset: entry.silenceEnd,
+      beatOffset: entry.silenceEnd
     });
     entry.status = 'ready';
   }
@@ -192,9 +192,7 @@ export const useCollectionStore = defineStore('collection', () => {
     savedTracks.update(path, patch);
   }
 
-  function getLoadable(
-    path: string,
-  ): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
+  function getLoadable(path: string): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
     const saved = savedTracks.get(path);
     if (!saved) return null;
     return {
@@ -202,7 +200,7 @@ export const useCollectionStore = defineStore('collection', () => {
       name: saved.name,
       bpm: saved.bpm,
       silenceEnd: saved.silenceEnd,
-      beatOffset: saved.beatOffset,
+      beatOffset: saved.beatOffset
     };
   }
 
@@ -231,6 +229,6 @@ export const useCollectionStore = defineStore('collection', () => {
     updateTrack,
     getLoadable,
     startDrag,
-    endDrag,
+    endDrag
   };
 });

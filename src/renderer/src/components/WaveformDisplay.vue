@@ -47,7 +47,11 @@ const props = defineProps<{
   denseSpectralRate: number;
   getTrackPosition: () => number | null;
   getPlayheadPosition: () => number;
-  getSpectralWaveformRegion: (startSec: number, endSec: number, numPoints: number) => Promise<number[]>;
+  getSpectralWaveformRegion: (
+    startSec: number,
+    endSec: number,
+    numPoints: number
+  ) => Promise<number[]>;
 }>();
 
 const emit = defineEmits<{
@@ -126,7 +130,6 @@ let bitmapCanvasH = 0;
 let bitmapPixelW = 0;
 let bitmapBuildInFlight = false;
 
-
 function requiredPtsPerSec(): number {
   const canvas = canvasEl.value;
   const zoomSec = viewEndSec - viewStartSec;
@@ -182,7 +185,10 @@ async function doFetchOnDemand() {
   const rStart = Math.max(0, viewStartSec - pad);
   const rEnd = Math.min(trackDuration, viewEndSec + pad);
   const rate = requiredPtsPerSec();
-  if (rate <= 0 || rEnd <= rStart) { isFetching = false; return; }
+  if (rate <= 0 || rEnd <= rStart) {
+    isFetching = false;
+    return;
+  }
   const numPoints = Math.max(64, Math.ceil((rEnd - rStart) * rate));
   try {
     const result = await props.getSpectralWaveformRegion(rStart, rEnd, numPoints);
@@ -212,7 +218,10 @@ function ensurePeaks() {
   if (ensureCachedFromDense()) return;
   if (cacheCoversView()) return;
   if (props.denseSpectralRate <= 0) return;
-  if (isFetching) { pendingFetch = true; return; }
+  if (isFetching) {
+    pendingFetch = true;
+    return;
+  }
   clearTimeout(fetchDebounceTimer);
   fetchDebounceTimer = window.setTimeout(() => {
     if (cacheCoversView() || ensureCachedFromDense()) return;
@@ -244,9 +253,13 @@ function ensureBitmap(canvasW: number, canvasH: number) {
   bitmapBuildInFlight = true;
   const imgData = buildWaveformImageData(bitmapW, canvasH, cachedPeaks, WAVEFORM_AMP_SCALE);
   createImageBitmap(imgData)
-    .then(bmp => { waveImgBitmap = bmp; })
+    .then((bmp) => {
+      waveImgBitmap = bmp;
+    })
     .catch(() => {})
-    .finally(() => { bitmapBuildInFlight = false; });
+    .finally(() => {
+      bitmapBuildInFlight = false;
+    });
 }
 
 function pxToSec(px: number): number {
@@ -664,5 +677,4 @@ watch(
   min-width: 24px;
   text-align: center;
 }
-
 </style>

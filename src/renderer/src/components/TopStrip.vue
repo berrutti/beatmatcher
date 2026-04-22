@@ -4,14 +4,18 @@
       <span class="topstrip__meter-label">L</span>
       <div class="topstrip__meter"><div class="topstrip__meter-fill" /></div>
       <span class="topstrip__meter-label">R</span>
-      <div class="topstrip__meter"><div class="topstrip__meter-fill topstrip__meter-fill--r" /></div>
+      <div class="topstrip__meter">
+        <div class="topstrip__meter-fill topstrip__meter-fill--r" />
+      </div>
     </div>
 
     <button
       class="topstrip__edit-btn"
       :class="{ 'topstrip__edit-btn--active': editMode }"
       @click="emit('toggle-edit')"
-    >EDIT</button>
+    >
+      EDIT
+    </button>
 
     <div class="topstrip__spacer" />
 
@@ -28,7 +32,13 @@
         v-if="mainDevice && mainDevice.channels > 2"
         class="topstrip__select topstrip__select--ch"
         :value="mixer.mainChannelOffset"
-        @change="(e) => mixer.setMainOutputDevice(mixer.mainDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+        @change="
+          (e) =>
+            mixer.setMainOutputDevice(
+              mixer.mainDeviceId,
+              parseInt((e.target as HTMLSelectElement).value)
+            )
+        "
       >
         <option v-for="offset in channelPairs(mainDevice.channels)" :key="offset" :value="offset">
           Ch {{ offset + 1 }}-{{ offset + 2 }}
@@ -48,7 +58,13 @@
         v-if="cueDevice && cueDevice.channels > 2"
         class="topstrip__select topstrip__select--ch"
         :value="mixer.cueChannelOffset"
-        @change="(e) => mixer.setCueOutputDevice(mixer.cueDeviceId, parseInt((e.target as HTMLSelectElement).value))"
+        @change="
+          (e) =>
+            mixer.setCueOutputDevice(
+              mixer.cueDeviceId,
+              parseInt((e.target as HTMLSelectElement).value)
+            )
+        "
       >
         <option v-for="offset in channelPairs(cueDevice.channels)" :key="offset" :value="offset">
           Ch {{ offset + 1 }}-{{ offset + 2 }}
@@ -70,8 +86,12 @@ const emit = defineEmits<{ 'toggle-edit': [] }>();
 
 const mixer = useMixerStore();
 
-const mainDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null);
-const cueDevice = computed(() => mixer.outputDevices.find((d) => d.id === mixer.cueDeviceId) ?? null);
+const mainDevice = computed(
+  () => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null
+);
+const cueDevice = computed(
+  () => mixer.outputDevices.find((d) => d.id === mixer.cueDeviceId) ?? null
+);
 
 function channelPairs(totalChannels: number): number[] {
   const offsets: number[] = [];
@@ -193,7 +213,9 @@ onMounted(() => {
   padding: 1px 6px;
   border-radius: 3px;
   cursor: pointer;
-  transition: border-color 0.1s, color 0.1s;
+  transition:
+    border-color 0.1s,
+    color 0.1s;
 }
 
 .topstrip__refresh:hover {

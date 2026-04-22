@@ -10,7 +10,9 @@
 
     <div class="edit-view__header">
       <span class="edit-view__label">EDIT</span>
-      <span v-if="deck.trackName" class="edit-view__track-name" :title="deck.trackName">{{ deck.trackName }}</span>
+      <span v-if="deck.trackName" class="edit-view__track-name" :title="deck.trackName">{{
+        deck.trackName
+      }}</span>
       <div v-if="deck.trackLoaded" class="edit-view__bpm">
         <span class="edit-view__bpm-value">{{ deck.targetBpm?.toFixed(1) ?? '--.-' }}</span>
         <span class="edit-view__bpm-unit">BPM</span>
@@ -23,13 +25,17 @@
           @mousedown.prevent="deck.cueStart()"
           @mouseup="deck.cueEnd()"
           @mouseleave="deck.cueEnd()"
-        >CUE</button>
+        >
+          CUE
+        </button>
         <button
           class="edit-view__btn edit-view__btn--play"
           :class="{ 'edit-view__btn--playing': deck.playing }"
           :disabled="!deck.trackLoaded"
           @click="deck.togglePlay()"
-        >{{ deck.playing ? '⏸' : '▶' }}</button>
+        >
+          {{ deck.playing ? '⏸' : '▶' }}
+        </button>
       </div>
       <button class="edit-view__close" @click="emit('close')">CLOSE</button>
     </div>
@@ -93,7 +99,7 @@ watch(
       window.removeEventListener('pointermove', onWindowPointerMove);
       isDragOver.value = false;
     }
-  },
+  }
 );
 
 function buildLoadable(path: string): LoadableTrack | null {
@@ -101,7 +107,7 @@ function buildLoadable(path: string): LoadableTrack | null {
   if (!data) return null;
   return {
     ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec }),
+    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
   };
 }
 

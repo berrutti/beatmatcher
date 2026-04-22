@@ -5,7 +5,10 @@ import { buildWaveformImageData } from '../waveformImage';
 if (typeof ImageData === 'undefined') {
   (globalThis as Record<string, unknown>).ImageData = class {
     data: Uint8ClampedArray;
-    constructor(public width: number, public height: number) {
+    constructor(
+      public width: number,
+      public height: number
+    ) {
       this.data = new Uint8ClampedArray(width * height * 4);
     }
   };
@@ -72,10 +75,7 @@ describe('buildWaveformImageData', () => {
     // point 1: r=0, g=1, b=0, amp=0.5 (green)
     // expected: r = sumR/sumAmp * 255 = 0.5/1.0 * 255 = 127
     //           g = 127, b = 0
-    const peaks = new Float32Array([
-      1.0, 0.0, 0.0, 0.5,
-      0.0, 1.0, 0.0, 0.5,
-    ]);
+    const peaks = new Float32Array([1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5]);
     const img = buildWaveformImageData(1, 10, peaks, 1.0);
     // Find a colored row (middle)
     const p = pixel(img, 0, 5);
@@ -91,8 +91,14 @@ describe('buildWaveformImageData', () => {
     //   halfCh=5, ampScale=1 → barPx = floor(0.707*5) = 3
     //   yTop = max(0, 5-3) = 2 → rows 0 and 1 stay background
     const peaks = new Float32Array([
-      0.0, 0.0, 1.0, 1.0, // loud blue
-      0.0, 0.0, 0.0, 0.0, // silent
+      0.0,
+      0.0,
+      1.0,
+      1.0, // loud blue
+      0.0,
+      0.0,
+      0.0,
+      0.0 // silent
     ]);
     const img = buildWaveformImageData(1, 10, peaks, 1.0);
     expect(isBackground(img, 0, 0)).toBe(true);
@@ -105,7 +111,8 @@ describe('buildWaveformImageData', () => {
     const tallImg = buildWaveformImageData(1, 20, peaks, 1.0);
     const shortImg = buildWaveformImageData(1, 20, peaks, 0.5);
     // Count colored rows for each
-    let tallRows = 0, shortRows = 0;
+    let tallRows = 0,
+      shortRows = 0;
     for (let row = 0; row < 20; row++) {
       if (!isBackground(tallImg, 0, row)) tallRows++;
       if (!isBackground(shortImg, 0, row)) shortRows++;

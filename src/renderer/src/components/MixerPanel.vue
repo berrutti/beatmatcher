@@ -10,11 +10,13 @@
     </div>
 
     <div class="mixer__channels">
-      <div v-for="deckId in (['A', 'B'] as const)" :key="deckId" class="mixer__channel">
-        <span class="mixer__channel-label" :style="{ color: decks.decks[deckId].accent }">{{ deckId }}</span>
+      <div v-for="deckId in ['A', 'B'] as const" :key="deckId" class="mixer__channel">
+        <span class="mixer__channel-label" :style="{ color: decks.decks[deckId].accent }">{{
+          deckId
+        }}</span>
 
         <div class="mixer__eq">
-          <div v-for="band in (['high', 'mid', 'low'] as const)" :key="band" class="mixer__eq-band">
+          <div v-for="band in ['high', 'mid', 'low'] as const" :key="band" class="mixer__eq-band">
             <input
               type="range"
               class="mixer__eq-slider"
@@ -25,7 +27,10 @@
               orient="vertical"
               :disabled="!decks.decks[deckId].trackLoaded"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
-              @input="(e) => decks.decks[deckId].setEq(band, parseFloat((e.target as HTMLInputElement).value))"
+              @input="
+                (e) =>
+                  decks.decks[deckId].setEq(band, parseFloat((e.target as HTMLInputElement).value))
+              "
               @dblclick="decks.decks[deckId].setEq(band, 0)"
             />
             <span class="mixer__eq-label">{{ band[0].toUpperCase() }}</span>
@@ -49,7 +54,9 @@
             step="0.01"
             :value="mixer.filter[deckId]"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            @input="(e) => mixer.setFilter(deckId, parseFloat((e.target as HTMLInputElement).value))"
+            @input="
+              (e) => mixer.setFilter(deckId, parseFloat((e.target as HTMLInputElement).value))
+            "
             @dblclick="mixer.setFilter(deckId, 0)"
           />
         </div>
@@ -179,7 +186,10 @@ const mixer = useMixerStore();
   padding: 0.25em 0.45em;
   border-radius: 3px;
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
 }
 
 .mixer__filter-btn:hover {
@@ -214,7 +224,10 @@ const mixer = useMixerStore();
   padding: 0.3em 0.7em;
   border-radius: 3px;
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
 }
 
 .mixer__cue-btn:hover {
