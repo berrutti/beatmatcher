@@ -2,12 +2,33 @@
   <div class="topstrip">
     <div class="topstrip__meters">
       <span class="topstrip__meter-label">L</span>
-      <div class="topstrip__meter"><div class="topstrip__meter-fill" /></div>
+      <div class="topstrip__meter">
+        <div class="topstrip__meter-mask" :style="{ width: `${(1 - paramL) * 100}%` }" />
+        <div
+          v-if="peakL.value > 0"
+          class="topstrip__meter-peak"
+          :style="{ right: `${(1 - peakL.value) * 100}%` }"
+        />
+      </div>
       <span class="topstrip__meter-label">R</span>
       <div class="topstrip__meter">
-        <div class="topstrip__meter-fill topstrip__meter-fill--r" />
+        <div class="topstrip__meter-mask" :style="{ width: `${(1 - paramR) * 100}%` }" />
+        <div
+          v-if="peakR.value > 0"
+          class="topstrip__meter-peak"
+          :style="{ right: `${(1 - peakR.value) * 100}%` }"
+        />
       </div>
     </div>
+
+    <button
+      class="topstrip__rec-btn"
+      :class="{ 'topstrip__rec-btn--active': isRecording }"
+      :title="isRecording ? 'Stop recording' : 'Record master output'"
+      @click="onRecClick"
+    >
+      REC
+    </button>
 
     <button
       class="topstrip__edit-btn"
@@ -16,6 +37,21 @@
     >
       EDIT
     </button>
+
+    <div
+      class="topstrip__swarm-btn"
+      :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
+      title="Activate with CapsLock"
+    >
+      SWARM
+      <span
+        v-for="deck in DECKS_DISPOSITION"
+        :key="deck"
+        class="topstrip__swarm-deck"
+        :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
+        >{{ deck }}</span
+      >
+    </div>
 
     <div class="topstrip__spacer" />
 
@@ -26,6 +62,7 @@
         :value="mixer.mainDeviceId"
         @change="(e) => mixer.setMainOutputDevice((e.target as HTMLSelectElement).value, 0)"
       >
+        <option value="">Not configured</option>
         <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
       <select
@@ -78,8 +115,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 defineProps<{ editMode: boolean }>();
 const emit = defineEmits<{ 'toggle-edit': [] }>();
@@ -99,8 +139,53 @@ function channelPairs(totalChannels: number): number[] {
   return offsets;
 }
 
+// ── Metering ──────────────────────────────────────────────────────────────────
+
+const paramL = ref(0);
+const paramR = ref(0);
+const peakL = ref<PeakState>({ value: 0, holdMs: 0 });
+const peakR = ref<PeakState>({ value: 0, holdMs: 0 });
+
+let rafId = 0;
+
+async function pollLevels() {
+  const [l, r] = await invoke<[number, number]>('get_master_level');
+  const newParamL = vuParam(l);
+  const newParamR = vuParam(r);
+  paramL.value = smoothParam(paramL.value, newParamL);
+  paramR.value = smoothParam(paramR.value, newParamR);
+  peakL.value = stepPeak(peakL.value, newParamL);
+  peakR.value = stepPeak(peakR.value, newParamR);
+  rafId = requestAnimationFrame(pollLevels);
+}
+
+// ── Recording ────────────────────────────────────────────────────────────────
+
+const isRecording = ref(false);
+
+async function onRecClick() {
+  if (isRecording.value) {
+    isRecording.value = false;
+    const tempPath = await invoke<string>('stop_recording');
+    const destPath = await invoke<string | null>('pick_save_path');
+    if (destPath) {
+      await invoke('save_recording', { src: tempPath, dest: destPath });
+    } else {
+      await invoke('discard_recording', { path: tempPath });
+    }
+  } else {
+    await invoke('start_recording');
+    isRecording.value = true;
+  }
+}
+
 onMounted(() => {
   mixer.loadOutputDevices();
+  rafId = requestAnimationFrame(pollLevels);
+});
+
+onUnmounted(() => {
+  cancelAnimationFrame(rafId);
 });
 </script>
 
@@ -133,21 +218,81 @@ onMounted(() => {
 .topstrip__meter {
   width: 56px;
   height: 4px;
-  background: var(--color-surface);
+  background: linear-gradient(
+    to right,
+    #22c55e 0%,
+    #22c55e 65%,
+    #facc15 80%,
+    #ef4444 92%,
+    #ef4444 100%
+  );
   border: 0.5px solid var(--color-border);
   border-radius: 1px;
   overflow: hidden;
+  position: relative;
 }
 
-.topstrip__meter-fill {
-  height: 100%;
-  width: 55%;
-  background: var(--color-muted);
+.topstrip__meter-mask {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-surface);
+}
+
+.topstrip__meter-peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  transform: translateX(100%);
+}
+
+.topstrip__swarm-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: not-allowed;
+  user-select: none;
+}
+
+.topstrip__swarm-btn--active {
+  border-color: #fbbf24;
+  color: #fbbf24;
+  background: color-mix(in srgb, #fbbf24 15%, transparent);
+  animation: swarm-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes swarm-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.topstrip__swarm-deck {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-muted);
   opacity: 0.5;
 }
 
-.topstrip__meter-fill--r {
-  width: 48%;
+.topstrip__swarm-deck--on {
+  color: #fbbf24;
+  opacity: 1;
 }
 
 .topstrip__spacer {
@@ -179,6 +324,40 @@ onMounted(() => {
 
 .topstrip__select:focus {
   border-color: #555;
+}
+
+.topstrip__rec-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.topstrip__rec-btn:hover {
+  border-color: #e55;
+  color: #e55;
+}
+
+.topstrip__rec-btn--active {
+  border-color: #e55;
+  color: #e55;
+  background: color-mix(in srgb, #e55 15%, transparent);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
 }
 
 .topstrip__edit-btn {

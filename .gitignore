@@ -22,6 +22,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# claude code local config
+.claude/
+
 # logs
 *.log
 npm-debug.log*

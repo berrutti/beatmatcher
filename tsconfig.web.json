@@ -10,6 +10,7 @@
     "jsx": "preserve",
     "jsxImportSource": "vue",
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@renderer/*": ["src/renderer/src/*"]
     }

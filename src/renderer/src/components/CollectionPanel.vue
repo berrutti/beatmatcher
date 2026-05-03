@@ -8,9 +8,27 @@
   >
     <div class="collection__header">
       <span class="collection__title">COLLECTION</span>
-      <span v-if="store.tracks.length > 0" class="collection__count">{{
-        store.tracks.length
-      }}</span>
+      <span v-if="store.tracks.length > 0" class="collection__count"
+        >{{ filteredTracks.length }}/{{ store.tracks.length }}</span
+      >
+      <div class="collection__search-wrap">
+        <input
+          v-model="searchQuery"
+          class="collection__search"
+          type="text"
+          placeholder="search"
+          spellcheck="false"
+          @keydown.esc="searchQuery = ''"
+        />
+        <button
+          v-if="searchQuery"
+          class="collection__search-clear"
+          tabindex="-1"
+          @click="searchQuery = ''"
+        >
+          ✕
+        </button>
+      </div>
       <button v-if="store.hasPending" class="collection__header-btn" @click="store.analyzeAll()">
         ANALYZE ALL
       </button>
@@ -23,20 +41,21 @@
         CLEAR
       </button>
     </div>
-    <div class="collection__body">
+    <div class="collection__body" :style="store.draggingPath ? { overflowY: 'hidden' } : {}">
       <div v-if="store.tracks.length === 0" class="collection__empty">
         Drop audio files or folders here, or use ADD
       </div>
+      <div v-else-if="filteredTracks.length === 0" class="collection__empty">no results</div>
       <div v-else class="collection__list">
         <div
-          v-for="track in store.tracks"
+          v-for="track in filteredTracks"
           :key="track.id"
           class="collection__item"
           :class="`collection__item--${track.status}`"
           @pointerdown="onItemPointerDown($event, track)"
         >
-          <span class="collection__item-name" :title="track.name">{{
-            displayName(track.name)
+          <span class="collection__item-name" :title="track.title ?? displayName(track.name)">{{
+            track.title ?? displayName(track.name)
           }}</span>
           <span v-if="store.bpmFor(track) !== null" class="collection__item-bpm">
             {{ store.bpmFor(track)!.toFixed(1) }} BPM
@@ -86,7 +105,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useCollectionStore } from '@renderer/stores/collection';
 import type { CollectionEntry } from '@renderer/stores/collection';
 import BpmModal from '@renderer/components/BpmModal.vue';
@@ -94,6 +113,16 @@ import BpmModal from '@renderer/components/BpmModal.vue';
 const store = useCollectionStore();
 const isDragOver = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
+const searchQuery = ref('');
+
+const filteredTracks = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return store.tracks;
+  return store.tracks.filter((t) => {
+    const label = t.title ?? displayName(t.name);
+    return label.toLowerCase().includes(q);
+  });
+});
 
 function openBpmModal(id: string) {
   bpmModalTrackId.value = id;
@@ -263,6 +292,51 @@ async function openFileDialog() {
   font-size: 0.65em;
   color: var(--color-muted);
   opacity: 0.6;
+}
+
+.collection__search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.collection__search {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-family: var(--font);
+  font-size: 0.6em;
+  padding: 0.25em 1.6em 0.25em 0.5em;
+  border-radius: 3px;
+  outline: none;
+  width: 8em;
+}
+
+.collection__search::placeholder {
+  color: var(--color-muted);
+  opacity: 0.5;
+}
+
+.collection__search:focus {
+  border-color: #555;
+}
+
+.collection__search-clear {
+  position: absolute;
+  right: 0.3em;
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 0.55em;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.6;
+}
+.collection__search-clear:hover {
+  opacity: 1;
+  color: var(--color-text);
 }
 
 .collection__header-btn {

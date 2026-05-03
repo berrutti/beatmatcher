@@ -13,6 +13,7 @@ export type CollectionEntry = {
   path: string | null;
   status: CollectionEntryStatus;
   silenceEnd: number;
+  title: string | null;
 };
 
 type PersistedEntry = { name: string; size: number; path: string | null };
@@ -55,7 +56,8 @@ export const useCollectionStore = defineStore('collection', () => {
       size: p.size,
       path: p.path,
       status: 'missing',
-      silenceEnd: 0
+      silenceEnd: 0,
+      title: null
     });
   }
 
@@ -73,6 +75,7 @@ export const useCollectionStore = defineStore('collection', () => {
             const hasSaved = savedTracks.get(path) !== null;
             entry.size = size;
             entry.status = hasSaved ? 'ready' : 'idle';
+            queueTagRead(entry.id);
           });
         })
         .catch(() => {});
@@ -98,14 +101,17 @@ export const useCollectionStore = defineStore('collection', () => {
       if (size === null || size === undefined) return;
       const name = path.split('/').pop() ?? path;
       const hasSaved = savedTracks.get(path) !== null;
-      tracks.push({
+      const entry: CollectionEntry = {
         id: `${name}-${Math.random().toString(36).slice(2)}`,
         name,
         size,
         path,
         status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0
-      });
+        silenceEnd: 0,
+        title: null
+      };
+      tracks.push(entry);
+      queueTagRead(entry.id);
     });
   }
 
@@ -118,18 +124,22 @@ export const useCollectionStore = defineStore('collection', () => {
           existing.path = path ?? existing.path;
           const hasSaved = existing.path !== null && savedTracks.get(existing.path) !== null;
           existing.status = hasSaved ? 'ready' : 'idle';
+          queueTagRead(existing.id);
         }
         continue;
       }
       const hasSaved = path !== null && savedTracks.get(path) !== null;
-      tracks.push({
+      const entry: CollectionEntry = {
         id: `${file.name}-${Math.random().toString(36).slice(2)}`,
         name: file.name,
         size: file.size,
         path,
         status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0
-      });
+        silenceEnd: 0,
+        title: null
+      };
+      tracks.push(entry);
+      queueTagRead(entry.id);
     }
   }
 
@@ -142,9 +152,26 @@ export const useCollectionStore = defineStore('collection', () => {
     tracks.splice(0, tracks.length);
   }
 
-  async function analyzeTrack(id: string) {
+  const ANALYZE_CONCURRENCY = 3;
+  let activeAnalyses = 0;
+  const analysisQueue: string[] = [];
+
+  function drainQueue() {
+    while (activeAnalyses < ANALYZE_CONCURRENCY && analysisQueue.length > 0) {
+      const id = analysisQueue.shift()!;
+      const entry = tracks.find((t) => t.id === id);
+      if (!entry || entry.status !== 'idle') continue;
+      activeAnalyses++;
+      doAnalyze(id).finally(() => {
+        activeAnalyses--;
+        drainQueue();
+      });
+    }
+  }
+
+  async function doAnalyze(id: string) {
     const entry = tracks.find((t) => t.id === id);
-    if (!entry || !entry.path || entry.status === 'analyzing' || entry.status === 'missing') return;
+    if (!entry || !entry.path) return;
     entry.status = 'analyzing';
     try {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
@@ -168,10 +195,54 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  function analyzeTrack(id: string) {
+    const entry = tracks.find((t) => t.id === id);
+    if (!entry || !entry.path || entry.status === 'analyzing' || entry.status === 'missing') return;
+    analysisQueue.push(id);
+    drainQueue();
+  }
+
   function analyzeAll() {
     for (const t of tracks.filter((t) => t.status === 'idle')) {
-      analyzeTrack(t.id);
+      analysisQueue.push(t.id);
     }
+    drainQueue();
+  }
+
+  const TAG_READ_CONCURRENCY = 8;
+  let activeTagReads = 0;
+  const tagReadQueue: string[] = [];
+
+  function drainTagQueue() {
+    while (activeTagReads < TAG_READ_CONCURRENCY && tagReadQueue.length > 0) {
+      const id = tagReadQueue.shift()!;
+      const entry = tracks.find((t) => t.id === id);
+      if (!entry || !entry.path) continue;
+      activeTagReads++;
+      readTagsForEntry(entry).finally(() => {
+        activeTagReads--;
+        drainTagQueue();
+      });
+    }
+  }
+
+  async function readTagsForEntry(entry: CollectionEntry) {
+    if (!entry.path) return;
+    try {
+      const tags = await invoke<{ title: string | null; artist: string | null }>(
+        'read_track_tags',
+        { path: entry.path }
+      );
+      const parts = [tags.artist, tags.title].filter(Boolean);
+      if (parts.length > 0) entry.title = parts.join(' - ');
+    } catch {
+      // ignore tag read failures
+    }
+  }
+
+  function queueTagRead(id: string) {
+    tagReadQueue.push(id);
+    drainTagQueue();
   }
 
   function setBpm(id: string, bpm: number) {
@@ -194,9 +265,10 @@ export const useCollectionStore = defineStore('collection', () => {
   function getLoadable(path: string): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
     const saved = savedTracks.get(path);
     if (!saved) return null;
+    const entry = tracks.find((t) => t.path === path);
     return {
       path,
-      name: saved.name,
+      name: entry?.title ?? saved.name,
       bpm: saved.bpm,
       silenceEnd: saved.silenceEnd,
       beatOffset: saved.beatOffset

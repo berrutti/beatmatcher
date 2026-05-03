@@ -1,14 +1,5 @@
 <template>
   <div class="lissajous-wrapper">
-    <div class="lissajous-labels">
-      <span
-        v-for="(source, i) in sources"
-        :key="i"
-        class="lissajous-label"
-        :style="{ color: source.accent }"
-        >{{ source.label }}</span
-      >
-    </div>
     <canvas ref="canvasEl" class="lissajous" />
     <p class="lissajous-hint">phase scope</p>
   </div>
@@ -28,7 +19,6 @@ const props = defineProps<{
   sources: PhaseSource[];
 }>();
 
-const SIZE = 200;
 const DOT_RADIUS = 4;
 const RING_RADIUS_RATIO = 0.82;
 const HISTORY_SIZE = 90;
@@ -47,21 +37,29 @@ function draw() {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const half = SIZE / 2;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width / dpr;
+  const h = canvas.height / dpr;
+  if (!w || !h) {
+    rafId = requestAnimationFrame(draw);
+    return;
+  }
+  const half = Math.min(w, h) / 2;
   const amplitude = half * RING_RADIUS_RATIO;
+  const cx = w / 2;
+  const cy = h / 2;
   const phases = props.sources.map((s) => s.getPhase());
   const anyPlaying = phases.some((p) => p !== 0);
 
   ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, 0, SIZE, SIZE);
+  ctx.fillRect(0, 0, w, h);
 
   if (anyPlaying) {
     if (!wasPlaying) history = [];
     wasPlaying = true;
     fadeFactor = 1;
-
-    const [x, y] = computeDotPosition(phases, amplitude, half);
-    history.push([x, y]);
+    const point = computeDotPosition(phases, amplitude, cx, cy);
+    history.push(point);
     if (history.length > HISTORY_SIZE) history.shift();
   } else if (wasPlaying) {
     fadeFactor -= FADE_DECAY;
@@ -97,19 +95,23 @@ function draw() {
 onMounted(() => {
   const canvas = canvasEl.value;
   if (!canvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = SIZE * dpr;
-  canvas.height = SIZE * dpr;
-  canvas.style.width = `${SIZE}px`;
-  canvas.style.height = `${SIZE}px`;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.scale(dpr, dpr);
-
-  ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, 0, SIZE, SIZE);
-
-  rafId = requestAnimationFrame(draw);
+  requestAnimationFrame(() => {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (!w || !h) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    history = [];
+    wasPlaying = false;
+    fadeFactor = 0;
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, w, h);
+    rafId = requestAnimationFrame(draw);
+  });
 });
 
 onUnmounted(() => {
@@ -122,22 +124,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-}
-
-.lissajous-labels {
-  display: flex;
-  gap: 12px;
-}
-
-.lissajous-label {
-  font-size: 0.7rem;
-  letter-spacing: 0.2em;
-  font-weight: 700;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
 }
 
 .lissajous {
   display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
   border-radius: 4px;
   border: 1px solid #2a2a2a;
 }

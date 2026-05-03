@@ -48,6 +48,7 @@ Built with Tauri + Vue 3 + TypeScript + Vite.
 
 The BPM detection logic was inspired by this [Joe Sullivan](https://x.com/itsjoesullivan)'s blog post:  
 http://joesul.li/van/beat-detection-using-web-audio/
+The waveform and meter rendering were inspired by [Mixxx](https://github.com/mixxxdj/mixxx).
 
 ## License
 

@@ -6,6 +6,11 @@
   box-sizing: border-box;
 }
 
+*:focus,
+*:focus-visible {
+  outline: none;
+}
+
 :root {
   --color-bg: #0a0a0a;
   --color-surface: #141414;

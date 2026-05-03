@@ -13,18 +13,20 @@
     </Modal>
 
     <TopStrip :edit-mode="editMode" @toggle-edit="tryToggleEditMode" />
-    <div class="app__main">
-      <div class="app__stage">
-        <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
-        <main v-else class="app__decks">
-          <DeckPanel :deck="store.deckA" :keybindings="KEYS.deckA" />
-          <div class="app__center">
-            <MixerPanel />
-          </div>
-          <DeckPanel :deck="store.deckB" :keybindings="KEYS.deckB" />
-        </main>
+
+    <div class="app__body">
+      <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
+      <div v-else class="app__play">
+        <DeckPanel class="app__deck-a" :deck="store.deckA" :keybindings="KEYS.deckA" />
+        <DeckPanel class="app__deck-c" :deck="store.deckC" :keybindings="KEYS.deckC" />
+        <div class="app__center">
+          <MixerPanel />
+        </div>
+        <DeckPanel class="app__deck-b" :deck="store.deckB" :keybindings="KEYS.deckB" />
+        <DeckPanel class="app__deck-d" :deck="store.deckD" :keybindings="KEYS.deckD" />
       </div>
     </div>
+
     <button class="app__collection-bar" @click="collectionStore.toggle()">
       <span class="app__collection-bar-label">COLLECTION</span>
       <span>{{ collectionStore.isOpen ? '▴' : '▾' }}</span>
@@ -65,7 +67,12 @@ function tryToggleEditMode() {
     store.editMode = false;
     return;
   }
-  if (store.deckA.loopPlaying || store.deckB.loopPlaying) {
+  if (
+    store.deckA.loopPlaying ||
+    store.deckB.loopPlaying ||
+    store.deckC.loopPlaying ||
+    store.deckD.loopPlaying
+  ) {
     enterEditPending.value = true;
   } else {
     store.editMode = true;
@@ -91,7 +98,6 @@ function onConfirmEditMode() {
   height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
   --topstrip-h: 26px;
   --collection-panel-h: 0px;
   --collection-bar-h: 22px;
@@ -101,82 +107,62 @@ function onConfirmEditMode() {
   --collection-panel-h: 200px;
 }
 
-.app__main {
+.app__body {
   flex: 1;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   min-height: 0;
-}
-
-.app__stage {
-  position: relative;
-  width: min(
-    100vw,
-    calc((100vh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)) * 16 / 9)
-  );
-  height: min(
-    calc(100vh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)),
-    calc(100vw * 9 / 16)
-  );
-  aspect-ratio: 16 / 9;
   overflow: hidden;
-  font-size: calc(
-    min(
-        calc(100vh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)),
-        calc(100vw * 9 / 16)
-      ) /
-      45
-  );
-}
-
-.app__decks {
-  display: flex;
-  width: 100%;
-  height: 100%;
-}
-
-.app__center {
-  width: 18em;
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  border-left: 1px solid var(--color-border);
+  font-size: clamp(
+    11px,
+    calc((100dvh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)) / 58),
+    15px
+  );
+}
+
+.app__play {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    'deck-a center deck-b'
+    'deck-c center deck-d';
+}
+
+.app__deck-a {
+  grid-area: deck-a;
+  min-width: 0;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app__deck-c {
+  grid-area: deck-c;
+  min-width: 0;
   border-right: 1px solid var(--color-border);
 }
 
-.app__collection-bar {
-  width: 100%;
-  height: var(--collection-bar-h);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5em;
-  cursor: pointer;
-  border-top: 1px solid var(--color-border);
-  background: var(--color-bg);
-  font-family: var(--font);
-  font-size: 11px;
-  letter-spacing: 0.15em;
-  color: var(--color-muted);
-  user-select: none;
-  flex-shrink: 0;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-}
-.app__collection-bar:hover {
-  color: var(--color-text);
-  background: var(--color-surface);
+.app__deck-b {
+  grid-area: deck-b;
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.app__collection {
-  width: 100%;
-  height: var(--collection-panel-h);
-  flex-shrink: 0;
-  overflow: hidden;
+.app__deck-d {
+  grid-area: deck-d;
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+}
+
+.app__center {
+  grid-area: center;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
 }
 
 .app__collection-bar {
