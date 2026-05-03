@@ -43,6 +43,8 @@ const props = defineProps<{
   trackBpm: number | null;
   beatOffset: number;
   cuePoint: number;
+  loopRegion: { startSec: number; endSec: number } | null;
+  loopActive: boolean;
   denseSpectralData: Float32Array | null;
   denseSpectralRate: number;
   getTrackPosition: () => number | null;
@@ -305,10 +307,33 @@ function drawWaveform() {
     }
   }
 
+  drawLoopRegion(ctx, w, h);
   drawRuler(ctx, w, h);
   drawDownbeatMarker(ctx, w, h);
   drawCueMarker(ctx, w, h);
   drawPlayhead(ctx, w, h);
+}
+
+function drawLoopRegion(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const region = props.loopRegion;
+  if (!region) return;
+  const x1 = Math.max(0, secToPx(region.startSec));
+  const x2 = Math.min(w, secToPx(region.endSec));
+  if (x2 <= x1) return;
+  ctx.save();
+  ctx.fillStyle = props.loopActive ? '#ca8a04' : '#78716c';
+  ctx.globalAlpha = 0.25;
+  ctx.fillRect(x1, 0, x2 - x1, h);
+  ctx.globalAlpha = props.loopActive ? 0.7 : 0.35;
+  ctx.strokeStyle = props.loopActive ? '#ca8a04' : '#78716c';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x1, 0);
+  ctx.lineTo(x1, h);
+  ctx.moveTo(x2, 0);
+  ctx.lineTo(x2, h);
+  ctx.stroke();
+  ctx.restore();
 }
 
 const MIN_LINE_SPACING_PX = 6;
@@ -442,14 +467,12 @@ function rafLoop() {
 
 // mousemove is batched to rAF: only the latest clientX is stored per frame.
 // Avoids redundant work when mousemove fires faster than display refresh (trackpads at 120 Hz).
-let dragging: 'pan' | null = null;
+let dragging: 'seek' | 'pan' | null = null;
 let panStartX = 0;
 let panStartViewSec = 0;
-let mouseDownPx = 0;
 let dragRectLeft = 0;
 let dragRectWidth = 0;
 let pendingDragX: number | null = null;
-const CLICK_THRESHOLD_PX = 5;
 
 function onMouseDown(e: MouseEvent) {
   const canvas = canvasEl.value;
@@ -458,23 +481,34 @@ function onMouseDown(e: MouseEvent) {
   dragRectLeft = rect.left;
   dragRectWidth = rect.width;
   const px = e.clientX - dragRectLeft;
-  mouseDownPx = px;
-  dragging = 'pan';
-  panStartX = px;
-  panStartViewSec = viewStartSec;
+
+  if (e.button === 2) {
+    dragging = 'pan';
+    panStartX = px;
+    panStartViewSec = viewStartSec;
+  } else {
+    dragging = 'seek';
+    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
+  }
 
   window.addEventListener('mousemove', onMouseMoveWindow);
   window.addEventListener('mouseup', onMouseUp);
 }
 
 function applyPendingDrag() {
-  if (pendingDragX === null || dragging !== 'pan' || dragRectWidth === 0) return;
+  if (pendingDragX === null) return;
   const px = pendingDragX - dragRectLeft;
-  const viewSpan = viewEndSec - viewStartSec;
-  const deltaSec = -((px - panStartX) / dragRectWidth) * viewSpan;
-  const [s, e] = clampView(panStartViewSec + deltaSec, viewSpan);
-  viewStartSec = s;
-  viewEndSec = e;
+
+  if (dragging === 'pan' && dragRectWidth > 0) {
+    const viewSpan = viewEndSec - viewStartSec;
+    const deltaSec = -((px - panStartX) / dragRectWidth) * viewSpan;
+    const [s, e] = clampView(panStartViewSec + deltaSec, viewSpan);
+    viewStartSec = s;
+    viewEndSec = e;
+  } else if (dragging === 'seek') {
+    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
+  }
+
   pendingDragX = null;
 }
 
@@ -511,15 +545,15 @@ function onWheel(e: WheelEvent) {
 function onMouseUp(e: MouseEvent) {
   pendingDragX = null;
   const px = e.clientX - dragRectLeft;
-  const wasDragging = dragging === 'pan';
-  const moved = Math.abs(px - mouseDownPx) >= CLICK_THRESHOLD_PX;
+  const wasPan = dragging === 'pan';
+  const wasSeek = dragging === 'seek';
   dragging = null;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
-  if (wasDragging && !moved) {
-    emit('seek', Math.max(0, Math.min(pxToSec(mouseDownPx), trackDuration)));
-  } else if (wasDragging) {
+  if (wasPan) {
     ensurePeaks();
+  } else if (wasSeek) {
+    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
   }
 }
 

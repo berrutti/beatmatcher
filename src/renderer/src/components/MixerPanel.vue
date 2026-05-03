@@ -1,22 +1,18 @@
 <template>
   <div class="mixer">
-    <div class="mixer__scope">
-      <LissajousScope
-        :sources="[
-          { getPhase: () => decks.deckA.phase, accent: decks.deckA.accent, label: 'A' },
-          { getPhase: () => decks.deckB.phase, accent: decks.deckB.accent, label: 'B' }
-        ]"
-      />
-    </div>
-
     <div class="mixer__channels">
-      <div v-for="deckId in ['A', 'B'] as const" :key="deckId" class="mixer__channel">
+      <div
+        v-for="deckId in DECKS_DISPOSITION"
+        :key="deckId"
+        class="mixer__channel"
+        :class="swarmChannelClass(deckId)"
+      >
         <span class="mixer__channel-label" :style="{ color: decks.decks[deckId].accent }">{{
           deckId
         }}</span>
 
         <div class="mixer__eq">
-          <div v-for="band in ['high', 'mid', 'low'] as const" :key="band" class="mixer__eq-band">
+          <div v-for="band in ['low', 'mid', 'high'] as const" :key="band" class="mixer__eq-band">
             <input
               type="range"
               class="mixer__eq-slider"
@@ -28,10 +24,9 @@
               :disabled="!decks.decks[deckId].trackLoaded"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
               @input="
-                (e) =>
-                  decks.decks[deckId].setEq(band, parseFloat((e.target as HTMLInputElement).value))
+                (e) => onEqInput(deckId, band, parseFloat((e.target as HTMLInputElement).value))
               "
-              @dblclick="decks.decks[deckId].setEq(band, 0)"
+              @dblclick="onEqReset(deckId, band)"
             />
             <span class="mixer__eq-label">{{ band[0].toUpperCase() }}</span>
           </div>
@@ -54,45 +49,180 @@
             step="0.01"
             :value="mixer.filter[deckId]"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            @input="
-              (e) => mixer.setFilter(deckId, parseFloat((e.target as HTMLInputElement).value))
-            "
-            @dblclick="mixer.setFilter(deckId, 0)"
+            @input="(e) => onFilterInput(deckId, parseFloat((e.target as HTMLInputElement).value))"
+            @dblclick="onFilterReset(deckId)"
           />
+          <button
+            class="mixer__filter-btn mixer__filter-btn--ghost"
+            aria-hidden="true"
+            tabindex="-1"
+          >
+            F
+          </button>
         </div>
 
-        <input
-          type="range"
-          class="mixer__fader"
-          min="0"
-          max="1"
-          step="0.01"
-          :value="mixer.volume[deckId]"
-          orient="vertical"
-          :style="{ '--fader-accent': decks.decks[deckId].accent }"
-          @input="(e) => mixer.setVolume(deckId, parseFloat((e.target as HTMLInputElement).value))"
-        />
+        <div class="mixer__fader-row">
+          <input
+            type="range"
+            class="mixer__fader"
+            min="0"
+            max="1"
+            step="0.01"
+            :value="mixer.volume[deckId]"
+            orient="vertical"
+            :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            @input="(e) => onVolumeInput(deckId, parseFloat((e.target as HTMLInputElement).value))"
+          />
+          <div class="mixer__meter">
+            <div
+              class="mixer__meter-mask"
+              :style="{ height: `${(1 - deckParams[deckId]) * 100}%` }"
+            />
+            <div
+              v-if="deckPeaks[deckId].value > 0"
+              class="mixer__meter-peak"
+              :style="{ bottom: `${deckPeaks[deckId].value * 100}%` }"
+            />
+          </div>
+        </div>
 
         <button
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
+          :disabled="mixer.swarmMode"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
           CUE
         </button>
       </div>
     </div>
+
+    <div class="mixer__master">
+      <span class="mixer__master-label">M</span>
+      <input
+        type="range"
+        class="mixer__master-fader"
+        min="0"
+        max="1"
+        step="0.01"
+        :value="mixer.masterGain"
+        orient="vertical"
+        @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
+        @dblclick="mixer.setMasterGain(1)"
+      />
+      <span class="mixer__master-value">{{ Math.round(mixer.masterGain * 100) }}</span>
+    </div>
+
+    <LissajousScope
+      class="mixer__lissajous"
+      :sources="[
+        { getPhase: () => decks.deckC.phase, accent: decks.deckC.accent, label: 'C' },
+        { getPhase: () => decks.deckA.phase, accent: decks.deckA.accent, label: 'A' },
+        { getPhase: () => decks.deckB.phase, accent: decks.deckB.accent, label: 'B' },
+        { getPhase: () => decks.deckD.phase, accent: decks.deckD.accent, label: 'D' }
+      ]"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { useDecksStore } from '@renderer/stores/decks';
-import { EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/decks';
+import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
 import LissajousScope from '@renderer/components/LissajousScope.vue';
+import type { DeckId } from '@renderer/stores/decks';
+import { reactive, onMounted, onUnmounted } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
+
+const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
+const deckPeaks = reactive<Record<DeckId, PeakState>>({
+  A: { value: 0, holdMs: 0 },
+  B: { value: 0, holdMs: 0 },
+  C: { value: 0, holdMs: 0 },
+  D: { value: 0, holdMs: 0 },
+  E: { value: 0, holdMs: 0 }
+});
+let levelPollId: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  levelPollId = setInterval(async () => {
+    const levels = await invoke<Record<string, [number, number]>>('get_deck_levels');
+    for (const id of Object.keys(levels) as DeckId[]) {
+      const [l, r] = levels[id];
+      const newParam = vuParam(Math.max(l, r));
+      deckParams[id] = smoothParam(deckParams[id], newParam);
+      deckPeaks[id] = stepPeak(deckPeaks[id], newParam);
+    }
+  }, 33);
+});
+
+onUnmounted(() => {
+  if (levelPollId !== null) clearInterval(levelPollId);
+});
+
+function swarmChannelClass(deckId: DeckId) {
+  if (!mixer.swarmMode || !mixer.swarmSelected[deckId]) return {};
+  const idx = DECKS_DISPOSITION.indexOf(deckId);
+  return {
+    'mixer__channel--swarm-selected': true,
+    'mixer__channel--swarm-no-left': idx > 0 && mixer.swarmSelected[DECKS_DISPOSITION[idx - 1]],
+    'mixer__channel--swarm-no-right':
+      idx < DECKS_DISPOSITION.length - 1 && mixer.swarmSelected[DECKS_DISPOSITION[idx + 1]]
+  };
+}
+
+function swarmAffected(deckId: DeckId): DeckId[] {
+  const selected = DECKS_DISPOSITION.filter((ch) => mixer.swarmSelected[ch]);
+  if (!selected.includes(deckId)) selected.push(deckId);
+  return selected;
+}
+
+function onVolumeInput(deckId: DeckId, newVal: number) {
+  if (mixer.swarmMode) {
+    const delta = newVal - mixer.volume[deckId];
+    for (const ch of swarmAffected(deckId)) mixer.setVolume(ch, mixer.volume[ch] + delta);
+  } else {
+    mixer.setVolume(deckId, newVal);
+  }
+}
+
+function onFilterInput(deckId: DeckId, newVal: number) {
+  if (mixer.swarmMode) {
+    const delta = newVal - mixer.filter[deckId];
+    for (const ch of swarmAffected(deckId)) mixer.setFilter(ch, mixer.filter[ch] + delta);
+  } else {
+    mixer.setFilter(deckId, newVal);
+  }
+}
+
+function onFilterReset(deckId: DeckId) {
+  if (mixer.swarmMode) {
+    for (const ch of swarmAffected(deckId)) mixer.setFilter(ch, 0);
+  } else {
+    mixer.setFilter(deckId, 0);
+  }
+}
+
+function onEqInput(deckId: DeckId, band: 'high' | 'mid' | 'low', newVal: number) {
+  if (mixer.swarmMode) {
+    const delta = newVal - decks.decks[deckId].eq[band];
+    for (const ch of swarmAffected(deckId))
+      decks.decks[ch].setEq(band, decks.decks[ch].eq[band] + delta);
+  } else {
+    decks.decks[deckId].setEq(band, newVal);
+  }
+}
+
+function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
+  if (mixer.swarmMode) {
+    for (const ch of swarmAffected(deckId)) decks.decks[ch].setEq(band, 0);
+  } else {
+    decks.decks[deckId].setEq(band, 0);
+  }
+}
 </script>
 
 <style scoped>
@@ -104,27 +234,97 @@ const mixer = useMixerStore();
   align-items: center;
   gap: 0.6em;
   padding: 0.6em 0.5em 0.8em;
+  width: 100%;
 }
 
-.mixer__scope {
-  width: 100%;
+.mixer__lissajous {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   min-height: 0;
+  width: 100%;
+}
+
+.mixer__master {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.mixer__master-label {
+  font-size: 0.6em;
+  color: var(--color-muted);
+  letter-spacing: 0.15em;
+}
+
+.mixer__master-value {
+  font-size: 0.55em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixer__master-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 100%;
+  height: 4.5em;
+  background: transparent;
+  cursor: pointer;
+}
+.mixer__master-fader::-webkit-slider-runnable-track {
+  width: 3px;
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+.mixer__master-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 2em;
+  height: 0.55em;
+  background: #e8e8e8;
+  border-radius: 2px;
+  margin-left: calc(-1em + 1.5px);
 }
 
 .mixer__channels {
   display: flex;
-  gap: 2em;
+  align-items: center;
+  justify-content: space-evenly;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .mixer__channel {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.4em;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+.mixer__channel--swarm-selected {
+  background: color-mix(in srgb, #fbbf24 8%, transparent);
+  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
+}
+
+.mixer__channel--swarm-no-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left-color: transparent;
+}
+
+.mixer__channel--swarm-no-right {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-color: transparent;
 }
 
 .mixer__channel-label {
@@ -146,14 +346,55 @@ const mixer = useMixerStore();
 }
 
 .mixer__eq-slider {
-  -webkit-appearance: slider-vertical;
-  appearance: auto;
+  -webkit-appearance: none;
+  appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 18px;
-  height: 4em;
+  width: 20px;
+  height: 7em;
   cursor: pointer;
-  accent-color: var(--eq-accent);
+  background: transparent;
+  padding: 0;
+}
+
+.mixer__eq-slider::-webkit-slider-runnable-track {
+  width: 3px;
+  background: #161616;
+  border: 1px solid #2c2c2c;
+  border-radius: 1px;
+}
+
+.mixer__eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 10px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.35) 0px,
+      rgba(0, 0, 0, 0.35) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    linear-gradient(to right, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
+  border-radius: 1px;
+  border-top: 1px solid #999;
+  border-bottom: 1px solid #2a2a2a;
+  border-left: 1px solid #5a5a5a;
+  border-right: 1px solid #5a5a5a;
+  cursor: grab;
+  margin-left: -7.5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.mixer__eq-slider:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mixer__eq-slider:disabled::-webkit-slider-thumb {
+  cursor: default;
 }
 
 .mixer__eq-label {
@@ -170,9 +411,44 @@ const mixer = useMixerStore();
 }
 
 .mixer__filter-slider {
+  -webkit-appearance: none;
+  appearance: none;
   width: 4em;
+  height: 18px;
   cursor: pointer;
-  accent-color: var(--fader-accent);
+  background: transparent;
+  padding: 0;
+}
+
+.mixer__filter-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #161616;
+  border: 1px solid #2c2c2c;
+  border-radius: 1px;
+}
+
+.mixer__filter-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 18px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(0, 0, 0, 0.35) 0px,
+      rgba(0, 0, 0, 0.35) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    linear-gradient(to bottom, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
+  border-radius: 1px;
+  border-left: 1px solid #999;
+  border-right: 1px solid #2a2a2a;
+  border-top: 1px solid #5a5a5a;
+  border-bottom: 1px solid #5a5a5a;
+  cursor: grab;
+  margin-top: -8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 
 .mixer__filter-btn {
@@ -197,21 +473,101 @@ const mixer = useMixerStore();
   color: var(--fader-accent);
 }
 
+.mixer__filter-btn--ghost {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .mixer__filter-btn--active {
   border-color: var(--fader-accent);
   color: var(--fader-accent);
   background: color-mix(in srgb, var(--fader-accent) 15%, transparent);
 }
 
+.mixer__fader-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+.mixer__meter {
+  width: 5px;
+  height: 10em;
+  background: linear-gradient(
+    to top,
+    #22c55e 0%,
+    #22c55e 65%,
+    #facc15 80%,
+    #ef4444 92%,
+    #ef4444 100%
+  );
+  border: 1px solid #282828;
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mixer__meter-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #111;
+}
+
+.mixer__meter-peak {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #fff;
+  transform: translateY(100%);
+}
+
 .mixer__fader {
-  -webkit-appearance: slider-vertical;
-  appearance: auto;
+  -webkit-appearance: none;
+  appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 22px;
-  height: 6em;
+  width: 30px;
+  height: 10em;
   cursor: pointer;
-  accent-color: var(--fader-accent);
+  background: transparent;
+  padding: 0;
+}
+
+.mixer__fader::-webkit-slider-runnable-track {
+  width: 4px;
+  background: #111;
+  border: 1px solid #282828;
+  border-radius: 2px;
+}
+
+.mixer__fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 20px;
+  background: linear-gradient(
+    to bottom,
+    #303030 0%,
+    #303030 38%,
+    #be1c1c 38%,
+    #be1c1c 62%,
+    #303030 62%,
+    #303030 100%
+  );
+  border-radius: 2px;
+  border-top: 1px solid #555;
+  border-bottom: 1px solid #1a1a1a;
+  border-left: 1px solid #444;
+  border-right: 1px solid #444;
+  cursor: grab;
+  margin-left: -12px;
+  box-shadow:
+    0 3px 7px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .mixer__cue-btn {

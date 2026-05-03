@@ -19,6 +19,13 @@
       </div>
       <div class="edit-view__transport">
         <button
+          class="edit-view__btn edit-view__btn--set-grid"
+          :disabled="!deck.trackLoaded"
+          @click="deck.setBeatOffset(deck.getPlayheadPosition())"
+        >
+          SET GRID
+        </button>
+        <button
           class="edit-view__btn edit-view__btn--cue"
           :class="{ 'edit-view__btn--cueing': deck.cueing }"
           :disabled="!deck.trackLoaded"
@@ -53,6 +60,8 @@
       :track-bpm="deck.trackBpm"
       :beat-offset="deck.beatOffset"
       :cue-point="deck.cuePoint"
+      :loop-region="deck.loopRegion"
+      :loop-active="deck.loopActive"
       :dense-spectral-data="deck.denseSpectralData"
       :dense-spectral-rate="deck.denseSpectralRate"
       :get-track-position="() => deck.trackPosition"
@@ -251,6 +260,17 @@ onUnmounted(() => {
 .edit-view__btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.edit-view__btn--set-grid {
+  color: var(--color-muted);
+  font-size: 0.55em;
+  letter-spacing: 0.1em;
+}
+
+.edit-view__btn--set-grid:not(:disabled):hover {
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 
 .edit-view__btn--cue {

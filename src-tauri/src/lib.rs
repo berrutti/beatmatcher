@@ -99,6 +99,8 @@ async fn load_track(
         d.loop_active = false;
         d.loop_start = 0.0;
         d.loop_end = 0.0;
+        d.bpm = None;
+        d.beat_offset_frames = 0.0;
         d.playback_rate = 1.0;
         d.nudge_factor = 1.0;
         d.bass_band = Arc::new(Vec::new());
@@ -221,6 +223,131 @@ fn set_loop_active(
     active: bool,
 ) -> Result<(), String> {
     get_deck(&state, &deck)?.lock().unwrap().loop_active = active;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct LoopSetResult {
+    start_sec: f64,
+    end_sec: f64,
+    beats: i64,
+}
+
+#[derive(serde::Serialize)]
+struct LoopOutResult {
+    start_sec: f64,
+    end_sec: f64,
+    beats: i64,
+    // Some when a late quantized press caused an immediate seek; frontend must sync positionCache.
+    seek_to_sec: Option<f64>,
+}
+
+fn quantize_to_beat(pos_frames: f64, bpm: f64, beat_offset_frames: f64, sr: f64) -> f64 {
+    let beat_dur = (60.0 / bpm) * sr;
+    let index = ((pos_frames - beat_offset_frames) / beat_dur).round();
+    (beat_offset_frames + index * beat_dur).max(0.0)
+}
+
+#[tauri::command]
+fn set_beat_grid(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    bpm: f64,
+    beat_offset_sec: f64,
+) -> Result<(), String> {
+    let arc = get_deck(&state, &deck)?;
+    let mut d = arc.lock().unwrap();
+    d.bpm = Some(bpm);
+    d.beat_offset_frames = beat_offset_sec * d.device_sample_rate as f64;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_loop_in(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    quantize: bool,
+) -> Result<LoopSetResult, String> {
+    let deck_arc = get_deck(&state, &deck)?;
+    let mut d = deck_arc.lock().unwrap();
+    let sr = d.device_sample_rate as f64;
+    let bpm = d.bpm.ok_or("no beat grid set")?;
+    let in_frames = if quantize {
+        quantize_to_beat(d.main_pos, bpm, d.beat_offset_frames, sr)
+    } else {
+        d.main_pos
+    };
+    let bar_frames = (4.0 * 60.0 / bpm) * sr;
+    let out_frames = if d.loop_end > d.loop_start && d.loop_end > in_frames + 0.01 * sr {
+        d.loop_end
+    } else {
+        in_frames + bar_frames
+    };
+    d.loop_active = false;
+    d.loop_start = in_frames;
+    d.loop_end = out_frames;
+    let start_sec = in_frames / sr;
+    let end_sec = out_frames / sr;
+    let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
+    Ok(LoopSetResult { start_sec, end_sec, beats })
+}
+
+#[tauri::command]
+fn set_loop_out(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    quantize: bool,
+    cue_point_sec: Option<f64>,
+) -> Result<Option<LoopOutResult>, String> {
+    let deck_arc = get_deck(&state, &deck)?;
+    let mut d = deck_arc.lock().unwrap();
+    let sr = d.device_sample_rate as f64;
+    let bpm = d.bpm.ok_or("no beat grid set")?;
+    let out_frames = if quantize {
+        quantize_to_beat(d.main_pos, bpm, d.beat_offset_frames, sr)
+    } else {
+        d.main_pos
+    };
+    let bar_frames = (4.0 * 60.0 / bpm) * sr;
+    let in_frames = if d.loop_end > d.loop_start {
+        d.loop_start
+    } else if let Some(cue_sec) = cue_point_sec {
+        let cue_frames = cue_sec * sr;
+        if cue_frames < out_frames { cue_frames } else { (out_frames - bar_frames).max(0.0) }
+    } else {
+        (out_frames - bar_frames).max(0.0)
+    };
+    if out_frames <= in_frames {
+        return Ok(None);
+    }
+    d.loop_start = in_frames;
+    d.loop_end = out_frames;
+    d.loop_active = true;
+    // When quantized and pressed late, main_pos has already passed loop_end.
+    // Immediately seek to loop_start + overshoot so the next audio callback
+    // reads from the compensated position rather than the overshoot.
+    let seek_to_sec = if quantize && d.main_pos > out_frames {
+        let dur = out_frames - in_frames;
+        let overshoot = d.main_pos - out_frames;
+        let new_pos = in_frames + overshoot % dur;
+        d.main_pos = new_pos;
+        Some(new_pos / sr)
+    } else {
+        None
+    };
+    let start_sec = in_frames / sr;
+    let end_sec = out_frames / sr;
+    let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
+    Ok(Some(LoopOutResult { start_sec, end_sec, beats, seek_to_sec }))
+}
+
+#[tauri::command]
+fn clear_loop_region(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
+    let arc = get_deck(&state, &deck)?;
+    let mut d = arc.lock().unwrap();
+    d.loop_active = false;
+    d.loop_start = 0.0;
+    d.loop_end = 0.0;
     Ok(())
 }
 
@@ -347,13 +474,10 @@ fn set_reloop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), Str
         return Ok(());
     }
     let start = d.loop_start;
+    d.main_pos = start;
+    d.cue_pos = start;
     if d.is_playing {
-        d.main_pos = start;
-        d.cue_pos = start;
         d.loop_active = true;
-    } else {
-        d.main_pos = start;
-        d.cue_pos = start;
     }
     Ok(())
 }
@@ -401,6 +525,67 @@ async fn open_file_dialog() -> Option<String> {
         .pick_file()
         .await;
     result.map(|f| f.path().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn pick_save_path() -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("WAV Audio", &["wav"])
+        .set_file_name("mix.wav")
+        .save_file()
+        .await
+        .map(|f| f.path().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn get_master_level(state: tauri::State<'_, AppState>) -> [f32; 2] {
+    state.audio.get_master_level()
+}
+
+#[tauri::command]
+fn get_deck_levels(state: tauri::State<'_, AppState>) -> std::collections::HashMap<String, [f32; 2]> {
+    state.audio.get_deck_levels()
+}
+
+#[tauri::command]
+fn start_recording(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.audio.start_recording()
+}
+
+#[tauri::command]
+async fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let audio = Arc::clone(&state.audio);
+    tokio::task::spawn_blocking(move || audio.stop_recording())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_track_tags(path: String) -> audio::TrackTags {
+    tokio::task::spawn_blocking(move || audio::read_tags(&path))
+        .await
+        .unwrap_or(audio::TrackTags { title: None, artist: None })
+}
+
+#[tauri::command]
+fn save_recording(src: String, dest: String) -> Result<(), String> {
+    if std::fs::rename(&src, &dest).is_ok() {
+        return Ok(());
+    }
+    // rename fails across filesystems; fall back to copy then delete
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    std::fs::remove_file(&src).ok();
+    Ok(())
+}
+
+#[tauri::command]
+fn discard_recording(path: String) -> Result<(), String> {
+    std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
+    state.audio.monitor.set_master_gain(gain);
 }
 
 #[tauri::command]
@@ -467,6 +652,10 @@ pub fn run() {
             seek,
             set_loop_region,
             set_loop_active,
+            set_beat_grid,
+            set_loop_in,
+            set_loop_out,
+            clear_loop_region,
             set_volume,
             set_playback_rate,
             set_nudge,
@@ -481,8 +670,17 @@ pub fn run() {
             set_cue_device,
             set_main_device,
             open_file_dialog,
+            pick_save_path,
             files_info,
             analyze_track,
+            get_master_level,
+            get_deck_levels,
+            start_recording,
+            stop_recording,
+            read_track_tags,
+            save_recording,
+            discard_recording,
+            set_master_gain,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

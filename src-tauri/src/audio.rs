@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
@@ -65,6 +66,19 @@ impl Biquad {
         self.delay1 = self.b1 * x - self.a1 * y + self.delay2;
         self.delay2 = self.b2 * x - self.a2 * y;
         y
+    }
+
+    // Replace the filter coefficients while preserving the delay-line state so
+    // there is no discontinuity click on a live signal. Do NOT call this when
+    // transitioning into identity (the dead zone): identity delay lines must be
+    // zeroed, not carried over from an active filter.
+    #[inline]
+    fn set_coefficients(&mut self, src: Self) {
+        let d1 = self.delay1;
+        let d2 = self.delay2;
+        *self = src;
+        self.delay1 = d1;
+        self.delay2 = d2;
     }
 
     fn low_shelf(sr: f32, freq: f32, db: f32) -> Self {
@@ -204,10 +218,10 @@ impl Biquad {
 // rolloff is steep enough to decisively kill bass and treble. Mid uses a single
 // wide-Q peaking filter to cover the full vocal/instrument range.
 
-const EQ_LOW_SHELF_HZ: f32 = 70.0;
+const EQ_LOW_SHELF_HZ: f32 = 200.0;
 const EQ_MID_PEAK_HZ: f32 = 1000.0;
-const EQ_MID_Q: f32 = 0.5;
-const EQ_HIGH_SHELF_HZ: f32 = 13_000.0;
+const EQ_MID_Q: f32 = 0.4;
+const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
 
 struct EqState {
     sample_rate: f32,
@@ -233,38 +247,23 @@ impl EqState {
     fn set_low(&mut self, db: f32) {
         let stage = Biquad::low_shelf(self.sample_rate, EQ_LOW_SHELF_HZ, db / 2.0);
         for (first, second) in self.low_stage1.iter_mut().zip(self.low_stage2.iter_mut()) {
-            let (prev_delay1, prev_delay2) = (first.delay1, first.delay2);
-            *first = stage;
-            first.delay1 = prev_delay1;
-            first.delay2 = prev_delay2;
-            let (prev_delay1, prev_delay2) = (second.delay1, second.delay2);
-            *second = stage;
-            second.delay1 = prev_delay1;
-            second.delay2 = prev_delay2;
+            first.set_coefficients(stage);
+            second.set_coefficients(stage);
         }
     }
 
     fn set_mid(&mut self, db: f32) {
         let filter = Biquad::peaking(self.sample_rate, EQ_MID_PEAK_HZ, EQ_MID_Q, db);
         for ch in &mut self.mid {
-            let (prev_delay1, prev_delay2) = (ch.delay1, ch.delay2);
-            *ch = filter;
-            ch.delay1 = prev_delay1;
-            ch.delay2 = prev_delay2;
+            ch.set_coefficients(filter);
         }
     }
 
     fn set_high(&mut self, db: f32) {
         let stage = Biquad::high_shelf(self.sample_rate, EQ_HIGH_SHELF_HZ, db / 2.0);
         for (first, second) in self.high_stage1.iter_mut().zip(self.high_stage2.iter_mut()) {
-            let (prev_delay1, prev_delay2) = (first.delay1, first.delay2);
-            *first = stage;
-            first.delay1 = prev_delay1;
-            first.delay2 = prev_delay2;
-            let (prev_delay1, prev_delay2) = (second.delay1, second.delay2);
-            *second = stage;
-            second.delay1 = prev_delay1;
-            second.delay2 = prev_delay2;
+            first.set_coefficients(stage);
+            second.set_coefficients(stage);
         }
     }
 
@@ -293,9 +292,19 @@ impl EqState {
 const FILTER_MIN_FREQ_HZ: f32 = 20.0;
 const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
 const FILTER_RESONANCE_Q: f32 = 2.0;
+// Q used at sweep=0 (center/dead-zone boundary). Interpolated up to
+// FILTER_RESONANCE_Q as the knob sweeps toward the extremes. Butterworth (0.5)
+// gives a smooth, flat response at the entry point of the sweep with no
+// resonance bump.
+const FILTER_CENTER_Q: f32 = 0.5;
 const FILTER_CENTER_DEAD_ZONE: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
-const FILTER_COEFF_REFRESH_INTERVAL: u32 = 16;
+// Coefficients are refreshed every N samples (knob is already smoothed per-sample).
+// Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
+const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
+// Beyond this sweep fraction (0..1) the output gain fades linearly to 0 so the
+// extreme position reaches -infinity regardless of biquad rolloff slope.
+const FILTER_KILL_START: f32 = 0.80;
 
 struct FilterState {
     sample_rate: f32,
@@ -303,7 +312,9 @@ struct FilterState {
     current_knob: f32,
     smoothing_coeff: f32,
     coeff_refresh_counter: u32,
-    filters: [Biquad; 2],
+    // Two cascaded 2nd-order stages per channel give 4th-order (-24 dB/oct) rolloff.
+    filters_a: [Biquad; 2],
+    filters_b: [Biquad; 2],
 }
 
 impl FilterState {
@@ -315,7 +326,8 @@ impl FilterState {
             current_knob: 0.0,
             smoothing_coeff,
             coeff_refresh_counter: 0,
-            filters: [Biquad::identity(), Biquad::identity()],
+            filters_a: [Biquad::identity(), Biquad::identity()],
+            filters_b: [Biquad::identity(), Biquad::identity()],
         }
     }
 
@@ -327,24 +339,31 @@ impl FilterState {
         let knob = self.current_knob;
         let abs_knob = knob.abs();
 
-        let new_filter = if abs_knob <= FILTER_CENTER_DEAD_ZONE {
-            Biquad::identity()
-        } else {
-            let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
-            if knob < 0.0 {
-                let cutoff = FILTER_MAX_FREQ_HZ * (FILTER_MIN_FREQ_HZ / FILTER_MAX_FREQ_HZ).powf(sweep);
-                Biquad::low_pass(self.sample_rate, cutoff, FILTER_RESONANCE_Q)
-            } else {
-                let cutoff = FILTER_MIN_FREQ_HZ * (FILTER_MAX_FREQ_HZ / FILTER_MIN_FREQ_HZ).powf(sweep);
-                Biquad::high_pass(self.sample_rate, cutoff, FILTER_RESONANCE_Q)
+        if abs_knob <= FILTER_CENTER_DEAD_ZONE {
+            // Reset to identity with zeroed delay lines. Preserving delay lines here
+            // would allow IIR state from the previous active filter to ring through,
+            // causing transient overshoots that push samples above 1.0.
+            let identity = Biquad::identity();
+            for (a, b) in self.filters_a.iter_mut().zip(self.filters_b.iter_mut()) {
+                *a = identity;
+                *b = identity;
             }
+            return;
+        }
+
+        let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
+        let q = FILTER_CENTER_Q + (FILTER_RESONANCE_Q - FILTER_CENTER_Q) * sweep;
+        let new_filter = if knob < 0.0 {
+            let cutoff = FILTER_MAX_FREQ_HZ * (FILTER_MIN_FREQ_HZ / FILTER_MAX_FREQ_HZ).powf(sweep);
+            Biquad::low_pass(self.sample_rate, cutoff, q)
+        } else {
+            let cutoff = FILTER_MIN_FREQ_HZ * (FILTER_MAX_FREQ_HZ / FILTER_MIN_FREQ_HZ).powf(sweep);
+            Biquad::high_pass(self.sample_rate, cutoff, q)
         };
 
-        for ch in &mut self.filters {
-            let (prev_delay1, prev_delay2) = (ch.delay1, ch.delay2);
-            *ch = new_filter;
-            ch.delay1 = prev_delay1;
-            ch.delay2 = prev_delay2;
+        for (a, b) in self.filters_a.iter_mut().zip(self.filters_b.iter_mut()) {
+            a.set_coefficients(new_filter);
+            b.set_coefficients(new_filter);
         }
     }
 
@@ -357,7 +376,25 @@ impl FilterState {
         }
         self.coeff_refresh_counter = (self.coeff_refresh_counter + 1) % FILTER_COEFF_REFRESH_INTERVAL;
 
-        (self.filters[0].process(l), self.filters[1].process(r))
+        // Kill gain: fade to 0 as the sweep enters the last 20% of its range so the
+        // extreme position always reaches -infinity regardless of biquad slope.
+        let abs_knob = self.current_knob.abs();
+        let kill_gain = if abs_knob > FILTER_CENTER_DEAD_ZONE {
+            let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
+            if sweep > FILTER_KILL_START {
+                1.0 - (sweep - FILTER_KILL_START) / (1.0 - FILTER_KILL_START)
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
+        let l1 = self.filters_a[0].process(l);
+        let r1 = self.filters_a[1].process(r);
+        let l2 = self.filters_b[0].process(l1) * kill_gain;
+        let r2 = self.filters_b[1].process(r1) * kill_gain;
+        (l2, r2)
     }
 }
 
@@ -371,6 +408,8 @@ pub struct ChannelStrip {
     eq_cue: EqState,
     filter: FilterState,
     filter_cue: FilterState,
+    pub level_l: Arc<AtomicU32>,
+    pub level_r: Arc<AtomicU32>,
 }
 
 impl ChannelStrip {
@@ -382,7 +421,21 @@ impl ChannelStrip {
             eq_cue: EqState::new(sample_rate),
             filter: FilterState::new(sample_rate),
             filter_cue: FilterState::new(sample_rate),
+            level_l: Arc::new(AtomicU32::new(0)),
+            level_r: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    pub fn store_level(&self, l: f32, r: f32) {
+        self.level_l.store(l.to_bits(), Ordering::Relaxed);
+        self.level_r.store(r.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get_level(&self) -> [f32; 2] {
+        [
+            f32::from_bits(self.level_l.load(Ordering::Relaxed)),
+            f32::from_bits(self.level_r.load(Ordering::Relaxed)),
+        ]
     }
 
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
@@ -402,9 +455,9 @@ impl ChannelStrip {
     // Applied to the master output path: EQ, filter, then fader gain.
     #[inline]
     pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let (l, r) = self.eq.process(l, r);
-        let (l, r) = self.filter.process(l, r);
-        (l * self.gain, r * self.gain)
+        let (el, er) = self.eq.process(l, r);
+        let (fl, fr) = self.filter.process(el, er);
+        (fl * self.gain, fr * self.gain)
     }
 
     // Applied to the cue output path: EQ then filter (pre-fader), gated by
@@ -440,6 +493,8 @@ pub struct DeckState {
     pub loop_active: bool,
     pub loop_start: f64, // in frames
     pub loop_end: f64,   // in frames
+    pub bpm: Option<f64>,
+    pub beat_offset_frames: f64,
     pub playback_rate: f64,
     pub nudge_factor: f64, // 1 + nudge_percent/100
 
@@ -466,6 +521,8 @@ impl DeckState {
             loop_active: false,
             loop_start: 0.0,
             loop_end: 0.0,
+            bpm: None,
+            beat_offset_frames: 0.0,
             playback_rate: 1.0,
             nudge_factor: 1.0,
             bass_band: Arc::new(Vec::new()),
@@ -563,6 +620,114 @@ struct SendStream(cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
 
+// -2 dBFS: gives the master bus headroom before the hardware clipping point.
+// 10^(-2/20) = 0.7943...
+const DEFAULT_MASTER_GAIN: f32 = 0.7943;
+
+// ── Master monitor (metering + recording tap) ─────────────────────────────────
+//
+// Shared between AppAudio and every master stream callback via Arc clones.
+// level_l/r are peak values from the last audio buffer, read by get_master_level.
+// record_tx is None when not recording; the callback does a try_lock so it
+// never blocks the audio thread.
+
+#[derive(Clone)]
+pub struct MasterMonitor {
+    pub level_l: Arc<AtomicU32>,
+    pub level_r: Arc<AtomicU32>,
+    pub master_gain: Arc<AtomicU32>,
+    pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
+}
+
+impl MasterMonitor {
+    fn new() -> Self {
+        Self {
+            level_l: Arc::new(AtomicU32::new(0)),
+            level_r: Arc::new(AtomicU32::new(0)),
+            master_gain: Arc::new(AtomicU32::new(DEFAULT_MASTER_GAIN.to_bits())),
+            record_tx: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn get_levels(&self) -> [f32; 2] {
+        [
+            f32::from_bits(self.level_l.load(Ordering::Relaxed)),
+            f32::from_bits(self.level_r.load(Ordering::Relaxed)),
+        ]
+    }
+
+    pub fn set_master_gain(&self, gain: f32) {
+        self.master_gain.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    fn store_levels(&self, l: f32, r: f32) {
+        self.level_l.store(l.to_bits(), Ordering::Relaxed);
+        self.level_r.store(r.to_bits(), Ordering::Relaxed);
+    }
+}
+
+struct RecordingState {
+    thread: std::thread::JoinHandle<Result<(), String>>,
+    temp_path: String,
+}
+
+// ── WAV writer thread ─────────────────────────────────────────────────────────
+//
+// Runs on a dedicated thread. Receives interleaved stereo f32 chunks and writes
+// them as IEEE-float WAV. When the channel closes (sender dropped on stop),
+// seeks back to fix the RIFF/data size fields and closes the file.
+
+fn wav_writer_thread(
+    path: String,
+    sample_rate: u32,
+    rx: std::sync::mpsc::Receiver<Vec<f32>>,
+) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let mut buf = std::io::BufWriter::new(file);
+
+    let channels: u16 = 2;
+    let bits_per_sample: u16 = 32;
+    let byte_rate = sample_rate * channels as u32 * (bits_per_sample as u32 / 8);
+    let block_align = channels * (bits_per_sample / 8);
+
+    // RIFF header (44 bytes total; sizes are placeholders, fixed at the end)
+    buf.write_all(b"RIFF").map_err(|e| e.to_string())?;
+    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // RIFF size
+    buf.write_all(b"WAVE").map_err(|e| e.to_string())?;
+    buf.write_all(b"fmt ").map_err(|e| e.to_string())?;
+    buf.write_all(&16u32.to_le_bytes()).map_err(|e| e.to_string())?; // fmt chunk size
+    buf.write_all(&3u16.to_le_bytes()).map_err(|e| e.to_string())?; // IEEE float
+    buf.write_all(&channels.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&sample_rate.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&byte_rate.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&block_align.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&bits_per_sample.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(b"data").map_err(|e| e.to_string())?;
+    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // data size
+
+    let mut data_bytes = 0u32;
+
+    while let Ok(chunk) = rx.recv() {
+        for s in &chunk {
+            buf.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
+            data_bytes = data_bytes.saturating_add(4);
+        }
+    }
+
+    buf.flush().map_err(|e| e.to_string())?;
+
+    let riff_size = data_bytes.saturating_add(36);
+    let mut file = buf.into_inner().map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(4)).map_err(|e| e.to_string())?;
+    file.write_all(&riff_size.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(40)).map_err(|e| e.to_string())?;
+    file.write_all(&data_bytes.to_le_bytes()).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // ── Audio engine ───────────────────────────────────────────────────────────────
 
 pub struct AppAudio {
@@ -574,8 +739,10 @@ pub struct AppAudio {
     current_main_offset: Mutex<usize>,
     current_cue_id: Mutex<String>,   // empty string = no cue device configured
     current_cue_offset: Mutex<usize>,
-    _main_stream: Mutex<SendStream>,
+    _main_stream: Mutex<Option<SendStream>>,
     _cue_stream: Mutex<Option<SendStream>>,
+    pub monitor: MasterMonitor,
+    recording: Mutex<Option<RecordingState>>,
 }
 
 // AppAudio is held in Tauri managed state and accessed from async command threads.
@@ -594,13 +761,14 @@ impl AppAudio {
 
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
-        for id in ["A", "B", "E"] {
+        for id in ["A", "B", "C", "D", "E"] {
             decks.insert(id.to_string(), Arc::new(Mutex::new(DeckState::empty(device_sample_rate))));
             strips.insert(id.to_string(), Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))));
         }
 
+        let monitor = MasterMonitor::new();
         let channels = channel_pairs(&decks, &strips);
-        let main_stream = build_stream(&device, &config, channels, false, 0)?;
+        let main_stream = build_stream(&device, &config, channels, false, 0, Some(monitor.clone()))?;
         main_stream.play()?;
 
         Ok(Self {
@@ -612,8 +780,10 @@ impl AppAudio {
             current_cue_id: Mutex::new(String::new()),
             current_cue_offset: Mutex::new(0),
             default_device_id,
-            _main_stream: Mutex::new(SendStream(main_stream)),
+            _main_stream: Mutex::new(Some(SendStream(main_stream))),
             _cue_stream: Mutex::new(None),
+            monitor,
+            recording: Mutex::new(None),
         })
     }
 
@@ -663,9 +833,8 @@ impl AppAudio {
     }
 
     pub fn set_main_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
-        let effective_id = if device_id.is_empty() { self.default_device_id.as_str() } else { device_id };
-        log::info!("set_main_device: id='{}' channel_offset={}", effective_id, channel_offset);
-        *self.current_main_id.lock().unwrap() = effective_id.to_string();
+        log::info!("set_main_device: id='{}' channel_offset={}", device_id, channel_offset);
+        *self.current_main_id.lock().unwrap() = device_id.to_string();
         *self.current_main_offset.lock().unwrap() = channel_offset;
         self.rebuild_streams()
     }
@@ -685,6 +854,7 @@ impl AppAudio {
         log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={}", main_id, main_off, cue_id, cue_off);
 
         let ch = channel_pairs(&self.decks, &self.strips);
+        let monitor = self.monitor.clone();
 
         if !cue_id.is_empty() && cue_id == main_id {
             // Same device — one combined stream handles both master (ch main_off/main_off+1)
@@ -694,11 +864,11 @@ impl AppAudio {
             let config = best_output_config(&device, min_ch, self.device_sample_rate)?;
             log::info!("rebuild_streams: combined config ch={} sr={} fmt={:?}",
                 config.channels(), config.sample_rate().0, config.sample_format());
-            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off)
+            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off, monitor)
                 .map_err(|e| e.to_string())?;
 
             // Pause all old streams, sync positions, then start the new combined stream.
-            self._main_stream.lock().unwrap().0.pause().ok();
+            if let Some(s) = self._main_stream.lock().unwrap().as_ref() { s.0.pause().ok(); }
             {
                 let mut guard = self._cue_stream.lock().unwrap();
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
@@ -707,33 +877,41 @@ impl AppAudio {
             self.sync_cue_positions();
             {
                 let mut guard = self._main_stream.lock().unwrap();
-                *guard = SendStream(stream);
-                guard.0.play().map_err(|e| e.to_string())?;
+                *guard = Some(SendStream(stream));
+                guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
             }
             log::info!("rebuild_streams: combined stream playing");
         } else {
-            // Different devices (or no cue configured) — two independent streams.
+            // Different devices, or main is unset, or no cue configured.
             // Build all new streams before pausing anything so the gap is minimal.
-            let main_device = find_output_device(&main_id)?;
-            let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
-            log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
-                main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
-            let main_stream = build_stream(&main_device, &main_cfg, ch.clone(), false, main_off)
-                .map_err(|e| e.to_string())?;
+            let new_main_stream = if !main_id.is_empty() {
+                let main_device = find_output_device(&main_id)?;
+                let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
+                log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
+                    main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
+                Some(build_stream(&main_device, &main_cfg, ch.clone(), false, main_off, Some(monitor.clone()))
+                    .map_err(|e| e.to_string())?)
+            } else {
+                log::info!("rebuild_streams: no master output configured");
+                None
+            };
 
             let new_cue_stream = if !cue_id.is_empty() {
                 let cue_device = find_output_device(&cue_id)?;
                 let cue_cfg    = best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
                 log::info!("rebuild_streams: cue config ch={} sr={} fmt={:?}",
                     cue_cfg.channels(), cue_cfg.sample_rate().0, cue_cfg.sample_format());
-                Some(build_stream(&cue_device, &cue_cfg, ch, true, cue_off)
+                // When there is no main output, the cue stream also drives the
+                // master mix render so that recording and metering still work.
+                let cue_monitor = if main_id.is_empty() { Some(monitor) } else { None };
+                Some(build_cue_stream(&cue_device, &cue_cfg, ch, cue_off, cue_monitor)
                     .map_err(|e| e.to_string())?)
             } else {
                 None
             };
 
             // Pause all old streams, sync cue_pos to main_pos, then start new streams.
-            self._main_stream.lock().unwrap().0.pause().ok();
+            if let Some(s) = self._main_stream.lock().unwrap().as_ref() { s.0.pause().ok(); }
             {
                 let guard = self._cue_stream.lock().unwrap();
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
@@ -742,8 +920,13 @@ impl AppAudio {
 
             {
                 let mut guard = self._main_stream.lock().unwrap();
-                *guard = SendStream(main_stream);
-                guard.0.play().map_err(|e| e.to_string())?;
+                match new_main_stream {
+                    Some(s) => {
+                        *guard = Some(SendStream(s));
+                        guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
+                    }
+                    None => *guard = None,
+                }
             }
             {
                 let mut guard = self._cue_stream.lock().unwrap();
@@ -766,6 +949,53 @@ impl AppAudio {
             let mut deck = deck_arc.lock().unwrap();
             deck.cue_pos = deck.main_pos;
         }
+    }
+
+    pub fn get_master_level(&self) -> [f32; 2] {
+        self.monitor.get_levels()
+    }
+
+    pub fn get_deck_levels(&self) -> HashMap<String, [f32; 2]> {
+        self.strips.iter().map(|(id, strip)| {
+            (id.clone(), strip.lock().unwrap().get_level())
+        }).collect()
+    }
+
+    pub fn start_recording(&self) -> Result<(), String> {
+        let mut recording = self.recording.lock().unwrap();
+        if recording.is_some() {
+            return Err("already recording".to_string());
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let temp_path = std::env::temp_dir()
+            .join(format!("beatmatcher_rec_{}.wav", ts))
+            .to_string_lossy()
+            .into_owned();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
+        *self.monitor.record_tx.lock().unwrap() = Some(tx);
+        let sr = self.device_sample_rate;
+        let path_for_thread = temp_path.clone();
+        let thread = std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, rx));
+        *recording = Some(RecordingState { thread, temp_path });
+        Ok(())
+    }
+
+    pub fn stop_recording(&self) -> Result<String, String> {
+        self.monitor.record_tx.lock().unwrap().take();
+        let state = self.recording.lock().unwrap().take();
+        if let Some(s) = state {
+            s.thread.join().map_err(|_| "recorder thread panicked".to_string())??;
+            Ok(s.temp_path)
+        } else {
+            Err("not recording".to_string())
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recording.lock().unwrap().is_some()
     }
 }
 
@@ -860,6 +1090,7 @@ fn build_stream(
     channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
     is_cue: bool,
     channel_offset: usize,
+    monitor: Option<MasterMonitor>,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
     let stream_config: cpal::StreamConfig = config.clone().into();
     let output_channels = config.channels() as usize;
@@ -874,7 +1105,7 @@ fn build_stream(
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output(data, output_channels, &channels, is_cue, channel_offset);
+                    fill_output(data, output_channels, &channels, is_cue, channel_offset, monitor.as_ref());
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -882,11 +1113,63 @@ fn build_stream(
             Ok(stream)
         }
         cpal::SampleFormat::I16 => {
+            let mut buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
-                    let mut buf = vec![0.0f32; data.len()];
-                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset);
+                    buf.resize(data.len(), 0.0);
+                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset, monitor.as_ref());
+                    for (d, s) in data.iter_mut().zip(buf.iter()) {
+                        *d = (*s * i16::MAX as f32) as i16;
+                    }
+                },
+                |e| eprintln!("audio stream error: {:?}", e),
+                None,
+            )?;
+            Ok(stream)
+        }
+        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
+    }
+}
+
+fn build_cue_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
+    channel_offset: usize,
+    monitor: Option<MasterMonitor>,
+) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
+    let stream_config: cpal::StreamConfig = config.clone().into();
+    let output_channels = config.channels() as usize;
+    log::info!(
+        "build_cue_stream: output_channels={} channel_offset={} master_tap={} format={:?} sr={}",
+        output_channels, channel_offset, monitor.is_some(), config.sample_format(), config.sample_rate().0
+    );
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let mut master_mix: Vec<f32> = Vec::new();
+            let stream = device.build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _| match &monitor {
+                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix),
+                    None    => fill_output(data, output_channels, &channels, true, channel_offset, None),
+                },
+                |e| eprintln!("audio stream error: {:?}", e),
+                None,
+            )?;
+            Ok(stream)
+        }
+        cpal::SampleFormat::I16 => {
+            let mut buf: Vec<f32> = Vec::new();
+            let mut master_mix: Vec<f32> = Vec::new();
+            let stream = device.build_output_stream(
+                &stream_config,
+                move |data: &mut [i16], _| {
+                    buf.resize(data.len(), 0.0);
+                    match &monitor {
+                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix),
+                        None    => fill_output(&mut buf, output_channels, &channels, true, channel_offset, None),
+                    }
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -906,6 +1189,7 @@ fn fill_output(
     channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
     is_cue: bool,
     channel_offset: usize,
+    monitor: Option<&MasterMonitor>,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -915,16 +1199,80 @@ fn fill_output(
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
         let mut strip = strip_arc.lock().unwrap();
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
         for i in 0..frames {
-            let (l, r) = deck_tick(&mut deck);
-            let (l, r) = strip_process(&mut strip, l, r);
+            let (raw_l, raw_r) = deck_tick(&mut deck);
+            let (l, r) = strip_process(&mut strip, raw_l, raw_r);
+            if !is_cue {
+                sum_l += l.abs();
+                sum_r += r.abs();
+            }
             mix_frame(data, i, output_channels, channel_offset, l, r);
+        }
+        if !is_cue {
+            strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
         }
     }
 
-    for sample in data.iter_mut() {
-        *sample = sample.clamp(-1.0, 1.0);
+    if let Some(m) = monitor {
+        let gain = f32::from_bits(m.master_gain.load(Ordering::Relaxed));
+        for sample in data.iter_mut() {
+            *sample = (*sample * gain).clamp(-1.0, 1.0);
+        }
+        tap_master_output(data, frames, output_channels, channel_offset, m);
+    } else {
+        for sample in data.iter_mut() {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
     }
+}
+
+// Used when main output is unrouted but a cue stream is active and recording is
+// requested. Renders both the cue signal (into `data`) and the master mix (into
+// a temporary stereo buffer), then taps the master mix for metering/recording.
+// Nothing from the master mix is sent to the cue hardware output.
+fn fill_cue_with_master_tap(
+    data: &mut [f32],
+    output_channels: usize,
+    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
+    cue_offset: usize,
+    monitor: &MasterMonitor,
+    master_mix: &mut Vec<f32>,
+) {
+    data.fill(0.0);
+    let frames = data.len() / output_channels.max(1);
+    master_mix.resize(frames * 2, 0.0);
+    master_mix.fill(0.0);
+
+    for (deck_arc, strip_arc) in channels {
+        let mut deck = deck_arc.lock().unwrap();
+        let mut strip = strip_arc.lock().unwrap();
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
+        for i in 0..frames {
+            let (l, r) = deck.main_tick();
+            let (ml, mr) = strip.process_main(l, r);
+            sum_l += ml.abs();
+            sum_r += mr.abs();
+            master_mix[i * 2] += ml;
+            master_mix[i * 2 + 1] += mr;
+
+            let (l, r) = deck.cue_tick();
+            let (cl, cr) = strip.process_cue(l, r);
+            mix_frame(data, i, output_channels, cue_offset, cl, cr);
+        }
+        strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
+    }
+
+    let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
+    for s in master_mix.iter_mut() {
+        *s = (*s * gain).clamp(-1.0, 1.0);
+    }
+    for s in data.iter_mut() {
+        *s = s.clamp(-1.0, 1.0);
+    }
+    tap_master_output(&master_mix, frames, 2, 0, monitor);
 }
 
 #[inline]
@@ -951,6 +1299,7 @@ fn build_combined_stream(
     output_channels: usize,
     main_offset: usize,
     cue_offset: usize,
+    monitor: MasterMonitor,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
     let stream_config: cpal::StreamConfig = config.clone().into();
     log::info!(
@@ -962,7 +1311,7 @@ fn build_combined_stream(
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset);
+                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -970,11 +1319,12 @@ fn build_combined_stream(
             Ok(stream)
         }
         cpal::SampleFormat::I16 => {
+            let mut buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
-                    let mut buf = vec![0.0f32; data.len()];
-                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset);
+                    buf.resize(data.len(), 0.0);
+                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -994,23 +1344,77 @@ fn fill_output_combined(
     channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
     main_offset: usize,
     cue_offset: usize,
+    monitor: &MasterMonitor,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
         let mut strip = strip_arc.lock().unwrap();
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
         for i in 0..frames {
             let (l, r) = deck.main_tick();
             let (ml, mr) = strip.process_main(l, r);
+            sum_l += ml.abs();
+            sum_r += mr.abs();
             mix_frame(data, i, output_channels, main_offset, ml, mr);
             let (l, r) = deck.cue_tick();
             let (cl, cr) = strip.process_cue(l, r);
             mix_frame(data, i, output_channels, cue_offset, cl, cr);
         }
+        strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
+    }
+    let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
+    for i in 0..frames {
+        let idx = i * output_channels + main_offset;
+        if idx + 1 < data.len() {
+            data[idx]     = (data[idx]     * gain).clamp(-1.0, 1.0);
+            data[idx + 1] = (data[idx + 1] * gain).clamp(-1.0, 1.0);
+        }
     }
     for s in data.iter_mut() {
         *s = s.clamp(-1.0, 1.0);
+    }
+    tap_master_output(data, frames, output_channels, main_offset, monitor);
+}
+
+// Reads the final clamped master L/R samples from the output buffer, stores
+// the peak level in the monitor atomics, and forwards to the recording channel
+// if recording is active. Uses try_lock so the audio callback never blocks.
+fn tap_master_output(
+    data: &[f32],
+    frames: usize,
+    output_channels: usize,
+    channel_offset: usize,
+    monitor: &MasterMonitor,
+) {
+    let mut sum_l = 0.0f32;
+    let mut sum_r = 0.0f32;
+    let mut counted = 0usize;
+    for i in 0..frames {
+        let base = i * output_channels + channel_offset;
+        if base + 1 < data.len() {
+            sum_l += data[base].abs();
+            sum_r += data[base + 1].abs();
+            counted += 1;
+        }
+    }
+    let n = counted.max(1) as f32;
+    monitor.store_levels(sum_l / n, sum_r / n);
+
+    if let Ok(guard) = monitor.record_tx.try_lock() {
+        if let Some(ref tx) = *guard {
+            let mut chunk = Vec::with_capacity(frames * 2);
+            for i in 0..frames {
+                let base = i * output_channels + channel_offset;
+                if base + 1 < data.len() {
+                    chunk.push(data[base]);
+                    chunk.push(data[base + 1]);
+                }
+            }
+            let _ = tx.try_send(chunk);
+        }
     }
 }
 
@@ -1207,10 +1611,13 @@ pub fn compute_waveform_region(
 
 // ── Spectral band analysis ────────────────────────────────────────────────────
 
+const BAND_BASS_HZ: f32 = 250.0;
+const BAND_MID_HZ: f32 = 2_000.0;
+
 // Downmix to mono and split into bass/mid/high via two Butterworth lowpass filters.
-// Bass:  signal below 250 Hz
-// Mid:   signal between 250 Hz and 2000 Hz
-// High:  signal above 2000 Hz
+// Bass:  signal below BAND_BASS_HZ
+// Mid:   signal between BAND_BASS_HZ and BAND_MID_HZ
+// High:  signal above BAND_MID_HZ
 // Returns three mono buffers, one sample per input frame.
 pub fn compute_spectral_bands(
     samples: &[f32],
@@ -1224,8 +1631,8 @@ pub fn compute_spectral_bands(
     let sr = sample_rate as f32;
     let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
 
-    let mut lp_bass = Biquad::low_pass(sr, 250.0, butterworth_q);
-    let mut lp_bass_mid = Biquad::low_pass(sr, 2000.0, butterworth_q);
+    let mut lp_bass = Biquad::low_pass(sr, BAND_BASS_HZ, butterworth_q);
+    let mut lp_bass_mid = Biquad::low_pass(sr, BAND_MID_HZ, butterworth_q);
 
     let mut bass = Vec::with_capacity(n);
     let mut mid = Vec::with_capacity(n);
@@ -1352,8 +1759,87 @@ pub fn compute_spectral_waveform_region(
     result
 }
 
+// ── ID3 / metadata tag reading ────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+}
+
+pub fn read_tags(path: &str) -> TrackTags {
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::{MetadataOptions, StandardTagKey};
+    use symphonia::core::probe::Hint;
+
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return TrackTags { title: None, artist: None },
+    };
+
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut probed = match symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => return TrackTags { title: None, artist: None },
+    };
+
+    let mut title: Option<String> = None;
+    let mut artist: Option<String> = None;
+
+    // Tags embedded before the format container (ID3v2 in MP3, APEv2, etc.)
+    if let Some(rev) = probed.metadata.get().and_then(|m| m.current().cloned()) {
+        for tag in rev.tags() {
+            match tag.std_key {
+                Some(StandardTagKey::TrackTitle) if title.is_none() => {
+                    title = Some(tag.value.to_string());
+                }
+                Some(StandardTagKey::Artist) if artist.is_none() => {
+                    artist = Some(tag.value.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Tags from the format reader itself (FLAC Vorbis comments, M4A atoms, etc.)
+    if title.is_none() || artist.is_none() {
+        let mut format = probed.format;
+        if let Some(rev) = format.metadata().current() {
+            for tag in rev.tags() {
+                match tag.std_key {
+                    Some(StandardTagKey::TrackTitle) if title.is_none() => {
+                        title = Some(tag.value.to_string());
+                    }
+                    Some(StandardTagKey::Artist) if artist.is_none() => {
+                        artist = Some(tag.value.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    TrackTags { title, artist }
+}
+
 // ── BPM detection ─────────────────────────────────────────────────────────────
 
+// Isolate kick drum energy for onset detection. Bass drum fundamentals sit
+// between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
+// would create false beat intervals.
+const BPM_LOWPASS_HZ: f32 = 150.0;
 const BPM_MIN: f64 = 90.0;
 const BPM_MAX: f64 = 180.0;
 const PEAK_SKIP_SAMPLES: usize = 10_000;
@@ -1421,7 +1907,7 @@ struct BpmCluster {
 }
 
 pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
-    let filtered = lowpass_biquad(mono, sample_rate, 150.0);
+    let filtered = lowpass_biquad(mono, sample_rate, BPM_LOWPASS_HZ);
 
     let mut peaks = Vec::new();
     for &threshold in THRESHOLDS {
@@ -1511,4 +1997,164 @@ pub fn detect_silence_end(mono: &[f32], sample_rate: u32) -> f64 {
         mono.len()
     );
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine_wave(freq_hz: f32, sample_rate: f32, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate).sin())
+            .collect()
+    }
+
+    // --- Biquad ---
+
+    #[test]
+    fn identity_biquad_passes_impulse_through() {
+        let mut bq = Biquad::identity();
+        assert_eq!(bq.process(1.0), 1.0);
+        for _ in 0..63 {
+            assert_eq!(bq.process(0.0), 0.0);
+        }
+    }
+
+    #[test]
+    fn identity_biquad_l1_norm_is_one() {
+        let mut bq = Biquad::identity();
+        let norm: f32 = std::iter::once(1.0_f32)
+            .chain(std::iter::repeat(0.0).take(127))
+            .map(|x| bq.process(x).abs())
+            .sum();
+        assert!((norm - 1.0).abs() < 1e-6, "L1 norm={}", norm);
+    }
+
+    #[test]
+    fn set_coefficients_preserves_delay_lines() {
+        let mut bq = Biquad::identity();
+        bq.delay1 = 0.5;
+        bq.delay2 = 0.25;
+        let lpf = Biquad::low_pass(44100.0, 1000.0, 0.707);
+        bq.set_coefficients(lpf);
+        assert_eq!(bq.delay1, 0.5);
+        assert_eq!(bq.delay2, 0.25);
+        assert_eq!(bq.b0, lpf.b0);
+    }
+
+    // --- FilterState (regression for the clipping bug) ---
+
+    // Before the fix, FilterState at knob=0 placed a 20 Hz HPF whose IIR delay
+    // lines accumulated state that caused per-sample outputs exceeding 1.0 on
+    // transients. Now it uses identity, which has L1 norm = 1.
+    #[test]
+    fn filter_center_impulse_never_clips() {
+        let mut state = FilterState::new(44100.0);
+        // knob=0 (default): dead zone, must use identity
+        let (l, r) = state.process(1.0, 1.0);
+        assert!(l <= 1.0 + 1e-5 && r <= 1.0 + 1e-5, "l={} r={}", l, r);
+        // Identity has no memory: output must decay to zero immediately
+        for _ in 0..32 {
+            let (l, r) = state.process(0.0, 0.0);
+            assert!(l.abs() < 1e-6 && r.abs() < 1e-6, "l={} r={}", l, r);
+        }
+    }
+
+    #[test]
+    fn filter_center_full_scale_sine_never_clips() {
+        let sr = 44100.0f32;
+        let mut state = FilterState::new(sr);
+        for (i, &s) in sine_wave(1000.0, sr, 4096).iter().enumerate() {
+            let (l, r) = state.process(s, s);
+            assert!(l.abs() <= 1.0 + 1e-5, "clipped at sample {}: l={}", i, l);
+            assert!(r.abs() <= 1.0 + 1e-5, "clipped at sample {}: r={}", i, r);
+        }
+    }
+
+    #[test]
+    fn filter_center_multiple_frequencies_never_clip() {
+        let sr = 44100.0f32;
+        for &freq in &[40.0f32, 200.0, 1000.0, 8000.0, 15000.0] {
+            let mut state = FilterState::new(sr);
+            for (i, &s) in sine_wave(freq, sr, 4096).iter().enumerate() {
+                let (l, _r) = state.process(s, s);
+                assert!(
+                    l.abs() <= 1.0 + 1e-5,
+                    "freq={} Hz clipped at sample {}: l={}",
+                    freq, i, l
+                );
+            }
+        }
+    }
+
+    // --- EqState ---
+
+    #[test]
+    fn eq_at_zero_db_is_transparent() {
+        let sr = 44100.0f32;
+        let mut eq = EqState::new(sr);
+        // All bands default to 0 dB (identity biquads), so output must equal input exactly.
+        for &s in sine_wave(1000.0, sr, 1024).iter() {
+            let (l, _r) = eq.process(s, s);
+            assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
+        }
+    }
+
+    // --- mix_frame ---
+
+    #[test]
+    fn mix_frame_writes_stereo() {
+        let mut buf = vec![0.0f32; 4]; // 2 channels, 2 frames
+        mix_frame(&mut buf, 0, 2, 0, 0.5, -0.5);
+        assert_eq!(buf[0], 0.5);
+        assert_eq!(buf[1], -0.5);
+        assert_eq!(buf[2], 0.0);
+        assert_eq!(buf[3], 0.0);
+    }
+
+    #[test]
+    fn mix_frame_accumulates() {
+        let mut buf = vec![0.4f32, 0.3, 0.0, 0.0];
+        mix_frame(&mut buf, 0, 2, 0, 0.1, 0.2);
+        assert!((buf[0] - 0.5).abs() < 1e-6, "buf[0]={}", buf[0]);
+        assert!((buf[1] - 0.5).abs() < 1e-6, "buf[1]={}", buf[1]);
+    }
+
+    #[test]
+    fn mix_frame_mono_downmix() {
+        let mut buf = vec![0.0f32; 2];
+        mix_frame(&mut buf, 0, 1, 0, 0.4, 0.8);
+        assert!((buf[0] - 0.6).abs() < 1e-6, "buf[0]={}", buf[0]); // (0.4+0.8)/2
+    }
+
+    #[test]
+    fn mix_frame_out_of_bounds_is_silent() {
+        let mut buf = vec![0.0f32; 2];
+        mix_frame(&mut buf, 0, 2, 2, 1.0, 1.0); // offset beyond buffer
+        assert_eq!(buf[0], 0.0);
+        assert_eq!(buf[1], 0.0);
+    }
+
+    // --- interval_to_bpm ---
+
+    #[test]
+    fn interval_to_bpm_zero_is_none() {
+        assert!(interval_to_bpm(0, 44100).is_none());
+    }
+
+    #[test]
+    fn interval_to_bpm_folds_into_range() {
+        // 44100 samples at 44100 Hz = 1 beat/sec = 60 BPM. Below BPM_MIN (90)
+        // so doubles to 120, which is within [90, 180].
+        let bpm = interval_to_bpm(44100, 44100).expect("should be Some");
+        assert!((bpm - 120.0).abs() < 0.5, "expected ~120 BPM, got {}", bpm);
+    }
+
+    #[test]
+    fn interval_to_bpm_direct_hit() {
+        // 60 * 44100 / interval = 128 => interval = 60 * 44100 / 128 = 20671.875
+        let interval = (60.0_f64 * 44100.0 / 128.0).round() as usize;
+        let bpm = interval_to_bpm(interval, 44100).expect("should be Some");
+        assert!((bpm - 128.0).abs() < 1.0, "expected ~128 BPM, got {}", bpm);
+    }
 }
