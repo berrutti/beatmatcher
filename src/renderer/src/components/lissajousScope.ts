@@ -2,7 +2,7 @@ export function computeDotPosition(
   phases: number[],
   amplitude: number,
   cx: number,
-  cy: number
+  cy: number = cx
 ): [number, number] {
   let sumX = 0;
   let sumY = 0;
@@ -11,11 +11,6 @@ export function computeDotPosition(
     const displacement = Math.sin(phases[i] * Math.PI * 2);
     sumX += displacement * Math.cos(angle);
     sumY += displacement * Math.sin(angle);
-  }
-  const mag = Math.hypot(sumX, sumY);
-  if (mag > 1) {
-    sumX /= mag;
-    sumY /= mag;
   }
   return [cx + sumX * amplitude, cy + sumY * amplitude];
 }
