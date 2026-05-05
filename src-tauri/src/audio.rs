@@ -636,6 +636,7 @@ pub struct MasterMonitor {
     pub level_l: Arc<AtomicU32>,
     pub level_r: Arc<AtomicU32>,
     pub master_gain: Arc<AtomicU32>,
+    pub cue_mix: Arc<AtomicU32>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
 }
 
@@ -645,6 +646,7 @@ impl MasterMonitor {
             level_l: Arc::new(AtomicU32::new(0)),
             level_r: Arc::new(AtomicU32::new(0)),
             master_gain: Arc::new(AtomicU32::new(DEFAULT_MASTER_GAIN.to_bits())),
+            cue_mix: Arc::new(AtomicU32::new(0u32)),
             record_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -658,6 +660,10 @@ impl MasterMonitor {
 
     pub fn set_master_gain(&self, gain: f32) {
         self.master_gain.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_cue_mix(&self, mix: f32) {
+        self.cue_mix.store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     fn store_levels(&self, l: f32, r: f32) {
@@ -1244,6 +1250,7 @@ fn fill_cue_with_master_tap(
     let frames = data.len() / output_channels.max(1);
     master_mix.resize(frames * 2, 0.0);
     master_mix.fill(0.0);
+    let mut cue_buf = vec![0.0f32; frames * 2];
 
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
@@ -1260,7 +1267,8 @@ fn fill_cue_with_master_tap(
 
             let (l, r) = deck.cue_tick();
             let (cl, cr) = strip.process_cue(l, r);
-            mix_frame(data, i, output_channels, cue_offset, cl, cr);
+            cue_buf[i * 2] += cl;
+            cue_buf[i * 2 + 1] += cr;
         }
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
@@ -1269,8 +1277,15 @@ fn fill_cue_with_master_tap(
     for s in master_mix.iter_mut() {
         *s = (*s * gain).clamp(-1.0, 1.0);
     }
-    for s in data.iter_mut() {
-        *s = s.clamp(-1.0, 1.0);
+    let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
+    for i in 0..frames {
+        let cl = cue_buf[i * 2].clamp(-1.0, 1.0);
+        let cr = cue_buf[i * 2 + 1].clamp(-1.0, 1.0);
+        let ml = master_mix[i * 2];
+        let mr = master_mix[i * 2 + 1];
+        let out_l = cl * (1.0 - mix) + ml * mix;
+        let out_r = cr * (1.0 - mix) + mr * mix;
+        mix_frame(data, i, output_channels, cue_offset, out_l, out_r);
     }
     tap_master_output(&master_mix, frames, 2, 0, monitor);
 }
@@ -1348,6 +1363,7 @@ fn fill_output_combined(
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
+    let mut cue_buf = vec![0.0f32; frames * 2];
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
         let mut strip = strip_arc.lock().unwrap();
@@ -1361,7 +1377,8 @@ fn fill_output_combined(
             mix_frame(data, i, output_channels, main_offset, ml, mr);
             let (l, r) = deck.cue_tick();
             let (cl, cr) = strip.process_cue(l, r);
-            mix_frame(data, i, output_channels, cue_offset, cl, cr);
+            cue_buf[i * 2] += cl;
+            cue_buf[i * 2 + 1] += cr;
         }
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
@@ -1373,8 +1390,16 @@ fn fill_output_combined(
             data[idx + 1] = (data[idx + 1] * gain).clamp(-1.0, 1.0);
         }
     }
-    for s in data.iter_mut() {
-        *s = s.clamp(-1.0, 1.0);
+    let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
+    for i in 0..frames {
+        let cl = cue_buf[i * 2].clamp(-1.0, 1.0);
+        let cr = cue_buf[i * 2 + 1].clamp(-1.0, 1.0);
+        let main_idx = i * output_channels + main_offset;
+        let ml = if main_idx + 1 < data.len() { data[main_idx] } else { 0.0 };
+        let mr = if main_idx + 1 < data.len() { data[main_idx + 1] } else { 0.0 };
+        let out_l = cl * (1.0 - mix) + ml * mix;
+        let out_r = cr * (1.0 - mix) + mr * mix;
+        mix_frame(data, i, output_channels, cue_offset, out_l, out_r);
     }
     tap_master_output(data, frames, output_channels, main_offset, monitor);
 }

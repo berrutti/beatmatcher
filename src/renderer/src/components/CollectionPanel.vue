@@ -32,7 +32,8 @@
       <button v-if="store.hasPending" class="collection__header-btn" @click="store.analyzeAll()">
         ANALYZE ALL
       </button>
-      <button class="collection__header-btn" @click="openFileDialog">ADD</button>
+      <button class="collection__header-btn" @click="openFileDialog">ADD FILES</button>
+      <button class="collection__header-btn" @click="openFolderDialog">ADD FOLDER</button>
       <button
         v-if="store.tracks.length > 0"
         class="collection__header-btn collection__header-btn--muted"
@@ -43,7 +44,7 @@
     </div>
     <div class="collection__body" :style="store.draggingPath ? { overflowY: 'hidden' } : {}">
       <div v-if="store.tracks.length === 0" class="collection__empty">
-        Drop audio files or folders here, or use ADD
+        Drop audio files or folders here, or use ADD FILES / ADD FOLDER
       </div>
       <div v-else-if="filteredTracks.length === 0" class="collection__empty">no results</div>
       <div v-else class="collection__list">
@@ -106,6 +107,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { useCollectionStore } from '@renderer/stores/collection';
 import type { CollectionEntry } from '@renderer/stores/collection';
 import BpmModal from '@renderer/components/BpmModal.vue';
@@ -253,6 +255,18 @@ async function openFileDialog() {
     const paths = Array.isArray(result) ? result : [result];
     store.addFilesFromPaths(paths);
   }
+}
+
+async function openFolderDialog() {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const result = await open({ directory: true, multiple: true });
+  if (!result) return;
+  const folders = Array.isArray(result) ? result : [result];
+  const pathLists = await Promise.all(
+    folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
+  );
+  const paths = pathLists.flat();
+  if (paths.length > 0) store.addFilesFromPaths(paths);
 }
 </script>
 

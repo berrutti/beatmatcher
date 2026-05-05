@@ -227,13 +227,6 @@ fn set_loop_active(
 }
 
 #[derive(serde::Serialize)]
-struct LoopSetResult {
-    start_sec: f64,
-    end_sec: f64,
-    beats: i64,
-}
-
-#[derive(serde::Serialize)]
 struct LoopOutResult {
     start_sec: f64,
     end_sec: f64,
@@ -267,7 +260,7 @@ fn set_loop_in(
     state: tauri::State<'_, AppState>,
     deck: String,
     quantize: bool,
-) -> Result<LoopSetResult, String> {
+) -> Result<f64, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
     let sr = d.device_sample_rate as f64;
@@ -277,19 +270,10 @@ fn set_loop_in(
     } else {
         d.main_pos
     };
-    let bar_frames = (4.0 * 60.0 / bpm) * sr;
-    let out_frames = if d.loop_end > d.loop_start && d.loop_end > in_frames + 0.01 * sr {
-        d.loop_end
-    } else {
-        in_frames + bar_frames
-    };
     d.loop_active = false;
-    d.loop_start = in_frames;
-    d.loop_end = out_frames;
-    let start_sec = in_frames / sr;
-    let end_sec = out_frames / sr;
-    let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
-    Ok(LoopSetResult { start_sec, end_sec, beats })
+    d.loop_start = 0.0;
+    d.loop_end = 0.0;
+    Ok(in_frames / sr)
 }
 
 #[tauri::command]
@@ -309,11 +293,11 @@ fn set_loop_out(
         d.main_pos
     };
     let bar_frames = (4.0 * 60.0 / bpm) * sr;
-    let in_frames = if d.loop_end > d.loop_start {
-        d.loop_start
-    } else if let Some(cue_sec) = cue_point_sec {
+    let in_frames = if let Some(cue_sec) = cue_point_sec {
         let cue_frames = cue_sec * sr;
         if cue_frames < out_frames { cue_frames } else { (out_frames - bar_frames).max(0.0) }
+    } else if d.loop_end > d.loop_start {
+        d.loop_start
     } else {
         (out_frames - bar_frames).max(0.0)
     };
@@ -589,11 +573,42 @@ fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
 }
 
 #[tauri::command]
+fn set_cue_mix(state: tauri::State<'_, AppState>, mix: f32) {
+    state.audio.monitor.set_cue_mix(mix);
+}
+
+#[tauri::command]
 fn files_info(paths: Vec<String>) -> Vec<Option<u64>> {
     paths
         .into_iter()
         .map(|p| std::fs::metadata(&p).ok().map(|m| m.len()))
         .collect()
+}
+
+fn scan_dir_recursive(dir: &std::path::Path, results: &mut Vec<String>) {
+    const AUDIO_EXT: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "m4a", "aif", "aiff"];
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut paths: Vec<_> = entries.flatten().collect();
+    paths.sort_by_key(|e| e.file_name());
+    for entry in paths {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir_recursive(&path, results);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if AUDIO_EXT.iter().any(|&e| e.eq_ignore_ascii_case(ext)) {
+                if let Some(p) = path.to_str() {
+                    results.push(p.to_string());
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn scan_folder(path: String) -> Vec<String> {
+    let mut results = Vec::new();
+    scan_dir_recursive(std::path::Path::new(&path), &mut results);
+    results
 }
 
 #[tauri::command]
@@ -672,6 +687,7 @@ pub fn run() {
             open_file_dialog,
             pick_save_path,
             files_info,
+            scan_folder,
             analyze_track,
             get_master_level,
             get_deck_levels,
@@ -681,6 +697,7 @@ pub fn run() {
             save_recording,
             discard_recording,
             set_master_gain,
+            set_cue_mix,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

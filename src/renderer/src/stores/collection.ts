@@ -258,7 +258,7 @@ export const useCollectionStore = defineStore('collection', () => {
     entry.status = 'ready';
   }
 
-  function updateTrack(path: string, patch: { beatOffset?: number }) {
+  function updateTrack(path: string, patch: { beatOffset?: number; bpm?: number }) {
     savedTracks.update(path, patch);
   }
 

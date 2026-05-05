@@ -65,6 +65,7 @@
         :full-spectral-data="props.deck.fullSpectralData"
         :loop-region="props.deck.loopRegion"
         :loop-active="props.deck.loopActive"
+        :cue-point="props.deck.cuePoint"
         @seek="props.deck.seekTo"
       />
 
@@ -134,10 +135,7 @@
           <div class="deck__btn-row">
             <button
               class="deck__btn deck__btn--loop-in"
-              :class="{
-                'deck__btn--loop-set': props.deck.loopRegion && !props.deck.loopActive,
-                'deck__btn--loop-active': props.deck.loopActive
-              }"
+              :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
               :disabled="!props.deck.trackLoaded"
               :tabindex="-1"
               @click="props.deck.setLoopIn()"

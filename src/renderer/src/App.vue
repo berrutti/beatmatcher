@@ -16,14 +16,24 @@
 
     <div class="app__body">
       <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
-      <div v-else class="app__play">
+      <div v-else class="app__play" :class="{ 'app__play--two-deck': mixerStore.deckCount === 2 }">
         <DeckPanel class="app__deck-a" :deck="store.deckA" :keybindings="KEYS.deckA" />
-        <DeckPanel class="app__deck-c" :deck="store.deckC" :keybindings="KEYS.deckC" />
+        <DeckPanel
+          v-if="mixerStore.deckCount === 4"
+          class="app__deck-c"
+          :deck="store.deckC"
+          :keybindings="KEYS.deckC"
+        />
         <div class="app__center">
           <MixerPanel />
         </div>
         <DeckPanel class="app__deck-b" :deck="store.deckB" :keybindings="KEYS.deckB" />
-        <DeckPanel class="app__deck-d" :deck="store.deckD" :keybindings="KEYS.deckD" />
+        <DeckPanel
+          v-if="mixerStore.deckCount === 4"
+          class="app__deck-d"
+          :deck="store.deckD"
+          :keybindings="KEYS.deckD"
+        />
       </div>
     </div>
 
@@ -39,6 +49,7 @@
 import { ref, computed, onUnmounted } from 'vue';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { useMixerStore } from '@renderer/stores/mixer';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import { KEYS } from '@renderer/keybindings';
 import DeckPanel from '@renderer/components/DeckPanel.vue';
@@ -52,6 +63,7 @@ useKeyboard();
 
 const store = useDecksStore();
 const collectionStore = useCollectionStore();
+const mixerStore = useMixerStore();
 onUnmounted(() => store.destroy());
 
 const editMode = computed({
@@ -129,6 +141,13 @@ function onConfirmEditMode() {
   grid-template-areas:
     'deck-a center deck-b'
     'deck-c center deck-d';
+}
+
+.app__play--two-deck {
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    'deck-a center deck-b'
+    '.      center .     ';
 }
 
 .app__deck-a {

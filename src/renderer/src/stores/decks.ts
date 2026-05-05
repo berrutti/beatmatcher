@@ -136,6 +136,16 @@ function createDeck(id: DeckId, accent: string) {
       invoke('set_playback_rate', { deck: id, rate: localRate });
     },
 
+    setTrackBpm(bpm: number) {
+      state.trackBpm = bpm;
+      state.targetBpm = bpm;
+      state.pitchOffset = 0;
+      syncPosition();
+      localRate = 1.0;
+      invoke('set_playback_rate', { deck: id, rate: 1.0 });
+      invoke('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
+    },
+
     setPitchOffset(pct: number) {
       if (state.trackBpm === null) return;
       state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct));
@@ -239,17 +249,12 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     async setLoopIn() {
-      if (!state.trackLoaded || state.trackBpm === null) return;
-      if (state.loopActive) {
-        syncPosition();
-        state.loopActive = false;
-      }
-      const r = await invoke<{ start_sec: number; end_sec: number; beats: number }>('set_loop_in', {
-        deck: id,
-        quantize: state.quantized
-      });
-      state.cuePoint = r.start_sec;
-      state.loopRegion = { startSec: r.start_sec, endSec: r.end_sec, beats: r.beats };
+      if (!state.trackLoaded) return;
+      syncPosition();
+      const cueSec = await invoke<number>('set_loop_in', { deck: id, quantize: state.quantized });
+      state.cuePoint = cueSec;
+      state.loopActive = false;
+      state.loopRegion = null;
     },
 
     async setLoopOut() {
@@ -356,6 +361,11 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     seekTo(sec: number) {
+      if (state.loopActive) {
+        state.loopActive = false;
+        state.loopRegion = null;
+        invoke('set_loop_active', { deck: id, active: false });
+      }
       const clamped = Math.max(0, sec);
       positionCache = clamped;
       clockAtPlay = performance.now();

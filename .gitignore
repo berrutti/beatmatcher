@@ -24,6 +24,7 @@ Thumbs.db
 
 # claude code local config
 .claude/
+CLAUDE.md
 
 # logs
 *.log
