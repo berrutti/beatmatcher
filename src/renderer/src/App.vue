@@ -1,5 +1,9 @@
 <template>
-  <div class="app" :class="{ 'app--collection-open': collectionStore.isOpen }">
+  <div
+    class="app"
+    :class="{ 'app--collection-open': collectionStore.isOpen }"
+    :style="{ '--collection-panel-h': collectionStore.isOpen ? collectionHeight + 'px' : '0px' }"
+  >
     <Modal
       :open="enterEditPending"
       title="Enter Edit mode?"
@@ -41,12 +45,20 @@
       <span class="app__collection-bar-label">COLLECTION</span>
       <span>{{ collectionStore.isOpen ? '▴' : '▾' }}</span>
     </button>
+    <div
+      v-if="collectionStore.isOpen"
+      class="app__collection-resize-handle"
+      @pointerdown.prevent="onResizeStart"
+    />
     <CollectionPanel v-show="collectionStore.isOpen" class="app__collection" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
+
+const MIN_COLLECTION_H = 120;
+const MAX_COLLECTION_H_RATIO = 0.65;
 import { useDecksStore } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
@@ -73,6 +85,29 @@ const editMode = computed({
   }
 });
 const enterEditPending = ref(false);
+const COLLECTION_HEIGHT_KEY = 'beatmatcher:collectionHeight';
+const savedHeight = parseInt(localStorage.getItem(COLLECTION_HEIGHT_KEY) ?? '', 10);
+const collectionHeight = ref(Number.isFinite(savedHeight) ? savedHeight : 200);
+
+function onResizeStart(e: PointerEvent) {
+  const startY = e.clientY;
+  const startHeight = collectionHeight.value;
+
+  function onMove(ev: PointerEvent) {
+    const delta = startY - ev.clientY;
+    const maxH = Math.floor(window.innerHeight * MAX_COLLECTION_H_RATIO);
+    collectionHeight.value = Math.max(MIN_COLLECTION_H, Math.min(maxH, startHeight + delta));
+  }
+
+  function onUp() {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    localStorage.setItem(COLLECTION_HEIGHT_KEY, String(collectionHeight.value));
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
 
 function tryToggleEditMode() {
   if (store.editMode) {
@@ -115,9 +150,7 @@ function onConfirmEditMode() {
   --collection-bar-h: 22px;
 }
 
-.app--collection-open {
-  --collection-panel-h: 200px;
-}
+/* --collection-panel-h is driven by inline style when open */
 
 .app__body {
   flex: 1;
@@ -195,7 +228,7 @@ function onConfirmEditMode() {
   border-top: 1px solid var(--color-border);
   background: var(--color-bg);
   font-family: var(--font);
-  font-size: 11px;
+  font-size: clamp(10px, 1vw, 12px);
   letter-spacing: 0.15em;
   color: var(--color-muted);
   user-select: none;
@@ -209,10 +242,23 @@ function onConfirmEditMode() {
   background: var(--color-surface);
 }
 
+.app__collection-resize-handle {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+  background: var(--color-border);
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+.app__collection-resize-handle:hover {
+  opacity: 0.9;
+}
+
 .app__collection {
   width: 100%;
   height: var(--collection-panel-h);
   flex-shrink: 0;
   overflow: hidden;
+  font-size: clamp(11px, 1.1vw, 14px);
 }
 </style>

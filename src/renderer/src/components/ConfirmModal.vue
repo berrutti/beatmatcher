@@ -2,7 +2,7 @@
   <Modal
     :open="open"
     :title="title"
-    confirm-label="Load"
+    :confirm-label="confirmLabel"
     @confirm="emit('confirm')"
     @cancel="emit('cancel')"
   >
@@ -13,7 +13,9 @@
 <script setup lang="ts">
 import Modal from './Modal.vue';
 
-defineProps<{ open: boolean; title: string; body: string }>();
+withDefaults(defineProps<{ open: boolean; title: string; body: string; confirmLabel?: string }>(), {
+  confirmLabel: 'Load'
+});
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 </script>
 

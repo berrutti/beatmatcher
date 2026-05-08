@@ -644,7 +644,20 @@ async fn analyze_track(path: String) -> Result<TrackInfo, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let verbose = std::env::args().any(|a| a == "--verbose")
+        || std::env::var("BEATMATCHER_VERBOSE").is_ok();
+    let app_level = if verbose {
+        log::LevelFilter::Info
+    } else {
+        log::LevelFilter::Warn
+    };
+
     let audio = AppAudio::new().expect("failed to initialize audio engine");
+    let ended_flags: Vec<(String, Arc<std::sync::atomic::AtomicBool>)> = audio
+        .ended_flags
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let app_state = AppState {
         audio: Arc::new(audio),
     };
@@ -652,12 +665,30 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
+                    .level(app_level)
+                    .level_for("symphonia_format_riff", log::LevelFilter::Warn)
+                    .level_for("symphonia_format_isomp4", log::LevelFilter::Warn)
+                    .level_for("symphonia_metadata", log::LevelFilter::Warn)
+                    .level_for("symphonia_bundle_mp3", log::LevelFilter::Warn)
                     .build(),
             )?;
+            let handle = app.handle().clone();
+            let flags = ended_flags;
+            tauri::async_runtime::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(tokio::time::Duration::from_millis(100));
+                loop {
+                    interval.tick().await;
+                    for (id, flag) in &flags {
+                        if flag.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                            handle.emit("track-ended", id.clone()).ok();
+                        }
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

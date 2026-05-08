@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
@@ -505,6 +505,10 @@ pub struct DeckState {
     pub bass_scale: f32,
     pub mid_scale: f32,
     pub high_scale: f32,
+
+    // Set to true by the audio thread when the track reaches its natural end.
+    // The monitoring task in lib.rs polls this and emits a "track-ended" event.
+    pub just_ended: Arc<AtomicBool>,
 }
 
 impl DeckState {
@@ -531,6 +535,7 @@ impl DeckState {
             bass_scale: 1.0,
             mid_scale: 1.0,
             high_scale: 1.0,
+            just_ended: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -601,6 +606,7 @@ impl DeckState {
         if new_pos >= self.total_frames as f64 {
             if is_main {
                 self.is_playing = false;
+                self.just_ended.store(true, Ordering::Release);
             }
             return self.total_frames as f64;
         }
@@ -740,6 +746,7 @@ pub struct AppAudio {
     pub device_sample_rate: u32,
     decks: HashMap<String, Arc<Mutex<DeckState>>>,
     strips: HashMap<String, Arc<Mutex<ChannelStrip>>>,
+    pub ended_flags: HashMap<String, Arc<AtomicBool>>,
     default_device_id: String,
     current_main_id: Mutex<String>,
     current_main_offset: Mutex<usize>,
@@ -767,8 +774,13 @@ impl AppAudio {
 
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
+        let mut ended_flags: HashMap<String, Arc<AtomicBool>> = HashMap::new();
         for id in ["A", "B", "C", "D", "E"] {
-            decks.insert(id.to_string(), Arc::new(Mutex::new(DeckState::empty(device_sample_rate))));
+            let flag = Arc::new(AtomicBool::new(false));
+            ended_flags.insert(id.to_string(), flag.clone());
+            let mut deck = DeckState::empty(device_sample_rate);
+            deck.just_ended = flag;
+            decks.insert(id.to_string(), Arc::new(Mutex::new(deck)));
             strips.insert(id.to_string(), Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))));
         }
 
@@ -781,6 +793,7 @@ impl AppAudio {
             device_sample_rate,
             decks,
             strips,
+            ended_flags,
             current_main_id: Mutex::new(default_device_id.clone()),
             current_main_offset: Mutex::new(0),
             current_cue_id: Mutex::new(String::new()),
@@ -813,11 +826,11 @@ impl AppAudio {
                 devices
                     .filter_map(|d| {
                         let name = d.name().ok()?;
-                        let configs: Vec<_> = d.supported_output_configs().ok()?.collect();
-                        if configs.is_empty() {
+                        let mut configs = d.supported_output_configs().ok()?.peekable();
+                        if configs.peek().is_none() {
                             return None;
                         }
-                        let max_channels = configs.iter().map(|c| c.channels() as usize).max().unwrap_or(2);
+                        let max_channels = configs.map(|c| c.channels() as usize).max().unwrap_or(2);
                         let is_default = name == self.default_device_id;
                         Some(DeviceInfo {
                             id: name.clone(),
@@ -1154,10 +1167,11 @@ fn build_cue_stream(
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let mut master_mix: Vec<f32> = Vec::new();
+            let mut cue_buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| match &monitor {
-                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix),
+                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf),
                     None    => fill_output(data, output_channels, &channels, true, channel_offset, None),
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
@@ -1168,12 +1182,13 @@ fn build_cue_stream(
         cpal::SampleFormat::I16 => {
             let mut buf: Vec<f32> = Vec::new();
             let mut master_mix: Vec<f32> = Vec::new();
+            let mut cue_buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     buf.resize(data.len(), 0.0);
                     match &monitor {
-                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix),
+                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf),
                         None    => fill_output(&mut buf, output_channels, &channels, true, channel_offset, None),
                     }
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
@@ -1245,12 +1260,14 @@ fn fill_cue_with_master_tap(
     cue_offset: usize,
     monitor: &MasterMonitor,
     master_mix: &mut Vec<f32>,
+    cue_buf: &mut Vec<f32>,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
     master_mix.resize(frames * 2, 0.0);
     master_mix.fill(0.0);
-    let mut cue_buf = vec![0.0f32; frames * 2];
+    cue_buf.resize(frames * 2, 0.0);
+    cue_buf.fill(0.0);
 
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
@@ -1323,10 +1340,11 @@ fn build_combined_stream(
     );
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
+            let mut cue_buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor);
+                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -1335,11 +1353,12 @@ fn build_combined_stream(
         }
         cpal::SampleFormat::I16 => {
             let mut buf: Vec<f32> = Vec::new();
+            let mut cue_buf: Vec<f32> = Vec::new();
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     buf.resize(data.len(), 0.0);
-                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor);
+                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
                         *d = (*s * i16::MAX as f32) as i16;
                     }
@@ -1360,10 +1379,12 @@ fn fill_output_combined(
     main_offset: usize,
     cue_offset: usize,
     monitor: &MasterMonitor,
+    cue_buf: &mut Vec<f32>,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    let mut cue_buf = vec![0.0f32; frames * 2];
+    cue_buf.resize(frames * 2, 0.0);
+    cue_buf.fill(0.0);
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap();
         let mut strip = strip_arc.lock().unwrap();
@@ -1445,11 +1466,9 @@ fn tap_master_output(
 
 // ── Audio decoding ─────────────────────────────────────────────────────────────
 
-pub fn decode_audio(
+fn open_format(
     path: &str,
-) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+) -> Result<symphonia::core::probe::ProbeResult, Box<dyn std::error::Error + Send + Sync>> {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
@@ -1457,21 +1476,25 @@ pub fn decode_audio(
 
     let file = std::fs::File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
     let mut hint = Hint::new();
-    if let Some(ext) = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-    {
+    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-
-    let probed = symphonia::default::get_probe().format(
+    Ok(symphonia::default::get_probe().format(
         &hint,
         mss,
         &FormatOptions::default(),
         &MetadataOptions::default(),
-    )?;
+    )?)
+}
+
+pub fn decode_audio(
+    path: &str,
+) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+
+    let probed = open_format(path)?;
 
     let mut format = probed.format;
 
@@ -1794,28 +1817,9 @@ pub struct TrackTags {
 }
 
 pub fn read_tags(path: &str) -> TrackTags {
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::{MetadataOptions, StandardTagKey};
-    use symphonia::core::probe::Hint;
+    use symphonia::core::meta::StandardTagKey;
 
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return TrackTags { title: None, artist: None },
-    };
-
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let mut probed = match symphonia::default::get_probe().format(
-        &hint,
-        mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
-    ) {
+    let mut probed = match open_format(path) {
         Ok(p) => p,
         Err(_) => return TrackTags { title: None, artist: None },
     };
@@ -1955,6 +1959,23 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
         }
     }
 
+    // For intervals whose raw BPM falls below BPM_MIN, the energy peaks are landing
+    // only on every other beat. Add synthetic votes for interval/2 so the actual beat
+    // period becomes visible to the clusterer. Only /2 — dividing by 3 would introduce
+    // spurious fractional-BPM candidates for common syncopated patterns.
+    let long_intervals: Vec<(usize, usize)> = interval_counts
+        .iter()
+        .filter(|(&interval, _)| {
+            interval > 0 && 60.0 * sample_rate as f64 / (interval as f64) < BPM_MIN
+        })
+        .map(|(&k, &v)| (k, v))
+        .collect();
+    for (interval, count) in long_intervals {
+        if interval % 2 == 0 {
+            *interval_counts.entry(interval / 2).or_insert(0) += count;
+        }
+    }
+
     let mut clusters: Vec<BpmCluster> = Vec::new();
 
     for (&interval, &count) in &interval_counts {
@@ -1975,7 +1996,16 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
         }
     }
 
-    clusters.sort_by(|a, b| b.count.cmp(&a.count));
+    // Sort by: most votes first, then most-integer BPM (97.3 loses to 146), then higher BPM.
+    clusters.sort_by(|a, b| {
+        let bpm_a = a.weighted_bpm_sum / a.count as f64;
+        let bpm_b = b.weighted_bpm_sum / b.count as f64;
+        let frac_a = (bpm_a - bpm_a.round()).abs();
+        let frac_b = (bpm_b - bpm_b.round()).abs();
+        b.count.cmp(&a.count)
+            .then_with(|| frac_a.partial_cmp(&frac_b).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| bpm_b.partial_cmp(&bpm_a).unwrap_or(std::cmp::Ordering::Equal))
+    });
     let result = clusters.first().map(|cluster| {
         let bpm = cluster.weighted_bpm_sum / cluster.count as f64;
         (bpm * 10.0).round() / 10.0
@@ -2181,5 +2211,161 @@ mod tests {
         let interval = (60.0_f64 * 44100.0 / 128.0).round() as usize;
         let bpm = interval_to_bpm(interval, 44100).expect("should be Some");
         assert!((bpm - 128.0).abs() < 1.0, "expected ~128 BPM, got {}", bpm);
+    }
+
+    // --- find_peaks ---
+
+    #[test]
+    fn find_peaks_detects_isolated_spikes() {
+        let mut signal = vec![0.0f32; 1000];
+        signal[100] = 1.0;
+        signal[400] = 1.0;
+        signal[700] = 1.0;
+        let peaks = find_peaks(&signal, 0.5, 200);
+        assert_eq!(peaks, vec![100, 400, 700]);
+    }
+
+    #[test]
+    fn find_peaks_skip_prevents_nearby_detection() {
+        // Two spikes 50 samples apart; skip=200 should suppress the second.
+        let mut signal = vec![0.0f32; 500];
+        signal[100] = 1.0;
+        signal[150] = 1.0;
+        let peaks = find_peaks(&signal, 0.5, 200);
+        assert_eq!(peaks.len(), 1);
+        assert_eq!(peaks[0], 100);
+    }
+
+    // --- Biquad filter correctness ---
+
+    #[test]
+    fn low_pass_attenuates_above_cutoff() {
+        let sr = 44100.0f32;
+        let mut bq = Biquad::low_pass(sr, 1000.0, 0.707);
+        // Settle
+        for i in 0..4096 {
+            bq.process((2.0 * std::f32::consts::PI * 4000.0 * i as f32 / sr).sin());
+        }
+        // Measure steady-state RMS at 4x the cutoff. A 2nd-order Butterworth LPF
+        // rolls off at -12 dB/octave, so 4 kHz is 2 octaves above the 1 kHz cutoff:
+        // expected attenuation ~24 dB, amplitude factor ~1/16.
+        let mut sum_sq = 0.0f32;
+        for i in 4096..8192 {
+            let y = bq.process((2.0 * std::f32::consts::PI * 4000.0 * i as f32 / sr).sin());
+            sum_sq += y * y;
+        }
+        let rms = (sum_sq / 4096.0).sqrt();
+        assert!(rms < 0.1, "LPF@1kHz should strongly attenuate 4kHz, got RMS={}", rms);
+    }
+
+    #[test]
+    fn high_pass_attenuates_below_cutoff() {
+        let sr = 44100.0f32;
+        let mut bq = Biquad::high_pass(sr, 1000.0, 0.707);
+        for i in 0..4096 {
+            bq.process((2.0 * std::f32::consts::PI * 250.0 * i as f32 / sr).sin());
+        }
+        let mut sum_sq = 0.0f32;
+        for i in 4096..8192 {
+            let y = bq.process((2.0 * std::f32::consts::PI * 250.0 * i as f32 / sr).sin());
+            sum_sq += y * y;
+        }
+        let rms = (sum_sq / 4096.0).sqrt();
+        assert!(rms < 0.1, "HPF@1kHz should strongly attenuate 250Hz, got RMS={}", rms);
+    }
+
+    // --- EqState band controls ---
+
+    fn rms(signal: &[f32]) -> f32 {
+        let sum_sq: f32 = signal.iter().map(|&x| x * x).sum();
+        (sum_sq / signal.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn eq_high_cut_reduces_high_frequency_level() {
+        let sr = 44100.0f32;
+        // 8 kHz sine — sits in the high-shelf band.
+        let input: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * std::f32::consts::PI * 8000.0 * i as f32 / sr).sin())
+            .collect();
+
+        let mut flat = EqState::new(sr);
+        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
+
+        let mut cut = EqState::new(sr);
+        cut.set_high(-12.0);
+        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
+
+        // Skip settling transient; compare tails only.
+        let flat_rms = rms(&flat_out[4096..]);
+        let cut_rms = rms(&cut_out[4096..]);
+        assert!(
+            cut_rms < flat_rms * 0.6,
+            "high cut should reduce 8kHz level; flat_rms={:.4} cut_rms={:.4}",
+            flat_rms, cut_rms
+        );
+    }
+
+    #[test]
+    fn eq_low_cut_reduces_low_frequency_level() {
+        let sr = 44100.0f32;
+        // 80 Hz sine — sits in the low-shelf band.
+        let input: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin())
+            .collect();
+
+        let mut flat = EqState::new(sr);
+        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
+
+        let mut cut = EqState::new(sr);
+        cut.set_low(-12.0);
+        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
+
+        let flat_rms = rms(&flat_out[4096..]);
+        let cut_rms = rms(&cut_out[4096..]);
+        assert!(
+            cut_rms < flat_rms * 0.6,
+            "low cut should reduce 80Hz level; flat_rms={:.4} cut_rms={:.4}",
+            flat_rms, cut_rms
+        );
+    }
+
+    // --- detect_bpm: integer BPM preference ---
+    //
+    // When two clusters have equal vote counts, the one whose BPM is closer to an
+    // integer should win. This covers cases where syncopated bass patterns create
+    // spurious fractional-BPM clusters that compete with the true integer BPM.
+
+    #[test]
+    fn detect_bpm_prefers_integer_bpm_over_fractional() {
+        let sr = 44100u32;
+        let true_bpm = 146.0f64;
+        let beat_samples = (60.0 * sr as f64 / true_bpm).round() as usize; // 18123
+
+        // Onsets every beat at 146 BPM. 80 Hz bursts survive the 150 Hz BPM lowpass.
+        let n_onsets = 30;
+        let burst_len = 2000usize;
+        let total = beat_samples * n_onsets + burst_len;
+        let mut signal = vec![0.0f32; total];
+        for onset in 0..n_onsets {
+            let start = onset * beat_samples;
+            for j in 0..burst_len {
+                signal[start + j] =
+                    (2.0 * std::f32::consts::PI * 80.0 * j as f32 / sr as f32).sin();
+            }
+        }
+
+        let detected = detect_bpm(&signal, sr).expect("should detect a BPM");
+        // Result must be 146 (integer) and not a fractional alias like 97.3.
+        assert!(
+            (detected - true_bpm).abs() < 2.0,
+            "expected ~{} BPM, got {} (fractional alias?)",
+            true_bpm, detected
+        );
+        assert_eq!(
+            detected,
+            (detected * 10.0).round() / 10.0,
+            "result should round to one decimal"
+        );
     }
 }

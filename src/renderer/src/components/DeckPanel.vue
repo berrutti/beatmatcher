@@ -6,7 +6,8 @@
     :style="{ '--deck-accent': props.deck.accent }"
     :class="{
       'deck--playing': props.deck.playing,
-      'deck--drag-over': isDragOverCollection
+      'deck--drag-over': isDragOverCollection,
+      'deck--loading': props.deck.loading
     }"
   >
     <ConfirmModal
@@ -19,10 +20,13 @@
 
     <div class="deck__header">
       <span class="deck__label">DECK {{ props.deck.id }}</span>
-      <div class="deck__status-dot" :class="{ 'deck__status-dot--on': props.deck.playing }" />
-      <span v-if="props.deck.trackName" class="deck__track-name" :title="props.deck.trackName">{{
-        props.deck.trackName
-      }}</span>
+      <div v-if="props.deck.trackName" class="deck__track-info">
+        <div class="deck__status-dot" :class="{ 'deck__status-dot--on': props.deck.playing }" />
+        <span class="deck__track-name" :title="props.deck.trackName">{{
+          props.deck.trackName
+        }}</span>
+      </div>
+
       <button
         v-if="props.deck.trackLoaded"
         class="deck__q-btn"
@@ -33,27 +37,44 @@
         Q
       </button>
       <div v-if="props.deck.trackLoaded" class="deck__bpm-header">
-        <input
-          v-if="editingBpm"
-          ref="bpmInputEl"
-          class="deck__bpm-input-header"
-          type="number"
-          min="20"
-          step="0.1"
-          :value="props.deck.targetBpm?.toFixed(1) ?? ''"
-          @blur="onBpmInputBlur"
-          @keydown.enter="onBpmInputBlur"
-          @keydown.escape="editingBpm = false"
-        />
-        <span v-else class="deck__bpm-value-header" @click="onBpmValueClick">{{
-          props.deck.targetBpm?.toFixed(1) ?? '--.-'
-        }}</span>
+        <div class="deck__bpm-value-wrap" @click="onBpmValueClick">
+          <input
+            v-if="editingBpm"
+            ref="bpmInputEl"
+            class="deck__bpm-input-header"
+            type="number"
+            min="20"
+            step="0.1"
+            :value="props.deck.targetBpm?.toFixed(1) ?? ''"
+            @blur="onBpmInputBlur"
+            @keydown.enter="onBpmInputBlur"
+            @keydown.escape="editingBpm = false"
+          />
+          <span
+            class="deck__bpm-value-header"
+            :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
+            >{{ props.deck.targetBpm?.toFixed(1) ?? '--.-' }}</span
+          >
+        </div>
         <span class="deck__bpm-unit-header">BPM</span>
       </div>
+      <button
+        v-if="props.deck.trackLoaded"
+        class="deck__eject-btn"
+        :tabindex="-1"
+        title="Eject track"
+        @click="props.deck.ejectTrack()"
+      >
+        ⏏
+      </button>
     </div>
 
+    <div v-if="props.deck.loading" class="deck__loading-bar" />
+
     <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-      <span class="deck__drop-hint">Drag a track from the collection</span>
+      <span class="deck__drop-hint">{{
+        props.deck.loading ? 'Loading...' : 'Drag a track from the collection'
+      }}</span>
     </div>
 
     <template v-if="props.deck.trackLoaded">
@@ -91,7 +112,7 @@
               @mouseleave="props.deck.nudgeEnd()"
             >
               <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.NUDGE_BACK }}</span>
-              <span class="deck__btn-icon">◀◀</span>
+              <span class="deck__btn-icon">↶</span>
             </button>
             <button
               class="deck__btn deck__btn--nudge"
@@ -103,7 +124,7 @@
               @mouseleave="props.deck.nudgeEnd()"
             >
               <span class="deck__btn-key">{{ props.keybindings.NUDGE_FORWARD }}</span>
-              <span class="deck__btn-icon">▶▶</span>
+              <span class="deck__btn-icon">↷</span>
             </button>
           </div>
 
@@ -304,11 +325,12 @@ const isDragOverCollection = ref(false);
 function onWindowPointerMove(e: PointerEvent) {
   if (!deckEl.value) return;
   const rect = deckEl.value.getBoundingClientRect();
-  isDragOverCollection.value =
+  const over =
     e.clientX >= rect.left &&
     e.clientX <= rect.right &&
     e.clientY >= rect.top &&
     e.clientY <= rect.bottom;
+  isDragOverCollection.value = over && collectionStore.draggingPath !== props.deck.loadedPath;
 }
 
 watch(
@@ -335,6 +357,7 @@ function buildLoadable(path: string): LoadableTrack | null {
 function onCollectionDrop(e: Event) {
   const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
   if (deckId !== props.deck.id) return;
+  if (props.deck.loadedPath === path) return;
   const loadable = buildLoadable(path);
   if (!loadable) return;
   if (props.deck.loopPlaying) {
@@ -384,12 +407,21 @@ function onConfirmLoad() {
 
 .deck__header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.6em;
   width: 100%;
   padding: 0.5em 0.8em;
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+}
+
+.deck__track-info {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .deck__label {
@@ -406,6 +438,7 @@ function onConfirmLoad() {
   border-radius: 50%;
   background: var(--color-border);
   flex-shrink: 0;
+  margin-right: 0.3em;
   transition:
     background 0.1s,
     box-shadow 0.1s;
@@ -427,10 +460,15 @@ function onConfirmLoad() {
 
 .deck__bpm-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.25em;
   flex-shrink: 0;
   margin-left: auto;
+}
+
+.deck__bpm-value-wrap {
+  position: relative;
+  cursor: text;
 }
 
 .deck__bpm-value-header {
@@ -438,28 +476,63 @@ function onConfirmLoad() {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--deck-accent);
-  cursor: text;
   letter-spacing: -0.01em;
+  display: block;
 }
 
 .deck__bpm-input-header {
+  position: absolute;
+  inset: 0;
   font-size: 0.85em;
   font-weight: 700;
   font-family: var(--font);
   font-variant-numeric: tabular-nums;
   background: transparent;
   border: none;
-  border-bottom: 1px solid currentColor;
+  box-shadow: 0 1px 0 0 var(--deck-accent);
   color: var(--deck-accent);
-  width: 5ch;
+  width: 100%;
   padding: 0;
   outline: none;
+  line-height: inherit;
+  appearance: textfield;
+}
+.deck__bpm-input-header::-webkit-inner-spin-button,
+.deck__bpm-input-header::-webkit-outer-spin-button {
+  display: none;
+}
+.deck__bpm-input-header::selection {
+  background: var(--deck-accent);
+  color: var(--color-bg);
 }
 
 .deck__bpm-unit-header {
   font-size: 0.6em;
   color: var(--color-muted);
   letter-spacing: 0.1em;
+}
+
+.deck__loading-bar {
+  height: 2px;
+  width: 100%;
+  flex-shrink: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--deck-accent) 40%,
+    var(--deck-accent) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: deck-loading-sweep 1.2s ease-in-out infinite;
+}
+@keyframes deck-loading-sweep {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
 }
 
 .deck__drop-zone {
@@ -470,8 +543,8 @@ function onConfirmLoad() {
 }
 .deck__drop-hint {
   color: var(--color-muted);
-  font-size: 0.65em;
-  letter-spacing: 0.1em;
+  font-style: italic;
+  font-size: 1.2em;
   opacity: 0.6;
 }
 
@@ -483,15 +556,13 @@ function onConfirmLoad() {
   flex: 1;
   display: flex;
   align-items: center;
-  justify-content: space-around;
-  padding: 0.5em 0.8em 0.8em;
-  gap: 0.5em;
+  justify-content: space-evenly;
   min-height: 0;
 }
 
 .deck__phase-ring {
-  width: 7em;
-  height: 7em;
+  aspect-ratio: 1;
+  height: clamp(2rem, 0.5rem + 10cqi, 10rem);
   flex-shrink: 0;
 }
 
@@ -506,20 +577,26 @@ function onConfirmLoad() {
   gap: 0.5em;
 }
 
+.todo {
+  display: flex;
+  gap: 0.25em;
+  align-items: center;
+}
+
 .deck__btn {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.25em;
-  width: 5em;
-  height: 4em;
+  width: 4.5em;
+  height: 3.5em;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-text);
   font-family: var(--font);
-  font-size: 1em;
+  font-size: clamp(1em, 0.7cqi, 1.2em);
   cursor: pointer;
   transition:
     background 0.1s,
@@ -589,6 +666,27 @@ function onConfirmLoad() {
   border-color: var(--deck-accent);
 }
 
+.deck__eject-btn {
+  padding: 0 0.3em;
+  height: 1.4em;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 0.75em;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+  opacity: 0.5;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
+}
+.deck__eject-btn:hover {
+  opacity: 1;
+  color: var(--color-fg);
+}
+
 .deck__btn--loop-in:hover:not(:disabled),
 .deck__btn--loop-out:hover:not(:disabled) {
   border-color: var(--deck-accent);
@@ -618,7 +716,7 @@ function onConfirmLoad() {
 }
 
 .deck__slider-label {
-  font-size: 0.6em;
+  font-size: 0.75em;
   color: var(--color-muted);
 }
 
@@ -626,9 +724,9 @@ function onConfirmLoad() {
   background: transparent;
   border: 1px solid var(--color-border);
   color: var(--color-muted);
-  font-size: 0.65em;
-  width: 2.2em;
-  height: 1.4em;
+  font-size: 0.85em;
+  width: 2.4em;
+  height: 1.6em;
   border-radius: 3px;
   cursor: pointer;
   display: flex;
@@ -647,8 +745,8 @@ function onConfirmLoad() {
   appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 32px;
-  height: 7em;
+  width: 30px;
+  height: 11.5em;
   cursor: pointer;
   background: transparent;
   padding: 0;
@@ -665,7 +763,7 @@ function onConfirmLoad() {
   -webkit-appearance: none;
   appearance: none;
   width: 28px;
-  height: 13px;
+  height: 20px;
   background:
     repeating-linear-gradient(
       to bottom,
@@ -681,6 +779,7 @@ function onConfirmLoad() {
   border-left: 1px solid #666;
   border-right: 1px solid #666;
   cursor: grab;
+  margin-left: -14px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.7);
 }
 

@@ -256,19 +256,44 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 
 .mixer__channel--swarm-selected {
   background: color-mix(in srgb, #fbbf24 8%, transparent);
-  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
+  border-color: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.mixer__channel--swarm-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, #fbbf24 40%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
 }
 
 .mixer__channel--swarm-no-left {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  border-left-color: transparent;
+}
+
+.mixer__channel--swarm-no-left::before {
+  border-left: none;
+  border-radius: 0 4px 4px 0;
 }
 
 .mixer__channel--swarm-no-right {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
-  border-right-color: transparent;
+}
+
+.mixer__channel--swarm-no-right::before {
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+}
+
+.mixer__channel--swarm-no-left.mixer__channel--swarm-no-right::before {
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
 }
 
 .mixer__channel-label {
@@ -514,7 +539,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   border-left: 1px solid #444;
   border-right: 1px solid #444;
   cursor: grab;
-  margin-left: -12px;
+  margin-left: -14px;
   box-shadow:
     0 3px 7px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);

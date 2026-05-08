@@ -1,5 +1,11 @@
 <template>
-  <div class="edit-view" ref="viewEl" data-deck-id="E" :style="{ '--deck-accent': deck.accent }">
+  <div
+    class="edit-view"
+    ref="viewEl"
+    data-deck-id="E"
+    :style="{ '--deck-accent': deck.accent }"
+    :class="{ 'edit-view--drag-over': isDragOver }"
+  >
     <ConfirmModal
       :open="pendingLoad !== null"
       title="Load new track?"
@@ -58,7 +64,7 @@
       <button
         class="edit-view__btn edit-view__btn--cue"
         :class="{ 'edit-view__btn--cueing': deck.cueing }"
-        @mousedown.prevent="deck.cueStart()"
+        @mousedown.prevent="deck.playing ? deck.stopAtCue() : deck.cueStart()"
         @mouseup="deck.cueEnd()"
         @mouseleave="deck.cueEnd()"
       >
@@ -169,6 +175,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow: hidden;
+}
+
+.edit-view--drag-over {
+  outline: 2px dashed var(--deck-accent);
+  outline-offset: -4px;
 }
 
 .edit-view__header {
@@ -263,12 +275,14 @@ onUnmounted(() => {
   border-color: var(--color-text);
 }
 
-.edit-view__btn--cue {
+.edit-view__btn--cue:hover {
   color: var(--deck-accent);
   border-color: var(--deck-accent);
 }
 
 .edit-view__btn--cueing {
+  color: var(--deck-accent);
+  border-color: var(--deck-accent);
   background: color-mix(in srgb, var(--deck-accent) 20%, transparent);
 }
 
