@@ -1,6 +1,6 @@
 [package]
 name = "beatmatcher"
-version = "3.0.1"
+version = "4.0.0"
 description = "Beat matching trainer app"
 authors = ["berrutti"]
 edition = "2021"
