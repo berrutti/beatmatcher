@@ -6,6 +6,12 @@ import type { LoadableTrack } from '@renderer/stores/decks';
 
 export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
+export type Playlist = {
+  id: string;
+  name: string;
+  paths: string[];
+};
+
 export type CollectionEntry = {
   id: string;
   name: string;
@@ -19,10 +25,19 @@ export type CollectionEntry = {
 type PersistedEntry = { name: string; size: number; path: string | null };
 
 const COLLECTION_KEY = 'beatmatcher:collection';
+const PLAYLISTS_KEY = 'beatmatcher:playlists';
 
 function loadPersisted(): PersistedEntry[] {
   try {
     return JSON.parse(localStorage.getItem(COLLECTION_KEY) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+
+function loadPersistedPlaylists(): Playlist[] {
+  try {
+    return JSON.parse(localStorage.getItem(PLAYLISTS_KEY) ?? '[]');
   } catch {
     return [];
   }
@@ -145,7 +160,19 @@ export const useCollectionStore = defineStore('collection', () => {
 
   function removeTrack(id: string) {
     const idx = tracks.findIndex((t) => t.id === id);
-    if (idx !== -1) tracks.splice(idx, 1);
+    if (idx !== -1) {
+      const path = tracks[idx].path;
+      if (path) savedTracks.remove(path);
+      tracks.splice(idx, 1);
+    }
+  }
+
+  function reanalyzeTrack(id: string) {
+    const entry = tracks.find((t) => t.id === id);
+    if (!entry || !entry.path) return;
+    savedTracks.remove(entry.path);
+    entry.status = 'idle';
+    analyzeTrack(id);
   }
 
   function clearAll() {
@@ -258,7 +285,7 @@ export const useCollectionStore = defineStore('collection', () => {
     entry.status = 'ready';
   }
 
-  function updateTrack(path: string, patch: { beatOffset?: number }) {
+  function updateTrack(path: string, patch: { beatOffset?: number; bpm?: number }) {
     savedTracks.update(path, patch);
   }
 
@@ -283,11 +310,56 @@ export const useCollectionStore = defineStore('collection', () => {
     draggingPath.value = null;
   }
 
+  const playlists = reactive<Playlist[]>(loadPersistedPlaylists());
+
+  watch(
+    playlists,
+    () => {
+      localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(playlists));
+    },
+    { deep: true }
+  );
+
+  function createPlaylist(name: string) {
+    playlists.push({ id: Math.random().toString(36).slice(2), name, paths: [] });
+  }
+
+  function deletePlaylist(id: string) {
+    const idx = playlists.findIndex((p) => p.id === id);
+    if (idx !== -1) playlists.splice(idx, 1);
+  }
+
+  function renamePlaylist(id: string, name: string) {
+    const p = playlists.find((p) => p.id === id);
+    if (p) p.name = name;
+  }
+
+  function addToPlaylist(playlistId: string, path: string) {
+    const p = playlists.find((p) => p.id === playlistId);
+    if (!p || p.paths.includes(path)) return;
+    p.paths.push(path);
+  }
+
+  function removeFromPlaylist(playlistId: string, path: string) {
+    const p = playlists.find((p) => p.id === playlistId);
+    if (!p) return;
+    const idx = p.paths.indexOf(path);
+    if (idx !== -1) p.paths.splice(idx, 1);
+  }
+
+  function moveInPlaylist(playlistId: string | null, fromIdx: number, toIdx: number) {
+    const p = playlists.find((p) => p.id === playlistId);
+    if (!p || fromIdx === toIdx) return;
+    const [item] = p.paths.splice(fromIdx, 1);
+    p.paths.splice(toIdx, 0, item);
+  }
+
   return {
     isOpen,
     tracks,
     draggingPath,
     hasPending,
+    playlists,
     bpmFor,
     toggle,
     addFiles,
@@ -295,11 +367,18 @@ export const useCollectionStore = defineStore('collection', () => {
     removeTrack,
     clearAll,
     analyzeTrack,
+    reanalyzeTrack,
     analyzeAll,
     setBpm,
     updateTrack,
     getLoadable,
     startDrag,
-    endDrag
+    endDrag,
+    createPlaylist,
+    deletePlaylist,
+    renamePlaylist,
+    addToPlaylist,
+    removeFromPlaylist,
+    moveInPlaylist
   };
 });

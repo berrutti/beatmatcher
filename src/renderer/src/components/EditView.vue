@@ -1,5 +1,11 @@
 <template>
-  <div class="edit-view" ref="viewEl" data-deck-id="E" :style="{ '--deck-accent': deck.accent }">
+  <div
+    class="edit-view"
+    ref="viewEl"
+    data-deck-id="E"
+    :style="{ '--deck-accent': deck.accent }"
+    :class="{ 'edit-view--drag-over': isDragOver }"
+  >
     <ConfirmModal
       :open="pendingLoad !== null"
       title="Load new track?"
@@ -7,44 +13,18 @@
       @confirm="onConfirmLoad"
       @cancel="pendingLoad = null"
     />
+    <BpmModal
+      :open="bpmModalOpen"
+      :current-bpm="deck.trackBpm"
+      @submit="onBpmSubmit"
+      @cancel="bpmModalOpen = false"
+    />
 
     <div class="edit-view__header">
-      <span class="edit-view__label">EDIT</span>
-      <span v-if="deck.trackName" class="edit-view__track-name" :title="deck.trackName">{{
-        deck.trackName
+      <span class="edit-view__track-name" :title="deck.trackName || ''">{{
+        deck.trackName || 'No track loaded'
       }}</span>
-      <div v-if="deck.trackLoaded" class="edit-view__bpm">
-        <span class="edit-view__bpm-value">{{ deck.targetBpm?.toFixed(1) ?? '--.-' }}</span>
-        <span class="edit-view__bpm-unit">BPM</span>
-      </div>
-      <div class="edit-view__transport">
-        <button
-          class="edit-view__btn edit-view__btn--set-grid"
-          :disabled="!deck.trackLoaded"
-          @click="deck.setBeatOffset(deck.getPlayheadPosition())"
-        >
-          SET GRID
-        </button>
-        <button
-          class="edit-view__btn edit-view__btn--cue"
-          :class="{ 'edit-view__btn--cueing': deck.cueing }"
-          :disabled="!deck.trackLoaded"
-          @mousedown.prevent="deck.cueStart()"
-          @mouseup="deck.cueEnd()"
-          @mouseleave="deck.cueEnd()"
-        >
-          CUE
-        </button>
-        <button
-          class="edit-view__btn edit-view__btn--play"
-          :class="{ 'edit-view__btn--playing': deck.playing }"
-          :disabled="!deck.trackLoaded"
-          @click="deck.togglePlay()"
-        >
-          {{ deck.playing ? '⏸' : '▶' }}
-        </button>
-      </div>
-      <button class="edit-view__close" @click="emit('close')">CLOSE</button>
+      <button class="edit-view__close" @click="emit('close')">✕</button>
     </div>
 
     <div v-if="!deck.trackLoaded" class="edit-view__drop-zone">
@@ -70,6 +50,34 @@
       @set-beat-offset="deck.setBeatOffset"
       @seek="deck.seekTo"
     />
+
+    <div v-if="deck.trackLoaded" class="edit-view__controls">
+      <button class="edit-view__btn edit-view__btn--set-bpm" @click="bpmModalOpen = true">
+        SET BPM
+      </button>
+      <button
+        class="edit-view__btn edit-view__btn--set-grid"
+        @click="deck.setBeatOffset(deck.getPlayheadPosition())"
+      >
+        SET GRID
+      </button>
+      <button
+        class="edit-view__btn edit-view__btn--cue"
+        :class="{ 'edit-view__btn--cueing': deck.cueing }"
+        @mousedown.prevent="deck.playing ? deck.stopAtCue() : deck.cueStart()"
+        @mouseup="deck.cueEnd()"
+        @mouseleave="deck.cueEnd()"
+      >
+        CUE
+      </button>
+      <button
+        class="edit-view__btn edit-view__btn--play"
+        :class="{ 'edit-view__btn--playing': deck.playing }"
+        @click="deck.togglePlay()"
+      >
+        {{ deck.playing ? '⏸' : '▶' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -79,6 +87,7 @@ import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
+import BpmModal from '@renderer/components/BpmModal.vue';
 
 const props = defineProps<{ deck: Deck }>();
 const emit = defineEmits<{ close: [] }>();
@@ -86,6 +95,8 @@ const emit = defineEmits<{ close: [] }>();
 const viewEl = ref<HTMLElement | null>(null);
 const pendingLoad = ref<LoadableTrack | null>(null);
 const isDragOver = ref(false);
+const bpmModalOpen = ref(false);
+const loadedPath = ref<string | null>(null);
 
 const collectionStore = useCollectionStore();
 
@@ -130,12 +141,24 @@ function onCollectionDrop(e: Event) {
     return;
   }
   props.deck.loadTrack(loadable);
+  loadedPath.value = path;
 }
 
 function onConfirmLoad() {
   const loadable = pendingLoad.value;
   pendingLoad.value = null;
-  if (loadable) props.deck.loadTrack(loadable);
+  if (loadable) {
+    props.deck.loadTrack(loadable);
+    loadedPath.value = loadable.path;
+  }
+}
+
+function onBpmSubmit(bpm: number) {
+  bpmModalOpen.value = false;
+  props.deck.setTrackBpm(bpm);
+  if (loadedPath.value) {
+    collectionStore.updateTrack(loadedPath.value, { bpm });
+  }
 }
 
 onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
@@ -147,11 +170,17 @@ onUnmounted(() => {
 
 <style scoped>
 .edit-view {
-  width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow: hidden;
+}
+
+.edit-view--drag-over {
+  outline: 2px dashed var(--deck-accent);
+  outline-offset: -4px;
 }
 
 .edit-view__header {
@@ -164,13 +193,6 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--color-border);
 }
 
-.edit-view__label {
-  font-size: 0.6em;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: var(--deck-accent);
-}
-
 .edit-view__track-name {
   font-size: 0.6em;
   color: var(--color-text);
@@ -181,40 +203,21 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.edit-view__bpm {
-  display: flex;
-  align-items: baseline;
-  gap: 0.2em;
-  flex-shrink: 0;
-}
-
-.edit-view__bpm-value {
-  font-size: 0.75em;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text);
-}
-
-.edit-view__bpm-unit {
-  font-size: 0.5em;
-  color: var(--color-muted);
-  letter-spacing: 0.1em;
-}
-
 .edit-view__close {
   background: transparent;
-  border: 1px solid var(--color-border);
+  border: none;
   color: var(--color-muted);
   font-family: var(--font);
-  font-size: 0.55em;
-  letter-spacing: 0.12em;
-  padding: 0.2em 0.6em;
-  border-radius: 3px;
+  font-size: 0.75em;
   cursor: pointer;
   flex-shrink: 0;
+  padding: 0.2em 0.3em;
+  line-height: 1;
+  opacity: 0.5;
 }
 
 .edit-view__close:hover {
-  border-color: var(--color-text);
+  opacity: 1;
   color: var(--color-text);
 }
 
@@ -237,12 +240,14 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.edit-view__transport {
+.edit-view__controls {
   display: flex;
   align-items: center;
   gap: 0.4em;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border);
+  background: #0d0d0d;
   flex-shrink: 0;
-  margin-left: auto;
 }
 
 .edit-view__btn {
@@ -257,28 +262,27 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.edit-view__btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
+.edit-view__btn--set-bpm,
 .edit-view__btn--set-grid {
   color: var(--color-muted);
   font-size: 0.55em;
   letter-spacing: 0.1em;
 }
 
-.edit-view__btn--set-grid:not(:disabled):hover {
+.edit-view__btn--set-bpm:hover,
+.edit-view__btn--set-grid:hover {
   color: var(--color-text);
   border-color: var(--color-text);
 }
 
-.edit-view__btn--cue {
+.edit-view__btn--cue:hover {
   color: var(--deck-accent);
   border-color: var(--deck-accent);
 }
 
 .edit-view__btn--cueing {
+  color: var(--deck-accent);
+  border-color: var(--deck-accent);
   background: color-mix(in srgb, var(--deck-accent) 20%, transparent);
 }
 

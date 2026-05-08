@@ -34,11 +34,27 @@ export const useMixerStore = defineStore('mixer', () => {
     E: false
   });
 
+  const DECK_COUNT_KEY = 'beatmatcher:deckCount';
+  const storedCount = parseInt(localStorage.getItem(DECK_COUNT_KEY) ?? '4', 10);
+  const deckCount = ref<2 | 4>(storedCount === 2 ? 2 : 4);
+
+  function toggleDeckCount() {
+    deckCount.value = deckCount.value === 4 ? 2 : 4;
+    localStorage.setItem(DECK_COUNT_KEY, String(deckCount.value));
+  }
+
   const masterGain = ref(DEFAULT_MASTER_GAIN);
 
   function setMasterGain(gain: number) {
     masterGain.value = Math.max(0, Math.min(1, gain));
     invoke('set_master_gain', { gain: masterGain.value });
+  }
+
+  const cueMix = ref(0);
+
+  function setCueMix(mix: number) {
+    cueMix.value = Math.max(0, Math.min(1, mix));
+    invoke('set_cue_mix', { mix: cueMix.value });
   }
 
   const swarmMode = ref(false);
@@ -93,13 +109,40 @@ export const useMixerStore = defineStore('mixer', () => {
     }
   }
 
+  function alternateChannelOffset(
+    totalChannels: number,
+    avoidOffset: number,
+    preferred: number
+  ): number | null {
+    if (preferred !== avoidOffset) return preferred;
+    for (let i = 0; i + 1 < totalChannels; i += 2) {
+      if (i !== avoidOffset) return i;
+    }
+    return null;
+  }
+
   async function setMainOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
     deviceError.value = '';
+    const newMainOffset = channelOffset ?? mainChannelOffset.value;
     if (deviceId && deviceId === cueDeviceId.value) {
-      cueDeviceId.value = '';
-      await invoke('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value }).catch(
-        () => {}
-      );
+      const device = outputDevices.value.find((d) => d.id === deviceId);
+      if (device && device.channels > 2) {
+        const newCueOffset = alternateChannelOffset(
+          device.channels,
+          newMainOffset,
+          cueChannelOffset.value
+        );
+        if (newCueOffset !== null) {
+          cueChannelOffset.value = newCueOffset;
+          await invoke('set_cue_device', { deviceId, channelOffset: newCueOffset }).catch(() => {});
+        }
+      } else {
+        cueDeviceId.value = '';
+        await invoke('set_cue_device', {
+          deviceId: '',
+          channelOffset: cueChannelOffset.value
+        }).catch(() => {});
+      }
     }
     mainDeviceId.value = deviceId;
     if (channelOffset !== undefined) mainChannelOffset.value = channelOffset;
@@ -112,12 +155,28 @@ export const useMixerStore = defineStore('mixer', () => {
 
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
     deviceError.value = '';
+    const newCueOffset = channelOffset ?? cueChannelOffset.value;
     if (deviceId && deviceId === mainDeviceId.value) {
-      mainDeviceId.value = '';
-      await invoke('set_main_device', {
-        deviceId: '',
-        channelOffset: mainChannelOffset.value
-      }).catch(() => {});
+      const device = outputDevices.value.find((d) => d.id === deviceId);
+      if (device && device.channels > 2) {
+        const newMainOffset = alternateChannelOffset(
+          device.channels,
+          newCueOffset,
+          mainChannelOffset.value
+        );
+        if (newMainOffset !== null) {
+          mainChannelOffset.value = newMainOffset;
+          await invoke('set_main_device', { deviceId, channelOffset: newMainOffset }).catch(
+            () => {}
+          );
+        }
+      } else {
+        mainDeviceId.value = '';
+        await invoke('set_main_device', {
+          deviceId: '',
+          channelOffset: mainChannelOffset.value
+        }).catch(() => {});
+      }
     }
     cueDeviceId.value = deviceId;
     if (channelOffset !== undefined) cueChannelOffset.value = channelOffset;
@@ -130,8 +189,12 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   return {
+    deckCount,
+    toggleDeckCount,
     masterGain,
     setMasterGain,
+    cueMix,
+    setCueMix,
     volume,
     cueActive,
     filter,

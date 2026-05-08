@@ -2,7 +2,7 @@
   <div class="mixer">
     <div class="mixer__channels">
       <div
-        v-for="deckId in DECKS_DISPOSITION"
+        v-for="deckId in activeDecks"
         :key="deckId"
         class="mixer__channel"
         :class="swarmChannelClass(deckId)"
@@ -62,6 +62,7 @@
         </div>
 
         <div class="mixer__fader-row">
+          <div class="mixer__ghost_meter"></div>
           <input
             type="range"
             class="mixer__fader"
@@ -97,22 +98,6 @@
       </div>
     </div>
 
-    <div class="mixer__master">
-      <span class="mixer__master-label">M</span>
-      <input
-        type="range"
-        class="mixer__master-fader"
-        min="0"
-        max="1"
-        step="0.01"
-        :value="mixer.masterGain"
-        orient="vertical"
-        @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
-        @dblclick="mixer.setMasterGain(1)"
-      />
-      <span class="mixer__master-value">{{ Math.round(mixer.masterGain * 100) }}</span>
-    </div>
-
     <LissajousScope
       class="mixer__lissajous"
       :sources="[
@@ -130,12 +115,16 @@ import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@rendere
 import { useMixerStore } from '@renderer/stores/mixer';
 import LissajousScope from '@renderer/components/LissajousScope.vue';
 import type { DeckId } from '@renderer/stores/decks';
-import { reactive, onMounted, onUnmounted } from 'vue';
+import { reactive, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
+
+const activeDecks = computed<DeckId[]>(() =>
+  mixer.deckCount === 2 ? ['A', 'B'] : DECKS_DISPOSITION
+);
 
 const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
 const deckPeaks = reactive<Record<DeckId, PeakState>>({
@@ -165,17 +154,18 @@ onUnmounted(() => {
 
 function swarmChannelClass(deckId: DeckId) {
   if (!mixer.swarmMode || !mixer.swarmSelected[deckId]) return {};
-  const idx = DECKS_DISPOSITION.indexOf(deckId);
+  const decklist = activeDecks.value;
+  const idx = decklist.indexOf(deckId);
   return {
     'mixer__channel--swarm-selected': true,
-    'mixer__channel--swarm-no-left': idx > 0 && mixer.swarmSelected[DECKS_DISPOSITION[idx - 1]],
+    'mixer__channel--swarm-no-left': idx > 0 && mixer.swarmSelected[decklist[idx - 1]],
     'mixer__channel--swarm-no-right':
-      idx < DECKS_DISPOSITION.length - 1 && mixer.swarmSelected[DECKS_DISPOSITION[idx + 1]]
+      idx < decklist.length - 1 && mixer.swarmSelected[decklist[idx + 1]]
   };
 }
 
 function swarmAffected(deckId: DeckId): DeckId[] {
-  const selected = DECKS_DISPOSITION.filter((ch) => mixer.swarmSelected[ch]);
+  const selected = activeDecks.value.filter((ch) => mixer.swarmSelected[ch]);
   if (!selected.includes(deckId)) selected.push(deckId);
   return selected;
 }
@@ -243,52 +233,6 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   width: 100%;
 }
 
-.mixer__master {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25em;
-  flex-shrink: 0;
-  width: 100%;
-}
-
-.mixer__master-label {
-  font-size: 0.6em;
-  color: var(--color-muted);
-  letter-spacing: 0.15em;
-}
-
-.mixer__master-value {
-  font-size: 0.55em;
-  color: var(--color-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.mixer__master-fader {
-  -webkit-appearance: none;
-  appearance: none;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 100%;
-  height: 4.5em;
-  background: transparent;
-  cursor: pointer;
-}
-.mixer__master-fader::-webkit-slider-runnable-track {
-  width: 3px;
-  background: #2a2a2a;
-  border-radius: 2px;
-}
-.mixer__master-fader::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 2em;
-  height: 0.55em;
-  background: #e8e8e8;
-  border-radius: 2px;
-  margin-left: calc(-1em + 1.5px);
-}
-
 .mixer__channels {
   display: flex;
   align-items: center;
@@ -312,19 +256,44 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 
 .mixer__channel--swarm-selected {
   background: color-mix(in srgb, #fbbf24 8%, transparent);
-  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
+  border-color: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.mixer__channel--swarm-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, #fbbf24 40%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
 }
 
 .mixer__channel--swarm-no-left {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  border-left-color: transparent;
+}
+
+.mixer__channel--swarm-no-left::before {
+  border-left: none;
+  border-radius: 0 4px 4px 0;
 }
 
 .mixer__channel--swarm-no-right {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
-  border-right-color: transparent;
+}
+
+.mixer__channel--swarm-no-right::before {
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+}
+
+.mixer__channel--swarm-no-left.mixer__channel--swarm-no-right::before {
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
 }
 
 .mixer__channel-label {
@@ -491,6 +460,13 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   gap: 3px;
 }
 
+.mixer__ghost_meter {
+  width: 5px;
+  height: 10em;
+  position: relative;
+  overflow: hidden;
+}
+
 .mixer__meter {
   width: 5px;
   height: 10em;
@@ -502,7 +478,6 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
     #ef4444 92%,
     #ef4444 100%
   );
-  border: 1px solid #282828;
   border-radius: 2px;
   position: relative;
   overflow: hidden;
@@ -513,7 +488,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   top: 0;
   left: 0;
   right: 0;
-  background: #111;
+  background: #000;
 }
 
 .mixer__meter-peak {
@@ -564,7 +539,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   border-left: 1px solid #444;
   border-right: 1px solid #444;
   cursor: grab;
-  margin-left: -12px;
+  margin-left: -14px;
   box-shadow:
     0 3px 7px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);

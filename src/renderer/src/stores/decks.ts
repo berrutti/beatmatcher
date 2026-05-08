@@ -47,6 +47,33 @@ function createDeck(id: DeckId, accent: string) {
   let localRate = 1.0; // effective playback rate (pitch + nudge) for interpolation
   let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
   let bandsReadyUnlisten: (() => void) | null = null;
+  let loadGeneration = 0;
+
+  async function fetchDenseLodChunked(
+    generation: number,
+    duration: number,
+    totalPoints: number
+  ): Promise<void> {
+    const CHUNKS = 10;
+    const buffer = new Float32Array(totalPoints * 4);
+    for (let i = 0; i < CHUNKS; i++) {
+      if (loadGeneration !== generation) return;
+      const startPt = Math.floor((i * totalPoints) / CHUNKS);
+      const endPt = Math.floor(((i + 1) * totalPoints) / CHUNKS);
+      const chunk = await invoke<number[]>('get_spectral_waveform_region', {
+        deck: id,
+        startSec: (duration * startPt) / totalPoints,
+        endSec: (duration * endPt) / totalPoints,
+        numPoints: endPt - startPt
+      });
+      if (loadGeneration !== generation) return;
+      buffer.set(new Float32Array(chunk), startPt * 4);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    if (loadGeneration !== generation) return;
+    state.denseSpectralData = buffer;
+    state.denseSpectralRate = totalPoints / duration;
+  }
 
   // Re-anchor positionCache to now so rate changes don't cause a position jump.
   function syncPosition() {
@@ -87,6 +114,8 @@ function createDeck(id: DeckId, accent: string) {
 
     trackName: '',
     trackLoaded: false,
+    loading: false,
+    loadedPath: null as string | null,
     trackData: null as TrackData | null,
     // Low-rate overview covering the whole track (few points per second).
     // Used by the overview strip and by WaveformDisplay as a first-paint
@@ -136,6 +165,16 @@ function createDeck(id: DeckId, accent: string) {
       invoke('set_playback_rate', { deck: id, rate: localRate });
     },
 
+    setTrackBpm(bpm: number) {
+      state.trackBpm = bpm;
+      state.targetBpm = bpm;
+      state.pitchOffset = 0;
+      syncPosition();
+      localRate = 1.0;
+      invoke('set_playback_rate', { deck: id, rate: 1.0 });
+      invoke('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
+    },
+
     setPitchOffset(pct: number) {
       if (state.trackBpm === null) return;
       state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct));
@@ -148,6 +187,8 @@ function createDeck(id: DeckId, accent: string) {
     async loadTrack(data: LoadableTrack) {
       bandsReadyUnlisten?.();
       bandsReadyUnlisten = null;
+      loadGeneration++;
+      state.loading = true;
       if (state.loopPlaying) {
         await invoke('stop', { deck: id });
         state.loopPlaying = false;
@@ -173,6 +214,7 @@ function createDeck(id: DeckId, accent: string) {
       state.trackName = data.name;
       state.trackData = info;
       state.trackLoaded = true;
+      state.loadedPath = data.path;
 
       state.trackBpm = data.bpm;
       state.beatOffset = data.beatOffset;
@@ -193,6 +235,7 @@ function createDeck(id: DeckId, accent: string) {
       // the bands buffers completes.
       const overviewPoints = Math.min(2000, Math.max(256, Math.ceil(info.duration * 4)));
       const densePoints = Math.max(256, Math.ceil(info.duration * DENSE_LOD_PTS_PER_SEC));
+      const gen = loadGeneration;
       const unlisten = await listen<string>('bands-ready', (event) => {
         if (event.payload !== id) return;
         bandsReadyUnlisten = null;
@@ -204,20 +247,14 @@ function createDeck(id: DeckId, accent: string) {
           numPoints: overviewPoints
         })
           .then((result) => {
+            if (loadGeneration !== gen) return;
             state.fullSpectralData = new Float32Array(result);
+            state.loading = false;
           })
-          .catch(() => {});
-        invoke<number[]>('get_spectral_waveform_region', {
-          deck: id,
-          startSec: 0,
-          endSec: info.duration,
-          numPoints: densePoints
-        })
-          .then((result) => {
-            state.denseSpectralData = new Float32Array(result);
-            state.denseSpectralRate = densePoints / info.duration;
-          })
-          .catch(() => {});
+          .catch(() => {
+            if (loadGeneration === gen) state.loading = false;
+          });
+        fetchDenseLodChunked(gen, info.duration, densePoints).catch(() => {});
       });
       bandsReadyUnlisten = unlisten;
     },
@@ -239,17 +276,12 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     async setLoopIn() {
-      if (!state.trackLoaded || state.trackBpm === null) return;
-      if (state.loopActive) {
-        syncPosition();
-        state.loopActive = false;
-      }
-      const r = await invoke<{ start_sec: number; end_sec: number; beats: number }>('set_loop_in', {
-        deck: id,
-        quantize: state.quantized
-      });
-      state.cuePoint = r.start_sec;
-      state.loopRegion = { startSec: r.start_sec, endSec: r.end_sec, beats: r.beats };
+      if (!state.trackLoaded) return;
+      syncPosition();
+      const cueSec = await invoke<number>('set_loop_in', { deck: id, quantize: state.quantized });
+      state.cuePoint = cueSec;
+      state.loopActive = false;
+      state.loopRegion = null;
     },
 
     async setLoopOut() {
@@ -356,6 +388,11 @@ function createDeck(id: DeckId, accent: string) {
     },
 
     seekTo(sec: number) {
+      if (state.loopActive) {
+        state.loopActive = false;
+        state.loopRegion = null;
+        invoke('set_loop_active', { deck: id, active: false });
+      }
       const clamped = Math.max(0, sec);
       positionCache = clamped;
       clockAtPlay = performance.now();
@@ -416,6 +453,44 @@ function createDeck(id: DeckId, accent: string) {
       });
     },
 
+    naturallyEnded() {
+      syncPosition();
+      if (state.trackData) positionCache = state.trackData.duration;
+      state.loopPlaying = false;
+      state.cueing = false;
+    },
+
+    async ejectTrack() {
+      bandsReadyUnlisten?.();
+      bandsReadyUnlisten = null;
+      loadGeneration++;
+      state.loading = false;
+      if (state.loopPlaying) {
+        await invoke('stop', { deck: id });
+        state.loopPlaying = false;
+      }
+      state.cueing = false;
+      state.nudging = null;
+      state.loopRegion = null;
+      state.loopActive = false;
+      state.trackData = null;
+      state.fullSpectralData = null;
+      state.denseSpectralData = null;
+      state.denseSpectralRate = 0;
+      state.trackName = '';
+      state.trackLoaded = false;
+      state.loadedPath = null;
+      state.trackBpm = null;
+      state.targetBpm = null;
+      state.pitchOffset = 0;
+      state.cuePoint = 0;
+      state.beatOffset = 0;
+      positionCache = 0;
+      clockAtPlay = 0;
+      localRate = 1.0;
+      onBeatOffsetChangeCb = null;
+    },
+
     destroy() {
       bandsReadyUnlisten?.();
       invoke('stop', { deck: id }).catch(() => {});
@@ -442,6 +517,12 @@ export const useDecksStore = defineStore('decks', () => {
     E: deckE
   };
   const editMode = ref(false);
+
+  listen<string>('track-ended', (event) => {
+    const deck = decks[event.payload as DeckId];
+    if (!deck) return;
+    deck.naturallyEnded();
+  });
 
   function destroy() {
     deckA.destroy();

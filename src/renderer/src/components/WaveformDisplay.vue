@@ -623,6 +623,7 @@ watch(
   flex-direction: column;
   background: #0a0a0a;
   position: relative;
+  overflow: hidden;
 }
 
 .waveform--drag-over {

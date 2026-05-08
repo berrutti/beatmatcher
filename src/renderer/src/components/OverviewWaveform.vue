@@ -20,6 +20,7 @@ const props = defineProps<{
   fullSpectralData: Float32Array | null;
   loopRegion: { startSec: number; endSec: number } | null;
   loopActive: boolean;
+  cuePoint: number;
 }>();
 
 const emit = defineEmits<{ seek: [sec: number] }>();
@@ -98,6 +99,22 @@ function draw() {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
+  }
+
+  if (trackDuration > 0) {
+    const cueX = (props.cuePoint / trackDuration) * w;
+    const TRI_W = 5;
+    const TRI_H = 8;
+    ctx.save();
+    ctx.fillStyle = '#eab308';
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(cueX - TRI_W, h);
+    ctx.lineTo(cueX + TRI_W, h);
+    ctx.lineTo(cueX, h - TRI_H);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   const pos = props.getPlayheadPosition();

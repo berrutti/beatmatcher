@@ -6,7 +6,7 @@
         <slot />
         <div class="modal__actions">
           <button class="modal__btn modal__btn--cancel" @click="emit('cancel')">Cancel</button>
-          <button class="modal__btn modal__btn--confirm" @click="emit('confirm')">
+          <button ref="confirmBtn" class="modal__btn modal__btn--confirm" @click="emit('confirm')">
             {{ confirmLabel }}
           </button>
         </div>
@@ -16,10 +16,20 @@
 </template>
 
 <script setup lang="ts">
-withDefaults(defineProps<{ open: boolean; title: string; confirmLabel?: string }>(), {
+import { ref, watch, nextTick } from 'vue';
+
+const props = withDefaults(defineProps<{ open: boolean; title: string; confirmLabel?: string }>(), {
   confirmLabel: 'Confirm'
 });
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
+
+const confirmBtn = ref<HTMLButtonElement | null>(null);
+watch(
+  () => props.open,
+  (val) => {
+    if (val) nextTick(() => confirmBtn.value?.focus());
+  }
+);
 </script>
 
 <style scoped>

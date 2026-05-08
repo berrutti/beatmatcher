@@ -16,10 +16,11 @@ const LINE_WIDTH_RATIO = 0.065;
 const FLASH_DECAY = 0.82;
 const BEAT_CROSSING_HIGH = 0.85;
 const BEAT_CROSSING_LOW = 0.15;
-const FLASH_SHADOW_BLUR = 24;
-const DOT_EXTRA_RADIUS = 2;
-const DOT_SHADOW_BASE = 10;
-const DOT_SHADOW_PEAK = 20;
+const FLASH_SHADOW_BLUR = 14;
+const DOT_EXTRA_RADIUS = 1;
+const DOT_SHADOW_BASE = 6;
+const DOT_SHADOW_PEAK = 10;
+const SHADOW_PAD = 14;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
@@ -36,7 +37,7 @@ function draw() {
   const LINE_WIDTH = SIZE * LINE_WIDTH_RATIO;
   const cx = SIZE / 2;
   const cy = SIZE / 2;
-  const radius = SIZE / 2 - LINE_WIDTH;
+  const radius = SIZE / 2 - LINE_WIDTH - SHADOW_PAD;
 
   canvas.width = SIZE * dpr;
   canvas.height = SIZE * dpr;
@@ -54,7 +55,7 @@ function draw() {
   let playing = false;
 
   const positionSec = props.getTrackPosition();
-  if (positionSec !== null && props.trackBpm > 0) {
+  if (positionSec !== null && props.trackBpm && props.trackBpm > 0) {
     playing = true;
     const currentBeat = ((positionSec - props.beatOffset) * props.trackBpm) / 60;
     beatFrac = ((currentBeat % 1) + 1) % 1;

@@ -1,5 +1,56 @@
 <template>
   <div class="topstrip">
+    <button
+      class="topstrip__rec-btn"
+      :class="{ 'topstrip__rec-btn--active': isRecording }"
+      :title="isRecording ? 'Stop recording' : 'Record master output'"
+      @click="onRecClick"
+    >
+      REC
+    </button>
+
+    <button
+      class="topstrip__edit-btn"
+      :class="{ 'topstrip__edit-btn--active': editMode }"
+      @click="emit('toggle-edit')"
+    >
+      EDIT
+    </button>
+
+    <button class="topstrip__deck-count-btn" @click="mixer.toggleDeckCount()">
+      {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
+    </button>
+
+    <div
+      class="topstrip__swarm-btn"
+      :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
+      title="Activate with CapsLock"
+    >
+      SWARM
+      <span
+        v-for="deck in activeDecks"
+        :key="deck"
+        class="topstrip__swarm-deck"
+        :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
+        >{{ deck }}</span
+      >
+    </div>
+
+    <div class="topstrip__spacer" />
+
+    <span class="topstrip__label">VOL</span>
+    <input
+      type="range"
+      class="topstrip__master-fader"
+      min="0"
+      max="1"
+      step="0.01"
+      :value="mixer.masterGain"
+      @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
+      @dblclick="mixer.setMasterGain(1)"
+    />
+    <span class="topstrip__master-value">{{ Math.round(mixer.masterGain * 100) }}</span>
+
     <div class="topstrip__meters">
       <span class="topstrip__meter-label">L</span>
       <div class="topstrip__meter">
@@ -20,40 +71,6 @@
         />
       </div>
     </div>
-
-    <button
-      class="topstrip__rec-btn"
-      :class="{ 'topstrip__rec-btn--active': isRecording }"
-      :title="isRecording ? 'Stop recording' : 'Record master output'"
-      @click="onRecClick"
-    >
-      REC
-    </button>
-
-    <button
-      class="topstrip__edit-btn"
-      :class="{ 'topstrip__edit-btn--active': editMode }"
-      @click="emit('toggle-edit')"
-    >
-      EDIT
-    </button>
-
-    <div
-      class="topstrip__swarm-btn"
-      :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
-      title="Activate with CapsLock"
-    >
-      SWARM
-      <span
-        v-for="deck in DECKS_DISPOSITION"
-        :key="deck"
-        class="topstrip__swarm-deck"
-        :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
-        >{{ deck }}</span
-      >
-    </div>
-
-    <div class="topstrip__spacer" />
 
     <template v-if="mixer.devicesLoaded">
       <span class="topstrip__label">MASTER</span>
@@ -82,7 +99,19 @@
         </option>
       </select>
 
-      <span class="topstrip__label">CUE</span>
+      <span class="topstrip__label topstrip__label--dim">CUE</span>
+      <input
+        type="range"
+        class="topstrip__cue-mix-fader"
+        min="0"
+        max="1"
+        step="0.01"
+        :value="mixer.cueMix"
+        @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
+        @dblclick="mixer.setCueMix(0)"
+        title="CUE/MIX: blend cue signal with master output in headphones"
+      />
+      <span class="topstrip__label topstrip__label--dim">MIX</span>
       <select
         class="topstrip__select"
         :value="mixer.cueDeviceId"
@@ -118,13 +147,17 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 defineProps<{ editMode: boolean }>();
 const emit = defineEmits<{ 'toggle-edit': [] }>();
 
 const mixer = useMixerStore();
+
+const activeDecks = computed<DeckId[]>(() =>
+  mixer.deckCount === 2 ? ['A', 'B'] : DECKS_DISPOSITION
+);
 
 const mainDevice = computed(
   () => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null
@@ -299,6 +332,66 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.topstrip__master-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 72px;
+  height: 12px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.topstrip__master-fader::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+.topstrip__master-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 14px;
+  background: #e8e8e8;
+  border-radius: 2px;
+  margin-top: -5.5px;
+}
+
+.topstrip__label--dim {
+  opacity: 0.5;
+}
+
+.topstrip__cue-mix-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 56px;
+  height: 12px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.topstrip__cue-mix-fader::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+.topstrip__cue-mix-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 14px;
+  background: #e8e8e8;
+  border-radius: 2px;
+  margin-top: -5.5px;
+}
+
+.topstrip__master-value {
+  font-size: 9px;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 18px;
+  text-align: right;
+}
+
 .topstrip__label {
   color: var(--color-muted);
   letter-spacing: 0.1em;
@@ -381,6 +474,23 @@ onUnmounted(() => {
   border-color: #a855f7;
   color: #a855f7;
   background: color-mix(in srgb, #a855f7 15%, transparent);
+}
+
+.topstrip__deck-count-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.topstrip__deck-count-btn:hover {
+  border-color: var(--color-text);
+  color: var(--color-text);
 }
 
 .topstrip__refresh {

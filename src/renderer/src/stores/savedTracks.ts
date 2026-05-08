@@ -43,5 +43,10 @@ export const useSavedTracksStore = defineStore('savedTracks', () => {
     persist();
   }
 
-  return { tracks, get, save, update };
+  function remove(path: string) {
+    delete tracks[path];
+    persist();
+  }
+
+  return { tracks, get, save, update, remove };
 });
