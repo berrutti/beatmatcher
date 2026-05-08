@@ -1,6 +1,8 @@
-# Beatmatcher
+# beatmatcher
 
-A desktop app for practicing beat matching. Two independent decks to play local audio. It has animations for a visual representation of how accurate the beatmatching is.
+A desktop app for practicing beat matching. Two or Four independent decks to play local audio.
+
+![beatmatcher screenshot](assets/screenshot.png)
 
 ## Download
 
@@ -18,22 +20,23 @@ Then the app should open without problems.
 
 ---
 
-## How it works
+## Getting started
 
-There are two decks, and each can load a track. When loading a track, the BPM will be auto-detected. If auto-detection fails, you will be promped to introduce the track's BPM. This is important, as you wont be able to properly beatmatch if the BPM of the track is not correct.
+Import audio files into your collection. You can load those tracks into one of the four decks, and from there you can play, equalize and mix them.
 
-Animations:
-The phase ring shows position within the current beat. The Lissajous scope plots both decks' phases against each other. A straight diagonal means they are in sync.
+The BPM will be auto-detected. If auto-detection fails, you can manually set te BPM in the "Edit" view.  
+Having the correct BPM of each track is essential for proper mixing.
 
-## Keyboard
+## How to play
 
-| Key       | Action                                 |
-| --------- | -------------------------------------- |
-| A / K     | Deck A/B play-pause                    |
-| S / L     | Deck A/B cue                           |
-| Q W / O P | Deck A/B nudge (pitch bend while held) |
+beatmatcher was designed to be fully operable with pointer (trackpad, mouse) and keyboard.
+You can press the following buttons to control the decks.
 
----
+| Deck C | Deck A | Deck B | Deck D | Function |
+| ------ | ------ | ------ | ------ | -------- |
+| Q / W  | E / R  | Y / U  | I / O  | Nudge    |
+| A / S  | D / F  | H / J  | K / L  | CUE/Play |
+| Z / X  | C / V  | N / M  | , / .  | LOOP     |
 
 ## Development
 
@@ -47,7 +50,7 @@ Built with Tauri + Vue 3 + TypeScript + Vite.
 ## Acknowledgements
 
 The BPM detection logic was inspired by this [Joe Sullivan](https://x.com/itsjoesullivan)'s blog post:  
-http://joesul.li/van/beat-detection-using-web-audio/
+http://joesul.li/van/beat-detection-using-web-audio/  
 The waveform and meter rendering were inspired by [Mixxx](https://github.com/mixxxdj/mixxx).
 
 ## License
