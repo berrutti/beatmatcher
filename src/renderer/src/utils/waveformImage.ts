@@ -11,9 +11,9 @@ const BACKGROUND_B = 10;
 const LOG_MUL: [number, number, number] = [10, 25, 75];
 
 export function spectralColor(bass: number, mid: number, high: number): [number, number, number] {
-  const r = (Math.log1p(bass * LOG_MUL[0]) / Math.log1p(LOG_MUL[0]) * 255) | 0;
-  const g = (Math.log1p(mid  * LOG_MUL[1]) / Math.log1p(LOG_MUL[1]) * 255) | 0;
-  const b = (Math.log1p(high * LOG_MUL[2]) / Math.log1p(LOG_MUL[2]) * 255) | 0;
+  const r = ((Math.log1p(bass * LOG_MUL[0]) / Math.log1p(LOG_MUL[0])) * 255) | 0;
+  const g = ((Math.log1p(mid * LOG_MUL[1]) / Math.log1p(LOG_MUL[1])) * 255) | 0;
+  const b = ((Math.log1p(high * LOG_MUL[2]) / Math.log1p(LOG_MUL[2])) * 255) | 0;
   return [r, g, b];
 }
 
@@ -59,7 +59,7 @@ export function buildWaveformImageData(
 
     const displayAmp = Math.sqrt(avgAmp);
     const avgBass = sumAmp > 0 ? sumR / sumAmp : 0;
-    const avgMid  = sumAmp > 0 ? sumG / sumAmp : 0;
+    const avgMid = sumAmp > 0 ? sumG / sumAmp : 0;
     const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
     const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
 

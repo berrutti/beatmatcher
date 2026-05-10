@@ -396,8 +396,6 @@ import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 const store = useCollectionStore();
 const decksStore = useDecksStore();
 
-
-
 const isDragOver = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
 const searchQuery = ref('');

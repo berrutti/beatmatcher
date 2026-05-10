@@ -1,7 +1,6 @@
 <template>
   <div class="scope-wrapper">
     <canvas ref="canvasEl" class="scope-canvas" />
-    <p class="scope-hint">phase scope</p>
   </div>
 </template>
 
@@ -97,29 +96,45 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
   const cx = OFFSCREEN_W / 2;
 
   for (let p = 0; p < px.length; p += 4) {
-    px[p] = 10; px[p + 1] = 10; px[p + 2] = 10; px[p + 3] = 255;
+    px[p] = 10;
+    px[p + 1] = 10;
+    px[p + 2] = 10;
+    px[p + 3] = 255;
   }
 
   for (let row = 0; row < numRows; row++) {
-    let bass = 0, mid = 0, high = 0, amp = 0, count = 0;
+    let bass = 0,
+      mid = 0,
+      high = 0,
+      amp = 0,
+      count = 0;
     for (let k = 0; k < stride; k++) {
       const si = startSample + row * stride + k;
       if (si >= totalSamples) break;
       const di = si * 4;
-      bass += data[di]; mid += data[di + 1]; high += data[di + 2]; amp += data[di + 3];
+      bass += data[di];
+      mid += data[di + 1];
+      high += data[di + 2];
+      amp += data[di + 3];
       count++;
     }
     if (count === 0) continue;
-    bass /= count; mid /= count; high /= count; amp /= count;
+    bass /= count;
+    mid /= count;
+    high /= count;
+    amp /= count;
 
     const [r, g, b] = spectralColor(bass, mid, high);
     const barW = Math.sqrt(amp) * cx * 1.5;
-    const xLeft  = Math.max(0, Math.round(cx - barW));
+    const xLeft = Math.max(0, Math.round(cx - barW));
     const xRight = Math.min(OFFSCREEN_W - 1, Math.round(cx + barW));
 
     for (let x = xLeft; x <= xRight; x++) {
       const idx = (row * OFFSCREEN_W + x) * 4;
-      px[idx] = r; px[idx + 1] = g; px[idx + 2] = b; px[idx + 3] = 255;
+      px[idx] = r;
+      px[idx + 1] = g;
+      px[idx + 2] = b;
+      px[idx + 3] = 255;
     }
   }
 
@@ -205,12 +220,12 @@ function draw() {
       const beatPeriod = 60 / bpm;
       const audioHalfWindow = HALF_WINDOW_SEC * rate;
       const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
-      const nEnd   = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
+      const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
 
       ctx.lineWidth = 1;
       for (let bn = nStart; bn <= nEnd; bn++) {
         const tBeat = beatOffset + bn * beatPeriod;
-        const yBeat = h / 2 + ((tBeat - pos) / rate) * h / (2 * HALF_WINDOW_SEC);
+        const yBeat = h / 2 + (((tBeat - pos) / rate) * h) / (2 * HALF_WINDOW_SEC);
         ctx.strokeStyle = bn % 4 === 0 ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.4)';
         ctx.beginPath();
         ctx.moveTo(x0, yBeat);
@@ -286,15 +301,6 @@ onUnmounted(() => {
   width: 100%;
   flex: 1;
   min-height: 0;
-  border-radius: 4px;
-  border: 1px solid #2a2a2a;
-}
-
-.scope-hint {
-  font-size: 0.6rem;
-  color: #444;
-  letter-spacing: 0.15em;
-  margin: 0;
-  text-transform: uppercase;
+  height: 100%;
 }
 </style>

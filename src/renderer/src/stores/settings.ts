@@ -86,7 +86,11 @@ export const useSettingsStore = defineStore('settings', () => {
     save().catch(() => {});
   }
 
-  function setKey(deckId: 'A' | 'B' | 'C' | 'D', command: Command, key: string): ConflictInfo | null {
+  function setKey(
+    deckId: 'A' | 'B' | 'C' | 'D',
+    command: Command,
+    key: string
+  ): ConflictInfo | null {
     for (const [d, bindings] of Object.entries(keybindings.value) as [
       'A' | 'B' | 'C' | 'D',
       Record<Command, string>

@@ -99,12 +99,56 @@
     </div>
 
     <PhaseScope
-      class="mixer__lissajous"
+      class="mixer__wrapper"
       :sources="[
-        { getPosition: () => decks.deckC.getPlayheadPosition(), getBpm: () => decks.deckC.trackBpm, getBeatOffset: () => decks.deckC.beatOffset, getRate: () => decks.deckC.trackBpm && decks.deckC.targetBpm ? decks.deckC.targetBpm / decks.deckC.trackBpm : 1, getDenseData: () => decks.deckC.denseSpectralData, getDenseRate: () => decks.deckC.denseSpectralRate, accent: decks.deckC.accent },
-        { getPosition: () => decks.deckA.getPlayheadPosition(), getBpm: () => decks.deckA.trackBpm, getBeatOffset: () => decks.deckA.beatOffset, getRate: () => decks.deckA.trackBpm && decks.deckA.targetBpm ? decks.deckA.targetBpm / decks.deckA.trackBpm : 1, getDenseData: () => decks.deckA.denseSpectralData, getDenseRate: () => decks.deckA.denseSpectralRate, accent: decks.deckA.accent },
-        { getPosition: () => decks.deckB.getPlayheadPosition(), getBpm: () => decks.deckB.trackBpm, getBeatOffset: () => decks.deckB.beatOffset, getRate: () => decks.deckB.trackBpm && decks.deckB.targetBpm ? decks.deckB.targetBpm / decks.deckB.trackBpm : 1, getDenseData: () => decks.deckB.denseSpectralData, getDenseRate: () => decks.deckB.denseSpectralRate, accent: decks.deckB.accent },
-        { getPosition: () => decks.deckD.getPlayheadPosition(), getBpm: () => decks.deckD.trackBpm, getBeatOffset: () => decks.deckD.beatOffset, getRate: () => decks.deckD.trackBpm && decks.deckD.targetBpm ? decks.deckD.targetBpm / decks.deckD.trackBpm : 1, getDenseData: () => decks.deckD.denseSpectralData, getDenseRate: () => decks.deckD.denseSpectralRate, accent: decks.deckD.accent }
+        {
+          getPosition: () => decks.deckC.getPlayheadPosition(),
+          getBpm: () => decks.deckC.trackBpm,
+          getBeatOffset: () => decks.deckC.beatOffset,
+          getRate: () =>
+            decks.deckC.trackBpm && decks.deckC.targetBpm
+              ? decks.deckC.targetBpm / decks.deckC.trackBpm
+              : 1,
+          getDenseData: () => decks.deckC.denseSpectralData,
+          getDenseRate: () => decks.deckC.denseSpectralRate,
+          accent: decks.deckC.accent
+        },
+        {
+          getPosition: () => decks.deckA.getPlayheadPosition(),
+          getBpm: () => decks.deckA.trackBpm,
+          getBeatOffset: () => decks.deckA.beatOffset,
+          getRate: () =>
+            decks.deckA.trackBpm && decks.deckA.targetBpm
+              ? decks.deckA.targetBpm / decks.deckA.trackBpm
+              : 1,
+          getDenseData: () => decks.deckA.denseSpectralData,
+          getDenseRate: () => decks.deckA.denseSpectralRate,
+          accent: decks.deckA.accent
+        },
+        {
+          getPosition: () => decks.deckB.getPlayheadPosition(),
+          getBpm: () => decks.deckB.trackBpm,
+          getBeatOffset: () => decks.deckB.beatOffset,
+          getRate: () =>
+            decks.deckB.trackBpm && decks.deckB.targetBpm
+              ? decks.deckB.targetBpm / decks.deckB.trackBpm
+              : 1,
+          getDenseData: () => decks.deckB.denseSpectralData,
+          getDenseRate: () => decks.deckB.denseSpectralRate,
+          accent: decks.deckB.accent
+        },
+        {
+          getPosition: () => decks.deckD.getPlayheadPosition(),
+          getBpm: () => decks.deckD.trackBpm,
+          getBeatOffset: () => decks.deckD.beatOffset,
+          getRate: () =>
+            decks.deckD.trackBpm && decks.deckD.targetBpm
+              ? decks.deckD.targetBpm / decks.deckD.trackBpm
+              : 1,
+          getDenseData: () => decks.deckD.denseSpectralData,
+          getDenseRate: () => decks.deckD.denseSpectralRate,
+          accent: decks.deckD.accent
+        }
       ]"
     />
   </div>
@@ -223,11 +267,11 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   flex-direction: column;
   align-items: center;
   gap: 0.4em;
-  padding: 0.3em 0.3em 0.5em;
+  padding: 0.3em 0.3em 0em;
   width: 100%;
 }
 
-.mixer__lissajous {
+.mixer__wrapper {
   flex: 1;
   min-height: 0;
   width: 100%;

@@ -242,8 +242,6 @@ const settings = useSettingsStore();
 const decks = useDecksStore();
 const mixer = useMixerStore();
 
-
-
 const COMMAND_LAYOUT: [Command, Command][] = [
   [commands.NUDGE_BACK, commands.NUDGE_FORWARD],
   [commands.CUE, commands.PLAY],
