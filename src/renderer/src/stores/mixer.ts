@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { DeckId } from './decks';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 
@@ -34,13 +35,17 @@ export const useMixerStore = defineStore('mixer', () => {
     E: false
   });
 
-  const DECK_COUNT_KEY = 'beatmatcher:deckCount';
-  const storedCount = parseInt(localStorage.getItem(DECK_COUNT_KEY) ?? '4', 10);
+  const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
   const deckCount = ref<2 | 4>(storedCount === 2 ? 2 : 4);
 
   function toggleDeckCount() {
     deckCount.value = deckCount.value === 4 ? 2 : 4;
-    localStorage.setItem(DECK_COUNT_KEY, String(deckCount.value));
+    storageSet(STORAGE_KEYS.deckCount, deckCount.value);
+  }
+
+  function setDeckCount(count: 2 | 4) {
+    deckCount.value = count;
+    storageSet(STORAGE_KEYS.deckCount, count);
   }
 
   const masterGain = ref(DEFAULT_MASTER_GAIN);
@@ -191,6 +196,7 @@ export const useMixerStore = defineStore('mixer', () => {
   return {
     deckCount,
     toggleDeckCount,
+    setDeckCount,
     masterGain,
     setMasterGain,
     cueMix,

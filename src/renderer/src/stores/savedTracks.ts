@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { reactive } from 'vue';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 export type SavedTrack = {
   path: string;
@@ -9,22 +10,14 @@ export type SavedTrack = {
   beatOffset: number;
 };
 
-const STORAGE_KEY = 'beatmatcher:saved-tracks';
-
-function loadFromStorage(): Record<string, SavedTrack> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 export const useSavedTracksStore = defineStore('savedTracks', () => {
-  const tracks = reactive<Record<string, SavedTrack>>(loadFromStorage());
+  const stored = storageGet<Record<string, SavedTrack>>(STORAGE_KEYS.savedTracks, {});
+  const tracks = reactive<Record<string, SavedTrack>>(
+    typeof stored === 'object' && stored !== null ? stored : {}
+  );
 
   function persist() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tracks));
+    storageSet(STORAGE_KEYS.savedTracks, tracks);
   }
 
   function get(path: string): SavedTrack | null {

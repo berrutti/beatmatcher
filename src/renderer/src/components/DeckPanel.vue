@@ -190,21 +190,12 @@
         </div>
 
         <div class="deck__pitch-wrapper">
-          <button
-            class="deck__bpm-step"
-            :disabled="!props.deck.trackLoaded"
-            @mousedown.prevent="onBpmStepMouseDown(1)"
-            @mouseup="stopBpmStep"
-            @mouseleave="stopBpmStep"
-          >
-            ▲
-          </button>
-          <span class="deck__slider-label">+{{ PITCH_RANGE }}%</span>
+          <span class="deck__slider-label">+{{ settingsStore.pitchRange }}%</span>
           <input
             type="range"
             class="deck__slider"
-            :min="-PITCH_RANGE"
-            :max="PITCH_RANGE"
+            :min="-settingsStore.pitchRange"
+            :max="settingsStore.pitchRange"
             step="0.1"
             :value="props.deck.pitchOffset"
             orient="vertical"
@@ -212,16 +203,7 @@
             @input="onSliderInput"
             @dblclick="onPitchDblClick"
           />
-          <span class="deck__slider-label">-{{ PITCH_RANGE }}%</span>
-          <button
-            class="deck__bpm-step"
-            :disabled="!props.deck.trackLoaded"
-            @mousedown.prevent="onBpmStepMouseDown(-1)"
-            @mouseup="stopBpmStep"
-            @mouseleave="stopBpmStep"
-          >
-            ▼
-          </button>
+          <span class="deck__slider-label">-{{ settingsStore.pitchRange }}%</span>
         </div>
       </div>
     </template>
@@ -230,23 +212,21 @@
 
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import { KEYS } from '@renderer/keybindings';
-import { PITCH_RANGE } from '@renderer/stores/decks';
+import type { DeckBindings } from '@renderer/keybindings';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
 import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 
 const deckEl = ref<HTMLElement | null>(null);
-
-const BPM_STEP = 0.1;
-const BPM_STEP_INTERVAL_MS = 80;
+const settingsStore = useSettingsStore();
 
 const props = defineProps<{
   deck: Deck;
-  keybindings: typeof KEYS.deckA | typeof KEYS.deckB | typeof KEYS.deckC | typeof KEYS.deckD;
+  keybindings: DeckBindings;
 }>();
 
 const editingBpm = ref(false);
@@ -278,24 +258,6 @@ function onSliderInput(e: Event) {
 function onPitchDblClick() {
   if (!props.deck.trackLoaded) return;
   props.deck.setPitchOffset(0);
-}
-
-let stepInterval: ReturnType<typeof setInterval> | null = null;
-
-function onBpmStepMouseDown(dir: 1 | -1) {
-  if (!props.deck.trackLoaded || props.deck.targetBpm === null) return;
-  props.deck.setTargetBpm(props.deck.targetBpm + dir * BPM_STEP);
-  stepInterval = setInterval(() => {
-    if (props.deck.targetBpm === null) return;
-    props.deck.setTargetBpm(props.deck.targetBpm + dir * BPM_STEP);
-  }, BPM_STEP_INTERVAL_MS);
-}
-
-function stopBpmStep() {
-  if (stepInterval !== null) {
-    clearInterval(stepInterval);
-    stepInterval = null;
-  }
 }
 
 function onNudgeStart(direction: 'back' | 'forward') {
@@ -720,33 +682,13 @@ function onConfirmLoad() {
   color: var(--color-muted);
 }
 
-.deck__bpm-step {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-size: 0.85em;
-  width: 2.4em;
-  height: 1.6em;
-  border-radius: 3px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  user-select: none;
-}
-.deck__bpm-step:hover {
-  border-color: #555;
-  color: var(--color-text);
-}
-
 .deck__slider {
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
   width: 30px;
-  height: 11.5em;
+  height: 16em;
   cursor: pointer;
   background: transparent;
   padding: 0;

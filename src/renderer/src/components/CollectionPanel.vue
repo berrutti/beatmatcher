@@ -7,7 +7,6 @@
     @drop="onDrop"
   >
     <div class="collection__header">
-      <span class="collection__title">COLLECTION</span>
       <div class="collection__tabs">
         <button
           class="collection__tab"
@@ -36,6 +35,7 @@
             type="text"
             placeholder="search"
             spellcheck="false"
+            @pointerdown="onSearchPointerDown"
             @keydown.esc="searchQuery = ''"
           />
           <button
@@ -89,7 +89,6 @@
       </template>
     </div>
 
-    <!-- All Tracks -->
     <div
       v-if="tab === 'all'"
       class="collection__body"
@@ -157,7 +156,7 @@
             </template>
             <template v-else>
               <button
-                v-for="deckId in LIVE_DECK_IDS"
+                v-for="deckId in DECKS_DISPOSITION"
                 :key="deckId"
                 class="collection__deck-btn"
                 :class="{ 'collection__deck-btn--loaded': deckHasTrack(deckId, track.path) }"
@@ -191,7 +190,6 @@
       </div>
     </div>
 
-    <!-- Playlists list -->
     <div v-else-if="activePlaylistId === null" class="collection__body">
       <div v-if="store.playlists.length === 0" class="collection__empty">
         No playlists yet. Click NEW PLAYLIST to get started.
@@ -217,7 +215,6 @@
       </div>
     </div>
 
-    <!-- Playlist detail -->
     <div v-else class="collection__body collection__body--playlist">
       <div
         ref="playlistListEl"
@@ -261,7 +258,7 @@
               </template>
               <template v-else>
                 <button
-                  v-for="deckId in LIVE_DECK_IDS"
+                  v-for="deckId in DECKS_DISPOSITION"
                   :key="deckId"
                   class="collection__deck-btn"
                   :class="{ 'collection__deck-btn--loaded': deckHasTrack(deckId, item.path) }"
@@ -301,6 +298,7 @@
               type="text"
               placeholder="search"
               spellcheck="false"
+              @pointerdown="onSearchPointerDown"
               @keydown.esc="addSectionSearch = ''"
             />
             <button
@@ -389,7 +387,7 @@
 import { ref, computed, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useDecksStore } from '@renderer/stores/decks';
+import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { CollectionEntry } from '@renderer/stores/collection';
 import type { DeckId } from '@renderer/stores/decks';
 import BpmModal from '@renderer/components/BpmModal.vue';
@@ -398,7 +396,7 @@ import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 const store = useCollectionStore();
 const decksStore = useDecksStore();
 
-const LIVE_DECK_IDS = ['A', 'B', 'C', 'D'] as const;
+
 
 const isDragOver = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
@@ -573,10 +571,9 @@ function confirmDeletePlaylist() {
 
 function bestAvailableDeck(): DeckId | null {
   if (decksStore.editMode) return 'E';
-  const order: DeckId[] = ['A', 'B', 'C', 'D'];
   return (
-    order.find((id) => !decksStore.decks[id].trackLoaded) ??
-    order.find((id) => !decksStore.decks[id].loopPlaying) ??
+    DECKS_DISPOSITION.find((id) => !decksStore.decks[id].trackLoaded) ??
+    DECKS_DISPOSITION.find((id) => !decksStore.decks[id].loopPlaying) ??
     null
   );
 }
@@ -739,6 +736,10 @@ async function onDrop(e: DragEvent) {
 
 const DRAG_THRESHOLD = 5;
 
+function onSearchPointerDown(e: PointerEvent) {
+  if (store.draggingPath) e.preventDefault();
+}
+
 function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
   if (e.button !== 0 || track.status !== 'ready' || !track.path) return;
   if ((e.target as HTMLElement).closest('button')) return;
@@ -842,13 +843,6 @@ async function openFolderDialog() {
   height: 32px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-border);
-}
-
-.collection__title {
-  font-size: 0.8em;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  color: var(--color-muted);
 }
 
 .collection__tabs {
@@ -1139,8 +1133,6 @@ async function openFolderDialog() {
   color: var(--color-text);
 }
 
-/* Deck load buttons */
-
 .collection__item-decks {
   display: flex;
   gap: 3px;
@@ -1180,8 +1172,6 @@ async function openFolderDialog() {
   cursor: default;
 }
 
-/* Sort bar */
-
 .collection__sort-bar {
   display: flex;
   border-bottom: 1px solid var(--color-border);
@@ -1209,8 +1199,6 @@ async function openFolderDialog() {
   flex: 1;
   text-align: left;
 }
-
-/* Playlist track rows */
 
 .collection__playlist-track {
   cursor: grab;
@@ -1248,8 +1236,6 @@ async function openFolderDialog() {
   opacity: 0.6;
   flex-shrink: 0;
 }
-
-/* Add tracks section */
 
 .collection__add-section {
   border-top: 1px solid var(--color-border);

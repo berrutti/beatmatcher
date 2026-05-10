@@ -2,10 +2,11 @@ import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { useSettingsStore } from '@renderer/stores/settings';
 
 export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
 
-export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as DeckId[];
+export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
 
 export type LoopRegion = {
   startSec: number;
@@ -29,9 +30,6 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-export const PITCH_RANGE = 10;
-
-const NUDGE_PERCENT = 4;
 export const EQ_MIN_DB = -26;
 export const EQ_MAX_DB = 6;
 
@@ -41,7 +39,7 @@ export const EQ_MAX_DB = 6;
 // rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
 const DENSE_LOD_PTS_PER_SEC = 250;
 
-function createDeck(id: DeckId, accent: string) {
+function createDeck(id: DeckId, accent: string, name: string) {
   let positionCache = 0;
   let clockAtPlay = 0; // performance.now() when playback started or position was last anchored
   let localRate = 1.0; // effective playback rate (pitch + nudge) for interpolation
@@ -111,7 +109,7 @@ function createDeck(id: DeckId, accent: string) {
   const state = reactive({
     id,
     accent,
-
+    name,
     trackName: '',
     trackLoaded: false,
     loading: false,
@@ -155,8 +153,9 @@ function createDeck(id: DeckId, accent: string) {
 
     setTargetBpm(value: number) {
       if (state.trackBpm === null) return;
-      const minBpm = state.trackBpm * (1 - PITCH_RANGE / 100);
-      const maxBpm = state.trackBpm * (1 + PITCH_RANGE / 100);
+      const pitchRange = useSettingsStore().pitchRange;
+      const minBpm = state.trackBpm * (1 - pitchRange / 100);
+      const maxBpm = state.trackBpm * (1 + pitchRange / 100);
       const clamped = Math.max(minBpm, Math.min(maxBpm, value));
       state.targetBpm = clamped;
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
@@ -177,7 +176,8 @@ function createDeck(id: DeckId, accent: string) {
 
     setPitchOffset(pct: number) {
       if (state.trackBpm === null) return;
-      state.pitchOffset = Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, pct));
+      const pitchRange = useSettingsStore().pitchRange;
+      state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
       state.targetBpm = state.trackBpm * (1 + state.pitchOffset / 100);
       syncPosition();
       localRate = state.targetBpm / state.trackBpm;
@@ -416,7 +416,8 @@ function createDeck(id: DeckId, accent: string) {
     nudgeStart(direction: 'back' | 'forward') {
       if (!state.trackLoaded) return;
       state.nudging = direction;
-      const offset = direction === 'forward' ? NUDGE_PERCENT : -NUDGE_PERCENT;
+      const nudgePct = useSettingsStore().nudgeSensitivity;
+      const offset = direction === 'forward' ? nudgePct : -nudgePct;
       syncPosition();
       const baseRate =
         state.targetBpm !== null && state.trackBpm !== null
@@ -503,11 +504,11 @@ function createDeck(id: DeckId, accent: string) {
 export type Deck = ReturnType<typeof createDeck>;
 
 export const useDecksStore = defineStore('decks', () => {
-  const deckA = createDeck('A', '#3b82f6');
-  const deckB = createDeck('B', '#f97316');
-  const deckC = createDeck('C', '#208043');
-  const deckD = createDeck('D', '#d631b0');
-  const deckE = createDeck('E', '#a855f7');
+  const deckA = createDeck('A', '#3b82f6', 'Deck A');
+  const deckB = createDeck('B', '#f97316', 'Deck B');
+  const deckC = createDeck('C', '#208043', 'Deck C');
+  const deckD = createDeck('D', '#d631b0', 'Deck D');
+  const deckE = createDeck('E', '#a855f7', 'Edit');
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = {
     A: deckA,

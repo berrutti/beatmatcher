@@ -5,6 +5,18 @@ const BACKGROUND_R = 10;
 const BACKGROUND_G = 10;
 const BACKGROUND_B = 10;
 
+// Log-compress each spectral band independently so all frequency ranges are visible.
+// Bass naturally dominates by energy, so it gets a smaller multiplier; highs get a
+// larger one so hi-hats and presence reach a comparable brightness.
+const LOG_MUL: [number, number, number] = [10, 25, 75];
+
+export function spectralColor(bass: number, mid: number, high: number): [number, number, number] {
+  const r = (Math.log1p(bass * LOG_MUL[0]) / Math.log1p(LOG_MUL[0]) * 255) | 0;
+  const g = (Math.log1p(mid  * LOG_MUL[1]) / Math.log1p(LOG_MUL[1]) * 255) | 0;
+  const b = (Math.log1p(high * LOG_MUL[2]) / Math.log1p(LOG_MUL[2]) * 255) | 0;
+  return [r, g, b];
+}
+
 export function buildWaveformImageData(
   cw: number,
   ch: number,
@@ -45,12 +57,11 @@ export function buildWaveformImageData(
     const avgAmp = count > 0 ? sumAmp / count : 0;
     if (avgAmp < 0.001) continue;
 
-    // sqrt maps raw RMS (0–1) to display height with a curve that keeps quiet
-    // sections visible and shows real dynamic variation across the track.
     const displayAmp = Math.sqrt(avgAmp);
-    const r = sumAmp > 0 ? ((sumR / sumAmp) * 255) | 0 : 0;
-    const g = sumAmp > 0 ? ((sumG / sumAmp) * 255) | 0 : 0;
-    const b = sumAmp > 0 ? ((sumB / sumAmp) * 255) | 0 : 0;
+    const avgBass = sumAmp > 0 ? sumR / sumAmp : 0;
+    const avgMid  = sumAmp > 0 ? sumG / sumAmp : 0;
+    const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
+    const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
 
     const barPx = (displayAmp * halfCh * ampScale) | 0;
     const yTop = Math.max(0, (halfCh | 0) - barPx);

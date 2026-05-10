@@ -7,8 +7,31 @@ export const commands = {
   LOOP_OUT_EXIT: 'LOOP_OUT_EXIT'
 } as const;
 
-export const KEYS = {
-  deckA: {
+export type Command = (typeof commands)[keyof typeof commands];
+export type DeckBindings = Record<Command, string>;
+export type Keybindings = Record<'A' | 'B' | 'C' | 'D', DeckBindings>;
+
+export const CODE_TO_CHAR: Record<string, string> = {
+  Period: '.',
+  Comma: ',',
+  Slash: '/',
+  Semicolon: ';',
+  Quote: "'",
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Minus: '-',
+  Equal: '=',
+  Backquote: '`'
+};
+
+export function resolveKey(e: KeyboardEvent): string {
+  if (e.code.startsWith('Key')) return e.code.slice(3).toLowerCase();
+  return CODE_TO_CHAR[e.code] ?? e.key.toLowerCase();
+}
+
+export const DEFAULT_KEYS: Keybindings = {
+  A: {
     [commands.CUE]: 'd',
     [commands.PLAY]: 'f',
     [commands.NUDGE_BACK]: 'e',
@@ -16,7 +39,7 @@ export const KEYS = {
     [commands.LOOP_IN]: 'c',
     [commands.LOOP_OUT_EXIT]: 'v'
   },
-  deckB: {
+  B: {
     [commands.CUE]: 'h',
     [commands.PLAY]: 'j',
     [commands.NUDGE_BACK]: 'y',
@@ -24,7 +47,7 @@ export const KEYS = {
     [commands.LOOP_IN]: 'n',
     [commands.LOOP_OUT_EXIT]: 'm'
   },
-  deckC: {
+  C: {
     [commands.CUE]: 'a',
     [commands.PLAY]: 's',
     [commands.NUDGE_BACK]: 'q',
@@ -32,7 +55,7 @@ export const KEYS = {
     [commands.LOOP_IN]: 'z',
     [commands.LOOP_OUT_EXIT]: 'x'
   },
-  deckD: {
+  D: {
     [commands.CUE]: 'k',
     [commands.PLAY]: 'l',
     [commands.NUDGE_BACK]: 'i',
@@ -40,4 +63,4 @@ export const KEYS = {
     [commands.LOOP_IN]: ',',
     [commands.LOOP_OUT_EXIT]: '.'
   }
-} as const;
+};

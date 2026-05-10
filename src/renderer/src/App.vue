@@ -16,27 +16,40 @@
       </p>
     </Modal>
 
-    <TopStrip :edit-mode="editMode" @toggle-edit="tryToggleEditMode" />
+    <TopStrip
+      :edit-mode="editMode"
+      @toggle-edit="tryToggleEditMode"
+      @open-settings="settingsStore.isOpen = true"
+    />
+    <SettingsModal v-if="settingsStore.isOpen" />
 
     <div class="app__body">
       <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
       <div v-else class="app__play" :class="{ 'app__play--two-deck': mixerStore.deckCount === 2 }">
-        <DeckPanel class="app__deck-a" :deck="store.deckA" :keybindings="KEYS.deckA" />
+        <DeckPanel
+          class="app__deck-a"
+          :deck="store.deckA"
+          :keybindings="settingsStore.keybindings.deckA"
+        />
         <DeckPanel
           v-if="mixerStore.deckCount === 4"
           class="app__deck-c"
           :deck="store.deckC"
-          :keybindings="KEYS.deckC"
+          :keybindings="settingsStore.keybindings.deckC"
         />
         <div class="app__center">
           <MixerPanel />
         </div>
-        <DeckPanel class="app__deck-b" :deck="store.deckB" :keybindings="KEYS.deckB" />
+        <DeckPanel
+          class="app__deck-b"
+          :deck="store.deckB"
+          :keybindings="settingsStore.keybindings.deckB"
+        />
         <DeckPanel
           v-if="mixerStore.deckCount === 4"
           class="app__deck-d"
           :deck="store.deckD"
-          :keybindings="KEYS.deckD"
+          :keybindings="settingsStore.keybindings.deckD"
         />
       </div>
     </div>
@@ -55,7 +68,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 const MIN_COLLECTION_H = 120;
 const MAX_COLLECTION_H_RATIO = 0.65;
@@ -63,19 +77,22 @@ import { useDecksStore } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
-import { KEYS } from '@renderer/keybindings';
+import { useSettingsStore } from '@renderer/stores/settings';
 import DeckPanel from '@renderer/components/DeckPanel.vue';
 import MixerPanel from '@renderer/components/MixerPanel.vue';
 import CollectionPanel from '@renderer/components/CollectionPanel.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
 import EditView from '@renderer/components/EditView.vue';
 import Modal from '@renderer/components/Modal.vue';
+import SettingsModal from '@renderer/components/SettingsModal.vue';
 
 useKeyboard();
 
 const store = useDecksStore();
 const collectionStore = useCollectionStore();
 const mixerStore = useMixerStore();
+const settingsStore = useSettingsStore();
+onMounted(() => settingsStore.init());
 onUnmounted(() => store.destroy());
 
 const editMode = computed({
@@ -85,9 +102,7 @@ const editMode = computed({
   }
 });
 const enterEditPending = ref(false);
-const COLLECTION_HEIGHT_KEY = 'beatmatcher:collectionHeight';
-const savedHeight = parseInt(localStorage.getItem(COLLECTION_HEIGHT_KEY) ?? '', 10);
-const collectionHeight = ref(Number.isFinite(savedHeight) ? savedHeight : 200);
+const collectionHeight = ref(storageGet<number>(STORAGE_KEYS.collectionHeight, 200));
 
 function onResizeStart(e: PointerEvent) {
   const startY = e.clientY;
@@ -102,7 +117,7 @@ function onResizeStart(e: PointerEvent) {
   function onUp() {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    localStorage.setItem(COLLECTION_HEIGHT_KEY, String(collectionHeight.value));
+    storageSet(STORAGE_KEYS.collectionHeight, collectionHeight.value);
   }
 
   window.addEventListener('pointermove', onMove);
@@ -160,7 +175,7 @@ function onConfirmEditMode() {
   flex-direction: column;
   font-size: clamp(
     11px,
-    calc((100dvh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)) / 58),
+    calc((100dvh - var(--topstrip-h) - var(--collection-bar-h) - var(--collection-panel-h)) / 54),
     15px
   );
 }

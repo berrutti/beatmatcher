@@ -4,8 +4,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
-// ── Public types returned to the frontend ────────────────────────────────────
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
@@ -299,6 +297,7 @@ const FILTER_RESONANCE_Q: f32 = 2.0;
 const FILTER_CENTER_Q: f32 = 0.5;
 const FILTER_CENTER_DEAD_ZONE: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
+const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
 // Coefficients are refreshed every N samples (knob is already smoothed per-sample).
 // Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
 const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
@@ -398,11 +397,49 @@ impl FilterState {
     }
 }
 
-// ── Channel strip ──────────────────────────────────────────────────────────────
-// Mixer concerns: EQ, fader gain, and cue routing.
+// ── Master bus limiter ────────────────────────────────────────────────────────
+// True-peak brickwall limiter. Attack is instantaneous (gain_reduction jumps
+// to THRESHOLD/peak immediately) so no sample ever exceeds THRESHOLD.
+// Release recovers smoothly over ~150 ms to avoid audible pumping.
+
+struct LimiterState {
+    gain_reduction: f32,
+    release_coeff: f32,
+}
+
+impl LimiterState {
+    const THRESHOLD: f32 = 0.99;
+
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            gain_reduction: 1.0,
+            release_coeff: 1.0 - (-1.0 / (sample_rate * 0.150)).exp(),
+        }
+    }
+
+    // Attack is instantaneous: gain_reduction jumps immediately to prevent any
+    // sample from exceeding THRESHOLD. Release recovers smoothly over ~150ms.
+    // Clamp is a safety net for floating-point edge cases.
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let peak = l.abs().max(r.abs());
+        let target_gr = if peak > 0.0 { (Self::THRESHOLD / peak).min(1.0) } else { 1.0 };
+        if target_gr < self.gain_reduction {
+            self.gain_reduction = target_gr;
+        } else {
+            self.gain_reduction += (target_gr - self.gain_reduction) * self.release_coeff;
+        }
+        (
+            (l * self.gain_reduction).clamp(-1.0, 1.0),
+            (r * self.gain_reduction).clamp(-1.0, 1.0),
+        )
+    }
+}
 
 pub struct ChannelStrip {
-    pub gain: f32,
+    target_gain: f32,
+    current_gain: f32,
+    gain_smooth_coeff: f32,
     pub cue_active: bool,
     eq: EqState,
     eq_cue: EqState,
@@ -414,8 +451,11 @@ pub struct ChannelStrip {
 
 impl ChannelStrip {
     pub fn new(sample_rate: f32) -> Self {
+        let gain_smooth_coeff = 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp();
         Self {
-            gain: 1.0,
+            target_gain: 1.0,
+            current_gain: 1.0,
+            gain_smooth_coeff,
             cue_active: false,
             eq: EqState::new(sample_rate),
             eq_cue: EqState::new(sample_rate),
@@ -452,12 +492,17 @@ impl ChannelStrip {
         self.filter_cue.set(v);
     }
 
+    pub fn set_gain(&mut self, v: f32) {
+        self.target_gain = v.clamp(0.0, 1.0);
+    }
+
     // Applied to the master output path: EQ, filter, then fader gain.
     #[inline]
     pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (el, er) = self.eq.process(l, r);
         let (fl, fr) = self.filter.process(el, er);
-        (fl * self.gain, fr * self.gain)
+        self.current_gain += (self.target_gain - self.current_gain) * self.gain_smooth_coeff;
+        (fl * self.current_gain, fr * self.current_gain)
     }
 
     // Applied to the cue output path: EQ then filter (pre-fader), gated by
@@ -643,6 +688,7 @@ pub struct MasterMonitor {
     pub level_r: Arc<AtomicU32>,
     pub master_gain: Arc<AtomicU32>,
     pub cue_mix: Arc<AtomicU32>,
+    pub limiter_enabled: Arc<AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
 }
 
@@ -653,6 +699,7 @@ impl MasterMonitor {
             level_r: Arc::new(AtomicU32::new(0)),
             master_gain: Arc::new(AtomicU32::new(DEFAULT_MASTER_GAIN.to_bits())),
             cue_mix: Arc::new(AtomicU32::new(0u32)),
+            limiter_enabled: Arc::new(AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -670,6 +717,10 @@ impl MasterMonitor {
 
     pub fn set_cue_mix(&self, mix: f32) {
         self.cue_mix.store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_limiter_enabled(&self, enabled: bool) {
+        self.limiter_enabled.store(enabled, Ordering::Relaxed);
     }
 
     fn store_levels(&self, l: f32, r: f32) {
@@ -692,6 +743,7 @@ struct RecordingState {
 fn wav_writer_thread(
     path: String,
     sample_rate: u32,
+    bit_depth: u16,
     rx: std::sync::mpsc::Receiver<Vec<f32>>,
 ) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write};
@@ -700,31 +752,37 @@ fn wav_writer_thread(
     let mut buf = std::io::BufWriter::new(file);
 
     let channels: u16 = 2;
-    let bits_per_sample: u16 = 32;
-    let byte_rate = sample_rate * channels as u32 * (bits_per_sample as u32 / 8);
-    let block_align = channels * (bits_per_sample / 8);
+    let bytes_per_sample: u32 = (bit_depth as u32) / 8;
+    let byte_rate = sample_rate * channels as u32 * bytes_per_sample;
+    let block_align = (channels as u32 * bytes_per_sample) as u16;
+    let format_tag: u16 = if bit_depth == 32 { 3 } else { 1 }; // 3=IEEE float, 1=PCM
 
-    // RIFF header (44 bytes total; sizes are placeholders, fixed at the end)
     buf.write_all(b"RIFF").map_err(|e| e.to_string())?;
-    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // RIFF size
+    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(b"WAVE").map_err(|e| e.to_string())?;
     buf.write_all(b"fmt ").map_err(|e| e.to_string())?;
-    buf.write_all(&16u32.to_le_bytes()).map_err(|e| e.to_string())?; // fmt chunk size
-    buf.write_all(&3u16.to_le_bytes()).map_err(|e| e.to_string())?; // IEEE float
+    buf.write_all(&16u32.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&format_tag.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(&channels.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(&sample_rate.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(&byte_rate.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(&block_align.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&bits_per_sample.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&bit_depth.to_le_bytes()).map_err(|e| e.to_string())?;
     buf.write_all(b"data").map_err(|e| e.to_string())?;
-    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // data size
+    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?;
 
     let mut data_bytes = 0u32;
 
     while let Ok(chunk) = rx.recv() {
-        for s in &chunk {
-            buf.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
-            data_bytes = data_bytes.saturating_add(4);
+        for &s in &chunk {
+            if bit_depth == 16 {
+                let sample = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                buf.write_all(&sample.to_le_bytes()).map_err(|e| e.to_string())?;
+                data_bytes = data_bytes.saturating_add(2);
+            } else {
+                buf.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
+                data_bytes = data_bytes.saturating_add(4);
+            }
         }
     }
 
@@ -740,6 +798,133 @@ fn wav_writer_thread(
     Ok(())
 }
 
+// Streams f32 samples from the recording channel to a temp .pcm file as i32 LE
+// (converting on the fly), then encodes that file to FLAC block-by-block via a
+// custom Source impl. Peak RAM during recording: O(one chunk). During encode:
+// O(one FLAC block, ~32 KB). 32-bit source → 24-bit FLAC; 16-bit → 16-bit FLAC.
+fn flac_writer_thread(
+    path: String,
+    sample_rate: u32,
+    bit_depth: u16,
+    rx: std::sync::mpsc::Receiver<Vec<f32>>,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let pcm_path = format!("{}.pcm", path);
+    let (scale, flac_bits): (f32, usize) = if bit_depth == 32 {
+        (8_388_607.0, 24)
+    } else {
+        (32_767.0, 16)
+    };
+
+    let mut total_samples_per_channel: usize = 0;
+    {
+        let file = std::fs::File::create(&pcm_path).map_err(|e| e.to_string())?;
+        let mut buf = std::io::BufWriter::new(file);
+        while let Ok(chunk) = rx.recv() {
+            for &s in &chunk {
+                let v = (s.clamp(-1.0, 1.0) * scale) as i32;
+                buf.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
+            }
+            total_samples_per_channel += chunk.len() / 2;
+        }
+        buf.flush().map_err(|e| e.to_string())?;
+    }
+
+    let source = PcmFileSource::open(&pcm_path, 2, flac_bits, sample_rate as usize, total_samples_per_channel)
+        .map_err(|e| e.to_string())?;
+
+    use flacenc::bitsink::ByteSink;
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+
+    let config = flacenc::config::Encoder::default()
+        .into_verified()
+        .map_err(|e| format!("FLAC config error: {:?}", e))?;
+    let block_size = config.block_size;
+    let stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
+        .map_err(|e| format!("FLAC encode error: {:?}", e))?;
+
+    let mut sink = ByteSink::with_capacity(stream.count_bits());
+    stream.write(&mut sink).map_err(|e| format!("FLAC write error: {:?}", e))?;
+
+    let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    out.write_all(sink.as_slice()).map_err(|e| e.to_string())?;
+
+    std::fs::remove_file(&pcm_path).ok();
+    Ok(())
+}
+
+// flacenc's Source trait requires integer samples, so we pre-convert f32 to i32
+// during the streaming phase rather than holding floats in memory.
+struct PcmFileSource {
+    reader: std::io::BufReader<std::fs::File>,
+    channels: usize,
+    bits_per_sample: usize,
+    sample_rate: usize,
+    total_samples_per_channel: usize,
+}
+
+impl PcmFileSource {
+    fn open(
+        path: &str,
+        channels: usize,
+        bits_per_sample: usize,
+        sample_rate: usize,
+        total_samples_per_channel: usize,
+    ) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        Ok(Self {
+            reader: std::io::BufReader::new(file),
+            channels,
+            bits_per_sample,
+            sample_rate,
+            total_samples_per_channel,
+        })
+    }
+}
+
+impl flacenc::source::Source for PcmFileSource {
+    fn channels(&self) -> usize { self.channels }
+    fn bits_per_sample(&self) -> usize { self.bits_per_sample }
+    fn sample_rate(&self) -> usize { self.sample_rate }
+    fn len_hint(&self) -> Option<usize> { Some(self.total_samples_per_channel) }
+
+    fn read_samples<F: flacenc::source::Fill>(
+        &mut self,
+        block_size: usize,
+        dest: &mut F,
+    ) -> Result<usize, flacenc::error::SourceError> {
+        use std::io::Read;
+        let n_frames = block_size * self.channels;
+        let mut bytes = vec![0u8; n_frames * 4];
+
+        // Read as many bytes as available (may be less on the final block).
+        let mut total = 0;
+        while total < bytes.len() {
+            match self.reader.read(&mut bytes[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(_) => break,
+            }
+        }
+        if total == 0 {
+            return Ok(0);
+        }
+
+        let complete = (total / (self.channels * 4)) * (self.channels * 4);
+        let per_channel = complete / (self.channels * 4);
+
+        let samples: Vec<i32> = bytes[..complete]
+            .chunks_exact(4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+
+        dest.fill_interleaved(&samples)?;
+        Ok(per_channel)
+    }
+}
+
 // ── Audio engine ───────────────────────────────────────────────────────────────
 
 pub struct AppAudio {
@@ -752,6 +937,9 @@ pub struct AppAudio {
     current_main_offset: Mutex<usize>,
     current_cue_id: Mutex<String>,   // empty string = no cue device configured
     current_cue_offset: Mutex<usize>,
+    buffer_frames: Arc<AtomicU32>,
+    pub bpm_min: Arc<AtomicU32>,
+    pub bpm_max: Arc<AtomicU32>,
     _main_stream: Mutex<Option<SendStream>>,
     _cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
@@ -786,7 +974,7 @@ impl AppAudio {
 
         let monitor = MasterMonitor::new();
         let channels = channel_pairs(&decks, &strips);
-        let main_stream = build_stream(&device, &config, channels, false, 0, Some(monitor.clone()))?;
+        let main_stream = build_stream(&device, &config, channels, false, 0, Some(monitor.clone()), 0)?;
         main_stream.play()?;
 
         Ok(Self {
@@ -798,6 +986,9 @@ impl AppAudio {
             current_main_offset: Mutex::new(0),
             current_cue_id: Mutex::new(String::new()),
             current_cue_offset: Mutex::new(0),
+            buffer_frames: Arc::new(AtomicU32::new(0)),
+            bpm_min: Arc::new(AtomicU32::new(BPM_MIN as u32)),
+            bpm_max: Arc::new(AtomicU32::new(BPM_MAX as u32)),
             default_device_id,
             _main_stream: Mutex::new(Some(SendStream(main_stream))),
             _cue_stream: Mutex::new(None),
@@ -858,6 +1049,17 @@ impl AppAudio {
         self.rebuild_streams()
     }
 
+    pub fn set_bpm_range(&self, min: u32, max: u32) {
+        self.bpm_min.store(min, Ordering::Relaxed);
+        self.bpm_max.store(max, Ordering::Relaxed);
+    }
+
+    pub fn set_buffer_frames(&self, frames: u32) -> Result<(), String> {
+        log::info!("set_buffer_frames: {}", frames);
+        self.buffer_frames.store(frames, std::sync::atomic::Ordering::Relaxed);
+        self.rebuild_streams()
+    }
+
     // Inspect the current main/cue routing and build either a single combined
     // stream (when both are on the same device) or two separate streams.
     //
@@ -869,8 +1071,9 @@ impl AppAudio {
         let main_off = *self.current_main_offset.lock().unwrap();
         let cue_id   = self.current_cue_id.lock().unwrap().clone();
         let cue_off  = *self.current_cue_offset.lock().unwrap();
+        let buf_frames = self.buffer_frames.load(std::sync::atomic::Ordering::Relaxed);
 
-        log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={}", main_id, main_off, cue_id, cue_off);
+        log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={} buf={}", main_id, main_off, cue_id, cue_off, buf_frames);
 
         let ch = channel_pairs(&self.decks, &self.strips);
         let monitor = self.monitor.clone();
@@ -883,7 +1086,7 @@ impl AppAudio {
             let config = best_output_config(&device, min_ch, self.device_sample_rate)?;
             log::info!("rebuild_streams: combined config ch={} sr={} fmt={:?}",
                 config.channels(), config.sample_rate().0, config.sample_format());
-            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off, monitor)
+            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off, monitor, buf_frames)
                 .map_err(|e| e.to_string())?;
 
             // Pause all old streams, sync positions, then start the new combined stream.
@@ -908,7 +1111,7 @@ impl AppAudio {
                 let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
                 log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
                     main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
-                Some(build_stream(&main_device, &main_cfg, ch.clone(), false, main_off, Some(monitor.clone()))
+                Some(build_stream(&main_device, &main_cfg, ch.clone(), false, main_off, Some(monitor.clone()), buf_frames)
                     .map_err(|e| e.to_string())?)
             } else {
                 log::info!("rebuild_streams: no master output configured");
@@ -923,7 +1126,7 @@ impl AppAudio {
                 // When there is no main output, the cue stream also drives the
                 // master mix render so that recording and metering still work.
                 let cue_monitor = if main_id.is_empty() { Some(monitor) } else { None };
-                Some(build_cue_stream(&cue_device, &cue_cfg, ch, cue_off, cue_monitor)
+                Some(build_cue_stream(&cue_device, &cue_cfg, ch, cue_off, cue_monitor, buf_frames)
                     .map_err(|e| e.to_string())?)
             } else {
                 None
@@ -980,7 +1183,7 @@ impl AppAudio {
         }).collect()
     }
 
-    pub fn start_recording(&self) -> Result<(), String> {
+    pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
         let mut recording = self.recording.lock().unwrap();
         if recording.is_some() {
             return Err("already recording".to_string());
@@ -989,15 +1192,20 @@ impl AppAudio {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let ext = if use_flac { "flac" } else { "wav" };
         let temp_path = std::env::temp_dir()
-            .join(format!("beatmatcher_rec_{}.wav", ts))
+            .join(format!("beatmatcher_rec_{}.{}", ts, ext))
             .to_string_lossy()
             .into_owned();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
         *self.monitor.record_tx.lock().unwrap() = Some(tx);
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
-        let thread = std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, rx));
+        let thread = if use_flac {
+            std::thread::spawn(move || flac_writer_thread(path_for_thread, sr, bit_depth, rx))
+        } else {
+            std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, bit_depth, rx))
+        };
         *recording = Some(RecordingState { thread, temp_path });
         Ok(())
     }
@@ -1103,6 +1311,11 @@ fn best_output_config(
     Ok(cfg)
 }
 
+#[inline]
+fn f32_to_i16_sample(s: f32) -> i16 {
+    (s * i16::MAX as f32) as i16
+}
+
 fn build_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
@@ -1110,8 +1323,12 @@ fn build_stream(
     is_cue: bool,
     channel_offset: usize,
     monitor: Option<MasterMonitor>,
+    buffer_frames: u32,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let mut stream_config: cpal::StreamConfig = config.clone().into();
+    if buffer_frames > 0 {
+        stream_config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
+    }
     let output_channels = config.channels() as usize;
     let label = if is_cue { "cue" } else { "master" };
     log::info!(
@@ -1119,12 +1336,14 @@ fn build_stream(
         label, output_channels, channel_offset, config.sample_format(), config.sample_rate().0
     );
 
+    let sample_rate = config.sample_rate().0 as f32;
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output(data, output_channels, &channels, is_cue, channel_offset, monitor.as_ref());
+                    fill_output(data, output_channels, &channels, is_cue, channel_offset, monitor.as_ref(), &mut limiter);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -1133,13 +1352,14 @@ fn build_stream(
         }
         cpal::SampleFormat::I16 => {
             let mut buf: Vec<f32> = Vec::new();
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     buf.resize(data.len(), 0.0);
-                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset, monitor.as_ref());
+                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset, monitor.as_ref(), &mut limiter);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = (*s * i16::MAX as f32) as i16;
+                        *d = f32_to_i16_sample(*s);
                     }
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
@@ -1157,22 +1377,28 @@ fn build_cue_stream(
     channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
     channel_offset: usize,
     monitor: Option<MasterMonitor>,
+    buffer_frames: u32,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let mut stream_config: cpal::StreamConfig = config.clone().into();
+    if buffer_frames > 0 {
+        stream_config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
+    }
     let output_channels = config.channels() as usize;
     log::info!(
         "build_cue_stream: output_channels={} channel_offset={} master_tap={} format={:?} sr={}",
         output_channels, channel_offset, monitor.is_some(), config.sample_format(), config.sample_rate().0
     );
+    let sample_rate = config.sample_rate().0 as f32;
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let mut master_mix: Vec<f32> = Vec::new();
             let mut cue_buf: Vec<f32> = Vec::new();
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| match &monitor {
-                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf),
-                    None    => fill_output(data, output_channels, &channels, true, channel_offset, None),
+                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf, &mut limiter),
+                    None    => fill_output(data, output_channels, &channels, true, channel_offset, None, &mut limiter),
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -1183,16 +1409,17 @@ fn build_cue_stream(
             let mut buf: Vec<f32> = Vec::new();
             let mut master_mix: Vec<f32> = Vec::new();
             let mut cue_buf: Vec<f32> = Vec::new();
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     buf.resize(data.len(), 0.0);
                     match &monitor {
-                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf),
-                        None    => fill_output(&mut buf, output_channels, &channels, true, channel_offset, None),
+                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf, &mut limiter),
+                        None    => fill_output(&mut buf, output_channels, &channels, true, channel_offset, None, &mut limiter),
                     }
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = (*s * i16::MAX as f32) as i16;
+                        *d = f32_to_i16_sample(*s);
                     }
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
@@ -1211,6 +1438,7 @@ fn fill_output(
     is_cue: bool,
     channel_offset: usize,
     monitor: Option<&MasterMonitor>,
+    limiter: &mut LimiterState,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -1238,8 +1466,16 @@ fn fill_output(
 
     if let Some(m) = monitor {
         let gain = f32::from_bits(m.master_gain.load(Ordering::Relaxed));
-        for sample in data.iter_mut() {
-            *sample = (*sample * gain).clamp(-1.0, 1.0);
+        let use_limiter = m.limiter_enabled.load(Ordering::Relaxed);
+        for i in 0..frames {
+            let base = i * output_channels + channel_offset;
+            if base + 1 < data.len() {
+                let l = data[base] * gain;
+                let r = data[base + 1] * gain;
+                let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+                data[base] = l;
+                data[base + 1] = r;
+            }
         }
         tap_master_output(data, frames, output_channels, channel_offset, m);
     } else {
@@ -1261,6 +1497,7 @@ fn fill_cue_with_master_tap(
     monitor: &MasterMonitor,
     master_mix: &mut Vec<f32>,
     cue_buf: &mut Vec<f32>,
+    limiter: &mut LimiterState,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -1291,8 +1528,13 @@ fn fill_cue_with_master_tap(
     }
 
     let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
-    for s in master_mix.iter_mut() {
-        *s = (*s * gain).clamp(-1.0, 1.0);
+    let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
+    for i in 0..frames {
+        let l = master_mix[i * 2] * gain;
+        let r = master_mix[i * 2 + 1] * gain;
+        let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+        master_mix[i * 2] = l;
+        master_mix[i * 2 + 1] = r;
     }
     let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
     for i in 0..frames {
@@ -1332,19 +1574,25 @@ fn build_combined_stream(
     main_offset: usize,
     cue_offset: usize,
     monitor: MasterMonitor,
+    buffer_frames: u32,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let mut stream_config: cpal::StreamConfig = config.clone().into();
+    if buffer_frames > 0 {
+        stream_config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
+    }
     log::info!(
         "build_combined_stream: output_channels={} main_offset={} cue_offset={} format={:?} sr={}",
         output_channels, main_offset, cue_offset, config.sample_format(), config.sample_rate().0
     );
+    let sample_rate = config.sample_rate().0 as f32;
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let mut cue_buf: Vec<f32> = Vec::new();
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
-                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf);
+                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf, &mut limiter);
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
                 None,
@@ -1354,13 +1602,14 @@ fn build_combined_stream(
         cpal::SampleFormat::I16 => {
             let mut buf: Vec<f32> = Vec::new();
             let mut cue_buf: Vec<f32> = Vec::new();
+            let mut limiter = LimiterState::new(sample_rate);
             let stream = device.build_output_stream(
                 &stream_config,
                 move |data: &mut [i16], _| {
                     buf.resize(data.len(), 0.0);
-                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf);
+                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf, &mut limiter);
                     for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = (*s * i16::MAX as f32) as i16;
+                        *d = f32_to_i16_sample(*s);
                     }
                 },
                 |e| eprintln!("audio stream error: {:?}", e),
@@ -1380,6 +1629,7 @@ fn fill_output_combined(
     cue_offset: usize,
     monitor: &MasterMonitor,
     cue_buf: &mut Vec<f32>,
+    limiter: &mut LimiterState,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -1404,11 +1654,15 @@ fn fill_output_combined(
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
     let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
+    let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
     for i in 0..frames {
         let idx = i * output_channels + main_offset;
         if idx + 1 < data.len() {
-            data[idx]     = (data[idx]     * gain).clamp(-1.0, 1.0);
-            data[idx + 1] = (data[idx + 1] * gain).clamp(-1.0, 1.0);
+            let l = data[idx] * gain;
+            let r = data[idx + 1] * gain;
+            let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+            data[idx] = l;
+            data[idx + 1] = r;
         }
     }
     let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
@@ -1463,8 +1717,6 @@ fn tap_master_output(
         }
     }
 }
-
-// ── Audio decoding ─────────────────────────────────────────────────────────────
 
 fn open_format(
     path: &str,
@@ -1578,8 +1830,6 @@ pub fn decode_audio(
     Ok((samples, channels, sample_rate))
 }
 
-// ── Resampling (linear interpolation) ────────────────────────────────────────
-
 pub fn resample_linear(
     input: &[f32],
     in_channels: usize,
@@ -1608,12 +1858,9 @@ pub fn resample_linear(
     output
 }
 
-// ── Waveform peak extraction ──────────────────────────────────────────────────
-
-// Compute `num_points` peak amplitude values for the region [start_sec, end_sec]
-// of the (resampled, interleaved) sample buffer at `device_sample_rate`.
-// Always returns exactly `num_points` values. Resolution adapts to the zoom
-// level: each point covers (end_sec - start_sec) / num_points seconds of audio,
+// Compute `num_points` peak amplitude values for the region [start_sec, end_sec].
+// Resolution adapts to zoom: each point covers (end_sec - start_sec) / num_points
+// seconds of audio, so wider views are coarser and tight zooms are sample-accurate.
 pub fn compute_waveform_region(
     samples: &[f32],
     channels: usize,
@@ -1656,8 +1903,6 @@ pub fn compute_waveform_region(
         })
         .collect()
 }
-
-// ── Spectral band analysis ────────────────────────────────────────────────────
 
 const BAND_BASS_HZ: f32 = 250.0;
 const BAND_MID_HZ: f32 = 2_000.0;
@@ -1807,8 +2052,6 @@ pub fn compute_spectral_waveform_region(
     result
 }
 
-// ── ID3 / metadata tag reading ────────────────────────────────────────────────
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackTags {
@@ -1816,9 +2059,26 @@ pub struct TrackTags {
     pub artist: Option<String>,
 }
 
-pub fn read_tags(path: &str) -> TrackTags {
+fn fill_tags_from_slice(
+    tags: &[symphonia::core::meta::Tag],
+    title: &mut Option<String>,
+    artist: &mut Option<String>,
+) {
     use symphonia::core::meta::StandardTagKey;
+    for tag in tags {
+        match tag.std_key {
+            Some(StandardTagKey::TrackTitle) if title.is_none() => {
+                *title = Some(tag.value.to_string());
+            }
+            Some(StandardTagKey::Artist) if artist.is_none() => {
+                *artist = Some(tag.value.to_string());
+            }
+            _ => {}
+        }
+    }
+}
 
+pub fn read_tags(path: &str) -> TrackTags {
     let mut probed = match open_format(path) {
         Ok(p) => p,
         Err(_) => return TrackTags { title: None, artist: None },
@@ -1829,41 +2089,19 @@ pub fn read_tags(path: &str) -> TrackTags {
 
     // Tags embedded before the format container (ID3v2 in MP3, APEv2, etc.)
     if let Some(rev) = probed.metadata.get().and_then(|m| m.current().cloned()) {
-        for tag in rev.tags() {
-            match tag.std_key {
-                Some(StandardTagKey::TrackTitle) if title.is_none() => {
-                    title = Some(tag.value.to_string());
-                }
-                Some(StandardTagKey::Artist) if artist.is_none() => {
-                    artist = Some(tag.value.to_string());
-                }
-                _ => {}
-            }
-        }
+        fill_tags_from_slice(rev.tags(), &mut title, &mut artist);
     }
 
     // Tags from the format reader itself (FLAC Vorbis comments, M4A atoms, etc.)
     if title.is_none() || artist.is_none() {
         let mut format = probed.format;
         if let Some(rev) = format.metadata().current() {
-            for tag in rev.tags() {
-                match tag.std_key {
-                    Some(StandardTagKey::TrackTitle) if title.is_none() => {
-                        title = Some(tag.value.to_string());
-                    }
-                    Some(StandardTagKey::Artist) if artist.is_none() => {
-                        artist = Some(tag.value.to_string());
-                    }
-                    _ => {}
-                }
-            }
+            fill_tags_from_slice(rev.tags(), &mut title, &mut artist);
         }
     }
 
     TrackTags { title, artist }
 }
-
-// ── BPM detection ─────────────────────────────────────────────────────────────
 
 // Isolate kick drum energy for onset detection. Bass drum fundamentals sit
 // between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
@@ -1920,14 +2158,14 @@ fn find_peaks(data: &[f32], threshold: f32, skip: usize) -> Vec<usize> {
     peaks
 }
 
-fn interval_to_bpm(interval: usize, sample_rate: u32) -> Option<f64> {
+fn interval_to_bpm(interval: usize, sample_rate: u32, bpm_min: f64, bpm_max: f64) -> Option<f64> {
     if interval == 0 {
         return None;
     }
     let mut bpm = 60.0 * sample_rate as f64 / interval as f64;
-    while bpm < BPM_MIN { bpm *= 2.0; }
-    while bpm > BPM_MAX { bpm /= 2.0; }
-    if bpm >= BPM_MIN && bpm <= BPM_MAX { Some(bpm) } else { None }
+    while bpm < bpm_min { bpm *= 2.0; }
+    while bpm > bpm_max { bpm /= 2.0; }
+    if bpm >= bpm_min && bpm <= bpm_max { Some(bpm) } else { None }
 }
 
 struct BpmCluster {
@@ -1935,7 +2173,7 @@ struct BpmCluster {
     count: usize,
 }
 
-pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
+pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) -> Option<f64> {
     let filtered = lowpass_biquad(mono, sample_rate, BPM_LOWPASS_HZ);
 
     let mut peaks = Vec::new();
@@ -1966,7 +2204,7 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
     let long_intervals: Vec<(usize, usize)> = interval_counts
         .iter()
         .filter(|(&interval, _)| {
-            interval > 0 && 60.0 * sample_rate as f64 / (interval as f64) < BPM_MIN
+            interval > 0 && 60.0 * sample_rate as f64 / (interval as f64) < bpm_min
         })
         .map(|(&k, &v)| (k, v))
         .collect();
@@ -1979,7 +2217,7 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32) -> Option<f64> {
     let mut clusters: Vec<BpmCluster> = Vec::new();
 
     for (&interval, &count) in &interval_counts {
-        if let Some(bpm) = interval_to_bpm(interval, sample_rate) {
+        if let Some(bpm) = interval_to_bpm(interval, sample_rate, bpm_min, bpm_max) {
             let mut merged = false;
             for cluster in &mut clusters {
                 let cluster_avg = cluster.weighted_bpm_sum / cluster.count as f64;
@@ -2194,14 +2432,14 @@ mod tests {
 
     #[test]
     fn interval_to_bpm_zero_is_none() {
-        assert!(interval_to_bpm(0, 44100).is_none());
+        assert!(interval_to_bpm(0, 44100, BPM_MIN, BPM_MAX).is_none());
     }
 
     #[test]
     fn interval_to_bpm_folds_into_range() {
         // 44100 samples at 44100 Hz = 1 beat/sec = 60 BPM. Below BPM_MIN (90)
         // so doubles to 120, which is within [90, 180].
-        let bpm = interval_to_bpm(44100, 44100).expect("should be Some");
+        let bpm = interval_to_bpm(44100, 44100, BPM_MIN, BPM_MAX).expect("should be Some");
         assert!((bpm - 120.0).abs() < 0.5, "expected ~120 BPM, got {}", bpm);
     }
 
@@ -2209,7 +2447,7 @@ mod tests {
     fn interval_to_bpm_direct_hit() {
         // 60 * 44100 / interval = 128 => interval = 60 * 44100 / 128 = 20671.875
         let interval = (60.0_f64 * 44100.0 / 128.0).round() as usize;
-        let bpm = interval_to_bpm(interval, 44100).expect("should be Some");
+        let bpm = interval_to_bpm(interval, 44100, BPM_MIN, BPM_MAX).expect("should be Some");
         assert!((bpm - 128.0).abs() < 1.0, "expected ~128 BPM, got {}", bpm);
     }
 
@@ -2355,7 +2593,7 @@ mod tests {
             }
         }
 
-        let detected = detect_bpm(&signal, sr).expect("should detect a BPM");
+        let detected = detect_bpm(&signal, sr, BPM_MIN, BPM_MAX).expect("should detect a BPM");
         // Result must be 146 (integer) and not a fractional alias like 97.3.
         assert!(
             (detected - true_bpm).abs() < 2.0,
@@ -2367,5 +2605,241 @@ mod tests {
             (detected * 10.0).round() / 10.0,
             "result should round to one decimal"
         );
+    }
+
+    // --- resample_linear ---
+
+    #[test]
+    fn resample_linear_identity_passes_through() {
+        let input = vec![0.0f32, 0.25, 0.5, 0.75, 1.0];
+        let output = resample_linear(&input, 1, 44100, 44100);
+        assert_eq!(output.len(), input.len());
+        for (a, b) in input.iter().zip(output.iter()) {
+            assert!((a - b).abs() < 1e-6, "a={} b={}", a, b);
+        }
+    }
+
+    #[test]
+    fn resample_linear_downsample_halves_length() {
+        let input: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let output = resample_linear(&input, 1, 44100, 22050);
+        assert!(
+            output.len() >= 49 && output.len() <= 51,
+            "expected ~50 frames, got {}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn resample_linear_upsample_doubles_length() {
+        let input = vec![0.0f32, 1.0, 0.0];
+        let output = resample_linear(&input, 1, 22050, 44100);
+        assert!(
+            output.len() >= 5 && output.len() <= 7,
+            "expected ~6 frames, got {}",
+            output.len()
+        );
+        // output[1] sits halfway between input[0]=0.0 and input[1]=1.0 — the
+        // true interpolated midpoint. output[2] lands exactly on input[1]=1.0
+        // (interp factor = 0.0) so checking [2] would always equal 1.0.
+        assert!((output[1] - 0.5).abs() < 0.01, "interpolated midpoint={}", output[1]);
+    }
+
+    #[test]
+    fn resample_linear_stereo_preserves_channel_interleave() {
+        // 4 frames × 2 channels: left=1.0, right=-1.0 throughout
+        let input = vec![1.0f32, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+        let output = resample_linear(&input, 2, 44100, 44100);
+        assert_eq!(output.len(), input.len());
+        for (i, &s) in output.iter().enumerate() {
+            let expected = if i % 2 == 0 { 1.0 } else { -1.0 };
+            assert!((s - expected).abs() < 1e-5, "idx={} got={}", i, s);
+        }
+    }
+
+    #[test]
+    fn resample_linear_empty_input_returns_empty() {
+        let output = resample_linear(&[], 1, 44100, 44100);
+        assert!(output.is_empty());
+    }
+
+    // --- compute_waveform_region ---
+
+    #[test]
+    fn waveform_region_empty_input_returns_zeros() {
+        let out = compute_waveform_region(&[], 1, 44100, 0.0, 1.0, 5);
+        assert_eq!(out, vec![0.0f32; 5]);
+    }
+
+    #[test]
+    fn waveform_region_constant_signal_returns_amplitude() {
+        let samples = vec![0.5f32; 44100 * 2]; // 2 seconds mono
+        let out = compute_waveform_region(&samples, 1, 44100, 0.0, 2.0, 10);
+        assert_eq!(out.len(), 10);
+        for &v in &out {
+            assert!((v - 0.5).abs() < 1e-5, "got {}", v);
+        }
+    }
+
+    #[test]
+    fn waveform_region_out_of_range_returns_zeros() {
+        let samples = vec![1.0f32; 44100]; // 1 second
+        let out = compute_waveform_region(&samples, 1, 44100, 5.0, 6.0, 4);
+        assert_eq!(out, vec![0.0f32; 4]);
+    }
+
+    #[test]
+    fn waveform_region_returns_exact_num_points() {
+        let samples = vec![0.8f32; 44100 * 4];
+        let out = compute_waveform_region(&samples, 1, 44100, 0.0, 4.0, 17);
+        assert_eq!(out.len(), 17);
+    }
+
+    // --- detect_silence_end ---
+
+    #[test]
+    fn detect_silence_end_all_zeros_returns_zero() {
+        let silence = vec![0.0f32; 44100];
+        assert_eq!(detect_silence_end(&silence, 44100), 0.0);
+    }
+
+    #[test]
+    fn detect_silence_end_loud_signal_returns_near_zero() {
+        let loud = sine_wave(440.0, 44100.0, 44100);
+        let result = detect_silence_end(&loud, 44100);
+        assert!(result < 0.1, "expected ~0.0s, got {}s", result);
+    }
+
+    #[test]
+    fn detect_silence_end_locates_audio_start() {
+        let sr = 44100u32;
+        let silence_sec = 0.5;
+        let silence_frames = (silence_sec * sr as f64) as usize;
+        let mut signal = vec![0.0f32; sr as usize];
+        let tone = sine_wave(440.0, sr as f32, signal.len() - silence_frames);
+        signal[silence_frames..].copy_from_slice(&tone);
+        let result = detect_silence_end(&signal, sr);
+        assert!(
+            result >= 0.4 && result <= 0.6,
+            "expected ~0.5s, got {}s",
+            result
+        );
+    }
+
+    // --- ChannelStrip gain smoothing ---
+
+    #[test]
+    fn channel_strip_gain_does_not_jump_on_change() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_gain(0.0);
+        // One sample after the change current_gain should still be very close to 1.0
+        let (l, _) = strip.process_main(1.0, 1.0);
+        assert!(l > 0.5, "expected gain near 1.0 on first sample, got {}", l);
+    }
+
+    #[test]
+    fn channel_strip_gain_converges_to_target() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_gain(0.0);
+        // 500ms of samples — gain should reach essentially zero
+        for _ in 0..24_000 {
+            strip.process_main(1.0, 1.0);
+        }
+        let (l, _) = strip.process_main(1.0, 1.0);
+        assert!(l < 0.001, "expected gain near 0.0 after convergence, got {}", l);
+    }
+
+    #[test]
+    fn channel_strip_gain_starts_at_full_volume() {
+        let mut strip = ChannelStrip::new(48000.0);
+        // Default gain is 1.0 — a unit impulse should pass through unattenuated
+        let (l, r) = strip.process_main(1.0, 1.0);
+        assert!(l > 0.99, "expected l near 1.0, got {}", l);
+        assert!(r > 0.99, "expected r near 1.0, got {}", r);
+    }
+
+    // --- f32_to_i16_sample ---
+
+    #[test]
+    fn f32_to_i16_sample_full_scale() {
+        assert_eq!(f32_to_i16_sample(1.0), i16::MAX);
+        // -1.0 × 32767 = -32767, which fits in i16
+        assert_eq!(f32_to_i16_sample(-1.0), -i16::MAX);
+    }
+
+    #[test]
+    fn f32_to_i16_sample_zero() {
+        assert_eq!(f32_to_i16_sample(0.0), 0);
+    }
+
+    #[test]
+    fn f32_to_i16_sample_midpoint() {
+        let result = f32_to_i16_sample(0.5);
+        let expected = (0.5 * i16::MAX as f32) as i16;
+        assert_eq!(result, expected);
+    }
+
+    // --- LimiterState ---
+
+    #[test]
+    fn limiter_no_reduction_below_threshold() {
+        let mut lim = LimiterState::new(44100.0);
+        let (l, r) = lim.process(0.5, -0.3);
+        assert!((l - 0.5).abs() < 1e-5, "l should be unchanged");
+        assert!((r + 0.3).abs() < 1e-5, "r should be unchanged");
+        assert!((lim.gain_reduction - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn limiter_instantaneous_attack_prevents_clipping() {
+        let mut lim = LimiterState::new(44100.0);
+        // First sample is loud — must be limited in the same sample, not the next one.
+        let (l, r) = lim.process(2.0, 1.5);
+        assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
+        assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");
+        assert!((l - LimiterState::THRESHOLD).abs() < 1e-4, "peak should be at threshold");
+    }
+
+    #[test]
+    fn limiter_brickwall_over_many_samples() {
+        let mut lim = LimiterState::new(44100.0);
+        // Simulate a loud mix and verify no sample exceeds 1.0 at any point.
+        let samples = [2.0f32, 1.5, 0.3, 1.8, -2.2, 0.8, 1.1, -1.05, 0.0, 1.6];
+        for &s in &samples {
+            let (l, r) = lim.process(s, -s * 0.7);
+            assert!(l.abs() <= 1.0, "l={l} from input {s}");
+            assert!(r.abs() <= 1.0, "r={r} from input {s}");
+        }
+    }
+
+    #[test]
+    fn limiter_releases_after_loud_burst() {
+        let mut lim = LimiterState::new(44100.0);
+        // Trigger a large gain reduction.
+        lim.process(3.0, 0.0);
+        let gr_after_burst = lim.gain_reduction;
+        assert!(gr_after_burst < 0.5, "gain_reduction should be low after 3.0 input");
+        // Feed silence — gain_reduction should recover toward 1.0 over time.
+        for _ in 0..44100 {
+            lim.process(0.0, 0.0);
+        }
+        assert!(
+            lim.gain_reduction > 0.99,
+            "gain_reduction={} should be near 1.0 after 1s of silence",
+            lim.gain_reduction
+        );
+    }
+
+    #[test]
+    fn limiter_gain_reduction_stable_on_steady_signal() {
+        let mut lim = LimiterState::new(44100.0);
+        // Warm up to steady state on a constant signal above threshold.
+        for _ in 0..1000 {
+            lim.process(1.5, 0.0);
+        }
+        let gr = lim.gain_reduction;
+        // After settling, gain_reduction should be stable (not oscillating).
+        lim.process(1.5, 0.0);
+        assert!((lim.gain_reduction - gr).abs() < 1e-6, "gain_reduction should be stable");
     }
 }
