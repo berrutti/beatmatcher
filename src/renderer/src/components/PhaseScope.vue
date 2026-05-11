@@ -1,0 +1,306 @@
+<template>
+  <div class="scope-wrapper">
+    <canvas ref="canvasEl" class="scope-canvas" />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue';
+import { spectralColor } from '@renderer/utils/waveformImage';
+
+type PhaseSource = {
+  getPosition: () => number;
+  getBpm: () => number | null;
+  getBeatOffset: () => number;
+  getRate: () => number;
+  getDenseData: () => Float32Array | null;
+  getDenseRate: () => number;
+  accent: string;
+};
+
+const props = defineProps<{ sources: PhaseSource[] }>();
+
+const HALF_WINDOW_SEC = 5;
+const OFFSCREEN_W = 256;
+// Pre-render ±30s around the playhead. At 250 pts/sec this caps the offscreen
+// at 15,000 rows, well within WebKit's ~32k canvas dimension limit.
+const BUFFER_SEC = 30;
+
+const canvasEl = ref<HTMLCanvasElement | null>(null);
+let rafId = 0;
+let resizeObserver: ResizeObserver | null = null;
+
+type OffscreenState = {
+  canvas: HTMLCanvasElement | null;
+  builtFrom: Float32Array | null;
+  denseRate: number;
+  // Aggregated rows/sec stored in the offscreen. Chosen so that 1 row ≈ 1
+  // physical pixel in the visible window, eliminating downscale aliasing.
+  displayRate: number;
+  numRows: number;
+  bufferStartSec: number;
+  lastBuiltH: number;
+  lastBuiltDpr: number;
+};
+
+let states: OffscreenState[] = [];
+
+function initStates() {
+  states = props.sources.map(() => ({
+    canvas: null,
+    builtFrom: null,
+    denseRate: 0,
+    displayRate: 0,
+    numRows: 0,
+    bufferStartSec: 0,
+    lastBuiltH: 0,
+    lastBuiltDpr: 0
+  }));
+}
+
+function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+  const src = props.sources[i];
+  const data = src.getDenseData();
+  const s = states[i];
+
+  if (!data) {
+    s.canvas = null;
+    s.builtFrom = null;
+    return;
+  }
+
+  const denseRate = src.getDenseRate();
+  const totalSamples = Math.floor(data.length / 4);
+  const totalDuration = totalSamples / denseRate;
+
+  // Target: 1 aggregated row per physical pixel in the 10-second visible window
+  const physicalH = h * dpr;
+  const targetDisplayRate = physicalH / (2 * HALF_WINDOW_SEC);
+  const stride = Math.max(1, Math.round(denseRate / targetDisplayRate));
+  const displayRate = denseRate / stride;
+
+  const bufferStartSec = Math.max(0, centerPos - BUFFER_SEC);
+  const bufferEndSec = Math.min(totalDuration, centerPos + BUFFER_SEC);
+  const startSample = Math.floor(bufferStartSec * denseRate);
+  const endSample = Math.min(totalSamples, Math.ceil(bufferEndSec * denseRate));
+  const numRows = Math.ceil((endSample - startSample) / stride);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = OFFSCREEN_W;
+  canvas.height = numRows;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const imageData = ctx.createImageData(OFFSCREEN_W, numRows);
+  const px = imageData.data;
+  const cx = OFFSCREEN_W / 2;
+
+  for (let p = 0; p < px.length; p += 4) {
+    px[p] = 10;
+    px[p + 1] = 10;
+    px[p + 2] = 10;
+    px[p + 3] = 255;
+  }
+
+  for (let row = 0; row < numRows; row++) {
+    let bass = 0,
+      mid = 0,
+      high = 0,
+      amp = 0,
+      count = 0;
+    for (let k = 0; k < stride; k++) {
+      const si = startSample + row * stride + k;
+      if (si >= totalSamples) break;
+      const di = si * 4;
+      bass += data[di];
+      mid += data[di + 1];
+      high += data[di + 2];
+      amp += data[di + 3];
+      count++;
+    }
+    if (count === 0) continue;
+    bass /= count;
+    mid /= count;
+    high /= count;
+    amp /= count;
+
+    const [r, g, b] = spectralColor(bass, mid, high);
+    const barW = Math.sqrt(amp) * cx * 1.5;
+    const xLeft = Math.max(0, Math.round(cx - barW));
+    const xRight = Math.min(OFFSCREEN_W - 1, Math.round(cx + barW));
+
+    for (let x = xLeft; x <= xRight; x++) {
+      const idx = (row * OFFSCREEN_W + x) * 4;
+      px[idx] = r;
+      px[idx + 1] = g;
+      px[idx + 2] = b;
+      px[idx + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  s.canvas = canvas;
+  s.builtFrom = data;
+  s.denseRate = denseRate;
+  s.displayRate = displayRate;
+  s.numRows = numRows;
+  s.bufferStartSec = bufferStartSec;
+  s.lastBuiltH = h;
+  s.lastBuiltDpr = dpr;
+}
+
+function draw() {
+  const canvas = canvasEl.value;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width / dpr;
+  const h = canvas.height / dpr;
+
+  if (!w || !h) {
+    rafId = requestAnimationFrame(draw);
+    return;
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, w, h);
+
+  const n = props.sources.length;
+  const stripW = Math.floor(w / n);
+
+  for (let si = 0; si < n; si++) {
+    const src = props.sources[si];
+    const s = states[si];
+    const x0 = si * stripW;
+
+    if (si > 0) {
+      ctx.fillStyle = '#1c1c1c';
+      ctx.fillRect(x0, 0, 1, h);
+    }
+
+    const pos = src.getPosition();
+    const bufferEndSec = s.bufferStartSec + s.numRows / (s.displayRate || 1);
+    const edgeGuard = HALF_WINDOW_SEC + 5;
+    const needsRebuild =
+      s.builtFrom !== src.getDenseData() ||
+      s.lastBuiltH !== h ||
+      s.lastBuiltDpr !== dpr ||
+      pos < s.bufferStartSec + edgeGuard ||
+      pos > bufferEndSec - edgeGuard;
+
+    if (needsRebuild) buildOffscreenWindow(si, pos, h, dpr);
+    if (!s.canvas) continue;
+
+    // rate > 1 means pitched up: audio advances faster than real time, so the
+    // waveform appears compressed vertically (fewer audio seconds fit in the
+    // fixed real-time window). Divide all audio-time offsets by rate to convert
+    // to real-time screen coordinates.
+    const rate = Math.max(0.1, src.getRate());
+    const scaleY = h / (2 * HALF_WINDOW_SEC * s.displayRate * rate);
+    // Snap to physical pixel boundary to eliminate sub-pixel shimmer
+    const tyRaw = h / 2 - (pos - s.bufferStartSec) * s.displayRate * scaleY;
+    const ty = Math.round(tyRaw * dpr) / dpr;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, 0, stripW, h);
+    ctx.clip();
+    ctx.drawImage(s.canvas, 0, 0, OFFSCREEN_W, s.numRows, x0, ty, stripW, s.numRows * scaleY);
+    ctx.restore();
+
+    // Beat grid markers — tBeat is in audio time; divide by rate to get real-time offset
+    const bpm = src.getBpm();
+    if (bpm !== null) {
+      const beatOffset = src.getBeatOffset();
+      const beatPeriod = 60 / bpm;
+      const audioHalfWindow = HALF_WINDOW_SEC * rate;
+      const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
+      const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
+
+      ctx.lineWidth = 1;
+      for (let bn = nStart; bn <= nEnd; bn++) {
+        const tBeat = beatOffset + bn * beatPeriod;
+        const yBeat = h / 2 + (((tBeat - pos) / rate) * h) / (2 * HALF_WINDOW_SEC);
+        ctx.strokeStyle = bn % 4 === 0 ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.4)';
+        ctx.beginPath();
+        ctx.moveTo(x0, yBeat);
+        ctx.lineTo(x0 + stripW, yBeat);
+        ctx.stroke();
+      }
+    }
+
+    // Horizontal playhead — same y across all strips; alignment = sync
+    ctx.strokeStyle = src.accent;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x0, h / 2);
+    ctx.lineTo(x0 + stripW, h / 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  rafId = requestAnimationFrame(draw);
+}
+
+function resizeCanvas(canvas: HTMLCanvasElement) {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!w || !h) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width === w * dpr && canvas.height === h * dpr) return;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.scale(dpr, dpr);
+  // Force offscreen rebuild at new size
+  for (const s of states) {
+    s.lastBuiltH = 0;
+    s.lastBuiltDpr = 0;
+  }
+}
+
+onMounted(() => {
+  const canvas = canvasEl.value;
+  if (!canvas) return;
+  requestAnimationFrame(() => {
+    resizeCanvas(canvas);
+    initStates();
+    rafId = requestAnimationFrame(draw);
+  });
+  resizeObserver = new ResizeObserver(() => {
+    requestAnimationFrame(() => resizeCanvas(canvas));
+  });
+  resizeObserver.observe(canvas);
+});
+
+onUnmounted(() => {
+  cancelAnimationFrame(rafId);
+  resizeObserver?.disconnect();
+});
+</script>
+
+<style scoped>
+.scope-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+}
+
+.scope-canvas {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+</style>

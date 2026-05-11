@@ -140,6 +140,10 @@
       <button class="topstrip__refresh" @click="mixer.loadOutputDevices()">↻</button>
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
     </template>
+
+    <button class="topstrip__settings-btn" title="Settings (⌘,)" @click="emit('open-settings')">
+      ⚙
+    </button>
   </div>
 </template>
 
@@ -148,15 +152,17 @@ import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 defineProps<{ editMode: boolean }>();
-const emit = defineEmits<{ 'toggle-edit': [] }>();
+const emit = defineEmits<{ 'toggle-edit': []; 'open-settings': [] }>();
 
 const mixer = useMixerStore();
+const settings = useSettingsStore();
 
 const activeDecks = computed<DeckId[]>(() =>
-  mixer.deckCount === 2 ? ['A', 'B'] : DECKS_DISPOSITION
+  mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
 );
 
 const mainDevice = computed(
@@ -171,8 +177,6 @@ function channelPairs(totalChannels: number): number[] {
   for (let i = 0; i + 1 < totalChannels; i += 2) offsets.push(i);
   return offsets;
 }
-
-// ── Metering ──────────────────────────────────────────────────────────────────
 
 const paramL = ref(0);
 const paramR = ref(0);
@@ -192,22 +196,25 @@ async function pollLevels() {
   rafId = requestAnimationFrame(pollLevels);
 }
 
-// ── Recording ────────────────────────────────────────────────────────────────
-
 const isRecording = ref(false);
 
 async function onRecClick() {
   if (isRecording.value) {
     isRecording.value = false;
     const tempPath = await invoke<string>('stop_recording');
-    const destPath = await invoke<string | null>('pick_save_path');
+    const destPath = await invoke<string | null>('pick_save_path', {
+      format: settings.recordingFormat
+    });
     if (destPath) {
       await invoke('save_recording', { src: tempPath, dest: destPath });
     } else {
       await invoke('discard_recording', { path: tempPath });
     }
   } else {
-    await invoke('start_recording');
+    await invoke('start_recording', {
+      bitDepth: settings.recordingBitDepth,
+      useFlac: settings.recordingFormat === 'flac'
+    });
     isRecording.value = true;
   }
 }
@@ -515,5 +522,29 @@ onUnmounted(() => {
 .topstrip__error {
   color: #e55;
   font-size: 10px;
+}
+
+.topstrip__settings-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-size: 13px;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition:
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.topstrip__settings-btn:hover {
+  border-color: var(--color-text);
+  color: var(--color-text);
 }
 </style>

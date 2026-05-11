@@ -11,8 +11,6 @@ pub struct AppState {
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
-// ── Helper ────────────────────────────────────────────────────────────────────
-
 fn get_deck(
     state: &tauri::State<'_, AppState>,
     deck: &str,
@@ -27,7 +25,9 @@ fn get_strip(
     state.audio.strip(deck).ok_or_else(|| format!("unknown deck: {}", deck))
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+fn sec_to_frame(sec: f64, sample_rate: u32, total_frames: usize) -> f64 {
+    (sec * sample_rate as f64).clamp(0.0, total_frames as f64)
+}
 
 #[tauri::command]
 async fn load_track(
@@ -39,6 +39,8 @@ async fn load_track(
 ) -> Result<TrackInfo, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let device_sample_rate = state.audio.device_sample_rate;
+    let bpm_min = state.audio.bpm_min.load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_max = state.audio.bpm_max.load(std::sync::atomic::Ordering::Relaxed) as f64;
 
     // Run all CPU-heavy work in a single blocking thread.
     let (samples, channels, bpm, silence_end, native_sr) =
@@ -58,7 +60,7 @@ async fn load_track(
                     &mono_owned
                 };
                 (
-                    audio::detect_bpm(mono, native_sr),
+                    audio::detect_bpm(mono, native_sr, bpm_min, bpm_max),
                     audio::detect_silence_end(mono, native_sr),
                 )
             } else {
@@ -164,9 +166,7 @@ fn play(
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
     if let Some(sec) = from_sec {
-        let pos = (sec * d.device_sample_rate as f64)
-            .max(0.0)
-            .min(d.total_frames as f64);
+        let pos = sec_to_frame(sec, d.device_sample_rate, d.total_frames);
         d.main_pos = pos;
         d.cue_pos = pos;
     } else {
@@ -192,9 +192,7 @@ fn seek(
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
-    let pos = (sec * d.device_sample_rate as f64)
-        .max(0.0)
-        .min(d.total_frames as f64);
+    let pos = sec_to_frame(sec, d.device_sample_rate, d.total_frames);
     log::info!("seek [{}]: {:.3}s -> frame {:.0}", deck, sec, pos);
     d.main_pos = pos;
     d.cue_pos = pos;
@@ -341,7 +339,7 @@ fn set_volume(
     deck: String,
     gain: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().gain = gain.clamp(0.0, 1.0);
+    get_strip(&state, &deck)?.lock().unwrap().set_gain(gain);
     Ok(())
 }
 
@@ -512,10 +510,15 @@ async fn open_file_dialog() -> Option<String> {
 }
 
 #[tauri::command]
-async fn pick_save_path() -> Option<String> {
+async fn pick_save_path(format: String) -> Option<String> {
+    let (label, ext, name) = if format == "flac" {
+        ("FLAC Audio", "flac", "mix.flac")
+    } else {
+        ("WAV Audio", "wav", "mix.wav")
+    };
     rfd::AsyncFileDialog::new()
-        .add_filter("WAV Audio", &["wav"])
-        .set_file_name("mix.wav")
+        .add_filter(label, &[ext])
+        .set_file_name(name)
         .save_file()
         .await
         .map(|f| f.path().to_string_lossy().into_owned())
@@ -532,8 +535,8 @@ fn get_deck_levels(state: tauri::State<'_, AppState>) -> std::collections::HashM
 }
 
 #[tauri::command]
-fn start_recording(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.audio.start_recording()
+fn start_recording(state: tauri::State<'_, AppState>, bit_depth: u16, use_flac: bool) -> Result<(), String> {
+    state.audio.start_recording(bit_depth, use_flac)
 }
 
 #[tauri::command]
@@ -562,6 +565,7 @@ fn save_recording(src: String, dest: String) -> Result<(), String> {
     Ok(())
 }
 
+
 #[tauri::command]
 fn discard_recording(path: String) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
@@ -575,6 +579,21 @@ fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
 #[tauri::command]
 fn set_cue_mix(state: tauri::State<'_, AppState>, mix: f32) {
     state.audio.monitor.set_cue_mix(mix);
+}
+
+#[tauri::command]
+fn set_limiter_enabled(state: tauri::State<'_, AppState>, enabled: bool) {
+    state.audio.monitor.set_limiter_enabled(enabled);
+}
+
+#[tauri::command]
+fn set_buffer_size(state: tauri::State<'_, AppState>, frames: u32) -> Result<(), String> {
+    state.audio.set_buffer_frames(frames)
+}
+
+#[tauri::command]
+fn set_bpm_range(state: tauri::State<'_, AppState>, min: u32, max: u32) {
+    state.audio.set_bpm_range(min, max);
 }
 
 #[tauri::command]
@@ -612,7 +631,9 @@ fn scan_folder(path: String) -> Vec<String> {
 }
 
 #[tauri::command]
-async fn analyze_track(path: String) -> Result<TrackInfo, String> {
+async fn analyze_track(state: tauri::State<'_, AppState>, path: String) -> Result<TrackInfo, String> {
+    let bpm_min = state.audio.bpm_min.load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_max = state.audio.bpm_max.load(std::sync::atomic::Ordering::Relaxed) as f64;
     tokio::task::spawn_blocking(move || -> Result<TrackInfo, String> {
         let (raw_samples, channels, native_sr) =
             audio::decode_audio(&path).map_err(|e| e.to_string())?;
@@ -631,7 +652,7 @@ async fn analyze_track(path: String) -> Result<TrackInfo, String> {
             &mono_owned
         };
 
-        let bpm = audio::detect_bpm(mono, native_sr);
+        let bpm = audio::detect_bpm(mono, native_sr, bpm_min, bpm_max);
         let silence_end = audio::detect_silence_end(mono, native_sr);
 
         Ok(TrackInfo { duration, sample_rate: native_sr, bpm, silence_end })
@@ -639,8 +660,6 @@ async fn analyze_track(path: String) -> Result<TrackInfo, String> {
     .await
     .map_err(|e| e.to_string())?
 }
-
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -665,6 +684,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(move |app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -729,7 +749,93 @@ pub fn run() {
             discard_recording,
             set_master_gain,
             set_cue_mix,
+            set_limiter_enabled,
+            set_buffer_size,
+            set_bpm_range,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- sec_to_frame ---
+
+    #[test]
+    fn sec_to_frame_converts_seconds_to_samples() {
+        let result = sec_to_frame(1.0, 44100, 100_000);
+        assert!((result - 44100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sec_to_frame_clamps_negative_to_zero() {
+        assert_eq!(sec_to_frame(-5.0, 44100, 100_000), 0.0);
+    }
+
+    #[test]
+    fn sec_to_frame_clamps_at_total_frames() {
+        let total = 44100usize;
+        assert_eq!(sec_to_frame(100.0, 44100, total), total as f64);
+    }
+
+    #[test]
+    fn sec_to_frame_fractional_seconds() {
+        let result = sec_to_frame(0.5, 44100, 100_000);
+        assert!((result - 22050.0).abs() < 1e-9);
+    }
+
+    // --- quantize_to_beat ---
+
+    #[test]
+    fn quantize_to_beat_snaps_to_exact_beat_boundary() {
+        let sr = 44100.0f64;
+        let bpm = 120.0f64;
+        let beat_dur = (60.0 / bpm) * sr; // 22050 frames
+        let pos = 3.0 * beat_dur;
+        let result = quantize_to_beat(pos, bpm, 0.0, sr);
+        assert!((result - pos).abs() < 1.0, "got {}", result);
+    }
+
+    #[test]
+    fn quantize_to_beat_rounds_to_nearest_beat() {
+        let sr = 44100.0f64;
+        let bpm = 120.0f64;
+        let beat_dur = (60.0 / bpm) * sr;
+        // 30% into beat 2 → rounds down to beat 2
+        let pos = 2.0 * beat_dur + beat_dur * 0.3;
+        let result = quantize_to_beat(pos, bpm, 0.0, sr);
+        assert!((result - 2.0 * beat_dur).abs() < 1.0, "got {}", result);
+    }
+
+    #[test]
+    fn quantize_to_beat_rounds_up_past_midpoint() {
+        let sr = 44100.0f64;
+        let bpm = 120.0f64;
+        let beat_dur = (60.0 / bpm) * sr;
+        // 70% into beat 2 → rounds up to beat 3
+        let pos = 2.0 * beat_dur + beat_dur * 0.7;
+        let result = quantize_to_beat(pos, bpm, 0.0, sr);
+        assert!((result - 3.0 * beat_dur).abs() < 1.0, "got {}", result);
+    }
+
+    #[test]
+    fn quantize_to_beat_never_returns_negative() {
+        // Position very close to 0 should not produce a negative frame
+        let result = quantize_to_beat(1.0, 120.0, 0.0, 44100.0);
+        assert!(result >= 0.0, "got {}", result);
+    }
+
+    #[test]
+    fn quantize_to_beat_respects_beat_offset() {
+        let sr = 44100.0f64;
+        let bpm = 120.0f64;
+        let beat_dur = (60.0 / bpm) * sr;
+        let offset = beat_dur * 0.25; // grid starts a quarter beat in
+        // Position exactly on beat 1 with offset
+        let pos = offset + beat_dur;
+        let result = quantize_to_beat(pos, bpm, offset, sr);
+        assert!((result - pos).abs() < 1.0, "got {}", result);
+    }
 }

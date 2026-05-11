@@ -3,6 +3,7 @@ import { reactive, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useSavedTracksStore } from '@renderer/stores/savedTracks';
 import type { LoadableTrack } from '@renderer/stores/decks';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
@@ -24,32 +25,11 @@ export type CollectionEntry = {
 
 type PersistedEntry = { name: string; size: number; path: string | null };
 
-const COLLECTION_KEY = 'beatmatcher:collection';
-const PLAYLISTS_KEY = 'beatmatcher:playlists';
-
-function loadPersisted(): PersistedEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(COLLECTION_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
-}
-
-function loadPersistedPlaylists(): Playlist[] {
-  try {
-    return JSON.parse(localStorage.getItem(PLAYLISTS_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
-}
-
 function persist(entries: CollectionEntry[]) {
-  const data: PersistedEntry[] = entries.map((t) => ({
-    name: t.name,
-    size: t.size,
-    path: t.path
-  }));
-  localStorage.setItem(COLLECTION_KEY, JSON.stringify(data));
+  storageSet(
+    STORAGE_KEYS.collection,
+    entries.map((t) => ({ name: t.name, size: t.size, path: t.path }))
+  );
 }
 
 export const useCollectionStore = defineStore('collection', () => {
@@ -64,7 +44,7 @@ export const useCollectionStore = defineStore('collection', () => {
     return entry.path ? (savedTracks.get(entry.path)?.bpm ?? null) : null;
   }
 
-  for (const p of loadPersisted()) {
+  for (const p of storageGet<PersistedEntry[]>(STORAGE_KEYS.collection, [])) {
     tracks.push({
       id: `${p.name}-${Math.random().toString(36).slice(2)}`,
       name: p.name,
@@ -310,12 +290,12 @@ export const useCollectionStore = defineStore('collection', () => {
     draggingPath.value = null;
   }
 
-  const playlists = reactive<Playlist[]>(loadPersistedPlaylists());
+  const playlists = reactive<Playlist[]>(storageGet<Playlist[]>(STORAGE_KEYS.playlists, []));
 
   watch(
     playlists,
     () => {
-      localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(playlists));
+      storageSet(STORAGE_KEYS.playlists, playlists);
     },
     { deep: true }
   );

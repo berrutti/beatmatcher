@@ -98,13 +98,57 @@
       </div>
     </div>
 
-    <LissajousScope
-      class="mixer__lissajous"
+    <PhaseScope
+      class="mixer__wrapper"
       :sources="[
-        { getPhase: () => decks.deckC.phase, accent: decks.deckC.accent, label: 'C' },
-        { getPhase: () => decks.deckA.phase, accent: decks.deckA.accent, label: 'A' },
-        { getPhase: () => decks.deckB.phase, accent: decks.deckB.accent, label: 'B' },
-        { getPhase: () => decks.deckD.phase, accent: decks.deckD.accent, label: 'D' }
+        {
+          getPosition: () => decks.deckC.getPlayheadPosition(),
+          getBpm: () => decks.deckC.trackBpm,
+          getBeatOffset: () => decks.deckC.beatOffset,
+          getRate: () =>
+            decks.deckC.trackBpm && decks.deckC.targetBpm
+              ? decks.deckC.targetBpm / decks.deckC.trackBpm
+              : 1,
+          getDenseData: () => decks.deckC.denseSpectralData,
+          getDenseRate: () => decks.deckC.denseSpectralRate,
+          accent: decks.deckC.accent
+        },
+        {
+          getPosition: () => decks.deckA.getPlayheadPosition(),
+          getBpm: () => decks.deckA.trackBpm,
+          getBeatOffset: () => decks.deckA.beatOffset,
+          getRate: () =>
+            decks.deckA.trackBpm && decks.deckA.targetBpm
+              ? decks.deckA.targetBpm / decks.deckA.trackBpm
+              : 1,
+          getDenseData: () => decks.deckA.denseSpectralData,
+          getDenseRate: () => decks.deckA.denseSpectralRate,
+          accent: decks.deckA.accent
+        },
+        {
+          getPosition: () => decks.deckB.getPlayheadPosition(),
+          getBpm: () => decks.deckB.trackBpm,
+          getBeatOffset: () => decks.deckB.beatOffset,
+          getRate: () =>
+            decks.deckB.trackBpm && decks.deckB.targetBpm
+              ? decks.deckB.targetBpm / decks.deckB.trackBpm
+              : 1,
+          getDenseData: () => decks.deckB.denseSpectralData,
+          getDenseRate: () => decks.deckB.denseSpectralRate,
+          accent: decks.deckB.accent
+        },
+        {
+          getPosition: () => decks.deckD.getPlayheadPosition(),
+          getBpm: () => decks.deckD.trackBpm,
+          getBeatOffset: () => decks.deckD.beatOffset,
+          getRate: () =>
+            decks.deckD.trackBpm && decks.deckD.targetBpm
+              ? decks.deckD.targetBpm / decks.deckD.trackBpm
+              : 1,
+          getDenseData: () => decks.deckD.denseSpectralData,
+          getDenseRate: () => decks.deckD.denseSpectralRate,
+          accent: decks.deckD.accent
+        }
       ]"
     />
   </div>
@@ -113,7 +157,7 @@
 <script setup lang="ts">
 import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
-import LissajousScope from '@renderer/components/LissajousScope.vue';
+import PhaseScope from '@renderer/components/PhaseScope.vue';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
@@ -123,7 +167,7 @@ const decks = useDecksStore();
 const mixer = useMixerStore();
 
 const activeDecks = computed<DeckId[]>(() =>
-  mixer.deckCount === 2 ? ['A', 'B'] : DECKS_DISPOSITION
+  mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
 );
 
 const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
@@ -222,12 +266,12 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.6em;
-  padding: 0.6em 0.5em 0.8em;
+  gap: 0.4em;
+  padding: 0.3em 0.3em 0em;
   width: 100%;
 }
 
-.mixer__lissajous {
+.mixer__wrapper {
   flex: 1;
   min-height: 0;
   width: 100%;
@@ -236,7 +280,8 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__channels {
   display: flex;
   align-items: center;
-  justify-content: space-evenly;
+  justify-content: center;
+  gap: 0.4em;
   width: 100%;
   flex-shrink: 0;
 }
@@ -246,7 +291,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.4em;
+  gap: 0.25em;
   border-radius: 4px;
   border: 1px solid transparent;
   transition:
@@ -320,7 +365,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   writing-mode: vertical-lr;
   direction: rtl;
   width: 20px;
-  height: 7em;
+  height: 9em;
   cursor: pointer;
   background: transparent;
   padding: 0;
@@ -337,7 +382,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
-  height: 10px;
+  height: 14px;
   background:
     repeating-linear-gradient(
       to bottom,
@@ -382,7 +427,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__filter-slider {
   -webkit-appearance: none;
   appearance: none;
-  width: 4em;
+  width: 6.5em;
   height: 18px;
   cursor: pointer;
   background: transparent;
@@ -399,7 +444,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__filter-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 10px;
+  width: 13px;
   height: 18px;
   background:
     repeating-linear-gradient(
@@ -462,14 +507,14 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 
 .mixer__ghost_meter {
   width: 5px;
-  height: 10em;
+  height: 14em;
   position: relative;
   overflow: hidden;
 }
 
 .mixer__meter {
   width: 5px;
-  height: 10em;
+  height: 14em;
   background: linear-gradient(
     to top,
     #22c55e 0%,
@@ -506,7 +551,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   writing-mode: vertical-lr;
   direction: rtl;
   width: 30px;
-  height: 10em;
+  height: 14em;
   cursor: pointer;
   background: transparent;
   padding: 0;
