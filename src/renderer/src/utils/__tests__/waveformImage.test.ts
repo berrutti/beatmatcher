@@ -73,14 +73,16 @@ describe('buildWaveformImageData', () => {
     // 2 source points map to 1 output column:
     // point 0: r=1, g=0, b=0, amp=0.5 (red)
     // point 1: r=0, g=1, b=0, amp=0.5 (green)
-    // expected: r = sumR/sumAmp * 255 = 0.5/1.0 * 255 = 127
-    //           g = 127, b = 0
+    // avgBass=0.5, avgMid=0.5, avgHigh=0 -> spectralColor applies log compression:
+    //   r = (log1p(0.5*10) / log1p(10)) * 255 | 0 = 190
+    //   g = (log1p(0.5*25) / log1p(25)) * 255 | 0 = 203
+    //   b = 0
     const peaks = new Float32Array([1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5]);
     const img = buildWaveformImageData(1, 10, peaks, 1.0);
     // Find a colored row (middle)
     const p = pixel(img, 0, 5);
-    expect(p.r).toBe(127);
-    expect(p.g).toBe(127);
+    expect(p.r).toBe(190);
+    expect(p.g).toBe(203);
     expect(p.b).toBe(0);
   });
 
