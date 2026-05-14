@@ -1,6 +1,6 @@
 <template>
-  <div class="scope-wrapper">
-    <canvas ref="canvasEl" class="scope-canvas" />
+  <div class="strips-wrapper">
+    <canvas ref="canvasEl" class="strips-canvas" />
   </div>
 </template>
 
@@ -8,7 +8,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { spectralColor } from '@renderer/utils/waveformImage';
 
-type PhaseSource = {
+type WaveformStripsSource = {
   getPosition: () => number;
   getBpm: () => number | null;
   getBeatOffset: () => number;
@@ -18,7 +18,7 @@ type PhaseSource = {
   accent: string;
 };
 
-const props = defineProps<{ sources: PhaseSource[] }>();
+const props = defineProps<{ sources: WaveformStripsSource[] }>();
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_W = 256;
@@ -29,6 +29,8 @@ const BUFFER_SEC = 30;
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
 let resizeObserver: ResizeObserver | null = null;
+
+const ROWS_PER_CHUNK = 500;
 
 type OffscreenState = {
   canvas: HTMLCanvasElement | null;
@@ -41,6 +43,7 @@ type OffscreenState = {
   bufferStartSec: number;
   lastBuiltH: number;
   lastBuiltDpr: number;
+  isBuilding: boolean;
 };
 
 let states: OffscreenState[] = [];
@@ -54,18 +57,23 @@ function initStates() {
     numRows: 0,
     bufferStartSec: 0,
     lastBuiltH: 0,
-    lastBuiltDpr: 0
+    lastBuiltDpr: 0,
+    isBuilding: false
   }));
 }
 
-function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+  const state = states[i];
+  state.isBuilding = true;
+  await new Promise<void>((r) => setTimeout(r, 0));
+
   const src = props.sources[i];
   const data = src.getDenseData();
-  const s = states[i];
 
   if (!data) {
-    s.canvas = null;
-    s.builtFrom = null;
+    state.canvas = null;
+    state.builtFrom = null;
+    state.isBuilding = false;
     return;
   }
 
@@ -89,35 +97,42 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
   canvas.width = OFFSCREEN_W;
   canvas.height = numRows;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) {
+    state.isBuilding = false;
+    return;
+  }
 
   const imageData = ctx.createImageData(OFFSCREEN_W, numRows);
   const px = imageData.data;
   const cx = OFFSCREEN_W / 2;
 
-  for (let p = 0; p < px.length; p += 4) {
-    px[p] = 10;
-    px[p + 1] = 10;
-    px[p + 2] = 10;
-    px[p + 3] = 255;
-  }
-
   for (let row = 0; row < numRows; row++) {
+    const rowBase = row * OFFSCREEN_W * 4;
+
     let bass = 0,
       mid = 0,
       high = 0,
       amp = 0,
       count = 0;
     for (let k = 0; k < stride; k++) {
-      const si = startSample + row * stride + k;
-      if (si >= totalSamples) break;
-      const di = si * 4;
+      const sampleIdx = startSample + row * stride + k;
+      if (sampleIdx >= totalSamples) break;
+      const di = sampleIdx * 4;
       bass += data[di];
       mid += data[di + 1];
       high += data[di + 2];
       amp += data[di + 3];
       count++;
     }
+
+    const rowEnd = rowBase + OFFSCREEN_W * 4;
+    for (let p = rowBase; p < rowEnd; p += 4) {
+      px[p] = 10;
+      px[p + 1] = 10;
+      px[p + 2] = 10;
+      px[p + 3] = 255;
+    }
+
     if (count === 0) continue;
     bass /= count;
     mid /= count;
@@ -130,24 +145,38 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
     const xRight = Math.min(OFFSCREEN_W - 1, Math.round(cx + barW));
 
     for (let x = xLeft; x <= xRight; x++) {
-      const idx = (row * OFFSCREEN_W + x) * 4;
+      const idx = rowBase + x * 4;
       px[idx] = r;
       px[idx + 1] = g;
       px[idx + 2] = b;
       px[idx + 3] = 255;
     }
+
+    if ((row + 1) % ROWS_PER_CHUNK === 0) {
+      if (src.getDenseData() !== data) {
+        state.isBuilding = false;
+        return;
+      }
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
+  }
+
+  if (src.getDenseData() !== data) {
+    state.isBuilding = false;
+    return;
   }
 
   ctx.putImageData(imageData, 0, 0);
 
-  s.canvas = canvas;
-  s.builtFrom = data;
-  s.denseRate = denseRate;
-  s.displayRate = displayRate;
-  s.numRows = numRows;
-  s.bufferStartSec = bufferStartSec;
-  s.lastBuiltH = h;
-  s.lastBuiltDpr = dpr;
+  state.canvas = canvas;
+  state.builtFrom = data;
+  state.denseRate = denseRate;
+  state.displayRate = displayRate;
+  state.numRows = numRows;
+  state.bufferStartSec = bufferStartSec;
+  state.lastBuiltH = h;
+  state.lastBuiltDpr = dpr;
+  state.isBuilding = false;
 }
 
 function draw() {
@@ -173,44 +202,54 @@ function draw() {
   const n = props.sources.length;
   const stripW = Math.floor(w / n);
 
-  for (let si = 0; si < n; si++) {
-    const src = props.sources[si];
-    const s = states[si];
-    const x0 = si * stripW;
+  for (let i = 0; i < n; i++) {
+    const src = props.sources[i];
+    const state = states[i];
+    const x0 = i * stripW;
 
-    if (si > 0) {
+    if (i > 0) {
       ctx.fillStyle = '#1c1c1c';
       ctx.fillRect(x0, 0, 1, h);
     }
 
     const pos = src.getPosition();
-    const bufferEndSec = s.bufferStartSec + s.numRows / (s.displayRate || 1);
+    const bufferEndSec = state.bufferStartSec + state.numRows / (state.displayRate || 1);
     const edgeGuard = HALF_WINDOW_SEC + 5;
     const needsRebuild =
-      s.builtFrom !== src.getDenseData() ||
-      s.lastBuiltH !== h ||
-      s.lastBuiltDpr !== dpr ||
-      pos < s.bufferStartSec + edgeGuard ||
+      state.builtFrom !== src.getDenseData() ||
+      state.lastBuiltH !== h ||
+      state.lastBuiltDpr !== dpr ||
+      pos < state.bufferStartSec + edgeGuard ||
       pos > bufferEndSec - edgeGuard;
 
-    if (needsRebuild) buildOffscreenWindow(si, pos, h, dpr);
-    if (!s.canvas) continue;
+    if (needsRebuild && !state.isBuilding) buildOffscreenWindow(i, pos, h, dpr).catch(() => {});
+    if (!state.canvas) continue;
 
     // rate > 1 means pitched up: audio advances faster than real time, so the
     // waveform appears compressed vertically (fewer audio seconds fit in the
     // fixed real-time window). Divide all audio-time offsets by rate to convert
     // to real-time screen coordinates.
     const rate = Math.max(0.1, src.getRate());
-    const scaleY = h / (2 * HALF_WINDOW_SEC * s.displayRate * rate);
+    const scaleY = h / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
     // Snap to physical pixel boundary to eliminate sub-pixel shimmer
-    const tyRaw = h / 2 - (pos - s.bufferStartSec) * s.displayRate * scaleY;
+    const tyRaw = h / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleY;
     const ty = Math.round(tyRaw * dpr) / dpr;
 
     ctx.save();
     ctx.beginPath();
     ctx.rect(x0, 0, stripW, h);
     ctx.clip();
-    ctx.drawImage(s.canvas, 0, 0, OFFSCREEN_W, s.numRows, x0, ty, stripW, s.numRows * scaleY);
+    ctx.drawImage(
+      state.canvas,
+      0,
+      0,
+      OFFSCREEN_W,
+      state.numRows,
+      x0,
+      ty,
+      stripW,
+      state.numRows * scaleY
+    );
     ctx.restore();
 
     // Beat grid markers — tBeat is in audio time; divide by rate to get real-time offset
@@ -287,7 +326,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.scope-wrapper {
+.strips-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -296,7 +335,7 @@ onUnmounted(() => {
   height: 100%;
 }
 
-.scope-canvas {
+.strips-canvas {
   display: block;
   width: 100%;
   flex: 1;

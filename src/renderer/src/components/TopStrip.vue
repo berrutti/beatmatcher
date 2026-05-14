@@ -148,18 +148,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
-import { useSettingsStore } from '@renderer/stores/settings';
+import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 defineProps<{ editMode: boolean }>();
 const emit = defineEmits<{ 'toggle-edit': []; 'open-settings': [] }>();
 
 const mixer = useMixerStore();
-const settings = useSettingsStore();
+const decks = useDecksStore();
 
 const activeDecks = computed<DeckId[]>(() =>
   mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
@@ -186,7 +184,15 @@ const peakR = ref<PeakState>({ value: 0, holdMs: 0 });
 let rafId = 0;
 
 async function pollLevels() {
-  const [l, r] = await invoke<[number, number]>('get_master_level');
+  if (!decks.anyDeckActive) {
+    paramL.value = 0;
+    paramR.value = 0;
+    peakL.value = { value: 0, holdMs: 0 };
+    peakR.value = { value: 0, holdMs: 0 };
+    rafId = 0;
+    return;
+  }
+  const [l, r] = await mixer.getMasterLevel();
   const newParamL = vuParam(l);
   const newParamR = vuParam(r);
   paramL.value = smoothParam(paramL.value, newParamL);
@@ -196,32 +202,33 @@ async function pollLevels() {
   rafId = requestAnimationFrame(pollLevels);
 }
 
+watch(
+  () => decks.anyDeckActive,
+  (active) => {
+    if (active && rafId === 0) rafId = requestAnimationFrame(pollLevels);
+  }
+);
+
 const isRecording = ref(false);
 
 async function onRecClick() {
   if (isRecording.value) {
     isRecording.value = false;
-    const tempPath = await invoke<string>('stop_recording');
-    const destPath = await invoke<string | null>('pick_save_path', {
-      format: settings.recordingFormat
-    });
+    const tempPath = await mixer.stopRecording();
+    const destPath = await mixer.pickSavePath();
     if (destPath) {
-      await invoke('save_recording', { src: tempPath, dest: destPath });
+      await mixer.saveRecording(tempPath, destPath);
     } else {
-      await invoke('discard_recording', { path: tempPath });
+      await mixer.discardRecording(tempPath);
     }
   } else {
-    await invoke('start_recording', {
-      bitDepth: settings.recordingBitDepth,
-      useFlac: settings.recordingFormat === 'flac'
-    });
+    await mixer.startRecording();
     isRecording.value = true;
   }
 }
 
 onMounted(() => {
   mixer.loadOutputDevices();
-  rafId = requestAnimationFrame(pollLevels);
 });
 
 onUnmounted(() => {

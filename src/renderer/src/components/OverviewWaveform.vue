@@ -78,7 +78,8 @@ function draw() {
     waveImgForCw = cw;
     waveImgForCh = ch;
   }
-  ctx.putImageData(waveImgData!, 0, 0);
+  if (!waveImgData) return;
+  ctx.putImageData(waveImgData, 0, 0);
 
   const region = props.loopRegion;
   if (region && trackDuration > 0) {

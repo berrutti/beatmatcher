@@ -36,7 +36,19 @@ export default [
     rules: {
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': 'warn',
-      'vue/multi-word-component-names': 'off'
+      'vue/multi-word-component-names': 'off',
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector: 'CallExpression[callee.property.name="then"]',
+          message: 'Prefer async/await over .then(). Make the function async and await the Promise.'
+        },
+        {
+          selector:
+            'CallExpression[callee.type="ArrowFunctionExpression"], CallExpression[callee.type="FunctionExpression"]',
+          message: 'Avoid IIFEs. Extract to a named function instead.'
+        }
+      ]
     }
   },
   prettier

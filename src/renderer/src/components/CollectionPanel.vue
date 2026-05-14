@@ -125,8 +125,8 @@
           <span class="collection__item-name" :title="track.title ?? displayName(track.name)">{{
             track.title ?? displayName(track.name)
           }}</span>
-          <span v-if="store.bpmFor(track) !== null" class="collection__item-bpm">
-            {{ store.bpmFor(track)!.toFixed(1) }} BPM
+          <span v-if="store.getBpm(track) !== null" class="collection__item-bpm">
+            {{ store.getBpm(track)?.toFixed(1) }} BPM
           </span>
           <span v-else-if="track.status === 'analyzing'" class="collection__item-tag">
             detecting...
@@ -325,8 +325,8 @@
             <span class="collection__item-name" :title="track.title ?? displayName(track.name)">{{
               track.title ?? displayName(track.name)
             }}</span>
-            <span v-if="store.bpmFor(track) !== null" class="collection__item-bpm">
-              {{ store.bpmFor(track)!.toFixed(1) }} BPM
+            <span v-if="store.getBpm(track) !== null" class="collection__item-bpm">
+              {{ store.getBpm(track)?.toFixed(1) }} BPM
             </span>
             <button
               class="collection__item-btn"
@@ -385,7 +385,6 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { CollectionEntry } from '@renderer/stores/collection';
@@ -464,8 +463,8 @@ const sortedFilteredTracks = computed(() => {
       aVal = (a.title ?? displayName(a.name)).toLowerCase();
       bVal = (b.title ?? displayName(b.name)).toLowerCase();
     } else {
-      aVal = store.bpmFor(a);
-      bVal = store.bpmFor(b);
+      aVal = store.getBpm(a);
+      bVal = store.getBpm(b);
     }
     if (aVal === null && bVal === null) return 0;
     if (aVal === null) return 1;
@@ -494,7 +493,7 @@ const playlistItems = computed((): PlaylistItem[] => {
     const label = entry
       ? (entry.title ?? displayName(entry.name))
       : (path.split('/').pop() ?? path);
-    const bpm = entry ? store.bpmFor(entry) : null;
+    const bpm = entry ? store.getBpm(entry) : null;
     return { path, entry, label, bpm };
   });
 });
@@ -567,18 +566,9 @@ function confirmDeletePlaylist() {
   pendingDeletePlaylistId.value = null;
 }
 
-function bestAvailableDeck(): DeckId | null {
-  if (decksStore.editMode) return 'E';
-  return (
-    DECKS_DISPOSITION.find((id) => !decksStore.decks[id].trackLoaded) ??
-    DECKS_DISPOSITION.find((id) => !decksStore.decks[id].loopPlaying) ??
-    null
-  );
-}
-
 function onTrackDblClick(track: CollectionEntry) {
   if (track.status !== 'ready' || !track.path) return;
-  const target = bestAvailableDeck();
+  const target = decksStore.bestAvailableDeck();
   if (!target) return;
   loadToDeck(track.path, target);
 }
@@ -586,7 +576,7 @@ function onTrackDblClick(track: CollectionEntry) {
 function onTrackDblClickByPath(path: string) {
   const entry = store.tracks.find((t) => t.path === path);
   if (!entry || entry.status !== 'ready') return;
-  const target = bestAvailableDeck();
+  const target = decksStore.bestAvailableDeck();
   if (!target) return;
   loadToDeck(path, target);
 }
@@ -609,12 +599,13 @@ async function onCreatePlaylist() {
   renameInputEl.value?.select();
 }
 
-function startRename() {
+async function startRename() {
   const p = activePlaylist.value;
   if (!p) return;
   renameValue.value = p.name;
   renamingPlaylist.value = true;
-  nextTick().then(() => renameInputEl.value?.select());
+  await nextTick();
+  renameInputEl.value?.select();
 }
 
 function confirmRename() {
@@ -732,6 +723,7 @@ async function onDrop(e: DragEvent) {
   if (files.length > 0) store.addFiles(files);
 }
 
+// Movement below this threshold is treated as a click, not a drag start.
 const DRAG_THRESHOLD = 5;
 
 function onSearchPointerDown(e: PointerEvent) {
@@ -810,10 +802,7 @@ async function openFolderDialog() {
   const result = await open({ directory: true, multiple: true });
   if (!result) return;
   const folders = Array.isArray(result) ? result : [result];
-  const pathLists = await Promise.all(
-    folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
-  );
-  const paths = pathLists.flat();
+  const paths = await store.scanFolders(folders);
   if (paths.length > 0) store.addFilesFromPaths(paths);
 }
 </script>

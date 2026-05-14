@@ -98,7 +98,7 @@
       </div>
     </div>
 
-    <PhaseScope
+    <WaveformStrips
       class="mixer__wrapper"
       :sources="[
         {
@@ -157,10 +157,9 @@
 <script setup lang="ts">
 import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
-import PhaseScope from '@renderer/components/PhaseScope.vue';
+import WaveformStrips from '@renderer/components/WaveformStrips.vue';
 import type { DeckId } from '@renderer/stores/decks';
-import { reactive, computed, onMounted, onUnmounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { reactive, computed, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
@@ -180,9 +179,10 @@ const deckPeaks = reactive<Record<DeckId, PeakState>>({
 });
 let levelPollId: ReturnType<typeof setInterval> | null = null;
 
-onMounted(() => {
+function startLevelPoll() {
+  if (levelPollId !== null) return;
   levelPollId = setInterval(async () => {
-    const levels = await invoke<Record<string, [number, number]>>('get_deck_levels');
+    const levels = await mixer.getDeckLevels();
     for (const id of Object.keys(levels) as DeckId[]) {
       const [l, r] = levels[id];
       const newParam = vuParam(Math.max(l, r));
@@ -190,11 +190,28 @@ onMounted(() => {
       deckPeaks[id] = stepPeak(deckPeaks[id], newParam);
     }
   }, 33);
-});
+}
 
-onUnmounted(() => {
-  if (levelPollId !== null) clearInterval(levelPollId);
-});
+function stopLevelPoll() {
+  if (levelPollId !== null) {
+    clearInterval(levelPollId);
+    levelPollId = null;
+  }
+  for (const id of Object.keys(deckParams) as DeckId[]) {
+    deckParams[id] = 0;
+    deckPeaks[id] = { value: 0, holdMs: 0 };
+  }
+}
+
+watch(
+  () => decks.anyDeckActive,
+  (active) => {
+    if (active) startLevelPoll();
+    else stopLevelPoll();
+  }
+);
+
+onUnmounted(stopLevelPoll);
 
 function swarmChannelClass(deckId: DeckId) {
   if (!mixer.swarmMode || !mixer.swarmSelected[deckId]) return {};

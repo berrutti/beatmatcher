@@ -1,10 +1,14 @@
 <template>
-  <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
-    <div v-if="!props.trackData" class="waveform__empty">
+  <div
+    class="waveform"
+    :class="{ 'waveform--drag-over': props.isDragOver }"
+    :style="{ '--accent': props.accent }"
+  >
+    <div v-show="!props.trackData" class="waveform__empty">
       <span class="waveform__empty-text">No track loaded</span>
     </div>
 
-    <template v-if="props.trackData">
+    <div v-show="props.trackData" class="waveform__content">
       <canvas
         ref="canvasEl"
         class="waveform__canvas"
@@ -24,7 +28,7 @@
           <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -32,7 +36,7 @@
 // Rendering approach inspired by Mixxx (https://github.com/mixxxdj/mixxx):
 // mean-in-window pixel aggregation with an overscan bitmap cache for
 // stable, LOD-aware display across all zoom levels.
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
 import { buildWaveformImageData } from '@renderer/utils/waveformImage';
 
@@ -53,7 +57,7 @@ const props = defineProps<{
     startSec: number,
     endSec: number,
     numPoints: number
-  ) => Promise<number[]>;
+  ) => Promise<ArrayBuffer>;
 }>();
 
 const emit = defineEmits<{
@@ -61,7 +65,6 @@ const emit = defineEmits<{
   seek: [sec: number];
 }>();
 
-const accent = computed(() => props.accent);
 const WAVEFORM_AMP_SCALE = 0.9;
 const PLAYHEAD_LINE_WIDTH = 1.5;
 const PLAYHEAD_ALPHA = 0.9;
@@ -84,8 +87,8 @@ let viewEndSec = 0;
 const zoomIdx = ref(ZOOM_LEVELS_SEC.indexOf(DEFAULT_ZOOM_SEC));
 
 const zoomLabel = computed(() => {
-  const s = ZOOM_LEVELS_SEC[zoomIdx.value];
-  return s >= 60 ? `${s / 60}m` : `${s}s`;
+  const sec = ZOOM_LEVELS_SEC[zoomIdx.value];
+  return sec >= 60 ? `${sec / 60}m` : `${sec}s`;
 });
 
 function viewDurationSec(): number {
@@ -231,6 +234,18 @@ function ensurePeaks() {
   }, 80);
 }
 
+async function buildBitmap(peaks: Float32Array, bitmapW: number, canvasH: number) {
+  try {
+    const imgData = buildWaveformImageData(bitmapW, canvasH, peaks, WAVEFORM_AMP_SCALE);
+    const bmp = await createImageBitmap(imgData);
+    if (cachedPeaks === peaks) waveImgBitmap = bmp;
+  } catch {
+    // createImageBitmap failure — skip this bitmap update
+  } finally {
+    bitmapBuildInFlight = false;
+  }
+}
+
 function ensureBitmap(canvasW: number, canvasH: number) {
   if (!cachedPeaks) return;
   const cacheSpan = cachedEndSec - cachedStartSec;
@@ -249,19 +264,12 @@ function ensureBitmap(canvasW: number, canvasH: number) {
   if (sameSource && sameSize && closeWidth) return;
   if (bitmapBuildInFlight) return;
 
+  const peaksSnapshot = cachedPeaks;
   bitmapForPeaks = cachedPeaks;
   bitmapCanvasH = canvasH;
   bitmapPixelW = bitmapW;
   bitmapBuildInFlight = true;
-  const imgData = buildWaveformImageData(bitmapW, canvasH, cachedPeaks, WAVEFORM_AMP_SCALE);
-  createImageBitmap(imgData)
-    .then((bmp) => {
-      waveImgBitmap = bmp;
-    })
-    .catch(() => {})
-    .finally(() => {
-      bitmapBuildInFlight = false;
-    });
+  buildBitmap(peaksSnapshot, bitmapW, canvasH);
 }
 
 function pxToSec(px: number): number {
@@ -560,11 +568,11 @@ function onMouseUp(e: MouseEvent) {
 let resizeObserver: ResizeObserver | null = null;
 
 watch(canvasEl, (el) => {
-  if (el && !resizeObserver) {
+  if (el && !resizeObserver && el.parentElement) {
     resizeObserver = new ResizeObserver(() => {
       ensurePeaks();
     });
-    resizeObserver.observe(el.parentElement!);
+    resizeObserver.observe(el.parentElement);
   }
 });
 
@@ -576,6 +584,8 @@ onUnmounted(() => {
   resizeObserver?.disconnect();
   cancelAnimationFrame(rafId);
   clearTimeout(fetchDebounceTimer);
+  window.removeEventListener('mousemove', onMouseMoveWindow);
+  window.removeEventListener('mouseup', onMouseUp);
 });
 
 watch(
@@ -627,7 +637,7 @@ watch(
 }
 
 .waveform--drag-over {
-  outline: 2px dashed v-bind(accent);
+  outline: 2px dashed var(--accent);
   outline-offset: -4px;
 }
 
@@ -646,6 +656,13 @@ watch(
   font-size: 0.7rem;
   letter-spacing: 0.12em;
   opacity: 0.6;
+}
+
+.waveform__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .waveform__canvas {
@@ -667,7 +684,7 @@ watch(
 .waveform__bpm-readout {
   font-size: 0.85rem;
   font-weight: 700;
-  color: v-bind(accent);
+  color: var(--accent);
   margin-left: auto;
   letter-spacing: 0.05em;
 }

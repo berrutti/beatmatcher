@@ -17,40 +17,26 @@
     </Modal>
 
     <TopStrip
-      :edit-mode="editMode"
+      :edit-mode="decksStore.editMode"
       @toggle-edit="tryToggleEditMode"
       @open-settings="settingsStore.isOpen = true"
     />
     <SettingsModal v-if="settingsStore.isOpen" />
 
     <div class="app__body">
-      <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
+      <EditView
+        v-if="decksStore.editMode"
+        :deck="decksStore.deckE"
+        @close="decksStore.exitEditMode()"
+      />
       <div v-else class="app__play" :class="{ 'app__play--two-deck': mixerStore.deckCount === 2 }">
-        <DeckPanel
-          class="app__deck-a"
-          :deck="store.deckA"
-          :keybindings="settingsStore.keybindings.deckA"
-        />
-        <DeckPanel
-          v-if="mixerStore.deckCount === 4"
-          class="app__deck-c"
-          :deck="store.deckC"
-          :keybindings="settingsStore.keybindings.deckC"
-        />
+        <DeckPanel class="app__deck-a" :deck="decksStore.deckA" />
+        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-c" :deck="decksStore.deckC" />
         <div class="app__center">
           <MixerPanel />
         </div>
-        <DeckPanel
-          class="app__deck-b"
-          :deck="store.deckB"
-          :keybindings="settingsStore.keybindings.deckB"
-        />
-        <DeckPanel
-          v-if="mixerStore.deckCount === 4"
-          class="app__deck-d"
-          :deck="store.deckD"
-          :keybindings="settingsStore.keybindings.deckD"
-        />
+        <DeckPanel class="app__deck-b" :deck="decksStore.deckB" />
+        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-d" :deck="decksStore.deckD" />
       </div>
     </div>
 
@@ -68,11 +54,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-
-const MIN_COLLECTION_H = 120;
-const MAX_COLLECTION_H_RATIO = 0.65;
 import { useDecksStore } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
@@ -86,21 +69,18 @@ import EditView from '@renderer/components/EditView.vue';
 import Modal from '@renderer/components/Modal.vue';
 import SettingsModal from '@renderer/components/SettingsModal.vue';
 
+const MIN_COLLECTION_H = 120;
+const MAX_COLLECTION_H_RATIO = 0.65;
+
 useKeyboard();
 
-const store = useDecksStore();
+const decksStore = useDecksStore();
 const collectionStore = useCollectionStore();
 const mixerStore = useMixerStore();
 const settingsStore = useSettingsStore();
 onMounted(() => settingsStore.init());
-onUnmounted(() => store.destroy());
+onUnmounted(() => decksStore.destroy());
 
-const editMode = computed({
-  get: () => store.editMode,
-  set: (v) => {
-    store.editMode = v;
-  }
-});
 const enterEditPending = ref(false);
 const collectionHeight = ref(storageGet<number>(STORAGE_KEYS.collectionHeight, 200));
 
@@ -125,25 +105,13 @@ function onResizeStart(e: PointerEvent) {
 }
 
 function tryToggleEditMode() {
-  if (store.editMode) {
-    store.editMode = false;
-    return;
-  }
-  if (
-    store.deckA.loopPlaying ||
-    store.deckB.loopPlaying ||
-    store.deckC.loopPlaying ||
-    store.deckD.loopPlaying
-  ) {
-    enterEditPending.value = true;
-  } else {
-    store.editMode = true;
-  }
+  const entered = decksStore.tryToggleEditMode();
+  if (!entered) enterEditPending.value = true;
 }
 
 function onConfirmEditMode() {
   enterEditPending.value = false;
-  store.editMode = true;
+  decksStore.enterEditMode();
 }
 </script>
 

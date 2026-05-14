@@ -11,6 +11,11 @@ pub struct AppState {
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
+fn band_normalization_scale(band: &[f32]) -> f32 {
+    let max = band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
+    if max > 0.0 { 1.0 / max } else { 1.0 }
+}
+
 fn get_deck(
     state: &tauri::State<'_, AppState>,
     deck: &str,
@@ -123,18 +128,9 @@ async fn load_track(
         .await
         .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
 
-        let bass_scale = {
-            let m = bass_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-            if m > 0.0 { 1.0 / m } else { 1.0 }
-        };
-        let mid_scale = {
-            let m = mid_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-            if m > 0.0 { 1.0 / m } else { 1.0 }
-        };
-        let high_scale = {
-            let m = high_band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-            if m > 0.0 { 1.0 / m } else { 1.0 }
-        };
+        let bass_scale = band_normalization_scale(&bass_band);
+        let mid_scale = band_normalization_scale(&mid_band);
+        let high_scale = band_normalization_scale(&high_band);
 
         {
             let mut d = deck_arc.lock().unwrap();
@@ -415,37 +411,41 @@ fn get_waveform_region(
     ))
 }
 
-// Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points.
-// Each band value is normalized by its per-band global max so colors reflect
-// spectral balance rather than absolute amplitude.
+// Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
+// f32 little-endian bytes. Binary transfer avoids JSON serialization overhead
+// that would otherwise cause GC pauses on large waveform loads.
 #[tauri::command]
-fn get_spectral_waveform_region(
+async fn get_spectral_waveform_region(
     state: tauri::State<'_, AppState>,
     deck: String,
     start_sec: f64,
     end_sec: f64,
     num_points: usize,
-) -> Result<Vec<f32>, String> {
+) -> Result<tauri::ipc::Response, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (samples, channels, bass, mid, high, bass_scale, mid_scale, high_scale, device_sr) = {
         let d = deck_arc.lock().unwrap();
         (
-            std::sync::Arc::clone(&d.samples),
+            Arc::clone(&d.samples),
             d.channels,
-            std::sync::Arc::clone(&d.bass_band),
-            std::sync::Arc::clone(&d.mid_band),
-            std::sync::Arc::clone(&d.high_band),
+            Arc::clone(&d.bass_band),
+            Arc::clone(&d.mid_band),
+            Arc::clone(&d.high_band),
             d.bass_scale,
             d.mid_scale,
             d.high_scale,
             d.device_sample_rate,
         )
     };
-    Ok(audio::compute_spectral_waveform_region(
-        &samples, channels, &bass, &mid, &high,
-        device_sr, bass_scale, mid_scale, high_scale,
-        start_sec, end_sec, num_points,
-    ))
+    let floats = tokio::task::spawn_blocking(move || {
+        audio::compute_spectral_waveform_region(
+            &samples, channels, &bass, &mid, &high,
+            device_sr, bass_scale, mid_scale, high_scale,
+            start_sec, end_sec, num_points,
+        )
+    }).await.map_err(|e| e.to_string())?;
+    let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]

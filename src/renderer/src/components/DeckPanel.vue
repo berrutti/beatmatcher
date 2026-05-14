@@ -69,7 +69,7 @@
       </button>
     </div>
 
-    <div v-if="props.deck.loading" class="deck__loading-bar" />
+    <div class="deck__loading-bar" />
 
     <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
       <span class="deck__drop-hint">{{
@@ -111,7 +111,7 @@
               @mouseup="props.deck.nudgeEnd()"
               @mouseleave="props.deck.nudgeEnd()"
             >
-              <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.NUDGE_BACK }}</span>
+              <span class="deck__btn-key" :tabindex="-1">{{ keybindings.NUDGE_BACK }}</span>
               <span class="deck__btn-icon">↶</span>
             </button>
             <button
@@ -123,7 +123,7 @@
               @mouseup="props.deck.nudgeEnd()"
               @mouseleave="props.deck.nudgeEnd()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.NUDGE_FORWARD }}</span>
+              <span class="deck__btn-key">{{ keybindings.NUDGE_FORWARD }}</span>
               <span class="deck__btn-icon">↷</span>
             </button>
           </div>
@@ -138,7 +138,7 @@
               @mouseup="props.deck.cueEnd()"
               @mouseleave="props.deck.cueEnd()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.CUE }}</span>
+              <span class="deck__btn-key">{{ keybindings.CUE }}</span>
               <span>CUE</span>
             </button>
             <button
@@ -148,7 +148,7 @@
               :tabindex="-1"
               @click="onTogglePlay()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.PLAY }}</span>
+              <span class="deck__btn-key">{{ keybindings.PLAY }}</span>
               <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
             </button>
           </div>
@@ -161,7 +161,7 @@
               :tabindex="-1"
               @click="props.deck.setLoopIn()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.LOOP_IN }}</span>
+              <span class="deck__btn-key">{{ keybindings.LOOP_IN }}</span>
               <span class="deck__btn-icon">IN</span>
             </button>
             <button
@@ -169,22 +169,10 @@
               :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
               :disabled="!props.deck.trackLoaded"
               :tabindex="-1"
-              @click="
-                shiftHeld && props.deck.loopActive
-                  ? props.deck.exitLoop()
-                  : shiftHeld && props.deck.loopRegion
-                    ? props.deck.reloop()
-                    : props.deck.setLoopOut()
-              "
+              @click="onLoopOutClick()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.LOOP_OUT_EXIT }}</span>
-              <span class="deck__btn-icon">{{
-                shiftHeld && props.deck.loopActive
-                  ? 'EXIT'
-                  : shiftHeld && props.deck.loopRegion
-                    ? 'RELOOP'
-                    : 'OUT'
-              }}</span>
+              <span class="deck__btn-key">{{ keybindings.LOOP_OUT_EXIT }}</span>
+              <span class="deck__btn-icon">{{ loopOutLabel() }}</span>
             </button>
           </div>
         </div>
@@ -211,11 +199,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import type { DeckBindings } from '@renderer/keybindings';
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
+import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
 import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
@@ -226,8 +214,9 @@ const settingsStore = useSettingsStore();
 
 const props = defineProps<{
   deck: Deck;
-  keybindings: DeckBindings;
 }>();
+
+const keybindings = computed(() => settingsStore.keybindings[props.deck.id as keyof Keybindings]);
 
 const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
@@ -263,6 +252,18 @@ function onPitchDblClick() {
 function onNudgeStart(direction: 'back' | 'forward') {
   if (!props.deck.trackLoaded) return;
   props.deck.nudgeStart(direction);
+}
+
+function loopOutLabel(): string {
+  if (shiftHeld.value && props.deck.loopActive) return 'EXIT';
+  if (shiftHeld.value && props.deck.loopRegion) return 'RELOOP';
+  return 'OUT';
+}
+
+function onLoopOutClick() {
+  if (shiftHeld.value && props.deck.loopActive) props.deck.exitLoop();
+  else if (shiftHeld.value && props.deck.loopRegion) props.deck.reloop();
+  else props.deck.setLoopOut();
 }
 
 function onCueMouseDown() {
@@ -307,20 +308,11 @@ watch(
   }
 );
 
-function buildLoadable(path: string): LoadableTrack | null {
-  const data = collectionStore.getLoadable(path);
-  if (!data) return null;
-  return {
-    ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
-  };
-}
-
 function onCollectionDrop(e: Event) {
   const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
   if (deckId !== props.deck.id) return;
   if (props.deck.loadedPath === path) return;
-  const loadable = buildLoadable(path);
+  const loadable = collectionStore.getLoadableTrack(path);
   if (!loadable) return;
   if (props.deck.loopPlaying) {
     pendingLoad.value = loadable;
@@ -359,12 +351,6 @@ function onConfirmLoad() {
 .deck--drag-over {
   outline: 2px dashed var(--deck-accent);
   outline-offset: -4px;
-}
-
-.deck__waveform {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
 }
 
 .deck__header {
@@ -478,22 +464,27 @@ function onConfirmLoad() {
   height: 2px;
   width: 100%;
   flex-shrink: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--deck-accent) 40%,
-    var(--deck-accent) 60%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: deck-loading-sweep 1.2s ease-in-out infinite;
+  overflow: hidden;
 }
+
+.deck__loading-bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--deck-accent), transparent);
+  transform: translateX(-100%);
+}
+
+.deck--loading .deck__loading-bar::after {
+  animation: deck-loading-sweep 2s ease-in-out infinite;
+}
+
 @keyframes deck-loading-sweep {
-  0% {
-    background-position: 150% 0;
+  from {
+    transform: translateX(-100%);
   }
-  100% {
-    background-position: -50% 0;
+  to {
+    transform: translateX(200%);
   }
 }
 
@@ -537,12 +528,6 @@ function onConfirmLoad() {
 .deck__btn-row {
   display: flex;
   gap: 0.5em;
-}
-
-.todo {
-  display: flex;
-  gap: 0.25em;
-  align-items: center;
 }
 
 .deck__btn {
@@ -654,21 +639,11 @@ function onConfirmLoad() {
   border-color: var(--deck-accent);
   color: var(--deck-accent);
 }
-.deck__btn--loop-set {
-  border-color: #92400e;
-  color: #d97706;
-  background: color-mix(in srgb, #d97706 10%, transparent);
-}
 .deck__btn--loop-active {
   border-color: #ca8a04;
   color: #fbbf24;
   background: color-mix(in srgb, #fbbf24 18%, transparent);
 }
-.deck__btn--reloop {
-  border-color: var(--color-muted);
-  color: var(--color-muted);
-}
-
 .deck__pitch-wrapper {
   display: flex;
   flex-direction: column;
