@@ -1,11 +1,18 @@
 import { defineStore } from 'pinia';
 import { reactive, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { useSavedTracksStore } from '@renderer/stores/savedTracks';
 import type { LoadableTrack } from '@renderer/stores/decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
+
+export type SavedTrack = {
+  path: string;
+  name: string;
+  bpm: number;
+  silenceEnd: number;
+  beatOffset: number;
+};
 
 export type Playlist = {
   id: string;
@@ -25,7 +32,7 @@ export type CollectionEntry = {
 
 type PersistedEntry = { name: string; size: number; path: string | null };
 
-function persist(entries: CollectionEntry[]) {
+function persistCollection(entries: CollectionEntry[]) {
   storageSet(
     STORAGE_KEYS.collection,
     entries.map((t) => ({ name: t.name, size: t.size, path: t.path }))
@@ -33,15 +40,44 @@ function persist(entries: CollectionEntry[]) {
 }
 
 export const useCollectionStore = defineStore('collection', () => {
-  const savedTracks = useSavedTracksStore();
+  const stored = storageGet<Record<string, SavedTrack>>(STORAGE_KEYS.savedTracks, {});
+  const savedTracks = reactive<Record<string, SavedTrack>>(
+    typeof stored === 'object' && stored !== null ? stored : {}
+  );
+
+  function persistSaved() {
+    storageSet(STORAGE_KEYS.savedTracks, savedTracks);
+  }
+
+  function getSaved(path: string): SavedTrack | null {
+    return savedTracks[path] ?? null;
+  }
+
+  function saveSaved(track: SavedTrack) {
+    savedTracks[track.path] = track;
+    persistSaved();
+  }
+
+  function updateSaved(path: string, patch: Partial<Omit<SavedTrack, 'path'>>) {
+    const existing = savedTracks[path];
+    if (!existing) return;
+    savedTracks[path] = { ...existing, ...patch };
+    persistSaved();
+  }
+
+  function removeSaved(path: string) {
+    delete savedTracks[path];
+    persistSaved();
+  }
+
   const isOpen = ref(false);
   const tracks = reactive<CollectionEntry[]>([]);
   const draggingPath = ref<string | null>(null);
 
   const hasPending = computed(() => tracks.some((t) => t.status === 'idle'));
 
-  function bpmFor(entry: CollectionEntry): number | null {
-    return entry.path ? (savedTracks.get(entry.path)?.bpm ?? null) : null;
+  function getBpm(entry: CollectionEntry): number | null {
+    return entry.path ? (getSaved(entry.path)?.bpm ?? null) : null;
   }
 
   for (const p of storageGet<PersistedEntry[]>(STORAGE_KEYS.collection, [])) {
@@ -69,7 +105,7 @@ export const useCollectionStore = defineStore('collection', () => {
         const size = sizes[k];
         if (size === null || size === undefined) return;
         const entry = tracks[i];
-        const hasSaved = savedTracks.get(path) !== null;
+        const hasSaved = getSaved(path) !== null;
         entry.size = size;
         entry.status = hasSaved ? 'ready' : 'idle';
         queueTagRead(entry.id);
@@ -83,7 +119,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   watch(
     () => tracks.map((t) => ({ name: t.name, size: t.size, path: t.path })),
-    () => persist(tracks),
+    () => persistCollection(tracks),
     { deep: true }
   );
 
@@ -99,7 +135,7 @@ export const useCollectionStore = defineStore('collection', () => {
       const size = sizes[i];
       if (size === null || size === undefined) return;
       const name = path.split('/').pop() ?? path;
-      const hasSaved = savedTracks.get(path) !== null;
+      const hasSaved = getSaved(path) !== null;
       const entry: CollectionEntry = {
         id: `${name}-${Math.random().toString(36).slice(2)}`,
         name,
@@ -121,13 +157,13 @@ export const useCollectionStore = defineStore('collection', () => {
       if (existing) {
         if (existing.status === 'missing') {
           existing.path = path ?? existing.path;
-          const hasSaved = existing.path !== null && savedTracks.get(existing.path) !== null;
+          const hasSaved = existing.path !== null && getSaved(existing.path) !== null;
           existing.status = hasSaved ? 'ready' : 'idle';
           queueTagRead(existing.id);
         }
         continue;
       }
-      const hasSaved = path !== null && savedTracks.get(path) !== null;
+      const hasSaved = path !== null && getSaved(path) !== null;
       const entry: CollectionEntry = {
         id: `${file.name}-${Math.random().toString(36).slice(2)}`,
         name: file.name,
@@ -146,7 +182,7 @@ export const useCollectionStore = defineStore('collection', () => {
     const idx = tracks.findIndex((t) => t.id === id);
     if (idx !== -1) {
       const path = tracks[idx].path;
-      if (path) savedTracks.remove(path);
+      if (path) removeSaved(path);
       tracks.splice(idx, 1);
     }
   }
@@ -154,7 +190,7 @@ export const useCollectionStore = defineStore('collection', () => {
   function reanalyzeTrack(id: string) {
     const entry = tracks.find((t) => t.id === id);
     if (!entry || !entry.path) return;
-    savedTracks.remove(entry.path);
+    removeSaved(entry.path);
     entry.status = 'idle';
     analyzeTrack(id);
   }
@@ -190,7 +226,7 @@ export const useCollectionStore = defineStore('collection', () => {
       });
       entry.silenceEnd = result.silenceEnd;
       if (result.bpm !== null && result.bpm > 0) {
-        savedTracks.save({
+        saveSaved({
           path: entry.path,
           name: entry.name,
           bpm: result.bpm,
@@ -259,7 +295,7 @@ export const useCollectionStore = defineStore('collection', () => {
   function setBpm(id: string, bpm: number) {
     const entry = tracks.find((t) => t.id === id);
     if (!entry || !entry.path || bpm <= 0) return;
-    savedTracks.save({
+    saveSaved({
       path: entry.path,
       name: entry.name,
       bpm,
@@ -270,11 +306,11 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   function updateTrack(path: string, patch: { beatOffset?: number; bpm?: number }) {
-    savedTracks.update(path, patch);
+    updateSaved(path, patch);
   }
 
   function getLoadable(path: string): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
-    const saved = savedTracks.get(path);
+    const saved = getSaved(path);
     if (!saved) return null;
     const entry = tracks.find((t) => t.path === path);
     return {
@@ -284,6 +320,16 @@ export const useCollectionStore = defineStore('collection', () => {
       silenceEnd: saved.silenceEnd,
       beatOffset: saved.beatOffset
     };
+  }
+
+  function getLoadableTrack(path: string): LoadableTrack | null {
+    const data = getLoadable(path);
+    return data
+      ? {
+          ...data,
+          onBeatOffsetChange: (sec) => updateTrack(path, { beatOffset: sec })
+        }
+      : null;
   }
 
   async function scanFolders(folders: string[]): Promise<string[]> {
@@ -346,31 +392,31 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   return {
-    isOpen,
-    tracks,
     draggingPath,
     hasPending,
+    isOpen,
     playlists,
-    bpmFor,
-    toggle,
+    tracks,
     addFiles,
     addFilesFromPaths,
-    removeTrack,
-    clearAll,
-    analyzeTrack,
-    reanalyzeTrack,
+    addToPlaylist,
     analyzeAll,
-    setBpm,
-    updateTrack,
-    getLoadable,
-    scanFolders,
-    startDrag,
-    endDrag,
+    analyzeTrack,
+    clearAll,
     createPlaylist,
     deletePlaylist,
-    renamePlaylist,
-    addToPlaylist,
+    endDrag,
+    getBpm,
+    getLoadableTrack,
+    moveInPlaylist,
+    reanalyzeTrack,
     removeFromPlaylist,
-    moveInPlaylist
+    removeTrack,
+    renamePlaylist,
+    scanFolders,
+    setBpm,
+    startDrag,
+    toggle,
+    updateTrack
   };
 });

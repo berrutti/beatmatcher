@@ -169,22 +169,10 @@
               :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
               :disabled="!props.deck.trackLoaded"
               :tabindex="-1"
-              @click="
-                shiftHeld && props.deck.loopActive
-                  ? props.deck.exitLoop()
-                  : shiftHeld && props.deck.loopRegion
-                    ? props.deck.reloop()
-                    : props.deck.setLoopOut()
-              "
+              @click="onLoopOutClick()"
             >
               <span class="deck__btn-key">{{ keybindings.LOOP_OUT_EXIT }}</span>
-              <span class="deck__btn-icon">{{
-                shiftHeld && props.deck.loopActive
-                  ? 'EXIT'
-                  : shiftHeld && props.deck.loopRegion
-                    ? 'RELOOP'
-                    : 'OUT'
-              }}</span>
+              <span class="deck__btn-icon">{{ loopOutLabel() }}</span>
             </button>
           </div>
         </div>
@@ -266,6 +254,18 @@ function onNudgeStart(direction: 'back' | 'forward') {
   props.deck.nudgeStart(direction);
 }
 
+function loopOutLabel(): string {
+  if (shiftHeld.value && props.deck.loopActive) return 'EXIT';
+  if (shiftHeld.value && props.deck.loopRegion) return 'RELOOP';
+  return 'OUT';
+}
+
+function onLoopOutClick() {
+  if (shiftHeld.value && props.deck.loopActive) props.deck.exitLoop();
+  else if (shiftHeld.value && props.deck.loopRegion) props.deck.reloop();
+  else props.deck.setLoopOut();
+}
+
 function onCueMouseDown() {
   if (!props.deck.trackLoaded) return;
   if (props.deck.playing) {
@@ -308,20 +308,11 @@ watch(
   }
 );
 
-function buildLoadable(path: string): LoadableTrack | null {
-  const data = collectionStore.getLoadable(path);
-  if (!data) return null;
-  return {
-    ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
-  };
-}
-
 function onCollectionDrop(e: Event) {
   const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
   if (deckId !== props.deck.id) return;
   if (props.deck.loadedPath === path) return;
-  const loadable = buildLoadable(path);
+  const loadable = collectionStore.getLoadableTrack(path);
   if (!loadable) return;
   if (props.deck.loopPlaying) {
     pendingLoad.value = loadable;
@@ -360,12 +351,6 @@ function onConfirmLoad() {
 .deck--drag-over {
   outline: 2px dashed var(--deck-accent);
   outline-offset: -4px;
-}
-
-.deck__waveform {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
 }
 
 .deck__header {
@@ -545,12 +530,6 @@ function onConfirmLoad() {
   gap: 0.5em;
 }
 
-.todo {
-  display: flex;
-  gap: 0.25em;
-  align-items: center;
-}
-
 .deck__btn {
   display: flex;
   flex-direction: column;
@@ -660,21 +639,11 @@ function onConfirmLoad() {
   border-color: var(--deck-accent);
   color: var(--deck-accent);
 }
-.deck__btn--loop-set {
-  border-color: #92400e;
-  color: #d97706;
-  background: color-mix(in srgb, #d97706 10%, transparent);
-}
 .deck__btn--loop-active {
   border-color: #ca8a04;
   color: #fbbf24;
   background: color-mix(in srgb, #fbbf24 18%, transparent);
 }
-.deck__btn--reloop {
-  border-color: var(--color-muted);
-  color: var(--color-muted);
-}
-
 .deck__pitch-wrapper {
   display: flex;
   flex-direction: column;

@@ -80,10 +80,12 @@ pub(crate) fn flac_writer_thread(
     use std::io::Write;
 
     let pcm_path = format!("{}.pcm", path);
+    const MAX_24BIT: f32 = 8_388_607.0; // 2^23 - 1
+    const MAX_16BIT: f32 = 32_767.0;    // 2^15 - 1
     let (scale, flac_bits): (f32, usize) = if bit_depth == 32 {
-        (8_388_607.0, 24)
+        (MAX_24BIT, 24)
     } else {
-        (32_767.0, 16)
+        (MAX_16BIT, 16)
     };
 
     let mut total_samples_per_channel: usize = 0;

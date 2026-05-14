@@ -55,12 +55,7 @@
       <button class="edit-view__btn edit-view__btn--set-bpm" @click="bpmModalOpen = true">
         SET BPM
       </button>
-      <button
-        class="edit-view__btn edit-view__btn--set-grid"
-        @click="deck.setBeatOffset(deck.getPlayheadPosition())"
-      >
-        SET GRID
-      </button>
+      <button class="edit-view__btn edit-view__btn--set-grid" @click="onSetGrid()">SET GRID</button>
       <button
         class="edit-view__btn edit-view__btn--cue"
         :class="{ 'edit-view__btn--cueing': deck.cueing }"
@@ -96,7 +91,6 @@ const viewEl = ref<HTMLElement | null>(null);
 const pendingLoad = ref<LoadableTrack | null>(null);
 const isDragOver = ref(false);
 const bpmModalOpen = ref(false);
-const loadedPath = ref<string | null>(null);
 
 const collectionStore = useCollectionStore();
 
@@ -122,42 +116,34 @@ watch(
   }
 );
 
-function buildLoadable(path: string): LoadableTrack | null {
-  const data = collectionStore.getLoadable(path);
-  if (!data) return null;
-  return {
-    ...data,
-    onBeatOffsetChange: (sec) => collectionStore.updateTrack(path, { beatOffset: sec })
-  };
+function onSetGrid() {
+  props.deck.setBeatOffset(props.deck.getPlayheadPosition());
 }
 
 function onCollectionDrop(e: Event) {
   const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
   if (deckId !== props.deck.id) return;
-  const loadable = buildLoadable(path);
+  if (props.deck.loadedPath === path) return;
+  const loadable = collectionStore.getLoadableTrack(path);
   if (!loadable) return;
   if (props.deck.loopPlaying) {
     pendingLoad.value = loadable;
     return;
   }
   props.deck.loadTrack(loadable);
-  loadedPath.value = path;
 }
 
 function onConfirmLoad() {
   const loadable = pendingLoad.value;
   pendingLoad.value = null;
-  if (loadable) {
-    props.deck.loadTrack(loadable);
-    loadedPath.value = loadable.path;
-  }
+  if (loadable) props.deck.loadTrack(loadable);
 }
 
 function onBpmSubmit(bpm: number) {
   bpmModalOpen.value = false;
   props.deck.setTrackBpm(bpm);
-  if (loadedPath.value) {
-    collectionStore.updateTrack(loadedPath.value, { bpm });
+  if (props.deck.loadedPath) {
+    collectionStore.updateTrack(props.deck.loadedPath, { bpm });
   }
 }
 

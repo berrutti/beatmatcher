@@ -529,6 +529,35 @@ export const useDecksStore = defineStore('decks', () => {
     deck.naturallyEnded();
   });
 
+  function tryToggleEditMode(): boolean {
+    if (editMode.value) {
+      editMode.value = false;
+      return true;
+    }
+    if (deckA.loopPlaying || deckB.loopPlaying || deckC.loopPlaying || deckD.loopPlaying) {
+      return false;
+    }
+    editMode.value = true;
+    return true;
+  }
+
+  function enterEditMode() {
+    editMode.value = true;
+  }
+
+  function exitEditMode() {
+    editMode.value = false;
+  }
+
+  function bestAvailableDeck(): DeckId | null {
+    if (editMode.value) return 'E';
+    return (
+      DECKS_DISPOSITION.find((id) => !decks[id].trackLoaded) ??
+      DECKS_DISPOSITION.find((id) => !decks[id].loopPlaying) ??
+      null
+    );
+  }
+
   function destroy() {
     deckA.destroy();
     deckB.destroy();
@@ -546,6 +575,10 @@ export const useDecksStore = defineStore('decks', () => {
     decks,
     editMode,
     anyDeckActive,
+    bestAvailableDeck,
+    enterEditMode,
+    exitEditMode,
+    tryToggleEditMode,
     destroy
   };
 });

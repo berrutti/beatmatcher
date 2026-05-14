@@ -157,24 +157,24 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
+    bpmMax,
+    bpmMin,
+    bufferSize,
+    isOpen,
     keybindings,
     limiterEnabled,
     nudgeSensitivity,
     pitchRange,
-    bufferSize,
-    bpmMin,
-    bpmMax,
     recordingBitDepth,
     recordingFormat,
-    isOpen,
     init,
-    setKey,
     resetToDefaults,
+    setBpmRange,
+    setBufferSize,
+    setKey,
     setLimiterEnabled,
     setNudgeSensitivity,
     setPitchRange,
-    setBufferSize,
-    setBpmRange,
     setRecordingBitDepth,
     setRecordingFormat
   };
