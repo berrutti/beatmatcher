@@ -385,7 +385,6 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { CollectionEntry } from '@renderer/stores/collection';
@@ -609,12 +608,13 @@ async function onCreatePlaylist() {
   renameInputEl.value?.select();
 }
 
-function startRename() {
+async function startRename() {
   const p = activePlaylist.value;
   if (!p) return;
   renameValue.value = p.name;
   renamingPlaylist.value = true;
-  nextTick().then(() => renameInputEl.value?.select());
+  await nextTick();
+  renameInputEl.value?.select();
 }
 
 function confirmRename() {
@@ -810,10 +810,7 @@ async function openFolderDialog() {
   const result = await open({ directory: true, multiple: true });
   if (!result) return;
   const folders = Array.isArray(result) ? result : [result];
-  const pathLists = await Promise.all(
-    folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
-  );
-  const paths = pathLists.flat();
+  const paths = await store.scanFolders(folders);
   if (paths.length > 0) store.addFilesFromPaths(paths);
 }
 </script>

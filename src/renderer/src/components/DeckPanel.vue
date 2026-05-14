@@ -69,7 +69,7 @@
       </button>
     </div>
 
-    <div v-if="props.deck.loading" class="deck__loading-bar" />
+    <div class="deck__loading-bar" />
 
     <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
       <span class="deck__drop-hint">{{
@@ -111,7 +111,7 @@
               @mouseup="props.deck.nudgeEnd()"
               @mouseleave="props.deck.nudgeEnd()"
             >
-              <span class="deck__btn-key" :tabindex="-1">{{ props.keybindings.NUDGE_BACK }}</span>
+              <span class="deck__btn-key" :tabindex="-1">{{ keybindings.NUDGE_BACK }}</span>
               <span class="deck__btn-icon">↶</span>
             </button>
             <button
@@ -123,7 +123,7 @@
               @mouseup="props.deck.nudgeEnd()"
               @mouseleave="props.deck.nudgeEnd()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.NUDGE_FORWARD }}</span>
+              <span class="deck__btn-key">{{ keybindings.NUDGE_FORWARD }}</span>
               <span class="deck__btn-icon">↷</span>
             </button>
           </div>
@@ -138,7 +138,7 @@
               @mouseup="props.deck.cueEnd()"
               @mouseleave="props.deck.cueEnd()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.CUE }}</span>
+              <span class="deck__btn-key">{{ keybindings.CUE }}</span>
               <span>CUE</span>
             </button>
             <button
@@ -148,7 +148,7 @@
               :tabindex="-1"
               @click="onTogglePlay()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.PLAY }}</span>
+              <span class="deck__btn-key">{{ keybindings.PLAY }}</span>
               <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
             </button>
           </div>
@@ -161,7 +161,7 @@
               :tabindex="-1"
               @click="props.deck.setLoopIn()"
             >
-              <span class="deck__btn-key">{{ props.keybindings.LOOP_IN }}</span>
+              <span class="deck__btn-key">{{ keybindings.LOOP_IN }}</span>
               <span class="deck__btn-icon">IN</span>
             </button>
             <button
@@ -177,7 +177,7 @@
                     : props.deck.setLoopOut()
               "
             >
-              <span class="deck__btn-key">{{ props.keybindings.LOOP_OUT_EXIT }}</span>
+              <span class="deck__btn-key">{{ keybindings.LOOP_OUT_EXIT }}</span>
               <span class="deck__btn-icon">{{
                 shiftHeld && props.deck.loopActive
                   ? 'EXIT'
@@ -211,11 +211,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import type { DeckBindings } from '@renderer/keybindings';
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
+import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/PhaseRing.vue';
 import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
@@ -226,8 +226,9 @@ const settingsStore = useSettingsStore();
 
 const props = defineProps<{
   deck: Deck;
-  keybindings: DeckBindings;
 }>();
+
+const keybindings = computed(() => settingsStore.keybindings[props.deck.id as keyof Keybindings]);
 
 const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
@@ -478,22 +479,27 @@ function onConfirmLoad() {
   height: 2px;
   width: 100%;
   flex-shrink: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--deck-accent) 40%,
-    var(--deck-accent) 60%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: deck-loading-sweep 1.2s ease-in-out infinite;
+  overflow: hidden;
 }
+
+.deck__loading-bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--deck-accent), transparent);
+  transform: translateX(-100%);
+}
+
+.deck--loading .deck__loading-bar::after {
+  animation: deck-loading-sweep 2s ease-in-out infinite;
+}
+
 @keyframes deck-loading-sweep {
-  0% {
-    background-position: 150% 0;
+  from {
+    transform: translateX(-100%);
   }
-  100% {
-    background-position: -50% 0;
+  to {
+    transform: translateX(200%);
   }
 }
 

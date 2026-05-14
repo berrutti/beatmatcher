@@ -1,10 +1,10 @@
 <template>
   <div class="waveform" :class="{ 'waveform--drag-over': props.isDragOver }">
-    <div v-if="!props.trackData" class="waveform__empty">
+    <div v-show="!props.trackData" class="waveform__empty">
       <span class="waveform__empty-text">No track loaded</span>
     </div>
 
-    <template v-if="props.trackData">
+    <div v-show="props.trackData" class="waveform__content">
       <canvas
         ref="canvasEl"
         class="waveform__canvas"
@@ -24,7 +24,7 @@
           <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -53,7 +53,7 @@ const props = defineProps<{
     startSec: number,
     endSec: number,
     numPoints: number
-  ) => Promise<number[]>;
+  ) => Promise<ArrayBuffer>;
 }>();
 
 const emit = defineEmits<{
@@ -231,6 +231,18 @@ function ensurePeaks() {
   }, 80);
 }
 
+async function buildBitmap(peaks: Float32Array, bitmapW: number, canvasH: number) {
+  try {
+    const imgData = buildWaveformImageData(bitmapW, canvasH, peaks, WAVEFORM_AMP_SCALE);
+    const bmp = await createImageBitmap(imgData);
+    if (cachedPeaks === peaks) waveImgBitmap = bmp;
+  } catch {
+    // createImageBitmap failure — skip this bitmap update
+  } finally {
+    bitmapBuildInFlight = false;
+  }
+}
+
 function ensureBitmap(canvasW: number, canvasH: number) {
   if (!cachedPeaks) return;
   const cacheSpan = cachedEndSec - cachedStartSec;
@@ -249,19 +261,12 @@ function ensureBitmap(canvasW: number, canvasH: number) {
   if (sameSource && sameSize && closeWidth) return;
   if (bitmapBuildInFlight) return;
 
+  const peaksSnapshot = cachedPeaks;
   bitmapForPeaks = cachedPeaks;
   bitmapCanvasH = canvasH;
   bitmapPixelW = bitmapW;
   bitmapBuildInFlight = true;
-  const imgData = buildWaveformImageData(bitmapW, canvasH, cachedPeaks, WAVEFORM_AMP_SCALE);
-  createImageBitmap(imgData)
-    .then((bmp) => {
-      waveImgBitmap = bmp;
-    })
-    .catch(() => {})
-    .finally(() => {
-      bitmapBuildInFlight = false;
-    });
+  buildBitmap(peaksSnapshot, bitmapW, canvasH);
 }
 
 function pxToSec(px: number): number {
@@ -646,6 +651,13 @@ watch(
   font-size: 0.7rem;
   letter-spacing: 0.12em;
   opacity: 0.6;
+}
+
+.waveform__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .waveform__canvas {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref } from 'vue';
+import { reactive, ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -58,14 +58,13 @@ function createDeck(id: DeckId, accent: string, name: string) {
       if (loadGeneration !== generation) return;
       const startPt = Math.floor((i * totalPoints) / CHUNKS);
       const endPt = Math.floor(((i + 1) * totalPoints) / CHUNKS);
-      const chunk = await invoke<number[]>('get_spectral_waveform_region', {
-        deck: id,
-        startSec: (duration * startPt) / totalPoints,
-        endSec: (duration * endPt) / totalPoints,
-        numPoints: endPt - startPt
-      });
+      const chunkBuf = await state.getSpectralWaveformRegion(
+        (duration * startPt) / totalPoints,
+        (duration * endPt) / totalPoints,
+        endPt - startPt
+      );
       if (loadGeneration !== generation) return;
-      buffer.set(new Float32Array(chunk), startPt * 4);
+      buffer.set(new Float32Array(chunkBuf), startPt * 4);
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
     if (loadGeneration !== generation) return;
@@ -198,9 +197,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.loopRegion = null;
       state.loopActive = false;
       state.trackData = null;
-      state.fullSpectralData = null;
-      state.denseSpectralData = null;
-      state.denseSpectralRate = 0;
       positionCache = 0;
 
       onBeatOffsetChangeCb = data.onBeatOffsetChange;
@@ -236,25 +232,19 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const overviewPoints = Math.min(2000, Math.max(256, Math.ceil(info.duration * 4)));
       const densePoints = Math.max(256, Math.ceil(info.duration * DENSE_LOD_PTS_PER_SEC));
       const gen = loadGeneration;
-      const unlisten = await listen<string>('bands-ready', (event) => {
+      const unlisten = await listen<string>('bands-ready', async (event) => {
         if (event.payload !== id) return;
         bandsReadyUnlisten = null;
-        unlisten();
-        invoke<number[]>('get_spectral_waveform_region', {
-          deck: id,
-          startSec: 0,
-          endSec: info.duration,
-          numPoints: overviewPoints
-        })
-          .then((result) => {
-            if (loadGeneration !== gen) return;
-            state.fullSpectralData = new Float32Array(result);
-            state.loading = false;
-          })
-          .catch(() => {
-            if (loadGeneration === gen) state.loading = false;
-          });
-        fetchDenseLodChunked(gen, info.duration, densePoints).catch(() => {});
+        setTimeout(unlisten, 0);
+        try {
+          const result = await state.getSpectralWaveformRegion(0, info.duration, overviewPoints);
+          if (loadGeneration !== gen) return;
+          state.fullSpectralData = new Float32Array(result);
+          state.loading = false;
+          fetchDenseLodChunked(gen, info.duration, densePoints).catch(() => {});
+        } catch {
+          if (loadGeneration === gen) state.loading = false;
+        }
       });
       bandsReadyUnlisten = unlisten;
     },
@@ -445,8 +435,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       startSec: number,
       endSec: number,
       numPoints: number
-    ): Promise<number[]> {
-      return invoke<number[]>('get_spectral_waveform_region', {
+    ): Promise<ArrayBuffer> {
+      return invoke<ArrayBuffer>('get_spectral_waveform_region', {
         deck: id,
         startSec,
         endSec,
@@ -519,6 +509,20 @@ export const useDecksStore = defineStore('decks', () => {
   };
   const editMode = ref(false);
 
+  const anyDeckActive = computed(
+    () =>
+      deckA.loopPlaying ||
+      deckA.cueing ||
+      deckB.loopPlaying ||
+      deckB.cueing ||
+      deckC.loopPlaying ||
+      deckC.cueing ||
+      deckD.loopPlaying ||
+      deckD.cueing ||
+      deckE.loopPlaying ||
+      deckE.cueing
+  );
+
   listen<string>('track-ended', (event) => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
@@ -541,6 +545,7 @@ export const useDecksStore = defineStore('decks', () => {
     deckE,
     decks,
     editMode,
+    anyDeckActive,
     destroy
   };
 });

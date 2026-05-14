@@ -25,15 +25,18 @@ export function buildWaveformImageData(
 ): ImageData {
   const img = new ImageData(cw, ch);
   const px = img.data;
-  for (let i = 0; i < px.length; i += 4) {
-    px[i] = BACKGROUND_R;
-    px[i + 1] = BACKGROUND_G;
-    px[i + 2] = BACKGROUND_B;
-    px[i + 3] = 255;
-  }
   const halfCh = ch / 2;
   const numPoints = (peaks.length / 4) | 0;
+
   for (let col = 0; col < cw; col++) {
+    for (let row = 0; row < ch; row++) {
+      const idx = (row * cw + col) * 4;
+      px[idx] = BACKGROUND_R;
+      px[idx + 1] = BACKGROUND_G;
+      px[idx + 2] = BACKGROUND_B;
+      px[idx + 3] = 255;
+    }
+
     const srcStart = (col * numPoints) / cw;
     const srcEnd = ((col + 1) * numPoints) / cw;
     const iStart = srcStart | 0;
@@ -55,23 +58,23 @@ export function buildWaveformImageData(
     }
 
     const avgAmp = count > 0 ? sumAmp / count : 0;
-    if (avgAmp < 0.001) continue;
-
-    const displayAmp = Math.sqrt(avgAmp);
-    const avgBass = sumAmp > 0 ? sumR / sumAmp : 0;
-    const avgMid = sumAmp > 0 ? sumG / sumAmp : 0;
-    const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
-    const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
-
-    const barPx = (displayAmp * halfCh * ampScale) | 0;
-    const yTop = Math.max(0, (halfCh | 0) - barPx);
-    const yBot = Math.min(ch, (halfCh | 0) + barPx);
-    for (let row = yTop; row < yBot; row++) {
-      const idx = (row * cw + col) * 4;
-      px[idx] = r;
-      px[idx + 1] = g;
-      px[idx + 2] = b;
+    if (avgAmp >= 0.001) {
+      const displayAmp = Math.sqrt(avgAmp);
+      const avgBass = sumAmp > 0 ? sumR / sumAmp : 0;
+      const avgMid = sumAmp > 0 ? sumG / sumAmp : 0;
+      const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
+      const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
+      const barPx = (displayAmp * halfCh * ampScale) | 0;
+      const yTop = Math.max(0, (halfCh | 0) - barPx);
+      const yBot = Math.min(ch, (halfCh | 0) + barPx);
+      for (let row = yTop; row < yBot; row++) {
+        const idx = (row * cw + col) * 4;
+        px[idx] = r;
+        px[idx + 1] = g;
+        px[idx + 2] = b;
+      }
     }
   }
+
   return img;
 }

@@ -56,26 +56,30 @@ export const useCollectionStore = defineStore('collection', () => {
     });
   }
 
-  if (tracks.length > 0) {
+  async function checkInitialFileSizes() {
     const pathsWithIdx = tracks
       .map((t, i) => (t.path ? { path: t.path, i } : null))
       .filter((x): x is { path: string; i: number } => x !== null);
-    if (pathsWithIdx.length > 0) {
-      invoke<(number | null)[]>('files_info', { paths: pathsWithIdx.map((x) => x.path) })
-        .then((sizes) => {
-          pathsWithIdx.forEach(({ path, i }, k) => {
-            const size = sizes[k];
-            if (size === null || size === undefined) return;
-            const entry = tracks[i];
-            const hasSaved = savedTracks.get(path) !== null;
-            entry.size = size;
-            entry.status = hasSaved ? 'ready' : 'idle';
-            queueTagRead(entry.id);
-          });
-        })
-        .catch(() => {});
+    if (pathsWithIdx.length === 0) return;
+    try {
+      const sizes = await invoke<(number | null)[]>('files_info', {
+        paths: pathsWithIdx.map((x) => x.path)
+      });
+      pathsWithIdx.forEach(({ path, i }, k) => {
+        const size = sizes[k];
+        if (size === null || size === undefined) return;
+        const entry = tracks[i];
+        const hasSaved = savedTracks.get(path) !== null;
+        entry.size = size;
+        entry.status = hasSaved ? 'ready' : 'idle';
+        queueTagRead(entry.id);
+      });
+    } catch {
+      // ignore, tracks stay in 'missing' state
     }
   }
+
+  if (tracks.length > 0) checkInitialFileSizes();
 
   watch(
     () => tracks.map((t) => ({ name: t.name, size: t.size, path: t.path })),
@@ -282,6 +286,13 @@ export const useCollectionStore = defineStore('collection', () => {
     };
   }
 
+  async function scanFolders(folders: string[]): Promise<string[]> {
+    const pathLists = await Promise.all(
+      folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
+    );
+    return pathLists.flat();
+  }
+
   function startDrag(path: string) {
     draggingPath.value = path;
   }
@@ -352,6 +363,7 @@ export const useCollectionStore = defineStore('collection', () => {
     setBpm,
     updateTrack,
     getLoadable,
+    scanFolders,
     startDrag,
     endDrag,
     createPlaylist,

@@ -26,31 +26,13 @@
     <div class="app__body">
       <EditView v-if="editMode" :deck="store.deckE" @close="editMode = false" />
       <div v-else class="app__play" :class="{ 'app__play--two-deck': mixerStore.deckCount === 2 }">
-        <DeckPanel
-          class="app__deck-a"
-          :deck="store.deckA"
-          :keybindings="settingsStore.keybindings.deckA"
-        />
-        <DeckPanel
-          v-if="mixerStore.deckCount === 4"
-          class="app__deck-c"
-          :deck="store.deckC"
-          :keybindings="settingsStore.keybindings.deckC"
-        />
+        <DeckPanel class="app__deck-a" :deck="store.deckA" />
+        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-c" :deck="store.deckC" />
         <div class="app__center">
           <MixerPanel />
         </div>
-        <DeckPanel
-          class="app__deck-b"
-          :deck="store.deckB"
-          :keybindings="settingsStore.keybindings.deckB"
-        />
-        <DeckPanel
-          v-if="mixerStore.deckCount === 4"
-          class="app__deck-d"
-          :deck="store.deckD"
-          :keybindings="settingsStore.keybindings.deckD"
-        />
+        <DeckPanel class="app__deck-b" :deck="store.deckB" />
+        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-d" :deck="store.deckD" />
       </div>
     </div>
 

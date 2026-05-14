@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { DeckId } from './decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
+import { useSettingsStore } from '@renderer/stores/settings';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 
@@ -158,6 +159,39 @@ export const useMixerStore = defineStore('mixer', () => {
     }
   }
 
+  async function getDeckLevels(): Promise<Record<string, [number, number]>> {
+    return invoke<Record<string, [number, number]>>('get_deck_levels');
+  }
+
+  async function getMasterLevel(): Promise<[number, number]> {
+    return invoke<[number, number]>('get_master_level');
+  }
+
+  async function startRecording(): Promise<void> {
+    const settings = useSettingsStore();
+    await invoke('start_recording', {
+      bitDepth: settings.recordingBitDepth,
+      useFlac: settings.recordingFormat === 'flac'
+    });
+  }
+
+  async function stopRecording(): Promise<string> {
+    return invoke<string>('stop_recording');
+  }
+
+  async function pickSavePath(): Promise<string | null> {
+    const settings = useSettingsStore();
+    return invoke<string | null>('pick_save_path', { format: settings.recordingFormat });
+  }
+
+  async function saveRecording(src: string, dest: string): Promise<void> {
+    await invoke('save_recording', { src, dest });
+  }
+
+  async function discardRecording(path: string): Promise<void> {
+    await invoke('discard_recording', { path });
+  }
+
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
     deviceError.value = '';
     const newCueOffset = channelOffset ?? cueChannelOffset.value;
@@ -222,6 +256,13 @@ export const useMixerStore = defineStore('mixer', () => {
     deviceError,
     loadOutputDevices,
     setMainOutputDevice,
-    setCueOutputDevice
+    setCueOutputDevice,
+    getDeckLevels,
+    getMasterLevel,
+    startRecording,
+    stopRecording,
+    pickSavePath,
+    saveRecording,
+    discardRecording
   };
 });

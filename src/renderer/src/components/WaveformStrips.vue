@@ -8,7 +8,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { spectralColor } from '@renderer/utils/waveformImage';
 
-type PhaseSource = {
+type WaveformStripsSource = {
   getPosition: () => number;
   getBpm: () => number | null;
   getBeatOffset: () => number;
@@ -18,7 +18,7 @@ type PhaseSource = {
   accent: string;
 };
 
-const props = defineProps<{ sources: PhaseSource[] }>();
+const props = defineProps<{ sources: WaveformStripsSource[] }>();
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_W = 256;
@@ -29,6 +29,8 @@ const BUFFER_SEC = 30;
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
 let resizeObserver: ResizeObserver | null = null;
+
+const ROWS_PER_CHUNK = 500;
 
 type OffscreenState = {
   canvas: HTMLCanvasElement | null;
@@ -41,6 +43,7 @@ type OffscreenState = {
   bufferStartSec: number;
   lastBuiltH: number;
   lastBuiltDpr: number;
+  isBuilding: boolean;
 };
 
 let states: OffscreenState[] = [];
@@ -54,18 +57,23 @@ function initStates() {
     numRows: 0,
     bufferStartSec: 0,
     lastBuiltH: 0,
-    lastBuiltDpr: 0
+    lastBuiltDpr: 0,
+    isBuilding: false
   }));
 }
 
-function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+  const s = states[i];
+  s.isBuilding = true;
+  await new Promise<void>((r) => setTimeout(r, 0));
+
   const src = props.sources[i];
   const data = src.getDenseData();
-  const s = states[i];
 
   if (!data) {
     s.canvas = null;
     s.builtFrom = null;
+    s.isBuilding = false;
     return;
   }
 
@@ -89,20 +97,18 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
   canvas.width = OFFSCREEN_W;
   canvas.height = numRows;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) {
+    s.isBuilding = false;
+    return;
+  }
 
   const imageData = ctx.createImageData(OFFSCREEN_W, numRows);
   const px = imageData.data;
   const cx = OFFSCREEN_W / 2;
 
-  for (let p = 0; p < px.length; p += 4) {
-    px[p] = 10;
-    px[p + 1] = 10;
-    px[p + 2] = 10;
-    px[p + 3] = 255;
-  }
-
   for (let row = 0; row < numRows; row++) {
+    const rowBase = row * OFFSCREEN_W * 4;
+
     let bass = 0,
       mid = 0,
       high = 0,
@@ -118,6 +124,15 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
       amp += data[di + 3];
       count++;
     }
+
+    const rowEnd = rowBase + OFFSCREEN_W * 4;
+    for (let p = rowBase; p < rowEnd; p += 4) {
+      px[p] = 10;
+      px[p + 1] = 10;
+      px[p + 2] = 10;
+      px[p + 3] = 255;
+    }
+
     if (count === 0) continue;
     bass /= count;
     mid /= count;
@@ -130,12 +145,25 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
     const xRight = Math.min(OFFSCREEN_W - 1, Math.round(cx + barW));
 
     for (let x = xLeft; x <= xRight; x++) {
-      const idx = (row * OFFSCREEN_W + x) * 4;
+      const idx = rowBase + x * 4;
       px[idx] = r;
       px[idx + 1] = g;
       px[idx + 2] = b;
       px[idx + 3] = 255;
     }
+
+    if ((row + 1) % ROWS_PER_CHUNK === 0) {
+      if (src.getDenseData() !== data) {
+        s.isBuilding = false;
+        return;
+      }
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
+  }
+
+  if (src.getDenseData() !== data) {
+    s.isBuilding = false;
+    return;
   }
 
   ctx.putImageData(imageData, 0, 0);
@@ -148,6 +176,7 @@ function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: numb
   s.bufferStartSec = bufferStartSec;
   s.lastBuiltH = h;
   s.lastBuiltDpr = dpr;
+  s.isBuilding = false;
 }
 
 function draw() {
@@ -193,7 +222,7 @@ function draw() {
       pos < s.bufferStartSec + edgeGuard ||
       pos > bufferEndSec - edgeGuard;
 
-    if (needsRebuild) buildOffscreenWindow(si, pos, h, dpr);
+    if (needsRebuild && !s.isBuilding) buildOffscreenWindow(si, pos, h, dpr).catch(() => {});
     if (!s.canvas) continue;
 
     // rate > 1 means pitched up: audio advances faster than real time, so the
