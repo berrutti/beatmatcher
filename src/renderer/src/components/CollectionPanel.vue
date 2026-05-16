@@ -33,7 +33,7 @@
             v-model="searchQuery"
             class="collection__search"
             type="text"
-            placeholder="search"
+            placeholder="Search"
             spellcheck="false"
             @pointerdown="onSearchPointerDown"
             @keydown.esc="searchQuery = ''"
@@ -66,7 +66,6 @@
       </template>
 
       <template v-else>
-        <button class="collection__header-btn" @click="activePlaylistId = null">← BACK</button>
         <input
           v-if="renamingPlaylist"
           ref="renameInputEl"
@@ -77,15 +76,8 @@
           @keydown.esc="cancelRename"
           @blur="confirmRename"
         />
-        <span v-else class="collection__playlist-title">{{ activePlaylist?.name }}</span>
-        <button
-          v-if="!renamingPlaylist"
-          class="collection__header-btn"
-          style="margin-left: 0"
-          @click="startRename"
-        >
-          RENAME
-        </button>
+        <span v-else class="collection__playlist-title" @click="startRename">{{ activePlaylist?.name }}</span>
+        <button class="collection__header-btn" style="margin-left: 0" @click="activePlaylistId = null">BACK</button>
       </template>
     </div>
 
@@ -349,7 +341,7 @@
     />
     <ConfirmModal
       :open="pendingDeletePlaylistId !== null"
-      title="Delete playlist?"
+      :title="`Delete '${pendingDeletePlaylistName}'?`"
       body="This cannot be undone. Tracks in your collection are not affected."
       confirm-label="Delete"
       @confirm="confirmDeletePlaylist"
@@ -367,11 +359,28 @@
     <Teleport to="body">
       <div
         v-if="contextMenu"
+        ref="contextMenuEl"
         class="context-menu"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
         <button class="context-menu__item" @click="onContextMenuReanalyze">Recalculate BPM</button>
+        <template v-if="store.playlists.length > 0">
+          <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
+            <span>Add to playlist</span>
+            <span class="context-menu__arrow">▶</span>
+            <div class="context-menu__submenu" :class="{ 'context-menu__submenu--flip': subFlipped }">
+              <button
+                v-for="playlist in store.playlists"
+                :key="playlist.id"
+                class="context-menu__item"
+                @click="onContextMenuAddToPlaylist(playlist.id)"
+              >
+                {{ playlist.name }}
+              </button>
+            </div>
+          </div>
+        </template>
       </div>
       <div
         v-if="contextMenu"
@@ -417,11 +426,29 @@ const sortDir = ref<'asc' | 'desc'>('asc');
 const pendingDeletePlaylistId = ref<string | null>(null);
 const pendingRemoveTrackId = ref<string | null>(null);
 
+const pendingDeletePlaylistName = computed(
+  () => store.playlists.find((p) => p.id === pendingDeletePlaylistId.value)?.name ?? ''
+);
+
 type ContextMenu = { trackId: string; x: number; y: number };
 const contextMenu = ref<ContextMenu | null>(null);
+const contextMenuEl = ref<HTMLElement | null>(null);
+const subFlipped = ref(false);
 
-function openContextMenu(e: MouseEvent, trackId: string) {
+async function openContextMenu(e: MouseEvent, trackId: string) {
   contextMenu.value = { trackId, x: e.clientX, y: e.clientY };
+  await nextTick();
+  if (!contextMenuEl.value || !contextMenu.value) return;
+  const rect = contextMenuEl.value.getBoundingClientRect();
+  const x = rect.right > window.innerWidth ? e.clientX - rect.width : e.clientX;
+  const y = rect.bottom > window.innerHeight ? e.clientY - rect.height : e.clientY;
+  contextMenu.value = { ...contextMenu.value, x, y };
+}
+
+function onSubEnter(e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const submenuHeight = store.playlists.length * 32 + 8;
+  subFlipped.value = rect.top + submenuHeight > window.innerHeight;
 }
 
 function closeContextMenu() {
@@ -430,6 +457,12 @@ function closeContextMenu() {
 
 function onContextMenuReanalyze() {
   if (contextMenu.value) store.reanalyzeTrack(contextMenu.value.trackId);
+  closeContextMenu();
+}
+
+function onContextMenuAddToPlaylist(playlistId: string) {
+  const track = store.tracks.find((t) => t.id === contextMenu.value?.trackId);
+  if (track?.path) store.addToPlaylist(playlistId, track.path);
   closeContextMenu();
 }
 
@@ -952,15 +985,27 @@ async function openFolderDialog() {
 }
 
 .collection__playlist-title {
+  margin-left: auto;
+  min-width: 0;
   font-size: 0.78em;
   color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 12em;
+  cursor: pointer;
+  border: 1px solid transparent;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+}
+
+.collection__playlist-title:hover {
+  color: #fff;
 }
 
 .collection__playlist-rename {
+  margin-left: auto;
+  min-width: 0;
+  width: 14em;
   background: transparent;
   border: 1px solid #555;
   color: var(--color-text);
@@ -969,7 +1014,6 @@ async function openFolderDialog() {
   padding: 0.2em 0.4em;
   border-radius: 3px;
   outline: none;
-  width: 10em;
 }
 
 .collection__body {
@@ -1307,5 +1351,48 @@ async function openFolderDialog() {
 .context-menu__item:hover {
   background: #2a2a2a;
   color: #fff;
+}
+
+.context-menu__separator {
+  height: 1px;
+  background: #333;
+  margin: 4px 0;
+}
+
+.context-menu__item--sub {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: default;
+}
+
+.context-menu__arrow {
+  font-size: 0.6em;
+  opacity: 0.5;
+  margin-left: 12px;
+}
+
+.context-menu__submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  z-index: 1001;
+}
+
+.context-menu__item--sub:hover .context-menu__submenu {
+  display: block;
+}
+
+.context-menu__submenu--flip {
+  top: auto;
+  bottom: -4px;
 }
 </style>
