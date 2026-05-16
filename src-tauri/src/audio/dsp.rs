@@ -273,6 +273,9 @@ const FILTER_RESONANCE_Q: f32 = 2.0;
 const FILTER_CENTER_Q: f32 = 0.5;
 const FILTER_CENTER_DEAD_ZONE: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
+// Crossfade time for bypass toggle. The filter output is crossfaded with the
+// dry signal so the knob position never sweeps during a bypass transition.
+const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
 // Coefficients are refreshed every N samples (knob is already smoothed per-sample).
 // Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
 const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
@@ -289,11 +292,18 @@ pub(crate) struct FilterState {
     // Two cascaded 2nd-order stages per channel give 4th-order (-24 dB/oct) rolloff.
     filters_a: [Biquad; 2],
     filters_b: [Biquad; 2],
+    // Dry/wet crossfade: 0.0 = fully filtered, 1.0 = fully dry (bypassed).
+    // The filter always runs at its set position; bypass is a gain crossfade,
+    // never a frequency sweep.
+    crossfade: f32,
+    crossfade_target: f32,
+    crossfade_coeff: f32,
 }
 
 impl FilterState {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let smoothing_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_SMOOTHING_TAU_SEC)).exp();
+        let crossfade_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_CROSSFADE_TAU_SEC)).exp();
         Self {
             sample_rate,
             target_knob: 0.0,
@@ -302,11 +312,18 @@ impl FilterState {
             coeff_refresh_counter: 0,
             filters_a: [Biquad::identity(), Biquad::identity()],
             filters_b: [Biquad::identity(), Biquad::identity()],
+            crossfade: 1.0,
+            crossfade_target: 1.0,
+            crossfade_coeff,
         }
     }
 
-    pub(crate) fn set(&mut self, v: f32) {
+    pub(crate) fn set_knob(&mut self, v: f32) {
         self.target_knob = v.clamp(-1.0, 1.0);
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool) {
+        self.crossfade_target = if active { 0.0 } else { 1.0 };
     }
 
     fn update_filters(&mut self) {
@@ -364,11 +381,14 @@ impl FilterState {
             1.0
         };
 
-        let l1 = self.filters_a[0].process(l);
-        let r1 = self.filters_a[1].process(r);
-        let l2 = self.filters_b[0].process(l1) * kill_gain;
-        let r2 = self.filters_b[1].process(r1) * kill_gain;
-        (l2, r2)
+        // Filter always runs at its set position. Bypass is a crossfade between
+        // filtered and dry so no frequency sweep ever happens during a toggle.
+        let l_filtered = self.filters_b[0].process(self.filters_a[0].process(l)) * kill_gain;
+        let r_filtered = self.filters_b[1].process(self.filters_a[1].process(r)) * kill_gain;
+
+        self.crossfade += (self.crossfade_target - self.crossfade) * self.crossfade_coeff;
+        let cf = self.crossfade;
+        (l * cf + l_filtered * (1.0 - cf), r * cf + r_filtered * (1.0 - cf))
     }
 }
 

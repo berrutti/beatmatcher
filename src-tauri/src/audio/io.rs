@@ -190,6 +190,37 @@ pub fn read_tags(path: &str) -> TrackTags {
     TrackTags { title, artist }
 }
 
+pub fn read_cover_art(path: &str) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use symphonia::core::meta::StandardVisualKey;
+
+    fn first_visual(visuals: &[symphonia::core::meta::Visual]) -> Option<String> {
+        let v = visuals
+            .iter()
+            .find(|v| v.usage == Some(StandardVisualKey::FrontCover))
+            .or_else(|| visuals.first())?;
+        let media_type = if v.media_type.is_empty() { "image/jpeg" } else { &v.media_type };
+        Some(format!("data:{};base64,{}", media_type, STANDARD.encode(&*v.data)))
+    }
+
+    let mut probed = open_format(path).ok()?;
+
+    if let Some(rev) = probed.metadata.get().and_then(|m| m.current().cloned()) {
+        if let Some(url) = first_visual(rev.visuals()) {
+            return Some(url);
+        }
+    }
+
+    let mut format = probed.format;
+    if let Some(rev) = format.metadata().current() {
+        if let Some(url) = first_visual(rev.visuals()) {
+            return Some(url);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

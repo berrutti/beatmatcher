@@ -19,6 +19,7 @@ export type TrackData = {
   sampleRate: number;
   bpm: number | null;
   silenceEnd: number;
+  coverArt: string | null;
 };
 
 export type LoadableTrack = {
@@ -124,6 +125,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     // fetches; see WaveformDisplay for the switching logic.
     denseSpectralData: null as Float32Array | null,
     denseSpectralRate: 0,
+    coverArt: null as string | null,
     loopPlaying: false,
     loopRegion: null as LoopRegion | null,
     loopActive: false,
@@ -209,6 +211,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
       state.trackName = data.name;
       state.trackData = info;
+      state.coverArt = info.coverArt ?? null;
       state.trackLoaded = true;
       state.loadedPath = data.path;
 
@@ -468,6 +471,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.fullSpectralData = null;
       state.denseSpectralData = null;
       state.denseSpectralRate = 0;
+      state.coverArt = null;
       state.trackName = '';
       state.trackLoaded = false;
       state.loadedPath = null;

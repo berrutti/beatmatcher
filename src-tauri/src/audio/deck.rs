@@ -55,8 +55,13 @@ impl ChannelStrip {
     }
 
     pub fn set_filter(&mut self, v: f32) {
-        self.filter.set(v);
-        self.filter_cue.set(v);
+        self.filter.set_knob(v);
+        self.filter_cue.set_knob(v);
+    }
+
+    pub fn set_filter_active(&mut self, active: bool) {
+        self.filter.set_active(active);
+        self.filter_cue.set_active(active);
     }
 
     pub fn set_gain(&mut self, v: f32) {
