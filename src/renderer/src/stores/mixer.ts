@@ -25,7 +25,7 @@ export const useMixerStore = defineStore('mixer', () => {
     B: false,
     C: false,
     D: false,
-    E: false
+    E: false // can never be active
   });
   const filter = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
   const filterEnabled = reactive<Record<DeckId, boolean>>({
@@ -33,7 +33,7 @@ export const useMixerStore = defineStore('mixer', () => {
     B: false,
     C: false,
     D: false,
-    E: false
+    E: false // can never be active
   });
 
   const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
@@ -97,12 +97,12 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function setFilter(deckId: DeckId, v: number) {
     filter[deckId] = Math.max(-1, Math.min(1, v));
-    invoke('set_filter', { deck: deckId, value: filterEnabled[deckId] ? filter[deckId] : 0 });
+    invoke('set_filter', { deck: deckId, value: filter[deckId] });
   }
 
   function toggleFilter(deckId: DeckId) {
     filterEnabled[deckId] = !filterEnabled[deckId];
-    invoke('set_filter', { deck: deckId, value: filterEnabled[deckId] ? filter[deckId] : 0 });
+    invoke('set_filter_active', { deck: deckId, active: filterEnabled[deckId] });
   }
 
   async function loadOutputDevices(): Promise<void> {

@@ -1,6 +1,14 @@
 <template>
   <div class="strips-wrapper">
-    <canvas ref="canvasEl" class="strips-canvas" />
+    <canvas
+      ref="canvasEl"
+      class="strips-canvas"
+      :class="{ 'strips-canvas--dragging': drag !== null }"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+    />
   </div>
 </template>
 
@@ -19,6 +27,11 @@ type WaveformStripsSource = {
 };
 
 const props = defineProps<{ sources: WaveformStripsSource[] }>();
+const emit = defineEmits<{
+  'scrub-start': [sourceIndex: number];
+  scrub: [sourceIndex: number, sec: number];
+  'scrub-end': [sourceIndex: number];
+}>();
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_W = 256;
@@ -29,6 +42,48 @@ const BUFFER_SEC = 30;
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
 let resizeObserver: ResizeObserver | null = null;
+
+type DragState = { stripIndex: number; anchorY: number; anchorPos: number };
+const drag = ref<DragState | null>(null);
+
+function onPointerDown(e: PointerEvent) {
+  const canvas = canvasEl.value;
+  if (!canvas) return;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!w || !h) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const n = props.sources.length;
+  const stripW = w / n;
+  const stripIndex = Math.min(Math.floor(x / stripW), n - 1);
+  if (states[stripIndex]?.canvas === null) return;
+  drag.value = {
+    stripIndex,
+    anchorY: e.clientY,
+    anchorPos: props.sources[stripIndex].getPosition()
+  };
+  canvas.setPointerCapture(e.pointerId);
+  emit('scrub-start', stripIndex);
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (!drag.value) return;
+  const canvas = canvasEl.value;
+  if (!canvas) return;
+  const h = canvas.clientHeight;
+  if (!h) return;
+  const src = props.sources[drag.value.stripIndex];
+  const rate = Math.max(0.1, src.getRate());
+  const dy = e.clientY - drag.value.anchorY;
+  const sec = Math.max(0, drag.value.anchorPos - (dy * (2 * HALF_WINDOW_SEC * rate)) / h);
+  emit('scrub', drag.value.stripIndex, sec);
+}
+
+function onPointerUp() {
+  if (drag.value) emit('scrub-end', drag.value.stripIndex);
+  drag.value = null;
+}
 
 const ROWS_PER_CHUNK = 500;
 
@@ -125,14 +180,6 @@ async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr
       count++;
     }
 
-    const rowEnd = rowBase + OFFSCREEN_W * 4;
-    for (let p = rowBase; p < rowEnd; p += 4) {
-      px[p] = 10;
-      px[p + 1] = 10;
-      px[p + 2] = 10;
-      px[p + 3] = 255;
-    }
-
     if (count === 0) continue;
     bass /= count;
     mid /= count;
@@ -196,8 +243,7 @@ function draw() {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, 0, w, h);
+  ctx.clearRect(0, 0, w, h);
 
   const n = props.sources.length;
   const stripW = Math.floor(w / n);
@@ -206,11 +252,6 @@ function draw() {
     const src = props.sources[i];
     const state = states[i];
     const x0 = i * stripW;
-
-    if (i > 0) {
-      ctx.fillStyle = '#1c1c1c';
-      ctx.fillRect(x0, 0, 1, h);
-    }
 
     const pos = src.getPosition();
     const bufferEndSec = state.bufferStartSec + state.numRows / (state.displayRate || 1);
@@ -261,11 +302,18 @@ function draw() {
       const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
       const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
 
-      ctx.lineWidth = 1;
       for (let bn = nStart; bn <= nEnd; bn++) {
         const tBeat = beatOffset + bn * beatPeriod;
         const yBeat = h / 2 + (((tBeat - pos) / rate) * h) / (2 * HALF_WINDOW_SEC);
-        ctx.strokeStyle = bn % 4 === 0 ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.4)';
+        const alpha = bn % 4 === 0 ? 0.8 : 0.4;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = `rgba(0,0,0,${alpha})`;
+        ctx.beginPath();
+        ctx.moveTo(x0, yBeat);
+        ctx.lineTo(x0 + stripW, yBeat);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
         ctx.beginPath();
         ctx.moveTo(x0, yBeat);
         ctx.lineTo(x0 + stripW, yBeat);
@@ -274,14 +322,27 @@ function draw() {
     }
 
     // Horizontal playhead — same y across all strips; alignment = sync
-    ctx.strokeStyle = src.accent;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.9)';
     ctx.beginPath();
     ctx.moveTo(x0, h / 2);
     ctx.lineTo(x0 + stripW, h / 2);
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(220,30,30,1)';
+    ctx.beginPath();
+    ctx.moveTo(x0, h / 2);
+    ctx.lineTo(x0 + stripW, h / 2);
+    ctx.stroke();
+  }
+
+  // Separators: drawn on top so waveform never covers them.
+  // Show whenever at least one adjacent strip is loaded; skip only between two empty strips.
+  for (let i = 1; i < n; i++) {
+    if (states[i - 1].canvas !== null || states[i].canvas !== null) {
+      ctx.fillStyle = '#2a2a2a';
+      ctx.fillRect(i * stripW, 0, 1, h);
+    }
   }
 
   rafId = requestAnimationFrame(draw);
@@ -341,5 +402,11 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   height: 100%;
+  background: var(--color-bg);
+  cursor: grab;
+}
+
+.strips-canvas--dragging {
+  cursor: grabbing;
 }
 </style>

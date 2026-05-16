@@ -2,6 +2,7 @@ mod audio;
 
 use audio::{AppAudio, ChannelStrip, DeviceInfo, TrackInfo};
 use std::sync::Arc;
+use tauri::menu::{AboutMetadataBuilder, MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Emitter;
 
 pub struct AppState {
@@ -48,8 +49,9 @@ async fn load_track(
     let bpm_max = state.audio.bpm_max.load(std::sync::atomic::Ordering::Relaxed) as f64;
 
     // Run all CPU-heavy work in a single blocking thread.
-    let (samples, channels, bpm, silence_end, native_sr) =
+    let (samples, channels, bpm, silence_end, native_sr, cover_art) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let cover_art = audio::read_cover_art(&path);
             let (raw_samples, channels, native_sr) =
                 audio::decode_audio(&path).map_err(|e| e.to_string())?;
 
@@ -79,7 +81,7 @@ async fn load_track(
                 audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
             };
 
-            Ok((std::sync::Arc::new(resampled), channels, bpm, silence_end, native_sr))
+            Ok((std::sync::Arc::new(resampled), channels, bpm, silence_end, native_sr, cover_art))
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -150,6 +152,7 @@ async fn load_track(
         sample_rate: device_sample_rate,
         bpm,
         silence_end,
+        cover_art,
     })
 }
 
@@ -377,6 +380,16 @@ fn set_filter(
     value: f32,
 ) -> Result<(), String> {
     get_strip(&state, &deck)?.lock().unwrap().set_filter(value);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_filter_active(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    active: bool,
+) -> Result<(), String> {
+    get_strip(&state, &deck)?.lock().unwrap().set_filter_active(active);
     Ok(())
 }
 
@@ -655,7 +668,7 @@ async fn analyze_track(state: tauri::State<'_, AppState>, path: String) -> Resul
         let bpm = audio::detect_bpm(mono, native_sr, bpm_min, bpm_max);
         let silence_end = audio::detect_silence_end(mono, native_sr);
 
-        Ok(TrackInfo { duration, sample_rate: native_sr, bpm, silence_end })
+        Ok(TrackInfo { duration, sample_rate: native_sr, bpm, silence_end, cover_art: None })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -686,6 +699,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(move |app| {
+            let icon = app.default_window_icon().cloned();
+            let about = AboutMetadataBuilder::new()
+                .name(Some("beatmatcher"))
+                .copyright(Some("Copyright 2025 Matias Berrutti\ngithub.com/berrutti/beatmatcher"))
+                .icon(icon)
+                .build();
+            let app_menu = SubmenuBuilder::new(app, "beatmatcher")
+                .item(&PredefinedMenuItem::about(app, None, Some(about))?)
+                .separator()
+                .item(&PredefinedMenuItem::hide(app, None)?)
+                .item(&PredefinedMenuItem::hide_others(app, None)?)
+                .separator()
+                .item(&PredefinedMenuItem::quit(app, None)?)
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&app_menu).build()?;
+            app.set_menu(menu)?;
+
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(app_level)
@@ -727,6 +757,7 @@ pub fn run() {
             set_nudge,
             set_eq,
             set_filter,
+            set_filter_active,
             get_position,
             get_waveform_region,
             get_spectral_waveform_region,

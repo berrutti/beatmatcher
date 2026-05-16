@@ -3,13 +3,17 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import './assets/main.css';
 
-const pinia = createPinia();
-const app = createApp(App);
-app.use(pinia);
-app.mount('#app');
+async function init() {
+  const pinia = createPinia();
+  const app = createApp(App);
+  app.use(pinia);
+  app.mount('#app');
 
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    app.unmount();
-  });
+  if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+      app.unmount();
+    });
+  }
 }
+
+init();

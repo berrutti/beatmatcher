@@ -1,5 +1,8 @@
 <template>
-  <canvas ref="canvasEl" class="phase-ring" />
+  <div class="phase-ring">
+    <img v-if="coverArt" :src="coverArt" class="phase-ring__art" aria-hidden="true" />
+    <canvas ref="canvasEl" class="phase-ring__canvas" />
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -10,22 +13,13 @@ const props = defineProps<{
   trackBpm: number | null;
   beatOffset: number;
   getTrackPosition: () => number | null;
+  coverArt: string | null;
 }>();
 
 const LINE_WIDTH_RATIO = 0.065;
-const FLASH_DECAY = 0.82;
-const BEAT_CROSSING_HIGH = 0.85;
-const BEAT_CROSSING_LOW = 0.15;
-const FLASH_SHADOW_BLUR = 14;
-const DOT_EXTRA_RADIUS = 1;
-const DOT_SHADOW_BASE = 6;
-const DOT_SHADOW_PEAK = 10;
-const SHADOW_PAD = 14;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
-let prevBeatFrac = 0;
-let flashStrength = 0;
 
 function draw() {
   const canvas = canvasEl.value;
@@ -37,7 +31,7 @@ function draw() {
   const LINE_WIDTH = SIZE * LINE_WIDTH_RATIO;
   const cx = SIZE / 2;
   const cy = SIZE / 2;
-  const radius = SIZE / 2 - LINE_WIDTH - SHADOW_PAD;
+  const radius = SIZE / 2 - LINE_WIDTH / 2;
 
   canvas.width = SIZE * dpr;
   canvas.height = SIZE * dpr;
@@ -51,62 +45,28 @@ function draw() {
   ctx.stroke();
 
   let phase4 = 0;
-  let beatFrac = 0;
-  let playing = false;
 
   const positionSec = props.getTrackPosition();
   if (positionSec !== null && props.trackBpm && props.trackBpm > 0) {
-    playing = true;
     const currentBeat = ((positionSec - props.beatOffset) * props.trackBpm) / 60;
-    beatFrac = ((currentBeat % 1) + 1) % 1;
     phase4 = (((currentBeat % 4) + 4) % 4) / 4;
-  }
-
-  if (playing && prevBeatFrac > BEAT_CROSSING_HIGH && beatFrac < BEAT_CROSSING_LOW) {
-    flashStrength = 1.0;
-  }
-  prevBeatFrac = beatFrac;
-
-  if (flashStrength > 0.01) {
-    flashStrength *= FLASH_DECAY;
-  } else {
-    flashStrength = 0;
   }
 
   const startAngle = -Math.PI / 2;
   const endAngle = startAngle + phase4 * Math.PI * 2;
 
-  if (flashStrength > 0.01) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, startAngle, endAngle);
-    ctx.strokeStyle = props.accent;
-    ctx.lineWidth = LINE_WIDTH;
-    ctx.shadowColor = props.accent;
-    ctx.shadowBlur = FLASH_SHADOW_BLUR * flashStrength;
-    ctx.globalAlpha = 0.4 + 0.6 * flashStrength;
-    ctx.stroke();
-    ctx.restore();
-  }
-
   ctx.beginPath();
   ctx.arc(cx, cy, radius, startAngle, endAngle);
   ctx.strokeStyle = props.accent;
   ctx.lineWidth = LINE_WIDTH;
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = 1;
   ctx.stroke();
 
   const dotX = cx + radius * Math.cos(endAngle);
   const dotY = cy + radius * Math.sin(endAngle);
   ctx.beginPath();
-  ctx.arc(dotX, dotY, LINE_WIDTH / 2 + DOT_EXTRA_RADIUS, 0, Math.PI * 2);
+  ctx.arc(dotX, dotY, LINE_WIDTH / 2, 0, Math.PI * 2);
   ctx.fillStyle = props.accent;
-  ctx.shadowColor = props.accent;
-  ctx.shadowBlur = DOT_SHADOW_BASE + DOT_SHADOW_PEAK * flashStrength;
   ctx.fill();
-  ctx.shadowBlur = 0;
 
   rafId = requestAnimationFrame(draw);
 }
@@ -122,8 +82,26 @@ onUnmounted(() => {
 
 <style scoped>
 .phase-ring {
-  display: block;
+  position: relative;
   width: 100%;
   aspect-ratio: 1;
+}
+
+.phase-ring__art {
+  position: absolute;
+  inset: 3.25%;
+  width: calc(100% - 6.5%);
+  height: calc(100% - 6.5%);
+  border-radius: 50%;
+  object-fit: cover;
+  opacity: 0.65;
+}
+
+.phase-ring__canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 </style>

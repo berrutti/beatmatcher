@@ -150,6 +150,9 @@
           accent: decks.deckD.accent
         }
       ]"
+      @scrub-start="onScrubStart"
+      @scrub="onScrub"
+      @scrub-end="onScrubEnd"
     />
   </div>
 </template>
@@ -164,6 +167,28 @@ import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
+
+let scrubSavedVolume: number | null = null;
+
+function onScrubStart(sourceIndex: number) {
+  const deckId = DECKS_DISPOSITION[sourceIndex];
+  if (!deckId) return;
+  scrubSavedVolume = mixer.volume[deckId];
+  mixer.setVolume(deckId, 0);
+}
+
+function onScrub(sourceIndex: number, sec: number) {
+  const deckId = DECKS_DISPOSITION[sourceIndex];
+  if (!deckId) return;
+  decks.decks[deckId].seekTo(sec);
+}
+
+function onScrubEnd(sourceIndex: number) {
+  const deckId = DECKS_DISPOSITION[sourceIndex];
+  if (!deckId || scrubSavedVolume === null) return;
+  mixer.setVolume(deckId, scrubSavedVolume);
+  scrubSavedVolume = null;
+}
 
 const activeDecks = computed<DeckId[]>(() =>
   mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]

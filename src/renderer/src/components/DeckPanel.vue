@@ -97,6 +97,7 @@
             :track-bpm="props.deck.trackBpm"
             :beat-offset="props.deck.beatOffset"
             :get-track-position="() => props.deck.trackPosition"
+            :cover-art="props.deck.coverArt"
           />
         </div>
 
@@ -109,7 +110,7 @@
               :tabindex="-1"
               @mousedown="onNudgeStart('back')"
               @mouseup="props.deck.nudgeEnd()"
-              @mouseleave="props.deck.nudgeEnd()"
+              @mouseleave="onNudgeMouseLeave"
             >
               <span class="deck__btn-key" :tabindex="-1">{{ keybindings.NUDGE_BACK }}</span>
               <span class="deck__btn-icon">↶</span>
@@ -121,7 +122,7 @@
               :tabindex="-1"
               @mousedown="onNudgeStart('forward')"
               @mouseup="props.deck.nudgeEnd()"
-              @mouseleave="props.deck.nudgeEnd()"
+              @mouseleave="onNudgeMouseLeave"
             >
               <span class="deck__btn-key">{{ keybindings.NUDGE_FORWARD }}</span>
               <span class="deck__btn-icon">↷</span>
@@ -136,7 +137,7 @@
               :tabindex="-1"
               @mousedown.prevent="onCueMouseDown()"
               @mouseup="props.deck.cueEnd()"
-              @mouseleave="props.deck.cueEnd()"
+              @mouseleave="onCueMouseLeave"
             >
               <span class="deck__btn-key">{{ keybindings.CUE }}</span>
               <span>CUE</span>
@@ -209,6 +210,8 @@ import PhaseRing from '@renderer/components/PhaseRing.vue';
 import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
 import ConfirmModal from '@renderer/components/ConfirmModal.vue';
 
+const PRIMARY_BUTTON = 1;
+
 const deckEl = ref<HTMLElement | null>(null);
 const settingsStore = useSettingsStore();
 
@@ -273,6 +276,14 @@ function onCueMouseDown() {
   } else {
     props.deck.cueStart();
   }
+}
+
+function onCueMouseLeave(e: MouseEvent) {
+  if (e.buttons & PRIMARY_BUTTON) props.deck.cueEnd();
+}
+
+function onNudgeMouseLeave(e: MouseEvent) {
+  if (e.buttons & PRIMARY_BUTTON) props.deck.nudgeEnd();
 }
 
 function onTogglePlay() {

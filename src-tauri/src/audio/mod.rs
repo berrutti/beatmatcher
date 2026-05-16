@@ -8,7 +8,7 @@ mod analysis;
 pub use deck::{DeckState, ChannelStrip};
 pub use stream::MasterMonitor;
 pub use io::TrackTags;
-pub use io::{decode_audio, resample_linear, read_tags};
+pub use io::{decode_audio, resample_linear, read_tags, read_cover_art};
 pub use analysis::{
     compute_spectral_bands, compute_waveform_region, compute_spectral_waveform_region,
     detect_bpm, detect_silence_end,
@@ -30,6 +30,7 @@ pub struct TrackInfo {
     pub sample_rate: u32,
     pub bpm: Option<f64>,
     pub silence_end: f64,
+    pub cover_art: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

@@ -13,7 +13,8 @@
     "ignoreDeprecations": "6.0",
     "paths": {
       "@renderer/*": ["src/renderer/src/*"]
-    }
+    },
+    "types": ["vite/client"]
   },
   "include": ["src/renderer/src/**/*", "src/renderer/src/**/*.vue"]
 }

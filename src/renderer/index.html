@@ -5,9 +5,56 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Beatmatcher</title>
     <link rel="icon" type="image/svg+xml" href="/beatmatcher/favicon.svg" />
+    <style>
+      #splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #0a0a0a;
+        font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+        gap: 14px;
+        pointer-events: none;
+      }
+      #splash-name {
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: 0.15em;
+        color: #e8e8e8;
+      }
+      #splash-logo {
+        width: 72px;
+        height: 72px;
+      }
+    </style>
   </head>
-  <body>
-    <div id="app"></div>
+  <body style="background: #0a0a0a">
+    <div id="app">
+      <div id="splash">
+        <svg id="splash-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+          <clipPath id="clip"><circle cx="256" cy="256" r="256" /></clipPath>
+          <path
+            d="M 0 256 C 80 256, 100 80, 180 80 C 260 80, 280 432, 360 432 C 440 432, 460 256, 512 256"
+            fill="none"
+            stroke="#f97316"
+            stroke-width="52"
+            stroke-linecap="round"
+            clip-path="url(#clip)"
+          />
+          <path
+            d="M 0 256 C 80 256, 100 432, 180 432 C 260 432, 280 80, 360 80 C 440 80, 460 256, 512 256"
+            fill="none"
+            stroke="#38bdf8"
+            stroke-width="52"
+            stroke-linecap="round"
+            clip-path="url(#clip)"
+          />
+        </svg>
+        <div id="splash-name">beatmatcher</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
