@@ -76,8 +76,16 @@
           @keydown.esc="cancelRename"
           @blur="confirmRename"
         />
-        <span v-else class="collection__playlist-title" @click="startRename">{{ activePlaylist?.name }}</span>
-        <button class="collection__header-btn" style="margin-left: 0" @click="activePlaylistId = null">BACK</button>
+        <span v-else class="collection__playlist-title" @click="startRename">{{
+          activePlaylist?.name
+        }}</span>
+        <button
+          class="collection__header-btn"
+          style="margin-left: 0"
+          @click="activePlaylistId = null"
+        >
+          BACK
+        </button>
       </template>
     </div>
 
@@ -369,7 +377,10 @@
           <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
             <span>Add to playlist</span>
             <span class="context-menu__arrow">▶</span>
-            <div class="context-menu__submenu" :class="{ 'context-menu__submenu--flip': subFlipped }">
+            <div
+              class="context-menu__submenu"
+              :class="{ 'context-menu__submenu--flip': subFlipped }"
+            >
               <button
                 v-for="playlist in store.playlists"
                 :key="playlist.id"
