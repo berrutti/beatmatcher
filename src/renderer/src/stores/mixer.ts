@@ -171,7 +171,8 @@ export const useMixerStore = defineStore('mixer', () => {
     const settings = useSettingsStore();
     await invoke('start_recording', {
       bitDepth: settings.recordingBitDepth,
-      useFlac: settings.recordingFormat === 'flac'
+      useFlac: settings.recordingFormat === 'flac',
+      recordSession: settings.recordSession
     });
   }
 

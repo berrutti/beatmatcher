@@ -40,6 +40,14 @@ export const EQ_MAX_DB = 6;
 // rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
 const DENSE_LOD_PTS_PER_SEC = 250;
 
+type DeckSyncPayload = {
+  is_playing: boolean;
+  is_cueing: boolean;
+  cue_point_sec: number;
+  position_sec: number;
+  loop_region_cleared: boolean;
+};
+
 function createDeck(id: DeckId, accent: string, name: string) {
   let positionCache = 0;
   let clockAtPlay = 0; // performance.now() when playback started or position was last anchored
@@ -88,6 +96,18 @@ function createDeck(id: DeckId, accent: string, name: string) {
     }
   }
 
+  function applyDeckState(payload: DeckSyncPayload) {
+    state.loopPlaying = payload.is_playing;
+    state.cueing = payload.is_cueing;
+    state.cuePoint = payload.cue_point_sec;
+    positionCache = payload.position_sec;
+    if (payload.is_playing) clockAtPlay = performance.now();
+    if (payload.loop_region_cleared) {
+      state.loopRegion = null;
+      state.loopActive = false;
+    }
+  }
+
   function interpolatedPosition(): number {
     let pos = positionCache;
     if (state.loopPlaying) {
@@ -113,6 +133,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     trackName: '',
     trackLoaded: false,
     loading: false,
+    waveformLoading: false,
     loadedPath: null as string | null,
     trackData: null as TrackData | null,
     // Low-rate overview covering the whole track (few points per second).
@@ -190,6 +211,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       bandsReadyUnlisten = null;
       loadGeneration++;
       state.loading = true;
+      state.waveformLoading = true;
       if (state.loopPlaying) {
         await invoke('stop', { deck: id });
         state.loopPlaying = false;
@@ -213,6 +235,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.trackData = info;
       state.coverArt = info.coverArt ?? null;
       state.trackLoaded = true;
+      state.loading = false;
       state.loadedPath = data.path;
 
       state.trackBpm = data.bpm;
@@ -243,10 +266,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
           const result = await state.getSpectralWaveformRegion(0, info.duration, overviewPoints);
           if (loadGeneration !== gen) return;
           state.fullSpectralData = new Float32Array(result);
-          state.loading = false;
+          state.waveformLoading = false;
           fetchDenseLodChunked(gen, info.duration, densePoints).catch(() => {});
         } catch {
-          if (loadGeneration === gen) state.loading = false;
+          // spectral fetch failed; waveform will remain blank but deck is playable
+          state.waveformLoading = false;
         }
       });
       bandsReadyUnlisten = unlisten;
@@ -316,68 +340,23 @@ function createDeck(id: DeckId, accent: string, name: string) {
     },
 
     async togglePlay() {
-      if (!state.trackLoaded) return;
-      if (state.cueing) {
-        state.cueing = false;
-        return;
-      }
-      if (state.loopPlaying) {
-        syncPosition();
-        await invoke('stop', { deck: id });
-        state.loopPlaying = false;
-      } else {
-        await invoke('play', { deck: id });
-        state.loopPlaying = true;
-        clockAtPlay = performance.now();
-      }
+      const payload = await invoke<DeckSyncPayload>('toggle_play', { deck: id });
+      applyDeckState(payload);
     },
 
     async cueStart() {
-      if (!state.trackLoaded || state.cueing || state.loopPlaying) return;
-      if (Math.abs(positionCache - state.cuePoint) > 0.001) {
-        state.cuePoint = positionCache;
-        if (state.loopRegion) {
-          state.loopRegion = null;
-          state.loopActive = false;
-          invoke('clear_loop_region', { deck: id });
-        }
-        return;
-      }
-      state.cueing = true;
-      state.loopPlaying = true;
-      await invoke('play', { deck: id, fromSec: state.cuePoint });
-      clockAtPlay = performance.now();
+      const payload = await invoke<DeckSyncPayload>('press_cue', { deck: id });
+      applyDeckState(payload);
     },
 
     async cueEnd() {
-      if (!state.cueing) return;
-      state.cueing = false;
-      state.loopPlaying = false;
-      await invoke('stop', { deck: id });
-      positionCache = state.cuePoint;
-      clockAtPlay = performance.now();
-      await invoke('seek', { deck: id, sec: state.cuePoint });
+      const payload = await invoke<DeckSyncPayload>('release_cue', { deck: id });
+      applyDeckState(payload);
     },
 
     async setCueAndStop() {
-      if (!state.trackLoaded || !state.loopPlaying || state.cueing) return;
-      syncPosition();
-      const pos = positionCache;
-      state.cuePoint = pos;
-      state.loopPlaying = false;
-      await invoke('stop', { deck: id });
-      positionCache = pos;
-      clockAtPlay = performance.now();
-      await invoke('seek', { deck: id, sec: pos });
-    },
-
-    async stopAtCue() {
-      if (!state.loopPlaying || state.cueing) return;
-      await invoke('stop', { deck: id });
-      state.loopPlaying = false;
-      positionCache = state.cuePoint;
-      clockAtPlay = performance.now();
-      await invoke('seek', { deck: id, sec: state.cuePoint });
+      const payload = await invoke<DeckSyncPayload>('set_cue_and_stop', { deck: id });
+      applyDeckState(payload);
     },
 
     seekTo(sec: number) {
@@ -459,10 +438,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       bandsReadyUnlisten = null;
       loadGeneration++;
       state.loading = false;
-      if (state.loopPlaying) {
-        await invoke('stop', { deck: id });
-        state.loopPlaying = false;
-      }
+      state.waveformLoading = false;
+      state.loopPlaying = false;
       state.cueing = false;
       state.nudging = null;
       state.loopRegion = null;
@@ -484,6 +461,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       clockAtPlay = 0;
       localRate = 1.0;
       onBeatOffsetChangeCb = null;
+      await invoke('eject_track', { deck: id });
     },
 
     destroy() {

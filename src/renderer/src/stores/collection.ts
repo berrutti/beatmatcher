@@ -205,7 +205,8 @@ export const useCollectionStore = defineStore('collection', () => {
 
   function drainQueue() {
     while (activeAnalyses < ANALYZE_CONCURRENCY && analysisQueue.length > 0) {
-      const id = analysisQueue.shift()!;
+      const id = analysisQueue.shift();
+      if (id === undefined) continue;
       const entry = tracks.find((t) => t.id === id);
       if (!entry || entry.status !== 'idle') continue;
       activeAnalyses++;
@@ -262,7 +263,8 @@ export const useCollectionStore = defineStore('collection', () => {
 
   function drainTagQueue() {
     while (activeTagReads < TAG_READ_CONCURRENCY && tagReadQueue.length > 0) {
-      const id = tagReadQueue.shift()!;
+      const id = tagReadQueue.shift();
+      if (id === undefined) continue;
       const entry = tracks.find((t) => t.id === id);
       if (!entry || !entry.path) continue;
       activeTagReads++;

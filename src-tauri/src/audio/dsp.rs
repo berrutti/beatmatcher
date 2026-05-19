@@ -404,11 +404,12 @@ pub(crate) struct LimiterState {
 
 impl LimiterState {
     pub(crate) const THRESHOLD: f32 = 0.99;
+    const RELEASE_TAU_SEC: f32 = 0.150;
 
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             gain_reduction: 1.0,
-            release_coeff: 1.0 - (-1.0 / (sample_rate * 0.150)).exp(),
+            release_coeff: 1.0 - (-1.0 / (sample_rate * Self::RELEASE_TAU_SEC)).exp(),
         }
     }
 

@@ -59,7 +59,7 @@
       <button
         class="edit-view__btn edit-view__btn--cue"
         :class="{ 'edit-view__btn--cueing': deck.cueing }"
-        @mousedown.prevent="deck.playing ? deck.stopAtCue() : deck.cueStart()"
+        @mousedown.prevent="deck.cueStart()"
         @mouseup="deck.cueEnd()"
         @mouseleave="deck.cueEnd()"
       >

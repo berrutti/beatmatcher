@@ -146,6 +146,18 @@
           block-by-block when you stop. Minimal memory use. 32-bit mode encodes at 24-bit; 16-bit at
           16-bit.
         </p>
+        <label class="settings-checkbox-row">
+          <input
+            type="checkbox"
+            :checked="settings.recordSession"
+            @change="settings.setRecordSession(($event.target as HTMLInputElement).checked)"
+          />
+          <span>Record session log (Experimental)</span>
+        </label>
+        <p class="settings-hint">
+          Saves a .session.json file alongside the recording with a full event log of every action
+          taken during the set.
+        </p>
       </section>
 
       <section class="settings-section settings-section--inline">
@@ -521,6 +533,17 @@ onUnmounted(() => {
   color: var(--color-muted);
   margin: 0;
   opacity: 0.65;
+}
+
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-text);
+  user-select: none;
+  margin-top: 8px;
 }
 
 /* ── Toggle ──────────────────────────────────────────────────────── */

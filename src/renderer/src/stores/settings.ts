@@ -26,6 +26,7 @@ type Stored = {
   bpmMax?: number;
   recordingBitDepth?: RecordingBitDepthOption;
   recordingFormat?: RecordingFormatOption;
+  recordSession?: boolean;
 };
 
 export type ConflictInfo = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
@@ -40,6 +41,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const bpmMax = ref<number>(180);
   const recordingBitDepth = ref<RecordingBitDepthOption>(32);
   const recordingFormat = ref<RecordingFormatOption>('wav');
+  const recordSession = ref<boolean>(false);
   const isOpen = ref(false);
 
   let _store: Store | null = null;
@@ -54,6 +56,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (stored.bpmMax !== undefined) bpmMax.value = stored.bpmMax;
     if (stored.recordingBitDepth !== undefined) recordingBitDepth.value = stored.recordingBitDepth;
     if (stored.recordingFormat !== undefined) recordingFormat.value = stored.recordingFormat;
+    if (stored.recordSession !== undefined) recordSession.value = stored.recordSession;
   }
 
   async function init(): Promise<void> {
@@ -77,7 +80,8 @@ export const useSettingsStore = defineStore('settings', () => {
       bpmMin: bpmMin.value,
       bpmMax: bpmMax.value,
       recordingBitDepth: recordingBitDepth.value,
-      recordingFormat: recordingFormat.value
+      recordingFormat: recordingFormat.value,
+      recordSession: recordSession.value
     } satisfies Stored);
     await _store.save();
   }
@@ -156,6 +160,11 @@ export const useSettingsStore = defineStore('settings', () => {
     saveAsync();
   }
 
+  function setRecordSession(value: boolean): void {
+    recordSession.value = value;
+    saveAsync();
+  }
+
   return {
     bpmMax,
     bpmMin,
@@ -167,6 +176,7 @@ export const useSettingsStore = defineStore('settings', () => {
     pitchRange,
     recordingBitDepth,
     recordingFormat,
+    recordSession,
     init,
     resetToDefaults,
     setBpmRange,
@@ -176,6 +186,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setNudgeSensitivity,
     setPitchRange,
     setRecordingBitDepth,
-    setRecordingFormat
+    setRecordingFormat,
+    setRecordSession
   };
 });

@@ -5,7 +5,7 @@ mod recording;
 mod io;
 mod analysis;
 
-pub use deck::{DeckState, ChannelStrip};
+pub use deck::{DeckState, ChannelStrip, CuePressOutcome};
 pub use stream::MasterMonitor;
 pub use io::TrackTags;
 pub use io::{decode_audio, resample_linear, read_tags, read_cover_art};
@@ -63,7 +63,8 @@ pub struct AppAudio {
     recording: Mutex<Option<RecordingState>>,
 }
 
-// AppAudio is held in Tauri managed state and accessed from async command threads.
+// Required because AppAudio contains SendStream (see stream.rs for the safety argument).
+// All other fields are already Send+Sync via Arc/Mutex/Atomic wrappers.
 unsafe impl Send for AppAudio {}
 unsafe impl Sync for AppAudio {}
 

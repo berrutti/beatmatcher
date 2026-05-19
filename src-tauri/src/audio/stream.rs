@@ -10,6 +10,11 @@ use super::deck::{DeckState, ChannelStrip};
 // We wrap it to allow storage in Tauri managed state. The stream is never moved
 // to another thread after creation; it's only kept alive by being held in AppAudio.
 
+// cpal::Stream is !Send because some platform backends (CoreAudio, WASAPI) require
+// the stream to be dropped on the thread that created it. We uphold this invariant
+// manually: streams are only ever created and dropped inside rebuild_streams(), which
+// is called from a single non-async context. The Mutex<Option<SendStream>> in AppAudio
+// ensures no two threads can drop or replace a stream simultaneously.
 #[allow(dead_code)]
 pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}

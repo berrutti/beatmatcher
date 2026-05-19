@@ -97,16 +97,29 @@ impl ChannelStrip {
 // Both start from the same point on play() and advance at the same rate, so
 // they stay in sync. Minor drift (sub-ms) is imperceptible for monitoring.
 
+// Outcome returned by press_cue so the Tauri command layer can relay the
+// relevant position data back to the frontend for display sync.
+#[derive(Debug, PartialEq)]
+pub enum CuePressOutcome {
+    PreviewStarted,
+    CueMoved { new_cue_point_sec: f64 },
+    StoppedAtCue { cue_point_sec: f64 },
+    NoTrack,
+}
+
 pub struct DeckState {
     pub samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub channels: usize,
     pub device_sample_rate: u32,
     pub total_frames: usize,
     pub duration: f64,
+    pub loaded_path: Option<String>,
 
     pub is_playing: bool,
+    pub is_cueing: bool,
     pub main_pos: f64, // fractional frame index
     pub cue_pos: f64,  // fractional frame index (independent of main_pos)
+    pub cue_point: f64, // in frames; the stored cue point for CDJ cue behavior
     pub loop_active: bool,
     pub loop_start: f64, // in frames
     pub loop_end: f64,   // in frames
@@ -136,9 +149,12 @@ impl DeckState {
             device_sample_rate,
             total_frames: 0,
             duration: 0.0,
+            loaded_path: None,
             is_playing: false,
+            is_cueing: false,
             main_pos: 0.0,
             cue_pos: 0.0,
+            cue_point: 0.0,
             loop_active: false,
             loop_start: 0.0,
             loop_end: 0.0,
@@ -154,6 +170,80 @@ impl DeckState {
             high_scale: 1.0,
             just_ended: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    // Threshold for "position is at the cue point" used by press_cue.
+    // 50 frames at 44100 Hz ≈ 1.1 ms; matches the frontend's 0.001 s tolerance.
+    const CUE_THRESHOLD_FRAMES: f64 = 50.0;
+
+    pub fn press_cue(&mut self) -> CuePressOutcome {
+        if self.total_frames == 0 {
+            return CuePressOutcome::NoTrack;
+        }
+        if self.is_cueing {
+            return CuePressOutcome::PreviewStarted;
+        }
+        if self.is_playing {
+            self.is_playing = false;
+            self.main_pos = self.cue_point;
+            self.cue_pos = self.cue_point;
+            return CuePressOutcome::StoppedAtCue {
+                cue_point_sec: self.cue_point / self.device_sample_rate as f64,
+            };
+        }
+        if (self.main_pos - self.cue_point).abs() <= Self::CUE_THRESHOLD_FRAMES {
+            self.is_playing = true;
+            self.is_cueing = true;
+            self.main_pos = self.cue_point;
+            self.cue_pos = self.cue_point;
+            return CuePressOutcome::PreviewStarted;
+        }
+        self.cue_point = self.main_pos;
+        CuePressOutcome::CueMoved {
+            new_cue_point_sec: self.cue_point / self.device_sample_rate as f64,
+        }
+    }
+
+    pub fn release_cue(&mut self) {
+        if !self.is_cueing {
+            return;
+        }
+        self.is_playing = false;
+        self.is_cueing = false;
+        self.main_pos = self.cue_point;
+        self.cue_pos = self.cue_point;
+    }
+
+    pub fn toggle_play(&mut self) {
+        if self.total_frames == 0 {
+            return;
+        }
+        if self.is_cueing {
+            // latch-on: release the cue and continue playing from current position
+            self.is_cueing = false;
+        } else {
+            self.is_playing = !self.is_playing;
+        }
+    }
+
+    pub fn set_cue_and_stop(&mut self) {
+        if !self.is_playing {
+            return;
+        }
+        self.cue_point = self.main_pos;
+        self.is_playing = false;
+        self.is_cueing = false;
+        self.cue_pos = self.main_pos;
+    }
+
+    pub fn stop_at_cue(&mut self) {
+        if !self.is_playing {
+            return;
+        }
+        self.is_playing = false;
+        self.is_cueing = false;
+        self.main_pos = self.cue_point;
+        self.cue_pos = self.cue_point;
     }
 
     pub fn position_sec(&self) -> f64 {
@@ -236,6 +326,26 @@ impl DeckState {
 mod tests {
     use super::*;
 
+    impl DeckState {
+        // Creates a DeckState loaded with a 440 Hz sine wave. No audio hardware.
+        pub fn loaded_for_testing(device_sample_rate: u32, duration_secs: f64) -> Self {
+            let total_frames = (device_sample_rate as f64 * duration_secs) as usize;
+            let freq = 440.0f64;
+            let samples: Vec<f32> = (0..total_frames)
+                .flat_map(|i| {
+                    let t = i as f64 / device_sample_rate as f64;
+                    let s = (2.0 * std::f64::consts::PI * freq * t).sin() as f32;
+                    [s, s]
+                })
+                .collect();
+            let mut d = DeckState::empty(device_sample_rate);
+            d.samples = Arc::new(samples);
+            d.total_frames = total_frames;
+            d.duration = duration_secs;
+            d
+        }
+    }
+
     // --- ChannelStrip gain smoothing ---
 
     #[test]
@@ -263,5 +373,307 @@ mod tests {
         let (l, r) = strip.process_main(1.0, 1.0);
         assert!(l > 0.99, "expected l near 1.0, got {}", l);
         assert!(r > 0.99, "expected r near 1.0, got {}", r);
+    }
+}
+
+// State machine tests for the cue/play commands being ported from TypeScript
+// Every test describes one state machine transition. The state is encoded in
+// three fields: total_frames (0 = empty), is_playing, is_cueing.
+#[cfg(test)]
+mod cue_state_machine {
+    use super::*;
+
+    const SR: u32 = 44100;
+    const BPM: f64 = 120.0;
+
+    fn beat_frames() -> f64 {
+        (60.0 / BPM) * SR as f64
+    }
+
+    fn stopped(duration_secs: f64) -> DeckState {
+        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+        d.is_playing = false;
+        d.is_cueing = false;
+        d.cue_point = 0.0;
+        d
+    }
+
+    fn playing(duration_secs: f64) -> DeckState {
+        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+        d.is_playing = true;
+        d.is_cueing = false;
+        d.cue_point = 0.0;
+        d
+    }
+
+    fn cueing(duration_secs: f64) -> DeckState {
+        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+        d.is_playing = true;
+        d.is_cueing = true;
+        d.cue_point = 0.0;
+        d
+    }
+
+    // ── toggle_play ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_play_on_empty_deck_does_nothing() {
+        let mut d = DeckState::empty(SR);
+        d.toggle_play();
+        assert!(!d.is_playing);
+    }
+
+    #[test]
+    fn toggle_play_stopped_to_playing() {
+        let mut d = stopped(10.0);
+        d.toggle_play();
+        assert!(d.is_playing);
+        assert!(!d.is_cueing);
+    }
+
+    #[test]
+    fn toggle_play_playing_to_stopped() {
+        let mut d = playing(10.0);
+        d.toggle_play();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+    }
+
+    // Pressing PLAY during cue preview "latches on" — playback continues from
+    // the current position instead of returning to the cue point.
+    #[test]
+    fn toggle_play_during_cue_preview_latches_to_playing() {
+        let mut d = cueing(10.0);
+        d.main_pos = beat_frames() * 2.0 + 1000.0; // slightly past cue
+        d.toggle_play();
+        assert!(d.is_playing);
+        assert!(!d.is_cueing, "cueing flag must be cleared");
+        // position stays wherever playback was, not snapped back to cue
+        assert!(d.main_pos > beat_frames() * 2.0);
+    }
+
+    // ── press_cue ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn press_cue_on_empty_deck_does_nothing() {
+        let mut d = DeckState::empty(SR);
+        let outcome = d.press_cue();
+        assert_eq!(outcome, CuePressOutcome::NoTrack);
+        assert!(!d.is_playing);
+    }
+
+    #[test]
+    fn press_cue_stopped_at_cue_starts_preview() {
+        let mut d = stopped(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point; // exactly at cue
+        let outcome = d.press_cue();
+        assert_eq!(outcome, CuePressOutcome::PreviewStarted);
+        assert!(d.is_playing);
+        assert!(d.is_cueing);
+        // playback must start FROM the cue point
+        assert!((d.main_pos - d.cue_point).abs() < 1.0);
+    }
+
+    #[test]
+    fn press_cue_stopped_within_threshold_of_cue_starts_preview() {
+        let mut d = stopped(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point + DeckState::CUE_THRESHOLD_FRAMES * 0.5; // inside tolerance
+        let outcome = d.press_cue();
+        assert_eq!(outcome, CuePressOutcome::PreviewStarted);
+    }
+
+    #[test]
+    fn press_cue_stopped_away_from_cue_moves_cue_no_playback() {
+        let mut d = stopped(10.0);
+        let original_cue = beat_frames() * 2.0;
+        d.cue_point = original_cue;
+        d.main_pos = beat_frames() * 5.0;
+        let outcome = d.press_cue();
+        let new_cue_sec = beat_frames() * 5.0 / SR as f64;
+        assert_eq!(outcome, CuePressOutcome::CueMoved { new_cue_point_sec: new_cue_sec });
+        assert!(!d.is_playing);
+        assert_eq!(d.cue_point, beat_frames() * 5.0, "cue_point must update to main_pos");
+    }
+
+    #[test]
+    fn press_cue_while_playing_stops_and_returns_to_cue() {
+        let mut d = playing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 7.0;
+        let outcome = d.press_cue();
+        let cue_sec = d.cue_point / SR as f64;
+        assert_eq!(outcome, CuePressOutcome::StoppedAtCue { cue_point_sec: cue_sec });
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert!((d.main_pos - d.cue_point).abs() < 1.0);
+    }
+
+    // Pressing CUE again during preview is a no-op — you can't start another
+    // preview while one is already running.
+    #[test]
+    fn press_cue_during_preview_is_noop() {
+        let mut d = cueing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point + 200.0;
+        let pos_before = d.main_pos;
+        let outcome = d.press_cue();
+        assert_eq!(outcome, CuePressOutcome::PreviewStarted);
+        assert!(d.is_playing);
+        assert!(d.is_cueing);
+        // position must not jump
+        assert!((d.main_pos - pos_before).abs() < 1.0);
+    }
+
+    // ── release_cue ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn release_cue_during_preview_stops_and_returns_to_cue() {
+        let mut d = cueing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point + 800.0; // played a bit
+        d.release_cue();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert!((d.main_pos - d.cue_point).abs() < 1.0);
+    }
+
+    // Idempotent: releasing when already stopped must not crash or change state.
+    #[test]
+    fn release_cue_when_stopped_is_noop() {
+        let mut d = stopped(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 3.0;
+        let pos_before = d.main_pos;
+        d.release_cue(); // first call
+        d.release_cue(); // second call — must also be fine
+        assert!(!d.is_playing);
+        assert_eq!(d.main_pos, pos_before, "position must not move on no-op release");
+    }
+
+    #[test]
+    fn release_cue_while_playing_normally_is_noop() {
+        let mut d = playing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 5.0;
+        d.release_cue();
+        assert!(d.is_playing, "normal playback must continue");
+        assert!(!d.is_cueing);
+    }
+
+    #[test]
+    fn release_cue_on_empty_deck_is_noop() {
+        let mut d = DeckState::empty(SR);
+        d.release_cue(); // must not panic
+        assert!(!d.is_playing);
+    }
+
+    // ── set_cue_and_stop ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_cue_and_stop_while_playing_freezes_cue_at_playhead() {
+        let mut d = playing(10.0);
+        d.main_pos = beat_frames() * 3.5;
+        d.set_cue_and_stop();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert!((d.cue_point - beat_frames() * 3.5).abs() < 1.0, "cue_point must be set to playhead");
+        assert!((d.main_pos - d.cue_point).abs() < 1.0, "position must stay at new cue point");
+    }
+
+    // No-op when already stopped — calling it twice must be safe.
+    #[test]
+    fn set_cue_and_stop_when_stopped_is_noop() {
+        let mut d = stopped(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 2.0;
+        d.set_cue_and_stop();
+        assert!(!d.is_playing);
+        assert_eq!(d.cue_point, beat_frames() * 2.0, "cue_point must not change when stopped");
+    }
+
+    // During cueing, set_cue_and_stop ends the preview and locks cue at
+    // the current (slightly advanced) position.
+    #[test]
+    fn set_cue_and_stop_during_preview_ends_preview_and_updates_cue() {
+        let mut d = cueing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point + 300.0;
+        let expected_cue = d.main_pos;
+        d.set_cue_and_stop();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert!((d.cue_point - expected_cue).abs() < 1.0, "cue_point must be set to playhead at time of call");
+    }
+
+    // ── stop_at_cue ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn stop_at_cue_while_playing_stops_and_returns_to_cue() {
+        let mut d = playing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 7.0;
+        let cue_before = d.cue_point;
+        d.stop_at_cue();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert_eq!(d.cue_point, cue_before, "cue_point must not change");
+        assert!((d.main_pos - cue_before).abs() < 1.0);
+    }
+
+    #[test]
+    fn stop_at_cue_when_already_stopped_is_noop() {
+        let mut d = stopped(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = beat_frames() * 4.0; // position away from cue
+        d.stop_at_cue(); // first call
+        d.stop_at_cue(); // second call — must not change anything further
+        assert!(!d.is_playing);
+    }
+
+    #[test]
+    fn stop_at_cue_during_preview_stops_and_returns_to_cue() {
+        let mut d = cueing(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.main_pos = d.cue_point + 400.0;
+        let cue_before = d.cue_point;
+        d.stop_at_cue();
+        assert!(!d.is_playing);
+        assert!(!d.is_cueing);
+        assert_eq!(d.cue_point, cue_before);
+        assert!((d.main_pos - cue_before).abs() < 1.0);
+    }
+
+    #[test]
+    fn stop_at_cue_on_empty_deck_is_noop() {
+        let mut d = DeckState::empty(SR);
+        d.stop_at_cue(); // must not panic
+        assert!(!d.is_playing);
+    }
+
+    // ── cue point persistence across state changes ────────────────────────────
+
+    // Cue point set during preview (press_cue moves it) must survive a
+    // press → release cycle and be the correct return target.
+    #[test]
+    fn cue_point_moved_then_preview_returns_to_new_cue() {
+        let mut d = stopped(10.0);
+        d.cue_point = 0.0;
+
+        // First press: away from cue → moves cue to current position
+        d.main_pos = beat_frames() * 3.0;
+        d.press_cue();
+        assert_eq!(d.cue_point, beat_frames() * 3.0);
+
+        // Second press: now at the new cue → starts preview
+        d.press_cue();
+        assert!(d.is_cueing);
+
+        // Release: must return to the new cue point, not 0
+        let pos_during_preview = d.main_pos + 500.0;
+        d.main_pos = pos_during_preview;
+        d.release_cue();
+        assert!((d.main_pos - beat_frames() * 3.0).abs() < 1.0);
     }
 }

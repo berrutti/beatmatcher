@@ -48,8 +48,7 @@ export function useKeyboard() {
   function handleDeckCommand(deck: Deck, command: Command, shiftKey: boolean) {
     switch (command) {
       case commands.CUE:
-        if (deck.playing) deck.stopAtCue();
-        else deck.cueStart();
+        deck.cueStart();
         break;
       case commands.PLAY:
         deck.togglePlay();
@@ -114,7 +113,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck) return;
+    if (!deck || deck.loading) return;
 
     handleDeckCommand(deck, deckCommand.command, e.shiftKey);
   }
@@ -143,7 +142,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck) return;
+    if (!deck || deck.loading) return;
 
     if (
       deckCommand.command === commands.NUDGE_BACK ||

@@ -111,6 +111,7 @@
               : 1,
           getDenseData: () => decks.deckC.denseSpectralData,
           getDenseRate: () => decks.deckC.denseSpectralRate,
+          isWaveformLoading: () => decks.deckC.waveformLoading,
           accent: decks.deckC.accent
         },
         {
@@ -123,6 +124,7 @@
               : 1,
           getDenseData: () => decks.deckA.denseSpectralData,
           getDenseRate: () => decks.deckA.denseSpectralRate,
+          isWaveformLoading: () => decks.deckA.waveformLoading,
           accent: decks.deckA.accent
         },
         {
@@ -135,6 +137,7 @@
               : 1,
           getDenseData: () => decks.deckB.denseSpectralData,
           getDenseRate: () => decks.deckB.denseSpectralRate,
+          isWaveformLoading: () => decks.deckB.waveformLoading,
           accent: decks.deckB.accent
         },
         {
@@ -147,6 +150,7 @@
               : 1,
           getDenseData: () => decks.deckD.denseSpectralData,
           getDenseRate: () => decks.deckD.denseSpectralRate,
+          isWaveformLoading: () => decks.deckD.waveformLoading,
           accent: decks.deckD.accent
         }
       ]"
