@@ -4,16 +4,19 @@
       ref="canvasEl"
       class="strips-canvas"
       :class="{ 'strips-canvas--dragging': drag !== null }"
+      :style="{ cursor: canvasCursor }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @mousemove="onMouseMove"
+      @mouseleave="hoveredStripIndex = -1"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { spectralColor } from '@renderer/utils/waveformImage';
 
 type WaveformStripsSource = {
@@ -23,6 +26,7 @@ type WaveformStripsSource = {
   getRate: () => number;
   getDenseData: () => Float32Array | null;
   getDenseRate: () => number;
+  isWaveformLoading: () => boolean;
   accent: string;
 };
 
@@ -45,6 +49,14 @@ let resizeObserver: ResizeObserver | null = null;
 
 type DragState = { stripIndex: number; anchorY: number; anchorPos: number };
 const drag = ref<DragState | null>(null);
+const hoveredStripIndex = ref(-1);
+
+const canvasCursor = computed(() => {
+  if (drag.value !== null) return 'grabbing';
+  if (hoveredStripIndex.value >= 0 && states[hoveredStripIndex.value]?.canvas !== null)
+    return 'grab';
+  return 'default';
+});
 
 function onPointerDown(e: PointerEvent) {
   const canvas = canvasEl.value;
@@ -83,6 +95,14 @@ function onPointerMove(e: PointerEvent) {
 function onPointerUp() {
   if (drag.value) emit('scrub-end', drag.value.stripIndex);
   drag.value = null;
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (drag.value !== null || !canvasEl.value || !canvasEl.value.clientWidth) return;
+  const rect = canvasEl.value.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const n = props.sources.length;
+  hoveredStripIndex.value = Math.min(Math.floor((x / canvasEl.value.clientWidth) * n), n - 1);
 }
 
 const ROWS_PER_CHUNK = 500;
@@ -334,6 +354,11 @@ function draw() {
     ctx.moveTo(x0, h / 2);
     ctx.lineTo(x0 + stripW, h / 2);
     ctx.stroke();
+
+    if (src.isWaveformLoading()) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(x0, 0, stripW, h);
+    }
   }
 
   // Separators: drawn on top so waveform never covers them.
@@ -403,10 +428,5 @@ onUnmounted(() => {
   min-height: 0;
   height: 100%;
   background: var(--color-bg);
-  cursor: grab;
-}
-
-.strips-canvas--dragging {
-  cursor: grabbing;
 }
 </style>

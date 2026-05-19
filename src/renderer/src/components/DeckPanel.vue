@@ -7,7 +7,7 @@
     :class="{
       'deck--playing': props.deck.playing,
       'deck--drag-over': isDragOverCollection,
-      'deck--loading': props.deck.loading
+      'deck--loading': props.deck.waveformLoading
     }"
   >
     <ConfirmModal
@@ -80,6 +80,7 @@
     <template v-if="props.deck.trackLoaded">
       <OverviewWaveform
         class="deck__overview"
+        :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
         :accent="props.deck.accent"
         :track-data="props.deck.trackData"
         :get-playhead-position="props.deck.getPlayheadPosition"
@@ -106,7 +107,7 @@
             <button
               class="deck__btn deck__btn--nudge"
               :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
               @mousedown="onNudgeStart('back')"
               @mouseup="props.deck.nudgeEnd()"
@@ -118,7 +119,7 @@
             <button
               class="deck__btn deck__btn--nudge"
               :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
               @mousedown="onNudgeStart('forward')"
               @mouseup="props.deck.nudgeEnd()"
@@ -133,9 +134,9 @@
             <button
               class="deck__btn deck__btn--cue"
               :class="{ 'deck__btn--cueing': props.deck.cueing }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
-              @mousedown.prevent="onCueMouseDown()"
+              @mousedown.prevent="props.deck.cueStart()"
               @mouseup="props.deck.cueEnd()"
               @mouseleave="onCueMouseLeave"
             >
@@ -145,7 +146,7 @@
             <button
               class="deck__btn deck__btn--play"
               :class="{ 'deck__btn--playing': props.deck.playing }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
               @click="onTogglePlay()"
             >
@@ -158,7 +159,7 @@
             <button
               class="deck__btn deck__btn--loop-in"
               :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
               @click="props.deck.setLoopIn()"
             >
@@ -168,7 +169,7 @@
             <button
               class="deck__btn deck__btn--loop-out"
               :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-              :disabled="!props.deck.trackLoaded"
+              :disabled="!props.deck.trackLoaded || props.deck.loading"
               :tabindex="-1"
               @click="onLoopOutClick()"
             >
@@ -188,7 +189,7 @@
             step="0.1"
             :value="props.deck.pitchOffset"
             orient="vertical"
-            :disabled="!props.deck.trackLoaded"
+            :disabled="!props.deck.trackLoaded || props.deck.loading"
             @input="onSliderInput"
             @dblclick="onPitchDblClick"
           />
@@ -267,15 +268,6 @@ function onLoopOutClick() {
   if (shiftHeld.value && props.deck.loopActive) props.deck.exitLoop();
   else if (shiftHeld.value && props.deck.loopRegion) props.deck.reloop();
   else props.deck.setLoopOut();
-}
-
-function onCueMouseDown() {
-  if (!props.deck.trackLoaded) return;
-  if (props.deck.playing) {
-    props.deck.stopAtCue();
-  } else {
-    props.deck.cueStart();
-  }
 }
 
 function onCueMouseLeave(e: MouseEvent) {
@@ -514,6 +506,11 @@ function onConfirmLoad() {
 
 .deck__overview {
   padding: 0.5em 0.8em 0;
+  transition: opacity 0.3s ease;
+}
+
+.deck__overview--waveform-loading {
+  opacity: 0.3;
 }
 
 .deck__controls {

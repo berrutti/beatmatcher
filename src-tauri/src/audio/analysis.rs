@@ -353,7 +353,8 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
 
 pub fn detect_silence_end(mono: &[f32], sample_rate: u32) -> f64 {
     const THRESHOLD: f32 = 0.01;
-    let window_frames = (sample_rate as usize / 20).max(1); // 50ms = sample_rate / 20
+    const WINDOW_MS: usize = 50;
+    let window_frames = (sample_rate as usize * WINDOW_MS / 1000).max(1);
 
     let mut frame = 0;
     while frame + window_frames <= mono.len() {
