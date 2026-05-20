@@ -45,7 +45,7 @@ const SKIP_TYPES = new Set([
   'cue_preview_start',
   'cue_preview_end',
   'cue_move',
-  'set_cue_active',
+  'set_cue_active'
 ]);
 
 export const useSessionStore = defineStore('session', () => {
@@ -56,10 +56,10 @@ export const useSessionStore = defineStore('session', () => {
   let timeouts: ReturnType<typeof setTimeout>[] = [];
 
   const durationMs = computed(() => session.value?.durationMs ?? 0);
-  const hasTrackInfo = computed(() =>
-    session.value?.events.some(
-      (e) => e.type === 'deck_snapshot' || e.type === 'load_track',
-    ) ?? false,
+  const hasTrackInfo = computed(
+    () =>
+      session.value?.events.some((e) => e.type === 'deck_snapshot' || e.type === 'load_track') ??
+      false
   );
 
   async function openSession(): Promise<boolean> {
@@ -84,7 +84,7 @@ export const useSessionStore = defineStore('session', () => {
       startedAt: raw.startedAt ?? '',
       events,
       durationMs,
-      filename,
+      filename
     };
     return true;
   }
@@ -107,7 +107,7 @@ export const useSessionStore = defineStore('session', () => {
           if (snap.playback_rate != null && snap.playback_rate !== 1) {
             await invoke('set_playback_rate', { deck: snap.deck, rate: snap.playback_rate });
           }
-        }),
+        })
       );
     }
 
@@ -142,7 +142,8 @@ export const useSessionStore = defineStore('session', () => {
         if (deck && event.sec != null) await invoke('seek', { deck, sec: event.sec });
         break;
       case 'load_track':
-        if (deck && event.path) await invoke('load_track', { deck, path: event.path, analyze: false });
+        if (deck && event.path)
+          await invoke('load_track', { deck, path: event.path, analyze: false });
         break;
       case 'eject_track':
         if (deck) await invoke('eject_track', { deck });
@@ -166,14 +167,19 @@ export const useSessionStore = defineStore('session', () => {
           await invoke('set_playback_rate', { deck, rate: event.rate });
         break;
       case 'set_nudge':
-        if (deck && event.percent != null) await invoke('set_nudge', { deck, percent: event.percent });
+        if (deck && event.percent != null)
+          await invoke('set_nudge', { deck, percent: event.percent });
         break;
       case 'set_master_gain':
         if (event.gain != null) await invoke('set_master_gain', { gain: event.gain });
         break;
       case 'set_beat_grid':
         if (deck && event.bpm != null && event.beat_offset_sec != null)
-          await invoke('set_beat_grid', { deck, bpm: event.bpm, beatOffsetSec: event.beat_offset_sec });
+          await invoke('set_beat_grid', {
+            deck,
+            bpm: event.bpm,
+            beatOffsetSec: event.beat_offset_sec
+          });
         break;
       case 'loop_in':
         if (deck) await invoke('set_loop_in', { deck, quantize: event.quantized ?? false });
@@ -223,6 +229,6 @@ export const useSessionStore = defineStore('session', () => {
     stop,
     stopAllDecks,
     enter,
-    exit,
+    exit
   };
 });
