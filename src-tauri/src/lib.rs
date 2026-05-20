@@ -204,7 +204,6 @@ async fn load_track(
         d.main_pos = silence_pos;
         d.cue_pos = silence_pos;
         d.loop_active = false;
-        d.loop_start = 0.0;
         d.loop_end = 0.0;
         d.bpm = None;
         d.beat_offset_frames = 0.0;
@@ -288,15 +287,21 @@ fn stop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn press_cue(state: tauri::State<'_, AppState>, deck: String) -> Result<DeckSyncPayload, String> {
+fn press_cue(state: tauri::State<'_, AppState>, deck: String, quantize: bool) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (outcome, payload) = {
         let mut d = deck_arc.lock().unwrap();
+        if quantize {
+            if let Some(bpm) = d.bpm {
+                let sr = d.device_sample_rate as f64;
+                d.main_pos = quantize_to_beat(d.main_pos, bpm, d.beat_offset_frames, sr);
+            }
+        }
+        let had_loop = d.loop_end > 0.0;
         let out = d.press_cue();
-        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && d.loop_end > d.loop_start;
+        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
         if loop_cleared {
             d.loop_active = false;
-            d.loop_start = 0.0;
             d.loop_end = 0.0;
         }
         (out, DeckSyncPayload::from_deck(&d, loop_cleared))
@@ -388,7 +393,6 @@ fn eject_track(state: tauri::State<'_, AppState>, deck: String) -> Result<(), St
         d.cue_pos = 0.0;
         d.cue_point = 0.0;
         d.loop_active = false;
-        d.loop_start = 0.0;
         d.loop_end = 0.0;
         d.bpm = None;
         d.beat_offset_frames = 0.0;
@@ -403,17 +407,21 @@ fn seek(
     state: tauri::State<'_, AppState>,
     deck: String,
     sec: f64,
-) -> Result<(), String> {
+) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
-    {
+    let payload = {
         let mut d = deck_arc.lock().unwrap();
         let pos = sec_to_frame(sec, d.device_sample_rate, d.total_frames);
         log::info!("seek [{}]: {:.3}s -> frame {:.0}", deck, sec, pos);
         d.main_pos = pos;
         d.cue_pos = pos;
-    }
+        if d.loop_active && (pos < d.cue_point || pos >= d.loop_end) {
+            d.loop_active = false;
+        }
+        DeckSyncPayload::from_deck(&d, false)
+    };
     state.log("seek", serde_json::json!({ "deck": deck, "sec": sec }));
-    Ok(())
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -426,7 +434,7 @@ fn set_loop_region(
     let deck_arc = get_deck(&state, &deck)?;
     let mut d = deck_arc.lock().unwrap();
     let sr = d.device_sample_rate as f64;
-    d.loop_start = start_sec * sr;
+    d.cue_point = start_sec * sr;
     d.loop_end = end_sec * sr;
     Ok(())
 }
@@ -436,23 +444,41 @@ fn set_loop_active(
     state: tauri::State<'_, AppState>,
     deck: String,
     active: bool,
-) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().loop_active = active;
+) -> Result<DeckSyncPayload, String> {
+    let arc = get_deck(&state, &deck)?;
+    let payload = {
+        let mut d = arc.lock().unwrap();
+        d.loop_active = active;
+        DeckSyncPayload::from_deck(&d, false)
+    };
     if !active {
         state.log("exit_loop", serde_json::json!({ "deck": deck }));
     }
-    Ok(())
+    Ok(payload)
 }
 
 // Returned by all transport commands so the frontend can mirror deck state
 // without any branching logic.
+//
+// loop_active vs loop_region_cleared are independent and mean different things:
+//
+//   loop_active       — whether the loop is currently armed (playback loops).
+//                       Can be false while a region is still defined, e.g. after
+//                       seeking outside the region or calling exitLoop. The region
+//                       persists so reloop can re-enter it.
+//
+//   loop_region_cleared — the region itself was destroyed and the frontend should
+//                       discard its cached loopRegion entirely (waveform overlay
+//                       disappears). Only true when the cue point moves to a new
+//                       position (CueMoved) or loop_in is pressed, because those
+//                       actions invalidate the old loop_end.
 #[derive(serde::Serialize)]
 struct DeckSyncPayload {
     is_playing: bool,
     is_cueing: bool,
     cue_point_sec: f64,
     position_sec: f64,
-    // true when a CUE move cleared the loop region; frontend must discard loopRegion
+    loop_active: bool,
     loop_region_cleared: bool,
 }
 
@@ -464,6 +490,7 @@ impl DeckSyncPayload {
             is_cueing: d.is_cueing,
             cue_point_sec: if sr > 0.0 { d.cue_point / sr } else { 0.0 },
             position_sec: d.position_sec(),
+            loop_active: d.loop_active,
             loop_region_cleared,
         }
     }
@@ -510,8 +537,8 @@ fn loop_in_core(d: &mut audio::DeckState, quantize: bool) -> Result<f64, String>
     } else {
         d.main_pos
     };
+    d.cue_point = in_frames;
     d.loop_active = false;
-    d.loop_start = 0.0;
     d.loop_end = 0.0;
     Ok(in_frames / sr)
 }
@@ -519,7 +546,6 @@ fn loop_in_core(d: &mut audio::DeckState, quantize: bool) -> Result<f64, String>
 fn loop_out_core(
     d: &mut audio::DeckState,
     quantize: bool,
-    cue_point_sec: Option<f64>,
 ) -> Result<Option<LoopOutResult>, String> {
     let sr = d.device_sample_rate as f64;
     let bpm = d.bpm.ok_or("no beat grid set")?;
@@ -528,23 +554,14 @@ fn loop_out_core(
     } else {
         d.main_pos
     };
-    let bar_frames = (4.0 * 60.0 / bpm) * sr;
-    let in_frames = if let Some(cue_sec) = cue_point_sec {
-        let cue_frames = cue_sec * sr;
-        if cue_frames < out_frames { cue_frames } else { (out_frames - bar_frames).max(0.0) }
-    } else if d.loop_end > d.loop_start {
-        d.loop_start
-    } else {
-        (out_frames - bar_frames).max(0.0)
-    };
+    let in_frames = d.cue_point;
     if out_frames <= in_frames {
         return Ok(None);
     }
-    d.loop_start = in_frames;
     d.loop_end = out_frames;
     d.loop_active = true;
     // When quantized and pressed late, main_pos has already passed loop_end.
-    // Immediately seek to loop_start + overshoot so the next audio callback
+    // Immediately seek to cue_point + overshoot so the next audio callback
     // reads from the compensated position rather than the overshoot.
     let seek_to_sec = if quantize && d.main_pos > out_frames {
         let dur = out_frames - in_frames;
@@ -566,12 +583,16 @@ fn set_loop_in(
     state: tauri::State<'_, AppState>,
     deck: String,
     quantize: bool,
-) -> Result<f64, String> {
+) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
-    let sec = loop_in_core(&mut deck_arc.lock().unwrap(), quantize)?;
-    state.log("loop_in",
-        serde_json::json!({ "deck": deck, "cue_sec": sec, "quantized": quantize }));
-    Ok(sec)
+    let payload = {
+        let mut d = deck_arc.lock().unwrap();
+        let sec = loop_in_core(&mut d, quantize)?;
+        state.log("loop_in",
+            serde_json::json!({ "deck": deck, "cue_sec": sec, "quantized": quantize }));
+        DeckSyncPayload::from_deck(&d, true)
+    };
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -579,10 +600,9 @@ fn set_loop_out(
     state: tauri::State<'_, AppState>,
     deck: String,
     quantize: bool,
-    cue_point_sec: Option<f64>,
 ) -> Result<Option<LoopOutResult>, String> {
     let deck_arc = get_deck(&state, &deck)?;
-    let result = loop_out_core(&mut deck_arc.lock().unwrap(), quantize, cue_point_sec)?;
+    let result = loop_out_core(&mut deck_arc.lock().unwrap(), quantize)?;
     if let Some(r) = &result {
         state.log("loop_out", serde_json::json!({
             "deck": deck, "start_sec": r.start_sec, "end_sec": r.end_sec,
@@ -597,7 +617,6 @@ fn clear_loop_region(state: tauri::State<'_, AppState>, deck: String) -> Result<
     let arc = get_deck(&state, &deck)?;
     let mut d = arc.lock().unwrap();
     d.loop_active = false;
-    d.loop_start = 0.0;
     d.loop_end = 0.0;
     Ok(())
 }
@@ -744,22 +763,21 @@ async fn get_spectral_waveform_region(
 }
 
 #[tauri::command]
-fn set_reloop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
+fn set_reloop(state: tauri::State<'_, AppState>, deck: String) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
-    {
+    let payload = {
         let mut d = deck_arc.lock().unwrap();
-        if d.loop_end <= d.loop_start {
-            return Ok(());
+        if d.loop_end > d.cue_point {
+            d.main_pos = d.cue_point;
+            d.cue_pos = d.cue_point;
+            if d.is_playing {
+                d.loop_active = true;
+            }
         }
-        let start = d.loop_start;
-        d.main_pos = start;
-        d.cue_pos = start;
-        if d.is_playing {
-            d.loop_active = true;
-        }
-    }
+        DeckSyncPayload::from_deck(&d, false)
+    };
     state.log("reloop", serde_json::json!({ "deck": deck }));
-    Ok(())
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -854,7 +872,6 @@ fn start_recording(state: tauri::State<'_, AppState>, bit_depth: u16, use_flac: 
                     "bpm": d.bpm,
                     "playback_rate": d.playback_rate,
                     "loop_active": d.loop_active,
-                    "loop_start_sec": d.loop_start / d.device_sample_rate as f64,
                     "loop_end_sec": d.loop_end / d.device_sample_rate as f64,
                 }));
             }
@@ -1030,7 +1047,7 @@ pub fn run() {
             let icon = app.default_window_icon().cloned();
             let about = AboutMetadataBuilder::new()
                 .name(Some("beatmatcher"))
-                .copyright(Some("Copyright 2025 Matias Berrutti\ngithub.com/berrutti/beatmatcher"))
+                .copyright(Some("Copyright 2026 Matias Berrutti\ngithub.com/berrutti/beatmatcher"))
                 .icon(icon)
                 .build();
             let app_menu = SubmenuBuilder::new(app, "beatmatcher")
@@ -1204,6 +1221,73 @@ mod tests {
         assert!((result - pos).abs() < 1.0, "got {}", result);
     }
 
+    // --- press_cue with quantize (command-layer logic) ---
+
+    // Mirrors the quantize-then-press sequence in the press_cue Tauri command.
+    fn press_cue_quantized(d: &mut DeckState) -> CuePressOutcome {
+        if let Some(bpm) = d.bpm {
+            let sr = d.device_sample_rate as f64;
+            d.main_pos = quantize_to_beat(d.main_pos, bpm, d.beat_offset_frames, sr);
+        }
+        d.press_cue()
+    }
+
+    #[test]
+    fn press_cue_quantized_snaps_new_cue_to_nearest_beat() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = 0.0;
+        d.main_pos = beat_dur() * 2.3; // closer to beat 2
+        let outcome = press_cue_quantized(&mut d);
+        let expected = beat_dur() * 2.0;
+        assert_eq!(outcome, CuePressOutcome::CueMoved { new_cue_point_sec: expected / SR_F });
+        assert!((d.cue_point - expected).abs() < 1.0, "cue_point must snap to nearest beat");
+        assert!((d.main_pos - expected).abs() < 1.0, "main_pos must also snap");
+    }
+
+    #[test]
+    fn press_cue_quantized_rounds_up_past_midpoint() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = 0.0;
+        d.main_pos = beat_dur() * 2.7; // past midpoint → rounds to beat 3
+        press_cue_quantized(&mut d);
+        let expected = beat_dur() * 3.0;
+        assert!((d.cue_point - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn press_cue_quantized_moves_cue_clears_loop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = 0.0;
+        d.loop_end = beat_dur() * 4.0;
+        d.loop_active = true;
+        d.main_pos = beat_dur() * 2.0;
+        // Simulate press_cue Tauri command: quantize then check loop_cleared
+        let had_loop = d.loop_end > 0.0;
+        let out = press_cue_quantized(&mut d);
+        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
+        if loop_cleared {
+            d.loop_active = false;
+            d.loop_end = 0.0;
+        }
+        assert!(loop_cleared, "moving the cue must clear the existing loop");
+        assert!(!d.loop_active);
+        assert_eq!(d.loop_end, 0.0);
+    }
+
+    #[test]
+    fn press_cue_quantized_preview_at_cue_does_not_clear_loop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 2.0;
+        d.loop_end = beat_dur() * 4.0;
+        d.loop_active = true;
+        d.main_pos = d.cue_point; // already at cue → preview, not move
+        let had_loop = d.loop_end > 0.0;
+        let out = press_cue_quantized(&mut d);
+        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
+        assert!(!loop_cleared, "preview at cue must not clear the loop");
+        assert!(d.loop_active);
+    }
+
     // --- loop_in_core ---
 
     #[test]
@@ -1224,15 +1308,33 @@ mod tests {
     }
 
     #[test]
+    fn loop_in_updates_cue_point_to_playhead() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = 0.0;
+        d.main_pos = beat_dur() * 3.0;
+        loop_in_core(&mut d, false).unwrap();
+        assert!((d.cue_point - beat_dur() * 3.0).abs() < 1e-9, "cue_point must move to playhead");
+    }
+
+    #[test]
+    fn loop_in_does_not_stop_playback() {
+        let mut d = deck_with_grid(10.0);
+        d.is_playing = true;
+        d.main_pos = beat_dur() * 3.0;
+        loop_in_core(&mut d, false).unwrap();
+        assert!(d.is_playing, "loop_in must not stop playback");
+    }
+
+    #[test]
     fn loop_in_clears_existing_loop_region() {
         let mut d = deck_with_grid(10.0);
-        d.loop_start = beat_dur();
+        d.cue_point = beat_dur();
         d.loop_end = beat_dur() * 3.0;
         d.loop_active = true;
         d.main_pos = beat_dur() * 4.0;
         loop_in_core(&mut d, false).unwrap();
         assert!(!d.loop_active);
-        assert_eq!(d.loop_start, 0.0);
+        assert!((d.cue_point - beat_dur() * 4.0).abs() < 1e-9, "cue_point updated to new loop-in position");
         assert_eq!(d.loop_end, 0.0);
     }
 
@@ -1249,32 +1351,29 @@ mod tests {
     #[test]
     fn loop_out_creates_region_using_cue_point_as_start() {
         let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 2.0;
         d.main_pos = beat_dur() * 4.0;
-        let cue_sec = beat_dur() * 2.0 / SR_F;
-        let result = loop_out_core(&mut d, false, Some(cue_sec)).unwrap().unwrap();
-        assert!((result.start_sec - cue_sec).abs() < 1e-6);
+        let result = loop_out_core(&mut d, false).unwrap().unwrap();
+        assert!((result.start_sec - beat_dur() * 2.0 / SR_F).abs() < 1e-6);
         assert!((result.end_sec - beat_dur() * 4.0 / SR_F).abs() < 1e-6);
         assert!(d.loop_active);
     }
 
     #[test]
-    fn loop_out_falls_back_to_one_bar_when_cue_is_past_out() {
+    fn loop_out_returns_none_when_cue_is_past_out() {
         let mut d = deck_with_grid(10.0);
-        d.main_pos = beat_dur() * 2.0;
-        // cue_point is after the out point → one-bar fallback
-        let cue_sec = beat_dur() * 3.0 / SR_F;
-        let result = loop_out_core(&mut d, false, Some(cue_sec)).unwrap().unwrap();
-        let bar_sec = 4.0 * 60.0 / BPM;
-        let expected_start = (beat_dur() * 2.0 / SR_F - bar_sec).max(0.0);
-        assert!((result.start_sec - expected_start).abs() < 1e-6);
+        d.cue_point = beat_dur() * 3.0;
+        d.main_pos = beat_dur() * 2.0; // playhead before cue → no loop
+        let result = loop_out_core(&mut d, false).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
     fn loop_out_quantized_snaps_end_to_beat() {
         let mut d = deck_with_grid(10.0);
+        d.cue_point = 0.0;
         d.main_pos = beat_dur() * 4.0 + beat_dur() * 0.1; // 10% past beat 4
-        let cue_sec = 0.0;
-        let result = loop_out_core(&mut d, true, Some(cue_sec)).unwrap().unwrap();
+        let result = loop_out_core(&mut d, true).unwrap().unwrap();
         let expected_end = beat_dur() * 4.0 / SR_F;
         assert!((result.end_sec - expected_end).abs() < 1e-3);
     }
@@ -1283,10 +1382,10 @@ mod tests {
     fn loop_out_quantized_compensates_late_press_position() {
         let mut d = deck_with_grid(10.0);
         let out_beat = beat_dur() * 4.0;
+        d.cue_point = 0.0;
         // Position is 5% past the loop end beat → late press
         d.main_pos = out_beat + beat_dur() * 0.05;
-        let cue_sec = 0.0;
-        let result = loop_out_core(&mut d, true, Some(cue_sec)).unwrap().unwrap();
+        let result = loop_out_core(&mut d, true).unwrap().unwrap();
         assert!(result.seek_to_sec.is_some(), "expected seek compensation for late press");
         let compensated = result.seek_to_sec.unwrap();
         // Must be within the loop region
@@ -1297,21 +1396,148 @@ mod tests {
     }
 
     #[test]
-    fn loop_out_returns_none_when_out_is_before_or_equal_to_start() {
+    fn loop_out_returns_none_when_cue_equals_out() {
         let mut d = deck_with_grid(10.0);
-        // Position at 0 with cue also at 0: out == in → no region
-        d.main_pos = 0.0;
-        let result = loop_out_core(&mut d, false, Some(0.0)).unwrap();
+        d.cue_point = 0.0;
+        d.main_pos = 0.0; // out == cue → zero-length, rejected
+        let result = loop_out_core(&mut d, false).unwrap();
         assert!(result.is_none());
+    }
+
+    // Explicit boundary test: loop out arms the loop only when playhead > cue,
+    // otherwise it is a no-op in every other configuration.
+    #[test]
+    fn loop_out_arms_only_when_playhead_is_strictly_after_cue() {
+        let cue = beat_dur() * 2.0;
+
+        // playhead > cue → loop armed
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = cue;
+        d.main_pos = beat_dur() * 4.0;
+        assert!(loop_out_core(&mut d, false).unwrap().is_some(), "playhead after cue: loop must arm");
+        assert!(d.loop_active);
+
+        // playhead == cue → no-op
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = cue;
+        d.main_pos = cue;
+        assert!(loop_out_core(&mut d, false).unwrap().is_none(), "playhead at cue: must not arm");
+        assert!(!d.loop_active);
+
+        // playhead < cue → no-op
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = cue;
+        d.main_pos = beat_dur() * 1.0;
+        assert!(loop_out_core(&mut d, false).unwrap().is_none(), "playhead before cue: must not arm");
+        assert!(!d.loop_active);
     }
 
     #[test]
     fn loop_out_beat_count_matches_region_duration() {
         let mut d = deck_with_grid(10.0);
-        d.main_pos = beat_dur() * 4.0; // exactly 4 beats from 0
-        let cue_sec = 0.0;
-        let result = loop_out_core(&mut d, false, Some(cue_sec)).unwrap().unwrap();
+        d.cue_point = 0.0;
+        d.main_pos = beat_dur() * 4.0; // exactly 4 beats from cue
+        let result = loop_out_core(&mut d, false).unwrap().unwrap();
         assert_eq!(result.beats, 4);
+    }
+
+    // --- seek: loop-arm rules ---
+
+    // Mirrors the seek command logic so tests reflect the real behaviour.
+    fn simulate_seek(d: &mut DeckState, pos: f64) {
+        d.main_pos = pos;
+        d.cue_pos = pos;
+        if d.loop_active && (pos < d.cue_point || pos >= d.loop_end) {
+            d.loop_active = false;
+        }
+    }
+
+    #[test]
+    fn seek_inside_armed_loop_keeps_loop_active() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 6.0); // inside [cue, loop_end)
+        assert!(d.loop_active, "loop must stay armed when seeking inside the region");
+    }
+
+    #[test]
+    fn seek_before_cue_disarms_loop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 2.0); // before cue_point
+        assert!(!d.loop_active, "loop must be disarmed when seeking before cue");
+    }
+
+    #[test]
+    fn seek_after_loop_end_disarms_loop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 10.0); // past loop_end
+        assert!(!d.loop_active, "loop must be disarmed when seeking past loop_end");
+    }
+
+    #[test]
+    fn seek_at_loop_end_disarms_loop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 8.0); // exactly at loop_end (exclusive boundary)
+        assert!(!d.loop_active, "loop_end is exclusive; seeking there must disarm");
+    }
+
+    #[test]
+    fn seek_inside_disarmed_loop_does_not_rearm() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = false;
+
+        simulate_seek(&mut d, beat_dur() * 6.0); // inside region, but was already disarmed
+        assert!(!d.loop_active, "seeking inside a disarmed loop must not rearm it");
+    }
+
+    #[test]
+    fn seek_never_clears_cue_point_or_loop_end() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 1.0); // outside — disarms but preserves region
+        assert!((d.cue_point - beat_dur() * 4.0).abs() < 1e-9, "cue_point must not move");
+        assert!((d.loop_end - beat_dur() * 8.0).abs() < 1e-9, "loop_end must not move");
+    }
+
+    // After a disarming seek, reloop can still re-enter the region.
+    #[test]
+    fn disarm_then_seek_still_allows_reloop() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_dur() * 4.0;
+        d.loop_end = beat_dur() * 8.0;
+        d.loop_active = true;
+
+        simulate_seek(&mut d, beat_dur() * 2.0); // disarms
+        assert!(!d.loop_active);
+        assert!(d.loop_end > d.cue_point, "region must still be valid");
+
+        // Simulate set_reloop: jump to cue_point and re-arm.
+        d.main_pos = d.cue_point;
+        d.cue_pos = d.cue_point;
+        d.loop_active = true;
+
+        assert!(d.loop_active);
+        assert!((d.main_pos - beat_dur() * 4.0).abs() < 1e-9);
     }
 
     // --- DeckState tick: loop wrap-around ---
@@ -1319,16 +1545,16 @@ mod tests {
     #[test]
     fn deck_wraps_within_loop_on_tick() {
         let mut d = DeckState::loaded_for_testing(SR, 10.0);
-        d.loop_start = beat_dur();
+        d.cue_point = beat_dur();
         d.loop_end = beat_dur() * 2.0;
         d.loop_active = true;
         d.is_playing = true;
         // Start 1 frame before the loop end
         d.main_pos = d.loop_end - 1.0;
-        // One tick should wrap to loop_start (+ 0 overshoot from the step of 1.0)
+        // One tick should wrap to cue_point (+ 0 overshoot from the step of 1.0)
         d.main_tick();
         assert!(
-            d.main_pos >= d.loop_start && d.main_pos < d.loop_end,
+            d.main_pos >= d.cue_point && d.main_pos < d.loop_end,
             "expected position inside loop, got {}",
             d.main_pos
         );
