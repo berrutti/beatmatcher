@@ -16,16 +16,31 @@
       </p>
     </Modal>
 
+    <Modal
+      :open="enterSessionPending"
+      title="Enter Session mode?"
+      confirm-label="Enter Session"
+      @confirm="onConfirmSessionMode"
+      @cancel="enterSessionPending = false"
+    >
+      <p class="app__modal-body">
+        Decks are playing. Entering Session mode will stop all playback.
+      </p>
+    </Modal>
+
     <TopStrip
       :edit-mode="decksStore.editMode"
+      :session-mode="sessionStore.sessionMode"
       @toggle-edit="tryToggleEditMode"
+      @toggle-session="tryToggleSessionMode"
       @open-settings="settingsStore.isOpen = true"
     />
     <SettingsModal v-if="settingsStore.isOpen" />
 
     <div class="app__body">
+      <SessionView v-if="sessionStore.sessionMode" @close="sessionStore.exit()" />
       <EditView
-        v-if="decksStore.editMode"
+        v-else-if="decksStore.editMode"
         :deck="decksStore.deckE"
         @close="decksStore.exitEditMode()"
       />
@@ -61,11 +76,13 @@ import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { useSessionStore } from '@renderer/stores/session';
 import DeckPanel from '@renderer/components/DeckPanel.vue';
 import MixerPanel from '@renderer/components/MixerPanel.vue';
 import CollectionPanel from '@renderer/components/CollectionPanel.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
 import EditView from '@renderer/components/EditView.vue';
+import SessionView from '@renderer/components/SessionView.vue';
 import Modal from '@renderer/components/Modal.vue';
 import SettingsModal from '@renderer/components/SettingsModal.vue';
 
@@ -78,10 +95,12 @@ const decksStore = useDecksStore();
 const collectionStore = useCollectionStore();
 const mixerStore = useMixerStore();
 const settingsStore = useSettingsStore();
+const sessionStore = useSessionStore();
 onMounted(() => settingsStore.init());
 onUnmounted(() => decksStore.destroy());
 
 const enterEditPending = ref(false);
+const enterSessionPending = ref(false);
 const collectionHeight = ref(storageGet<number>(STORAGE_KEYS.collectionHeight, 200));
 
 function onResizeStart(e: PointerEvent) {
@@ -112,6 +131,24 @@ function tryToggleEditMode() {
 function onConfirmEditMode() {
   enterEditPending.value = false;
   decksStore.enterEditMode();
+}
+
+function tryToggleSessionMode() {
+  if (sessionStore.sessionMode) {
+    sessionStore.exit();
+    return;
+  }
+  if (decksStore.anyDeckActive) {
+    enterSessionPending.value = true;
+  } else {
+    sessionStore.enter();
+  }
+}
+
+async function onConfirmSessionMode() {
+  enterSessionPending.value = false;
+  await sessionStore.stopAllDecks();
+  sessionStore.enter();
 }
 </script>
 

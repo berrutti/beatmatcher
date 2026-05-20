@@ -809,6 +809,25 @@ async fn open_file_dialog() -> Option<String> {
     result.map(|f| f.path().to_string_lossy().into_owned())
 }
 
+#[derive(serde::Serialize)]
+struct SessionFile {
+    path: String,
+    content: String,
+}
+
+#[tauri::command]
+async fn open_session_dialog() -> Option<SessionFile> {
+    let handle = rfd::AsyncFileDialog::new()
+        .add_filter("Session", &["json"])
+        .pick_file()
+        .await?;
+    let content = std::fs::read_to_string(handle.path()).ok()?;
+    Some(SessionFile {
+        path: handle.path().to_string_lossy().into_owned(),
+        content,
+    })
+}
+
 #[tauri::command]
 async fn pick_save_path(format: String) -> Option<String> {
     let (label, ext, name) = if format == "flac" {
@@ -1101,6 +1120,7 @@ pub fn run() {
             set_cue_device,
             set_main_device,
             open_file_dialog,
+            open_session_dialog,
             pick_save_path,
             files_info,
             scan_folder,
