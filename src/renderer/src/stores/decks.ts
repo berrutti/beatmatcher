@@ -296,7 +296,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
     async setLoopIn() {
       if (!state.trackLoaded) return;
       syncPosition();
-      const payload = await invoke<DeckSyncPayload>('set_loop_in', { deck: id, quantize: state.quantized });
+      const payload = await invoke<DeckSyncPayload>('set_loop_in', {
+        deck: id,
+        quantize: state.quantized
+      });
       applyDeckState(payload);
     },
 
@@ -309,7 +312,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
         seek_to_sec: number | null;
       } | null>('set_loop_out', {
         deck: id,
-        quantize: state.quantized,
+        quantize: state.quantized
       });
       if (!r) return;
       state.loopRegion = { startSec: r.start_sec, endSec: r.end_sec, beats: r.beats };
@@ -341,7 +344,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
     },
 
     async cueStart() {
-      const payload = await invoke<DeckSyncPayload>('press_cue', { deck: id, quantize: state.quantized });
+      const payload = await invoke<DeckSyncPayload>('press_cue', {
+        deck: id,
+        quantize: state.quantized
+      });
       applyDeckState(payload);
     },
 
