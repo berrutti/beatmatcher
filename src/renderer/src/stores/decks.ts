@@ -45,6 +45,7 @@ type DeckSyncPayload = {
   is_cueing: boolean;
   cue_point_sec: number;
   position_sec: number;
+  loop_active: boolean;
   loop_region_cleared: boolean;
 };
 
@@ -100,11 +101,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
     state.loopPlaying = payload.is_playing;
     state.cueing = payload.is_cueing;
     state.cuePoint = payload.cue_point_sec;
+    state.loopActive = payload.loop_active;
     positionCache = payload.position_sec;
     if (payload.is_playing) clockAtPlay = performance.now();
     if (payload.loop_region_cleared) {
       state.loopRegion = null;
-      state.loopActive = false;
     }
   }
 
@@ -295,10 +296,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
     async setLoopIn() {
       if (!state.trackLoaded) return;
       syncPosition();
-      const cueSec = await invoke<number>('set_loop_in', { deck: id, quantize: state.quantized });
-      state.cuePoint = cueSec;
-      state.loopActive = false;
-      state.loopRegion = null;
+      const payload = await invoke<DeckSyncPayload>('set_loop_in', {
+        deck: id,
+        quantize: state.quantized
+      });
+      applyDeckState(payload);
     },
 
     async setLoopOut() {
@@ -310,8 +312,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
         seek_to_sec: number | null;
       } | null>('set_loop_out', {
         deck: id,
-        quantize: state.quantized,
-        cuePointSec: state.cuePoint
+        quantize: state.quantized
       });
       if (!r) return;
       state.loopRegion = { startSec: r.start_sec, endSec: r.end_sec, beats: r.beats };
@@ -322,21 +323,19 @@ function createDeck(id: DeckId, accent: string, name: string) {
       }
     },
 
-    exitLoop() {
+    async exitLoop() {
       if (!state.loopActive) return;
       syncPosition();
-      state.loopActive = false;
-      invoke('set_loop_active', { deck: id, active: false });
+      const payload = await invoke<DeckSyncPayload>('set_loop_active', { deck: id, active: false });
+      applyDeckState(payload);
     },
 
-    reloop() {
+    async reloop() {
       if (!state.loopRegion) return;
       positionCache = state.loopRegion.startSec;
       clockAtPlay = performance.now();
-      invoke('set_reloop', { deck: id });
-      if (state.loopPlaying) {
-        state.loopActive = true;
-      }
+      const payload = await invoke<DeckSyncPayload>('set_reloop', { deck: id });
+      applyDeckState(payload);
     },
 
     async togglePlay() {
@@ -345,7 +344,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
     },
 
     async cueStart() {
-      const payload = await invoke<DeckSyncPayload>('press_cue', { deck: id });
+      const payload = await invoke<DeckSyncPayload>('press_cue', {
+        deck: id,
+        quantize: state.quantized
+      });
       applyDeckState(payload);
     },
 
@@ -359,16 +361,12 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
-    seekTo(sec: number) {
-      if (state.loopActive) {
-        state.loopActive = false;
-        state.loopRegion = null;
-        invoke('set_loop_active', { deck: id, active: false });
-      }
+    async seekTo(sec: number) {
       const clamped = Math.max(0, sec);
       positionCache = clamped;
       clockAtPlay = performance.now();
-      invoke('seek', { deck: id, sec: clamped });
+      const payload = await invoke<DeckSyncPayload>('seek', { deck: id, sec: clamped });
+      applyDeckState(payload);
     },
 
     getPlayheadPosition(): number {

@@ -119,10 +119,9 @@ pub struct DeckState {
     pub is_cueing: bool,
     pub main_pos: f64, // fractional frame index
     pub cue_pos: f64,  // fractional frame index (independent of main_pos)
-    pub cue_point: f64, // in frames; the stored cue point for CDJ cue behavior
+    pub cue_point: f64, // in frames; the stored cue point and loop-in position
     pub loop_active: bool,
-    pub loop_start: f64, // in frames
-    pub loop_end: f64,   // in frames
+    pub loop_end: f64, // in frames; loop_start is always cue_point
     pub bpm: Option<f64>,
     pub beat_offset_frames: f64,
     pub playback_rate: f64,
@@ -156,7 +155,6 @@ impl DeckState {
             cue_pos: 0.0,
             cue_point: 0.0,
             loop_active: false,
-            loop_start: 0.0,
             loop_end: 0.0,
             bpm: None,
             beat_offset_frames: 0.0,
@@ -302,11 +300,11 @@ impl DeckState {
         let new_pos = pos + step;
 
         if self.loop_active && new_pos >= self.loop_end {
-            let dur = self.loop_end - self.loop_start;
+            let dur = self.loop_end - self.cue_point;
             return if dur > 0.0 {
-                self.loop_start + (new_pos - self.loop_end) % dur
+                self.cue_point + (new_pos - self.loop_end) % dur
             } else {
-                self.loop_start
+                self.cue_point
             };
         }
 
@@ -675,5 +673,58 @@ mod cue_state_machine {
         d.main_pos = pos_during_preview;
         d.release_cue();
         assert!((d.main_pos - beat_frames() * 3.0).abs() < 1.0);
+    }
+
+}
+
+// ── Loop behaviour ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod loop_behavior {
+    use super::*;
+
+    const SR: u32 = 44100;
+    const BPM: f64 = 120.0;
+
+    fn beat_frames() -> f64 {
+        (60.0 / BPM) * SR as f64
+    }
+
+    fn deck_with_grid(duration_secs: f64) -> DeckState {
+        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+        d.bpm = Some(BPM);
+        d.beat_offset_frames = 0.0;
+        d
+    }
+
+    // Loop start IS the cue point: next_pos must wrap to cue_point, not a
+    // separate loop_start variable.
+    #[test]
+    fn loop_wraps_to_cue_point_not_separate_variable() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_frames();
+        d.loop_end = beat_frames() * 2.0;
+        d.loop_active = true;
+        d.is_playing = true;
+        d.main_pos = d.loop_end - 1.0; // one frame before loop end
+        d.main_tick();
+        assert!(
+            d.main_pos >= d.cue_point && d.main_pos < d.loop_end,
+            "expected position inside loop [{}, {}), got {}",
+            d.cue_point, d.loop_end, d.main_pos,
+        );
+    }
+
+    #[test]
+    fn loop_does_not_wrap_when_inactive() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_frames();
+        d.loop_end = beat_frames() * 2.0;
+        d.loop_active = false;
+        d.is_playing = true;
+        d.main_pos = d.loop_end - 1.0;
+        d.main_tick();
+        // should advance past loop_end without wrapping
+        assert!(d.main_pos >= d.loop_end);
     }
 }
