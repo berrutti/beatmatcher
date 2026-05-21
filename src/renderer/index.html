@@ -27,6 +27,11 @@
       #splash-logo {
         width: 72px;
         height: 72px;
+        animation: splash-icon 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+      }
+      @keyframes splash-icon {
+        from { transform: scale(1.5); opacity: 0; }
+        to   { transform: scale(1);    opacity: 1; }
       }
     </style>
   </head>

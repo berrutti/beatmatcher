@@ -10,7 +10,7 @@ pub use stream::MasterMonitor;
 pub use io::TrackTags;
 pub use io::{decode_audio, resample_linear, read_tags, read_cover_art};
 pub use analysis::{
-    compute_spectral_bands, compute_waveform_region, compute_spectral_waveform_region,
+    compute_spectral_bands, compute_spectral_waveform_region,
     detect_bpm, detect_silence_end,
 };
 
@@ -155,15 +155,15 @@ impl AppAudio {
 
     pub fn set_cue_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
         log::info!("set_cue_device: id='{}' channel_offset={}", device_id, channel_offset);
-        *self.current_cue_id.lock().unwrap() = device_id.to_string();
-        *self.current_cue_offset.lock().unwrap() = channel_offset;
+        *self.current_cue_id.lock().expect("stream id mutex poisoned") = device_id.to_string();
+        *self.current_cue_offset.lock().expect("stream offset mutex poisoned") = channel_offset;
         self.rebuild_streams()
     }
 
     pub fn set_main_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
         log::info!("set_main_device: id='{}' channel_offset={}", device_id, channel_offset);
-        *self.current_main_id.lock().unwrap() = device_id.to_string();
-        *self.current_main_offset.lock().unwrap() = channel_offset;
+        *self.current_main_id.lock().expect("stream id mutex poisoned") = device_id.to_string();
+        *self.current_main_offset.lock().expect("stream offset mutex poisoned") = channel_offset;
         self.rebuild_streams()
     }
 
@@ -185,10 +185,10 @@ impl AppAudio {
     // two separate CoreAudio render callbacks from interfering: a cue callback
     // that writes zeros doesn't blank out the main output buffer.
     fn rebuild_streams(&self) -> Result<(), String> {
-        let main_id  = self.current_main_id.lock().unwrap().clone();
-        let main_off = *self.current_main_offset.lock().unwrap();
-        let cue_id   = self.current_cue_id.lock().unwrap().clone();
-        let cue_off  = *self.current_cue_offset.lock().unwrap();
+        let main_id  = self.current_main_id.lock().expect("stream id mutex poisoned").clone();
+        let main_off = *self.current_main_offset.lock().expect("stream offset mutex poisoned");
+        let cue_id   = self.current_cue_id.lock().expect("stream id mutex poisoned").clone();
+        let cue_off  = *self.current_cue_offset.lock().expect("stream offset mutex poisoned");
         let buf_frames = self.buffer_frames.load(Ordering::Relaxed);
 
         log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={} buf={}", main_id, main_off, cue_id, cue_off, buf_frames);
@@ -208,15 +208,15 @@ impl AppAudio {
                 .map_err(|e| e.to_string())?;
 
             // Pause all old streams, sync positions, then start the new combined stream.
-            if let Some(s) = self._main_stream.lock().unwrap().as_ref() { s.0.pause().ok(); }
+            if let Some(s) = self._main_stream.lock().expect("main stream mutex poisoned").as_ref() { s.0.pause().ok(); }
             {
-                let mut guard = self._cue_stream.lock().unwrap();
+                let mut guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
                 *guard = None;
             }
             self.sync_cue_positions();
             {
-                let mut guard = self._main_stream.lock().unwrap();
+                let mut guard = self._main_stream.lock().expect("main stream mutex poisoned");
                 *guard = Some(SendStream(stream));
                 guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
             }
@@ -251,15 +251,15 @@ impl AppAudio {
             };
 
             // Pause all old streams, sync cue_pos to main_pos, then start new streams.
-            if let Some(s) = self._main_stream.lock().unwrap().as_ref() { s.0.pause().ok(); }
+            if let Some(s) = self._main_stream.lock().expect("main stream mutex poisoned").as_ref() { s.0.pause().ok(); }
             {
-                let guard = self._cue_stream.lock().unwrap();
+                let guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
                 if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
             }
             self.sync_cue_positions();
 
             {
-                let mut guard = self._main_stream.lock().unwrap();
+                let mut guard = self._main_stream.lock().expect("main stream mutex poisoned");
                 match new_main_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
@@ -269,7 +269,7 @@ impl AppAudio {
                 }
             }
             {
-                let mut guard = self._cue_stream.lock().unwrap();
+                let mut guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
                 match new_cue_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
@@ -286,7 +286,7 @@ impl AppAudio {
 
     fn sync_cue_positions(&self) {
         for deck_arc in self.decks.values() {
-            let mut deck = deck_arc.lock().unwrap();
+            let mut deck = deck_arc.lock().expect("deck mutex poisoned");
             deck.cue_pos = deck.main_pos;
         }
     }
@@ -297,12 +297,12 @@ impl AppAudio {
 
     pub fn get_deck_levels(&self) -> HashMap<String, [f32; 2]> {
         self.strips.iter().map(|(id, strip)| {
-            (id.clone(), strip.lock().unwrap().get_level())
+            (id.clone(), strip.lock().expect("channel strip mutex poisoned").get_level())
         }).collect()
     }
 
     pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
-        let mut recording = self.recording.lock().unwrap();
+        let mut recording = self.recording.lock().expect("recording mutex poisoned");
         if recording.is_some() {
             return Err("already recording".to_string());
         }
@@ -317,7 +317,7 @@ impl AppAudio {
             .into_owned();
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
-        *self.monitor.record_tx.lock().unwrap() = Some(tx);
+        *self.monitor.record_tx.lock().expect("recording channel mutex poisoned") = Some(tx);
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
         let thread = if use_flac {
@@ -330,8 +330,8 @@ impl AppAudio {
     }
 
     pub fn stop_recording(&self) -> Result<String, String> {
-        self.monitor.record_tx.lock().unwrap().take();
-        let state = self.recording.lock().unwrap().take();
+        self.monitor.record_tx.lock().expect("recording channel mutex poisoned").take();
+        let state = self.recording.lock().expect("recording mutex poisoned").take();
         if let Some(s) = state {
             s.thread.join().map_err(|_| "recorder thread panicked".to_string())??;
             Ok(s.temp_path)
@@ -341,6 +341,6 @@ impl AppAudio {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.recording.lock().unwrap().is_some()
+        self.recording.lock().expect("recording mutex poisoned").is_some()
     }
 }

@@ -44,25 +44,25 @@ export const useSettingsStore = defineStore('settings', () => {
   const recordSession = ref<boolean>(false);
   const isOpen = ref(false);
 
-  let _store: Store | null = null;
+  let store: Store | null = null;
 
   function applyStored(stored: Stored): void {
     if (stored.keybindings) keybindings.value = stored.keybindings;
-    if (stored.limiterEnabled !== undefined) limiterEnabled.value = stored.limiterEnabled;
-    if (stored.nudgeSensitivity !== undefined) nudgeSensitivity.value = stored.nudgeSensitivity;
-    if (stored.pitchRange !== undefined) pitchRange.value = stored.pitchRange;
-    if (stored.bufferSize !== undefined) bufferSize.value = stored.bufferSize;
-    if (stored.bpmMin !== undefined) bpmMin.value = stored.bpmMin;
-    if (stored.bpmMax !== undefined) bpmMax.value = stored.bpmMax;
-    if (stored.recordingBitDepth !== undefined) recordingBitDepth.value = stored.recordingBitDepth;
-    if (stored.recordingFormat !== undefined) recordingFormat.value = stored.recordingFormat;
-    if (stored.recordSession !== undefined) recordSession.value = stored.recordSession;
+    limiterEnabled.value = stored.limiterEnabled ?? limiterEnabled.value;
+    nudgeSensitivity.value = stored.nudgeSensitivity ?? nudgeSensitivity.value;
+    pitchRange.value = stored.pitchRange ?? pitchRange.value;
+    bufferSize.value = stored.bufferSize ?? bufferSize.value;
+    bpmMin.value = stored.bpmMin ?? bpmMin.value;
+    bpmMax.value = stored.bpmMax ?? bpmMax.value;
+    recordingBitDepth.value = stored.recordingBitDepth ?? recordingBitDepth.value;
+    recordingFormat.value = stored.recordingFormat ?? recordingFormat.value;
+    recordSession.value = stored.recordSession ?? recordSession.value;
   }
 
   async function init(): Promise<void> {
     try {
-      _store = await load('settings.json', { autoSave: false, defaults: {} });
-      const saved = await _store.get<Stored>('v1');
+      store = await load('settings.json', { autoSave: false, defaults: {} });
+      const saved = await store.get<Stored>('v1');
       if (saved) applyStored(saved);
     } catch {
       // use defaults
@@ -70,8 +70,8 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function save(): Promise<void> {
-    if (!_store) return;
-    await _store.set('v1', {
+    if (!store) return;
+    await store.set('v1', {
       keybindings: keybindings.value,
       limiterEnabled: limiterEnabled.value,
       nudgeSensitivity: nudgeSensitivity.value,
@@ -83,11 +83,15 @@ export const useSettingsStore = defineStore('settings', () => {
       recordingFormat: recordingFormat.value,
       recordSession: recordSession.value
     } satisfies Stored);
-    await _store.save();
+    await store.save();
   }
 
-  function saveAsync(): void {
-    save().catch(() => {});
+  async function trySave(): Promise<void> {
+    try {
+      await save();
+    } catch {
+      // save failures are non-fatal
+    }
   }
 
   function setKey(
@@ -109,13 +113,13 @@ export const useSettingsStore = defineStore('settings', () => {
       ...keybindings.value,
       [deckId]: { ...keybindings.value[deckId], [command]: key }
     };
-    saveAsync();
+    trySave();
     return null;
   }
 
   function resetToDefaults(): void {
     keybindings.value = structuredClone(DEFAULT_KEYS);
-    saveAsync();
+    trySave();
   }
 
   watch(limiterEnabled, (v) => invoke('set_limiter_enabled', { enabled: v }), { immediate: true });
@@ -126,43 +130,43 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setLimiterEnabled(enabled: boolean): void {
     limiterEnabled.value = enabled;
-    saveAsync();
+    trySave();
   }
 
   function setNudgeSensitivity(value: number): void {
     nudgeSensitivity.value = Math.max(1, Math.min(20, value));
-    saveAsync();
+    trySave();
   }
 
   function setPitchRange(value: PitchRangeOption): void {
     pitchRange.value = value;
-    saveAsync();
+    trySave();
   }
 
   function setBufferSize(value: BufferSizeOption): void {
     bufferSize.value = value;
-    saveAsync();
+    trySave();
   }
 
   function setBpmRange(min: number, max: number): void {
     bpmMin.value = Math.max(40, Math.min(min, max - 1));
     bpmMax.value = Math.min(250, Math.max(max, min + 1));
-    saveAsync();
+    trySave();
   }
 
   function setRecordingBitDepth(value: RecordingBitDepthOption): void {
     recordingBitDepth.value = value;
-    saveAsync();
+    trySave();
   }
 
   function setRecordingFormat(value: RecordingFormatOption): void {
     recordingFormat.value = value;
-    saveAsync();
+    trySave();
   }
 
   function setRecordSession(value: boolean): void {
     recordSession.value = value;
-    saveAsync();
+    trySave();
   }
 
   return {
