@@ -199,27 +199,39 @@ export const useCollectionStore = defineStore('collection', () => {
     tracks.splice(0, tracks.length);
   }
 
-  const ANALYZE_CONCURRENCY = 3;
-  let activeAnalyses = 0;
-  const analysisQueue: string[] = [];
+  function createConcurrentQueue(concurrency: number, worker: (id: string) => Promise<void>) {
+    let active = 0;
+    const pending: string[] = [];
 
-  function drainQueue() {
-    while (activeAnalyses < ANALYZE_CONCURRENCY && analysisQueue.length > 0) {
-      const id = analysisQueue.shift();
-      if (id === undefined) continue;
-      const entry = tracks.find((t) => t.id === id);
-      if (!entry || entry.status !== 'idle') continue;
-      activeAnalyses++;
-      doAnalyze(id).finally(() => {
-        activeAnalyses--;
-        drainQueue();
-      });
+    function drain() {
+      while (active < concurrency && pending.length > 0) {
+        const id = pending.shift();
+        if (id === undefined) continue;
+        active++;
+        run(id);
+      }
     }
+
+    async function run(id: string) {
+      await worker(id);
+      active--;
+      drain();
+    }
+
+    return {
+      enqueue(id: string) {
+        pending.push(id);
+        drain();
+      },
+      get pending() {
+        return pending;
+      }
+    };
   }
 
   async function doAnalyze(id: string) {
     const entry = tracks.find((t) => t.id === id);
-    if (!entry || !entry.path) return;
+    if (!entry || !entry.path || entry.status !== 'idle') return;
     entry.status = 'analyzing';
     try {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
@@ -243,38 +255,6 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  function analyzeTrack(id: string) {
-    const entry = tracks.find((t) => t.id === id);
-    if (!entry || !entry.path || entry.status === 'analyzing' || entry.status === 'missing') return;
-    analysisQueue.push(id);
-    drainQueue();
-  }
-
-  function analyzeAll() {
-    for (const t of tracks.filter((t) => t.status === 'idle')) {
-      analysisQueue.push(t.id);
-    }
-    drainQueue();
-  }
-
-  const TAG_READ_CONCURRENCY = 8;
-  let activeTagReads = 0;
-  const tagReadQueue: string[] = [];
-
-  function drainTagQueue() {
-    while (activeTagReads < TAG_READ_CONCURRENCY && tagReadQueue.length > 0) {
-      const id = tagReadQueue.shift();
-      if (id === undefined) continue;
-      const entry = tracks.find((t) => t.id === id);
-      if (!entry || !entry.path) continue;
-      activeTagReads++;
-      readTagsForEntry(entry).finally(() => {
-        activeTagReads--;
-        drainTagQueue();
-      });
-    }
-  }
-
   async function readTagsForEntry(entry: CollectionEntry) {
     if (!entry.path) return;
     try {
@@ -289,9 +269,26 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  const analysisQueue = createConcurrentQueue(3, doAnalyze);
+  const tagQueue = createConcurrentQueue(8, async (id) => {
+    const entry = tracks.find((t) => t.id === id);
+    if (entry) await readTagsForEntry(entry);
+  });
+
+  function analyzeTrack(id: string) {
+    const entry = tracks.find((t) => t.id === id);
+    if (!entry || !entry.path || entry.status === 'analyzing' || entry.status === 'missing') return;
+    analysisQueue.enqueue(id);
+  }
+
+  function analyzeAll() {
+    for (const track of tracks.filter((t) => t.status === 'idle')) {
+      analysisQueue.enqueue(track.id);
+    }
+  }
+
   function queueTagRead(id: string) {
-    tagReadQueue.push(id);
-    drainTagQueue();
+    tagQueue.enqueue(id);
   }
 
   function setBpm(id: string, bpm: number) {

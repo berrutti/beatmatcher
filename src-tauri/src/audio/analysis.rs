@@ -44,52 +44,6 @@ pub fn compute_spectral_bands(
     (bass, mid, high)
 }
 
-// Compute `num_points` peak amplitude values for the region [start_sec, end_sec].
-// Resolution adapts to zoom: each point covers (end_sec - start_sec) / num_points
-// seconds of audio, so wider views are coarser and tight zooms are sample-accurate.
-pub fn compute_waveform_region(
-    samples: &[f32],
-    channels: usize,
-    device_sample_rate: u32,
-    start_sec: f64,
-    end_sec: f64,
-    num_points: usize,
-) -> Vec<f32> {
-    if samples.is_empty() || channels == 0 || num_points == 0 {
-        return vec![0.0; num_points];
-    }
-    let total_frames = samples.len() / channels;
-    let sample_rate = device_sample_rate as f64;
-    let start_frame = (start_sec * sample_rate).max(0.0) as usize;
-    let end_frame = ((end_sec * sample_rate) as usize).min(total_frames);
-
-    if start_frame >= end_frame {
-        return vec![0.0; num_points];
-    }
-
-    let visible_frames = end_frame - start_frame;
-    let frames_per_point = visible_frames as f64 / num_points as f64;
-
-    (0..num_points)
-        .map(|point_index| {
-            let bin_start = start_frame + (point_index as f64 * frames_per_point) as usize;
-            let bin_end = (start_frame + ((point_index + 1) as f64 * frames_per_point) as usize)
-                .min(end_frame)
-                .max(bin_start + 1);
-            let mut max_amplitude = 0.0f32;
-            for frame in bin_start..bin_end {
-                for ch in 0..channels {
-                    let amplitude = samples[frame * channels + ch].abs();
-                    if amplitude > max_amplitude {
-                        max_amplitude = amplitude;
-                    }
-                }
-            }
-            max_amplitude
-        })
-        .collect()
-}
-
 // Compute per-pixel spectral color data for the region [start_sec, end_sec].
 // Returns a flat Vec of length num_points * 4: [r, g, b, amplitude, ...] per pixel.
 //
@@ -440,38 +394,6 @@ mod tests {
         let peaks = find_peaks(&signal, 0.5, 200);
         assert_eq!(peaks.len(), 1);
         assert_eq!(peaks[0], 100);
-    }
-
-    // --- compute_waveform_region ---
-
-    #[test]
-    fn waveform_region_empty_input_returns_zeros() {
-        let out = compute_waveform_region(&[], 1, 44100, 0.0, 1.0, 5);
-        assert_eq!(out, vec![0.0f32; 5]);
-    }
-
-    #[test]
-    fn waveform_region_constant_signal_returns_amplitude() {
-        let samples = vec![0.5f32; 44100 * 2];
-        let out = compute_waveform_region(&samples, 1, 44100, 0.0, 2.0, 10);
-        assert_eq!(out.len(), 10);
-        for &v in &out {
-            assert!((v - 0.5).abs() < 1e-5, "got {}", v);
-        }
-    }
-
-    #[test]
-    fn waveform_region_out_of_range_returns_zeros() {
-        let samples = vec![1.0f32; 44100];
-        let out = compute_waveform_region(&samples, 1, 44100, 5.0, 6.0, 4);
-        assert_eq!(out, vec![0.0f32; 4]);
-    }
-
-    #[test]
-    fn waveform_region_returns_exact_num_points() {
-        let samples = vec![0.8f32; 44100 * 4];
-        let out = compute_waveform_region(&samples, 1, 44100, 0.0, 4.0, 17);
-        assert_eq!(out.len(), 17);
     }
 
     // --- detect_silence_end ---

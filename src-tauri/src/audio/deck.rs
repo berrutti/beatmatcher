@@ -7,13 +7,13 @@ pub struct ChannelStrip {
     target_gain: f32,
     current_gain: f32,
     gain_smooth_coeff: f32,
-    pub cue_active: bool,
+    pub(crate) cue_active: bool,
     eq: EqState,
     eq_cue: EqState,
     filter: FilterState,
     filter_cue: FilterState,
-    pub level_l: Arc<AtomicU32>,
-    pub level_r: Arc<AtomicU32>,
+    level_l: Arc<AtomicU32>,
+    level_r: Arc<AtomicU32>,
 }
 
 impl ChannelStrip {
@@ -108,36 +108,37 @@ pub enum CuePressOutcome {
 }
 
 pub struct DeckState {
-    pub samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
-    pub channels: usize,
-    pub device_sample_rate: u32,
-    pub total_frames: usize,
-    pub duration: f64,
-    pub loaded_path: Option<String>,
+    pub(crate) samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
+    pub(crate) channels: usize,
+    pub(crate) device_sample_rate: u32,
+    pub(crate) total_frames: usize,
+    pub(crate) duration: f64,
+    pub(crate) loaded_path: Option<String>,
 
-    pub is_playing: bool,
-    pub is_cueing: bool,
-    pub main_pos: f64, // fractional frame index
-    pub cue_pos: f64,  // fractional frame index (independent of main_pos)
-    pub cue_point: f64, // in frames; the stored cue point and loop-in position
-    pub loop_active: bool,
-    pub loop_end: f64, // in frames; loop_start is always cue_point
-    pub bpm: Option<f64>,
-    pub beat_offset_frames: f64,
-    pub playback_rate: f64,
-    pub nudge_factor: f64, // 1 + nudge_percent/100
+    pub(crate) is_playing: bool,
+    pub(crate) is_cueing: bool,
+    pub(crate) main_pos: f64, // fractional frame index
+    pub(crate) cue_pos: f64,  // fractional frame index (independent of main_pos)
+    pub(crate) cue_point: f64, // in frames; the stored cue point and loop-in position
+    pub(crate) loop_active: bool,
+    pub(crate) loop_end: f64, // in frames; loop_start is always cue_point
+    pub(crate) bpm: Option<f64>,
+    pub(crate) beat_offset_frames: f64,
+    pub(crate) playback_rate: f64,
+    pub(crate) nudge_factor: f64, // 1 + nudge_percent/100
+    pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
-    pub bass_band: Arc<Vec<f32>>,
-    pub mid_band: Arc<Vec<f32>>,
-    pub high_band: Arc<Vec<f32>>,
-    pub bass_scale: f32,
-    pub mid_scale: f32,
-    pub high_scale: f32,
+    pub(crate) bass_band: Arc<Vec<f32>>,
+    pub(crate) mid_band: Arc<Vec<f32>>,
+    pub(crate) high_band: Arc<Vec<f32>>,
+    pub(crate) bass_scale: f32,
+    pub(crate) mid_scale: f32,
+    pub(crate) high_scale: f32,
 
     // Set to true by the audio thread when the track reaches its natural end.
     // The monitoring task in lib.rs polls this and emits a "track-ended" event.
-    pub just_ended: Arc<AtomicBool>,
+    pub(crate) just_ended: Arc<AtomicBool>,
 }
 
 impl DeckState {
@@ -160,6 +161,7 @@ impl DeckState {
             beat_offset_frames: 0.0,
             playback_rate: 1.0,
             nudge_factor: 1.0,
+            quantize: true,
             bass_band: Arc::new(Vec::new()),
             mid_band: Arc::new(Vec::new()),
             high_band: Arc::new(Vec::new()),
@@ -324,6 +326,8 @@ impl DeckState {
 mod tests {
     use super::*;
 
+    const SR: u32 = 44100;
+
     impl DeckState {
         // Creates a DeckState loaded with a 440 Hz sine wave. No audio hardware.
         pub fn loaded_for_testing(device_sample_rate: u32, duration_secs: f64) -> Self {
@@ -342,6 +346,37 @@ mod tests {
             d.duration = duration_secs;
             d
         }
+    }
+
+    // --- DeckState tick ---
+
+    #[test]
+    fn deck_stops_at_natural_end_of_track() {
+        let mut d = DeckState::loaded_for_testing(SR, 1.0);
+        d.is_playing = true;
+        d.main_pos = (d.total_frames - 1) as f64;
+        d.main_tick();
+        assert!(!d.is_playing, "deck should stop when it reaches the last frame");
+    }
+
+    #[test]
+    fn deck_is_silent_when_not_playing() {
+        let mut d = DeckState::loaded_for_testing(SR, 5.0);
+        d.is_playing = false;
+        let (l, r) = d.main_tick();
+        assert_eq!(l, 0.0);
+        assert_eq!(r, 0.0);
+    }
+
+    #[test]
+    fn deck_position_advances_while_playing() {
+        let mut d = DeckState::loaded_for_testing(SR, 5.0);
+        d.is_playing = true;
+        d.main_pos = 0.0;
+        for _ in 0..1000 {
+            d.main_tick();
+        }
+        assert!(d.main_pos > 900.0, "expected position to advance, got {}", d.main_pos);
     }
 
     // --- ChannelStrip gain smoothing ---
