@@ -140,13 +140,19 @@ export const useMixerStore = defineStore('mixer', () => {
         );
         if (newCueOffset !== null) {
           cueChannelOffset.value = newCueOffset;
-          try { await invoke('set_cue_device', { deviceId, channelOffset: newCueOffset }); } catch { /* best-effort */ }
+          try {
+            await invoke('set_cue_device', { deviceId, channelOffset: newCueOffset });
+          } catch {
+            /* best-effort */
+          }
         }
       } else {
         cueDeviceId.value = '';
         try {
           await invoke('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value });
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
       }
     }
     mainDeviceId.value = deviceId;
@@ -205,13 +211,19 @@ export const useMixerStore = defineStore('mixer', () => {
         );
         if (newMainOffset !== null) {
           mainChannelOffset.value = newMainOffset;
-          try { await invoke('set_main_device', { deviceId, channelOffset: newMainOffset }); } catch { /* best-effort */ }
+          try {
+            await invoke('set_main_device', { deviceId, channelOffset: newMainOffset });
+          } catch {
+            /* best-effort */
+          }
         }
       } else {
         mainDeviceId.value = '';
         try {
           await invoke('set_main_device', { deviceId: '', channelOffset: mainChannelOffset.value });
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
       }
     }
     cueDeviceId.value = deviceId;
