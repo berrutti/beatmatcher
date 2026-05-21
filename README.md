@@ -45,7 +45,7 @@ yarn install
 yarn dev
 ```
 
-Built with Tauri + Vue 3 + TypeScript + Vite.
+Built with Tauri + Vue 3 + TypeScript + Vite. See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams of the audio engine, signal chain, and IPC layer.
 
 ## Acknowledgements
 
