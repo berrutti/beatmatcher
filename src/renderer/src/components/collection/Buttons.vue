@@ -10,7 +10,7 @@
         title="Click to send to Edit"
         @click.stop="load('E')"
       >
-        {{decksStore.decks['E'].name}}
+        {{ decksStore.decks['E'].name }}
       </button>
     </template>
     <template v-else>
@@ -47,7 +47,9 @@ function deckLoaded(deckId: string): boolean {
 }
 
 function load(deckId: string) {
-  window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path: props.path } }));
+  window.dispatchEvent(
+    new CustomEvent('bm:collection-drop', { detail: { deckId, path: props.path } })
+  );
 }
 </script>
 

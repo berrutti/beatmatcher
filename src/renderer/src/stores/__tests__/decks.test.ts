@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn().mockResolvedValue({}),
+  invoke: vi.fn().mockResolvedValue({})
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
+  listen: vi.fn().mockResolvedValue(() => {})
 }));
 
 vi.mock('@tauri-apps/plugin-store', () => ({
-  load: vi.fn().mockResolvedValue({}),
+  load: vi.fn().mockResolvedValue({})
 }));
 
 vi.mock('@renderer/stores/settings', () => ({
-  useSettingsStore: () => ({ pitchRange: 8, nudgeSensitivity: 4 }),
+  useSettingsStore: () => ({ pitchRange: 8, nudgeSensitivity: 4 })
 }));
 
 import { useDecksStore } from '../decks';

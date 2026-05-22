@@ -32,7 +32,7 @@ withDefaults(
   }>(),
   {
     placeholder: 'Search',
-    fullWidth: false,
+    fullWidth: false
   }
 );
 

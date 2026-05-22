@@ -139,10 +139,7 @@
             class="collection__item-tag collection__item-tag--missing"
             >missing</span
           >
-          <Buttons
-            v-if="track.status === 'ready' && track.path"
-            :path="track.path ?? ''"
-          />
+          <Buttons v-if="track.status === 'ready' && track.path" :path="track.path ?? ''" />
           <button
             v-if="track.status === 'idle'"
             class="collection__item-btn"
@@ -1154,7 +1151,6 @@ async function openFolderDialog() {
   max-height: 200px;
   overflow-y: auto;
 }
-
 </style>
 
 <style>
