@@ -701,6 +701,7 @@ async function onDrop(e: DragEvent) {
   if (files.length > 0) store.addFiles(files);
 }
 
+// Movement below this threshold is treated as a click, not a drag start.
 const DRAG_THRESHOLD = 5;
 
 function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {

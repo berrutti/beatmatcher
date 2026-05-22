@@ -182,13 +182,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.6em;
   padding: 0 0.8em;
-  height: 2.2em;
+  height: 44px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-border);
 }
 
 .edit-view__track-name {
-  font-size: 0.6em;
+  font-size: 0.85em;
   color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
@@ -202,7 +202,7 @@ onUnmounted(() => {
   border: none;
   color: var(--color-muted);
   font-family: var(--font);
-  font-size: 0.75em;
+  font-size: 0.85em;
   cursor: pointer;
   flex-shrink: 0;
   padding: 0.2em 0.3em;
@@ -223,9 +223,11 @@ onUnmounted(() => {
 }
 
 .edit-view__drop-hint {
-  font-size: 0.6em;
+  font-size: 1em;
   color: var(--color-muted);
   letter-spacing: 0.1em;
+  opacity: 0.6;
+  font-style: italic;
 }
 
 .edit-view__waveform {
@@ -237,8 +239,9 @@ onUnmounted(() => {
 .edit-view__controls {
   display: flex;
   align-items: center;
-  gap: 0.4em;
-  padding: 8px 12px;
+  gap: 0.5em;
+  padding: 0 12px;
+  height: 44px;
   border-top: 1px solid var(--color-border);
   background: #0d0d0d;
   flex-shrink: 0;
@@ -246,9 +249,9 @@ onUnmounted(() => {
 
 .edit-view__btn {
   font-family: var(--font);
-  font-size: 0.65em;
+  font-size: 0.8em;
   letter-spacing: 0.1em;
-  padding: 0.4em 1.2em;
+  padding: 0.45em 1.2em;
   border-radius: 4px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -259,8 +262,6 @@ onUnmounted(() => {
 .edit-view__btn--set-bpm,
 .edit-view__btn--set-grid {
   color: var(--color-muted);
-  font-size: 0.55em;
-  letter-spacing: 0.1em;
 }
 
 .edit-view__btn--set-bpm:hover,
