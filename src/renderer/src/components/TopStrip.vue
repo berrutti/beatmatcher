@@ -4,6 +4,7 @@
       class="topstrip__rec-btn"
       :class="{ 'topstrip__rec-btn--active': isRecording }"
       :title="isRecording ? 'Stop recording' : 'Record master output'"
+      tabindex="-1"
       @click="onRecClick"
     >
       REC
@@ -12,12 +13,13 @@
     <button
       class="topstrip__edit-btn"
       :class="{ 'topstrip__edit-btn--active': editMode }"
+      tabindex="-1"
       @click="emit('toggle-edit')"
     >
       EDIT
     </button>
 
-    <button class="topstrip__deck-count-btn" @click="mixer.toggleDeckCount()">
+    <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
       {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
     </button>
 
@@ -137,11 +139,16 @@
         </option>
       </select>
 
-      <button class="topstrip__refresh" @click="mixer.loadOutputDevices()">↻</button>
+      <button class="topstrip__refresh" tabindex="-1" @click="mixer.loadOutputDevices()">↻</button>
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
     </template>
 
-    <button class="topstrip__settings-btn" title="Settings (⌘,)" @click="emit('open-settings')">
+    <button
+      class="topstrip__settings-btn"
+      tabindex="-1"
+      title="Settings (⌘,)"
+      @click="emit('open-settings')"
+    >
       ⚙
     </button>
   </div>

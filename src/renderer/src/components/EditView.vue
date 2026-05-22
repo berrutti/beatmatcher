@@ -24,7 +24,7 @@
       <span class="edit-view__track-name" :title="deck.trackName || ''">{{
         deck.trackName || 'No track loaded'
       }}</span>
-      <button class="edit-view__close" @click="emit('close')">✕</button>
+      <button class="edit-view__close" tabindex="-1" @click="emit('close')">✕</button>
     </div>
 
     <div v-if="!deck.trackLoaded" class="edit-view__drop-zone">
@@ -52,13 +52,20 @@
     />
 
     <div v-if="deck.trackLoaded" class="edit-view__controls">
-      <button class="edit-view__btn edit-view__btn--set-bpm" @click="bpmModalOpen = true">
+      <button
+        class="edit-view__btn edit-view__btn--set-bpm"
+        tabindex="-1"
+        @click="bpmModalOpen = true"
+      >
         SET BPM
       </button>
-      <button class="edit-view__btn edit-view__btn--set-grid" @click="onSetGrid()">SET GRID</button>
+      <button class="edit-view__btn edit-view__btn--set-grid" tabindex="-1" @click="onSetGrid()">
+        SET GRID
+      </button>
       <button
         class="edit-view__btn edit-view__btn--cue"
         :class="{ 'edit-view__btn--cueing': deck.cueing }"
+        tabindex="-1"
         @mousedown.prevent="deck.cueStart()"
         @mouseup="deck.cueEnd()"
         @mouseleave="deck.cueEnd()"
@@ -68,6 +75,7 @@
       <button
         class="edit-view__btn edit-view__btn--play"
         :class="{ 'edit-view__btn--playing': deck.playing }"
+        tabindex="-1"
         @click="deck.togglePlay()"
       >
         {{ deck.playing ? '⏸' : '▶' }}

@@ -23,9 +23,9 @@
         </span>
 
         <div class="waveform__zoom">
-          <button class="waveform__zoom-btn" @click="() => zoomOut()">−</button>
+          <button class="waveform__zoom-btn" tabindex="-1" @click="() => zoomOut()">−</button>
           <span class="waveform__zoom-label">{{ zoomLabel }}</span>
-          <button class="waveform__zoom-btn" @click="() => zoomIn()">+</button>
+          <button class="waveform__zoom-btn" tabindex="-1" @click="() => zoomIn()">+</button>
         </div>
       </div>
     </div>
@@ -481,7 +481,6 @@ let panStartViewSec = 0;
 let dragRectLeft = 0;
 let dragRectWidth = 0;
 let pendingDragX: number | null = null;
-
 function onMouseDown(e: MouseEvent) {
   const canvas = canvasEl.value;
   if (!canvas) return;
@@ -496,7 +495,7 @@ function onMouseDown(e: MouseEvent) {
     panStartViewSec = viewStartSec;
   } else {
     dragging = 'seek';
-    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
+    pendingDragX = e.clientX;
   }
 
   window.addEventListener('mousemove', onMouseMoveWindow);
@@ -550,18 +549,14 @@ function onWheel(e: WheelEvent) {
   }
 }
 
-function onMouseUp(e: MouseEvent) {
+function onMouseUp() {
   pendingDragX = null;
-  const px = e.clientX - dragRectLeft;
   const wasPan = dragging === 'pan';
-  const wasSeek = dragging === 'seek';
   dragging = null;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
   if (wasPan) {
     ensurePeaks();
-  } else if (wasSeek) {
-    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
   }
 }
 

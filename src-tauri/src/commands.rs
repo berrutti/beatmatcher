@@ -149,6 +149,7 @@ pub(crate) async fn load_track(
     deck: String,
     path: String,
     analyze: bool,
+    beat_offset_sec: f64,
 ) -> Result<TrackInfo, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let device_sample_rate = state.audio.device_sample_rate;
@@ -197,11 +198,16 @@ pub(crate) async fn load_track(
 
     let total_frames = samples.len() / channels;
     let duration = total_frames as f64 / device_sample_rate as f64;
-    let silence_pos = silence_end * device_sample_rate as f64;
+    // beat_offset_sec is the user-calibrated position of beat 1 (saved per track, defaults to
+    // silence_end). Setting main_pos, cue_pos, and cue_point all to the same value guarantees
+    // that press_cue finds main_pos == cue_point and starts preview immediately. Previously only
+    // main_pos was set here and cue_point was updated by a separate seek command, leaving a
+    // window where they diverged and press_cue returned CueMoved instead of PreviewStarted.
+    let start_pos = (beat_offset_sec * device_sample_rate as f64).clamp(0.0, total_frames as f64);
 
     log::info!(
-        "load_track [{}]: analyze={} native_sr={} device_sr={} channels={} duration={:.2}s bpm={:?} silence_end={:.3}s silence_pos={:.0} frames",
-        deck, analyze, native_sr, device_sample_rate, channels, duration, bpm, silence_end, silence_pos
+        "load_track [{}]: analyze={} native_sr={} device_sr={} channels={} duration={:.2}s bpm={:?} silence_end={:.3}s beat_offset={:.3}s start_pos={:.0} frames",
+        deck, analyze, native_sr, device_sample_rate, channels, duration, bpm, silence_end, beat_offset_sec, start_pos
     );
 
     {
@@ -213,8 +219,10 @@ pub(crate) async fn load_track(
         deck_state.duration = duration;
         deck_state.loaded_path = Some(path_for_log.clone());
         deck_state.is_playing = false;
-        deck_state.main_pos = silence_pos;
-        deck_state.cue_pos = silence_pos;
+        deck_state.is_cueing = false;
+        deck_state.main_pos = start_pos;
+        deck_state.cue_pos = start_pos;
+        deck_state.cue_point = start_pos;
         deck_state.loop_active = false;
         deck_state.loop_end = 0.0;
         deck_state.bpm = None;
@@ -1413,6 +1421,65 @@ mod tests {
         simulate_seek(&mut deck_state, beat_dur() * 1.0);
         assert!((deck_state.cue_point - beat_dur() * 4.0).abs() < 1e-9, "cue_point must not move");
         assert!((deck_state.loop_end - beat_dur() * 8.0).abs() < 1e-9, "loop_end must not move");
+    }
+
+    // --- load_track initialization (start_pos invariant) ---
+
+    // Simulate the deck state that load_track produces for a given beat_offset_sec.
+    fn load_deck_at_beat_offset(beat_offset_sec: f64, duration_secs: f64) -> DeckState {
+        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+        let start_pos = (beat_offset_sec * SR_F).clamp(0.0, d.total_frames as f64);
+        d.is_playing = false;
+        d.is_cueing = false;
+        d.main_pos = start_pos;
+        d.cue_pos = start_pos;
+        d.cue_point = start_pos;
+        d
+    }
+
+    #[test]
+    fn press_cue_starts_preview_immediately_after_load() {
+        // After load_track, main_pos == cue_point, so press_cue must return PreviewStarted
+        // without a CueMoved step first.
+        let mut d = load_deck_at_beat_offset(1.5, 10.0);
+        let outcome = d.press_cue();
+        assert!(
+            matches!(outcome, CuePressOutcome::PreviewStarted),
+            "expected PreviewStarted, got {:?}",
+            outcome
+        );
+        assert!(d.is_playing);
+        assert!(d.is_cueing);
+    }
+
+    #[test]
+    fn press_cue_cue_moved_when_main_pos_differs_from_cue_point() {
+        // Regression: before start_pos was introduced, seek(beatOffset) moved main_pos but
+        // left cue_point at silence_pos. This caused CueMoved on the first press.
+        let mut d = load_deck_at_beat_offset(0.0, 10.0); // silence_pos = 0
+        d.main_pos = 1.5 * SR_F; // beatOffset != silence_pos
+        // cue_point is still 0 — the old broken state
+        let outcome = d.press_cue();
+        assert!(
+            matches!(outcome, CuePressOutcome::CueMoved { .. }),
+            "expected CueMoved when positions differ, got {:?}",
+            outcome
+        );
+        assert!(!d.is_playing);
+    }
+
+    #[test]
+    fn press_cue_starts_preview_at_nonzero_beat_offset() {
+        // Tracks with a non-zero beat offset (user-adjusted grid) must also work on first press.
+        let beat_offset_sec = 0.342; // typical silence-skip value
+        let mut d = load_deck_at_beat_offset(beat_offset_sec, 10.0);
+        let outcome = d.press_cue();
+        assert!(
+            matches!(outcome, CuePressOutcome::PreviewStarted),
+            "expected PreviewStarted at beat_offset={}, got {:?}",
+            beat_offset_sec,
+            outcome
+        );
     }
 
     #[test]

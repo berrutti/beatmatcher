@@ -9,6 +9,7 @@
     <div class="collection__header">
       <div class="collection__tabs">
         <button
+          tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'all' }"
           @click="tab = 'all'"
@@ -16,6 +17,7 @@
           ALL
         </button>
         <button
+          tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'playlists' }"
           @click="tab = 'playlists'"
@@ -47,12 +49,22 @@
             ✕
           </button>
         </div>
-        <button v-if="store.hasPending" class="collection__header-btn" @click="store.analyzeAll()">
+        <button
+          tabindex="-1"
+          v-if="store.hasPending"
+          class="collection__header-btn"
+          @click="store.analyzeAll()"
+        >
           ANALYZE ALL
         </button>
-        <button class="collection__header-btn" @click="openFileDialog">ADD FILES</button>
-        <button class="collection__header-btn" @click="openFolderDialog">ADD FOLDER</button>
+        <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">
+          ADD FILES
+        </button>
+        <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">
+          ADD FOLDER
+        </button>
         <button
+          tabindex="-1"
           v-if="store.tracks.length > 0"
           class="collection__header-btn collection__header-btn--muted"
           @click="store.clearAll()"
@@ -62,7 +74,9 @@
       </template>
 
       <template v-else-if="activePlaylistId === null">
-        <button class="collection__header-btn" @click="onCreatePlaylist">NEW PLAYLIST</button>
+        <button tabindex="-1" class="collection__header-btn" @click="onCreatePlaylist">
+          NEW PLAYLIST
+        </button>
       </template>
 
       <template v-else>
@@ -80,6 +94,7 @@
           activePlaylist?.name
         }}</span>
         <button
+          tabindex="-1"
           class="collection__header-btn"
           style="margin-left: 0"
           @click="activePlaylistId = null"
@@ -101,15 +116,16 @@
       <div v-else class="collection__list">
         <div class="collection__sort-bar">
           <button
+            tabindex="-1"
             class="collection__sort-btn collection__sort-btn--title"
             @click="toggleSort('title')"
           >
             TITLE{{ sortField === 'title' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
-          <button class="collection__sort-btn" @click="toggleSort('bpm')">
+          <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('bpm')">
             BPM{{ sortField === 'bpm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
-          <button class="collection__sort-btn" @click="toggleSort('added')">
+          <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('added')">
             ADDED{{ sortField === 'added' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
         </div>
@@ -148,6 +164,7 @@
                 :class="{ 'collection__deck-btn--loaded': deckHasTrack('E', track.path) }"
                 :style="{ '--btn-color': decksStore.deckE.accent }"
                 :disabled="deckHasTrack('E', track.path)"
+                tabindex="-1"
                 title="Click to send to Edit"
                 @click.stop="loadToDeck(track.path, 'E')"
               >
@@ -162,6 +179,7 @@
                 :class="{ 'collection__deck-btn--loaded': deckHasTrack(deckId, track.path) }"
                 :style="{ '--btn-color': decksStore.decks[deckId].accent }"
                 :disabled="deckHasTrack(deckId, track.path)"
+                tabindex="-1"
                 :title="`Click to send to Deck ${deckId}`"
                 @click.stop="loadToDeck(track.path, deckId)"
               >
@@ -172,6 +190,7 @@
           <button
             v-if="track.status === 'idle'"
             class="collection__item-btn"
+            tabindex="-1"
             @click.stop="store.analyzeTrack(track.id)"
           >
             ANALYZE
@@ -179,11 +198,16 @@
           <button
             v-if="track.status === 'error'"
             class="collection__item-btn"
+            tabindex="-1"
             @click.stop="openBpmModal(track.id)"
           >
             SET BPM
           </button>
-          <button class="collection__item-remove" @click.stop="pendingRemoveTrackId = track.id">
+          <button
+            class="collection__item-remove"
+            tabindex="-1"
+            @click.stop="pendingRemoveTrackId = track.id"
+          >
             ✕
           </button>
         </div>
@@ -207,6 +231,7 @@
           >
           <button
             class="collection__item-remove"
+            tabindex="-1"
             @click.stop="pendingDeletePlaylistId = playlist.id"
           >
             ✕
@@ -250,6 +275,7 @@
                     item.entry.status !== 'ready' ||
                     deckHasTrack('E', item.path)
                   "
+                  tabindex="-1"
                   title="Click to send to Edit"
                   @click.stop="loadToDeck(item.path, 'E')"
                 >
@@ -268,6 +294,7 @@
                     item.entry.status !== 'ready' ||
                     deckHasTrack(deckId, item.path)
                   "
+                  tabindex="-1"
                   :title="`Click to send to Deck ${deckId}`"
                   @click.stop="loadToDeck(item.path, deckId)"
                 >
@@ -277,6 +304,7 @@
             </div>
             <button
               class="collection__item-remove"
+              tabindex="-1"
               @click.stop="removeFromActivePlaylist(item.path)"
             >
               ✕
@@ -287,7 +315,11 @@
       </div>
 
       <div class="collection__add-section">
-        <button class="collection__add-toggle" @click="showAddSection = !showAddSection">
+        <button
+          class="collection__add-toggle"
+          tabindex="-1"
+          @click="showAddSection = !showAddSection"
+        >
           {{ showAddSection ? '▾' : '▸' }} ADD TRACKS
         </button>
         <div v-if="showAddSection" class="collection__add-body">
@@ -302,6 +334,7 @@
               @keydown.esc="addSectionSearch = ''"
             />
             <button
+              tabindex="-1"
               v-if="addSectionSearch"
               class="collection__search-clear"
               @click="addSectionSearch = ''"
@@ -329,6 +362,7 @@
               {{ store.getBpm(track)?.toFixed(1) }} BPM
             </span>
             <button
+              tabindex="-1"
               class="collection__item-btn"
               @click="
                 track.path && activePlaylistId && store.addToPlaylist(activePlaylistId, track.path)
@@ -372,7 +406,9 @@
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
-        <button class="context-menu__item" @click="onContextMenuReanalyze">Recalculate BPM</button>
+        <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">
+          Recalculate BPM
+        </button>
         <template v-if="store.playlists.length > 0">
           <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
             <span>Add to playlist</span>
@@ -382,6 +418,7 @@
               :class="{ 'context-menu__submenu--flip': subFlipped }"
             >
               <button
+                tabindex="-1"
                 v-for="playlist in store.playlists"
                 :key="playlist.id"
                 class="context-menu__item"
@@ -1179,10 +1216,12 @@ async function openFolderDialog() {
   display: flex;
   gap: 3px;
   flex-shrink: 0;
+  align-self: stretch;
+  align-items: stretch;
+  padding: 3px 0;
 }
 
 .collection__deck-btn {
-  height: 1.6em;
   padding: 0 0.5em;
   border: 1px solid var(--btn-color);
   color: var(--btn-color);

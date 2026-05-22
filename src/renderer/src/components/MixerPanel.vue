@@ -37,6 +37,7 @@
             class="mixer__filter-btn"
             :class="{ 'mixer__filter-btn--active': mixer.filterEnabled[deckId] }"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            tabindex="-1"
             @click="mixer.toggleFilter(deckId)"
           >
             F
@@ -91,6 +92,7 @@
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
           :disabled="mixer.swarmMode"
+          tabindex="-1"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
           CUE

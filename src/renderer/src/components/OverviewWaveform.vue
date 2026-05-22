@@ -168,12 +168,10 @@ function onMouseMoveWindow(e: MouseEvent) {
   emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
 }
 
-function onMouseUp(e: MouseEvent) {
+function onMouseUp() {
   isDragging = false;
   window.removeEventListener('mousemove', onMouseMoveWindow);
   window.removeEventListener('mouseup', onMouseUp);
-  const px = e.clientX - dragRectLeft;
-  emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
 }
 
 function rafLoop() {
