@@ -30,26 +30,26 @@
         @close="decksStore.exitEditMode()"
       />
       <div v-else class="app__play" :class="{ 'app__play--two-deck': mixerStore.deckCount === 2 }">
-        <DeckPanel class="app__deck-a" :deck="decksStore.deckA" />
-        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-c" :deck="decksStore.deckC" />
+        <Deck class="app__deck-a" :deck="decksStore.deckA" />
+        <Deck v-if="mixerStore.deckCount === 4" class="app__deck-c" :deck="decksStore.deckC" />
         <div class="app__center">
-          <MixerPanel />
+          <Mixer />
         </div>
-        <DeckPanel class="app__deck-b" :deck="decksStore.deckB" />
-        <DeckPanel v-if="mixerStore.deckCount === 4" class="app__deck-d" :deck="decksStore.deckD" />
+        <Deck class="app__deck-b" :deck="decksStore.deckB" />
+        <Deck v-if="mixerStore.deckCount === 4" class="app__deck-d" :deck="decksStore.deckD" />
       </div>
     </div>
 
     <button class="app__collection-bar" @click="collectionStore.toggle()">
       <span class="app__collection-bar-label">COLLECTION</span>
-      <span>{{ collectionStore.isOpen ? '▴' : '▾' }}</span>
+      <span>{{ collectionStore.isOpen ? '▾' : '▴' }}</span>
     </button>
     <div
       v-if="collectionStore.isOpen"
       class="app__collection-resize-handle"
       @pointerdown.prevent="onResizeStart"
     />
-    <CollectionPanel v-show="collectionStore.isOpen" class="app__collection" />
+    <Browser v-show="collectionStore.isOpen" class="app__collection" />
   </div>
 </template>
 
@@ -61,13 +61,13 @@ import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import { useSettingsStore } from '@renderer/stores/settings';
-import DeckPanel from '@renderer/components/DeckPanel.vue';
-import MixerPanel from '@renderer/components/MixerPanel.vue';
-import CollectionPanel from '@renderer/components/CollectionPanel.vue';
+import Deck from '@renderer/components/deck/Deck.vue';
+import Mixer from '@renderer/components/mixer/Mixer.vue';
+import Browser from '@renderer/components/collection/Browser.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
-import EditView from '@renderer/components/EditView.vue';
-import Modal from '@renderer/components/Modal.vue';
-import SettingsModal from '@renderer/components/SettingsModal.vue';
+import EditView from '@renderer/components/deck/EditView.vue';
+import Modal from '@renderer/components/modals/Modal.vue';
+import SettingsModal from '@renderer/components/Settings.vue';
 
 const MIN_COLLECTION_H = 120;
 const MAX_COLLECTION_H_RATIO = 0.65;
