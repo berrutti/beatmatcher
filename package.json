@@ -22,10 +22,10 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-store": "^2.4.3",
     "pinia": "^2.3.1",
-    "vue": "^3.5.13"
+    "vue": "^3.5.34"
   },
   "simple-git-hooks": {
     "pre-commit": "yarn lint && yarn format"
