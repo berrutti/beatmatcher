@@ -88,9 +88,9 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
-import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
-import ConfirmModal from '@renderer/components/ConfirmModal.vue';
-import BpmModal from '@renderer/components/BpmModal.vue';
+import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
+import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import BpmModal from '@renderer/components/modals/BpmModal.vue';
 
 const props = defineProps<{ deck: Deck }>();
 const emit = defineEmits<{ close: [] }>();

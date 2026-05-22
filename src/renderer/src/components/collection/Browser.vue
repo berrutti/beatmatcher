@@ -30,25 +30,7 @@
         <span v-if="store.tracks.length > 0" class="collection__count"
           >{{ filteredTracks.length }}/{{ store.tracks.length }}</span
         >
-        <div class="collection__search-wrap">
-          <input
-            v-model="searchQuery"
-            class="collection__search"
-            type="text"
-            placeholder="Search"
-            spellcheck="false"
-            @pointerdown="onSearchPointerDown"
-            @keydown.esc="searchQuery = ''"
-          />
-          <button
-            v-if="searchQuery"
-            class="collection__search-clear"
-            tabindex="-1"
-            @click="searchQuery = ''"
-          >
-            ✕
-          </button>
-        </div>
+        <Search v-model="searchQuery" />
         <button
           tabindex="-1"
           v-if="store.hasPending"
@@ -157,36 +139,10 @@
             class="collection__item-tag collection__item-tag--missing"
             >missing</span
           >
-          <div v-if="track.status === 'ready' && track.path" class="collection__item-decks">
-            <template v-if="decksStore.editMode">
-              <button
-                class="collection__deck-btn"
-                :class="{ 'collection__deck-btn--loaded': deckHasTrack('E', track.path) }"
-                :style="{ '--btn-color': decksStore.deckE.accent }"
-                :disabled="deckHasTrack('E', track.path)"
-                tabindex="-1"
-                title="Click to send to Edit"
-                @click.stop="loadToDeck(track.path, 'E')"
-              >
-                Edit
-              </button>
-            </template>
-            <template v-else>
-              <button
-                v-for="deckId in DECKS_DISPOSITION"
-                :key="deckId"
-                class="collection__deck-btn"
-                :class="{ 'collection__deck-btn--loaded': deckHasTrack(deckId, track.path) }"
-                :style="{ '--btn-color': decksStore.decks[deckId].accent }"
-                :disabled="deckHasTrack(deckId, track.path)"
-                tabindex="-1"
-                :title="`Click to send to Deck ${deckId}`"
-                @click.stop="loadToDeck(track.path, deckId)"
-              >
-                Deck {{ deckId }}
-              </button>
-            </template>
-          </div>
+          <Buttons
+            v-if="track.status === 'ready' && track.path"
+            :path="track.path ?? ''"
+          />
           <button
             v-if="track.status === 'idle'"
             class="collection__item-btn"
@@ -264,44 +220,10 @@
             <span v-if="item.bpm !== null" class="collection__item-bpm"
               >{{ item.bpm.toFixed(1) }} BPM</span
             >
-            <div class="collection__item-decks">
-              <template v-if="decksStore.editMode">
-                <button
-                  class="collection__deck-btn"
-                  :class="{ 'collection__deck-btn--loaded': deckHasTrack('E', item.path) }"
-                  :style="{ '--btn-color': decksStore.deckE.accent }"
-                  :disabled="
-                    item.entry === null ||
-                    item.entry.status !== 'ready' ||
-                    deckHasTrack('E', item.path)
-                  "
-                  tabindex="-1"
-                  title="Click to send to Edit"
-                  @click.stop="loadToDeck(item.path, 'E')"
-                >
-                  Edit
-                </button>
-              </template>
-              <template v-else>
-                <button
-                  v-for="deckId in DECKS_DISPOSITION"
-                  :key="deckId"
-                  class="collection__deck-btn"
-                  :class="{ 'collection__deck-btn--loaded': deckHasTrack(deckId, item.path) }"
-                  :style="{ '--btn-color': decksStore.decks[deckId].accent }"
-                  :disabled="
-                    item.entry === null ||
-                    item.entry.status !== 'ready' ||
-                    deckHasTrack(deckId, item.path)
-                  "
-                  tabindex="-1"
-                  :title="`Click to send to Deck ${deckId}`"
-                  @click.stop="loadToDeck(item.path, deckId)"
-                >
-                  Deck {{ deckId }}
-                </button>
-              </template>
-            </div>
+            <Buttons
+              :path="item.path"
+              :disabled="item.entry === null || item.entry.status !== 'ready'"
+            />
             <button
               class="collection__item-remove"
               tabindex="-1"
@@ -323,25 +245,7 @@
           {{ showAddSection ? '▾' : '▸' }} ADD TRACKS
         </button>
         <div v-if="showAddSection" class="collection__add-body">
-          <div class="collection__add-search-wrap">
-            <input
-              v-model="addSectionSearch"
-              class="collection__search"
-              type="text"
-              placeholder="search"
-              spellcheck="false"
-              @pointerdown="onSearchPointerDown"
-              @keydown.esc="addSectionSearch = ''"
-            />
-            <button
-              tabindex="-1"
-              v-if="addSectionSearch"
-              class="collection__search-clear"
-              @click="addSectionSearch = ''"
-            >
-              ✕
-            </button>
-          </div>
+          <Search v-model="addSectionSearch" placeholder="search" :full-width="true" />
           <div v-if="addableTracks.length === 0" class="collection__empty" style="height: 40px">
             {{
               store.tracks.filter((t) => t.status === 'ready').length === 0
@@ -443,11 +347,12 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
 import type { CollectionEntry } from '@renderer/stores/collection';
-import type { DeckId } from '@renderer/stores/decks';
-import BpmModal from '@renderer/components/BpmModal.vue';
-import ConfirmModal from '@renderer/components/ConfirmModal.vue';
+import BpmModal from '@renderer/components/modals/BpmModal.vue';
+import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import Search from '@renderer/components/collection/Search.vue';
+import Buttons from '@renderer/components/collection/Buttons.vue';
 
 const store = useCollectionStore();
 const decksStore = useDecksStore();
@@ -617,11 +522,6 @@ function onBpmSubmit(bpm: number) {
 
 function displayName(filename: string): string {
   return filename.replace(/\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i, '');
-}
-
-function deckHasTrack(deckId: string, path: string | null): boolean {
-  if (!path) return false;
-  return decksStore.decks[deckId as DeckId].loadedPath === path;
 }
 
 function loadToDeck(path: string, deckId: string) {
@@ -804,12 +704,7 @@ async function onDrop(e: DragEvent) {
   if (files.length > 0) store.addFiles(files);
 }
 
-// Movement below this threshold is treated as a click, not a drag start.
 const DRAG_THRESHOLD = 5;
-
-function onSearchPointerDown(e: PointerEvent) {
-  if (store.draggingPath) e.preventDefault();
-}
 
 function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
   if (e.button !== 0 || track.status !== 'ready' || !track.path) return;
@@ -953,52 +848,6 @@ async function openFolderDialog() {
   font-size: 0.8em;
   color: var(--color-muted);
   opacity: 0.6;
-}
-
-.collection__search-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.collection__search {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  font-family: var(--font);
-  font-size: 0.8em;
-  padding: 0.25em 1.6em 0.25em 0.5em;
-  border-radius: 3px;
-  outline: none;
-  width: 8em;
-}
-
-.collection__search::placeholder {
-  color: var(--color-muted);
-  opacity: 0.5;
-}
-
-.collection__search:focus {
-  border-color: #555;
-}
-
-.collection__search-clear {
-  position: absolute;
-  right: 0.3em;
-  background: transparent;
-  border: none;
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 0.72em;
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-  opacity: 0.6;
-}
-
-.collection__search-clear:hover {
-  opacity: 1;
-  color: var(--color-text);
 }
 
 .collection__header-btn {
@@ -1212,47 +1061,6 @@ async function openFolderDialog() {
   color: var(--color-text);
 }
 
-.collection__item-decks {
-  display: flex;
-  gap: 3px;
-  flex-shrink: 0;
-  align-self: stretch;
-  align-items: stretch;
-  padding: 3px 0;
-}
-
-.collection__deck-btn {
-  padding: 0 0.5em;
-  border: 1px solid var(--btn-color);
-  color: var(--btn-color);
-  background: transparent;
-  font-family: var(--font);
-  font-size: 0.8em;
-  font-weight: 700;
-  border-radius: 2px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: background 0.1s;
-}
-
-.collection__deck-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--btn-color) 20%, transparent);
-}
-
-.collection__deck-btn--loaded {
-  background: color-mix(in srgb, var(--btn-color) 25%, transparent);
-  cursor: default;
-}
-
-.collection__deck-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
 .collection__sort-bar {
   display: flex;
   border-bottom: 1px solid var(--color-border);
@@ -1347,22 +1155,6 @@ async function openFolderDialog() {
   overflow-y: auto;
 }
 
-.collection__add-search-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  padding: 6px 1em;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.collection__add-search-wrap .collection__search {
-  width: 100%;
-  padding-right: 1.6em;
-}
-
-.collection__add-search-wrap .collection__search-clear {
-  right: calc(1em + 0.3em);
-}
 </style>
 
 <style>

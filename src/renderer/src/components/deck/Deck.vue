@@ -41,11 +41,11 @@
           <input
             v-if="editingBpm"
             ref="bpmInputEl"
+            v-model="bpmInputValue"
             class="deck__bpm-input-header"
             type="number"
             min="20"
             step="0.1"
-            :value="props.deck.targetBpm?.toFixed(1) ?? ''"
             @blur="onBpmInputBlur"
             @keydown.enter="onBpmInputBlur"
             @keydown.escape="editingBpm = false"
@@ -78,7 +78,7 @@
     </div>
 
     <template v-if="props.deck.trackLoaded">
-      <OverviewWaveform
+      <TrackWaveform
         class="deck__overview"
         :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
         :accent="props.deck.accent"
@@ -207,9 +207,9 @@ import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
-import PhaseRing from '@renderer/components/PhaseRing.vue';
-import OverviewWaveform from '@renderer/components/OverviewWaveform.vue';
-import ConfirmModal from '@renderer/components/ConfirmModal.vue';
+import PhaseRing from '@renderer/components/deck/PhaseRing.vue';
+import TrackWaveform from '@renderer/components/deck/TrackWaveform.vue';
+import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 
 const PRIMARY_BUTTON = 1;
 
@@ -224,8 +224,10 @@ const keybindings = computed(() => settingsStore.keybindings[props.deck.id as ke
 
 const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
+const bpmInputValue = ref('');
 
 async function startEditingBpm() {
+  bpmInputValue.value = props.deck.targetBpm?.toFixed(1) ?? '';
   editingBpm.value = true;
   await nextTick();
   bpmInputEl.value?.select();
@@ -236,8 +238,8 @@ function onBpmValueClick() {
   startEditingBpm();
 }
 
-function onBpmInputBlur(e: Event) {
-  const val = parseFloat((e.target as HTMLInputElement).value);
+function onBpmInputBlur() {
+  const val = parseFloat(bpmInputValue.value);
   if (!isNaN(val) && val > 0) props.deck.setTargetBpm(val);
   editingBpm.value = false;
 }

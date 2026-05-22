@@ -455,6 +455,13 @@ function createDeck(id: DeckId, accent: string, name: string) {
       await invoke('eject_track', { deck: id });
     },
 
+    async stop() {
+      if (!state.loopPlaying) return;
+      await invoke('stop', { deck: id });
+      state.loopPlaying = false;
+      state.cueing = false;
+    },
+
     async destroy() {
       bandsReadyUnlisten?.();
       try {
@@ -471,11 +478,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
 export type Deck = ReturnType<typeof createDeck>;
 
 export const useDecksStore = defineStore('decks', () => {
-  const deckA = createDeck('A', '#3b82f6', 'Deck A');
-  const deckB = createDeck('B', '#f97316', 'Deck B');
-  const deckC = createDeck('C', '#208043', 'Deck C');
-  const deckD = createDeck('D', '#d631b0', 'Deck D');
-  const deckE = createDeck('E', '#a855f7', 'Edit');
+  const deckA = createDeck('A', '#3b82f6', 'DECK A');
+  const deckB = createDeck('B', '#f97316', 'DECK B');
+  const deckC = createDeck('C', '#208043', 'DECK C');
+  const deckD = createDeck('D', '#d631b0', 'DECK D');
+  const deckE = createDeck('E', '#a855f7', 'EDIT');
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = {
     A: deckA,
@@ -518,7 +525,12 @@ export const useDecksStore = defineStore('decks', () => {
     return true;
   }
 
-  function enterEditMode() {
+  async function enterEditMode() {
+    await Promise.all(
+      DECKS_DISPOSITION.filter((deckId) => decks[deckId].loopPlaying).map((deckId) =>
+        decks[deckId].stop()
+      )
+    );
     editMode.value = true;
   }
 

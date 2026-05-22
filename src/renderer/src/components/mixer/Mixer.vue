@@ -166,7 +166,7 @@
 <script setup lang="ts">
 import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
-import WaveformStrips from '@renderer/components/WaveformStrips.vue';
+import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, computed, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
