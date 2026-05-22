@@ -143,7 +143,12 @@
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
     </template>
 
-    <button class="topstrip__settings-btn" tabindex="-1" title="Settings (⌘,)" @click="emit('open-settings')">
+    <button
+      class="topstrip__settings-btn"
+      tabindex="-1"
+      title="Settings (⌘,)"
+      @click="emit('open-settings')"
+    >
       ⚙
     </button>
   </div>

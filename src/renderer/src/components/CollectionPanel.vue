@@ -8,14 +8,16 @@
   >
     <div class="collection__header">
       <div class="collection__tabs">
-        <button tabindex="-1"
+        <button
+          tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'all' }"
           @click="tab = 'all'"
         >
           ALL
         </button>
-        <button tabindex="-1"
+        <button
+          tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'playlists' }"
           @click="tab = 'playlists'"
@@ -47,12 +49,22 @@
             ✕
           </button>
         </div>
-        <button tabindex="-1" v-if="store.hasPending" class="collection__header-btn" @click="store.analyzeAll()">
+        <button
+          tabindex="-1"
+          v-if="store.hasPending"
+          class="collection__header-btn"
+          @click="store.analyzeAll()"
+        >
           ANALYZE ALL
         </button>
-        <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">ADD FILES</button>
-        <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">ADD FOLDER</button>
-        <button tabindex="-1"
+        <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">
+          ADD FILES
+        </button>
+        <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">
+          ADD FOLDER
+        </button>
+        <button
+          tabindex="-1"
           v-if="store.tracks.length > 0"
           class="collection__header-btn collection__header-btn--muted"
           @click="store.clearAll()"
@@ -62,7 +74,9 @@
       </template>
 
       <template v-else-if="activePlaylistId === null">
-        <button tabindex="-1" class="collection__header-btn" @click="onCreatePlaylist">NEW PLAYLIST</button>
+        <button tabindex="-1" class="collection__header-btn" @click="onCreatePlaylist">
+          NEW PLAYLIST
+        </button>
       </template>
 
       <template v-else>
@@ -79,7 +93,8 @@
         <span v-else class="collection__playlist-title" @click="startRename">{{
           activePlaylist?.name
         }}</span>
-        <button tabindex="-1"
+        <button
+          tabindex="-1"
           class="collection__header-btn"
           style="margin-left: 0"
           @click="activePlaylistId = null"
@@ -100,7 +115,8 @@
       <div v-else-if="sortedFilteredTracks.length === 0" class="collection__empty">no results</div>
       <div v-else class="collection__list">
         <div class="collection__sort-bar">
-          <button tabindex="-1"
+          <button
+            tabindex="-1"
             class="collection__sort-btn collection__sort-btn--title"
             @click="toggleSort('title')"
           >
@@ -187,7 +203,11 @@
           >
             SET BPM
           </button>
-          <button class="collection__item-remove" tabindex="-1" @click.stop="pendingRemoveTrackId = track.id">
+          <button
+            class="collection__item-remove"
+            tabindex="-1"
+            @click.stop="pendingRemoveTrackId = track.id"
+          >
             ✕
           </button>
         </div>
@@ -295,8 +315,11 @@
       </div>
 
       <div class="collection__add-section">
-        <button class="collection__add-toggle" 
-        tabindex="-1" @click="showAddSection = !showAddSection">
+        <button
+          class="collection__add-toggle"
+          tabindex="-1"
+          @click="showAddSection = !showAddSection"
+        >
           {{ showAddSection ? '▾' : '▸' }} ADD TRACKS
         </button>
         <div v-if="showAddSection" class="collection__add-body">
@@ -310,7 +333,8 @@
               @pointerdown="onSearchPointerDown"
               @keydown.esc="addSectionSearch = ''"
             />
-            <button tabindex="-1"
+            <button
+              tabindex="-1"
               v-if="addSectionSearch"
               class="collection__search-clear"
               @click="addSectionSearch = ''"
@@ -337,7 +361,8 @@
             <span v-if="store.getBpm(track) !== null" class="collection__item-bpm">
               {{ store.getBpm(track)?.toFixed(1) }} BPM
             </span>
-            <button tabindex="-1"
+            <button
+              tabindex="-1"
               class="collection__item-btn"
               @click="
                 track.path && activePlaylistId && store.addToPlaylist(activePlaylistId, track.path)
@@ -381,7 +406,9 @@
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
-        <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">Recalculate BPM</button>
+        <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">
+          Recalculate BPM
+        </button>
         <template v-if="store.playlists.length > 0">
           <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
             <span>Add to playlist</span>
@@ -390,7 +417,8 @@
               class="context-menu__submenu"
               :class="{ 'context-menu__submenu--flip': subFlipped }"
             >
-              <button tabindex="-1"
+              <button
+                tabindex="-1"
                 v-for="playlist in store.playlists"
                 :key="playlist.id"
                 class="context-menu__item"

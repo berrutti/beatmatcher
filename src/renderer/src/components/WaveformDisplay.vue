@@ -549,7 +549,7 @@ function onWheel(e: WheelEvent) {
   }
 }
 
-function onMouseUp(e: MouseEvent) {
+function onMouseUp() {
   pendingDragX = null;
   const wasPan = dragging === 'pan';
   dragging = null;
