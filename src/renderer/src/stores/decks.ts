@@ -229,7 +229,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const info = await invoke<TrackData>('load_track', {
         deck: id,
         path: data.path,
-        analyze: false
+        analyze: false,
+        beatOffsetSec: data.beatOffset
       });
 
       state.trackName = data.name;
@@ -248,7 +249,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       clockAtPlay = performance.now();
       localRate = 1.0;
       await invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      await invoke('seek', { deck: id, sec: data.beatOffset });
       invoke('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
 
       // Spectral bands are computed in the background by Rust. Listen for
