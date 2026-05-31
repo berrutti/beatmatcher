@@ -77,7 +77,7 @@
       }}</span>
     </div>
 
-    <template v-if="props.deck.trackLoaded">
+    <div class="deck__content" :style="{ visibility: props.deck.trackLoaded ? 'visible' : 'hidden' }">
       <TrackWaveform
         class="deck__overview"
         :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
@@ -196,7 +196,7 @@
           <span class="deck__slider-label">-{{ settingsStore.pitchRange }}%</span>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -347,6 +347,7 @@ function onConfirmLoad() {
   flex-direction: column;
   align-items: stretch;
   transition: background 0.2s;
+  position: relative;
 }
 
 .deck--playing {
@@ -494,10 +495,19 @@ function onConfirmLoad() {
 }
 
 .deck__drop-zone {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: none;
+}
+
+.deck__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .deck__drop-hint {
   color: var(--color-muted);
