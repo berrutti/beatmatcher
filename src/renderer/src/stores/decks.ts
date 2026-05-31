@@ -417,9 +417,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
       });
     },
 
-    naturallyEnded() {
+    returnToCue() {
       syncPosition();
-      if (state.trackData) positionCache = state.trackData.duration;
+      positionCache = state.cuePoint;
       state.loopPlaying = false;
       state.cueing = false;
     },
@@ -510,7 +510,7 @@ export const useDecksStore = defineStore('decks', () => {
   listen<string>('track-ended', (event) => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
-    deck.naturallyEnded();
+    deck.returnToCue();
   });
 
   function tryToggleEditMode(): boolean {

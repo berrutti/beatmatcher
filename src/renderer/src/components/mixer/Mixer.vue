@@ -327,15 +327,17 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 
 .mixer__channels {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   gap: 0.4em;
   width: 100%;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 16em;
 }
 
 .mixer__channel {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -549,20 +551,22 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__fader-row {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: stretch;
   gap: 3px;
+  flex: 1;
+  min-height: 0;
 }
 
 .mixer__ghost_meter {
   width: 5px;
-  height: 14em;
+  height: 100%;
   position: relative;
   overflow: hidden;
 }
 
 .mixer__meter {
   width: 5px;
-  height: 14em;
+  height: 100%;
   background: linear-gradient(
     to top,
     #22c55e 0%,
@@ -599,7 +603,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   writing-mode: vertical-lr;
   direction: rtl;
   width: 30px;
-  height: 14em;
+  height: 100%;
   cursor: pointer;
   background: transparent;
   padding: 0;

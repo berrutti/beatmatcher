@@ -1111,7 +1111,6 @@ async function openFolderDialog() {
 
 .collection__playlist-grip {
   color: var(--color-muted);
-  opacity: 0.4;
   font-size: 0.9em;
   flex-shrink: 0;
   user-select: none;

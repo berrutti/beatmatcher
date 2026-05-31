@@ -314,8 +314,10 @@ impl DeckState {
             if is_main {
                 self.is_playing = false;
                 self.just_ended.store(true, Ordering::Release);
+                self.main_pos = self.cue_point;
+                self.cue_pos = self.cue_point;
             }
-            return self.total_frames as f64;
+            return self.cue_point;
         }
 
         new_pos
