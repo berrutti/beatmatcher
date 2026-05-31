@@ -77,7 +77,10 @@
       }}</span>
     </div>
 
-    <div class="deck__content" :style="{ visibility: props.deck.trackLoaded ? 'visible' : 'hidden' }">
+    <div
+      class="deck__content"
+      :style="{ visibility: props.deck.trackLoaded ? 'visible' : 'hidden' }"
+    >
       <TrackWaveform
         class="deck__overview"
         :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
