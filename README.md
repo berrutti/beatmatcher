@@ -55,7 +55,7 @@ The waveform and meter rendering were inspired by [Mixxx](https://github.com/mix
 
 ## License
 
-Beatmatcher - A desktop app for practicing beat matching.  
+beatmatcher - A desktop app for practicing beat matching.  
 Copyright (C) 2026 Matias Berrutti
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
