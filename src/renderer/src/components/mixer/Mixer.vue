@@ -37,6 +37,7 @@
             class="mixer__filter-btn"
             :class="{ 'mixer__filter-btn--active': mixer.filterEnabled[deckId] }"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            tabindex="-1"
             @click="mixer.toggleFilter(deckId)"
           >
             F
@@ -91,6 +92,7 @@
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
           :disabled="mixer.swarmMode"
+          tabindex="-1"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
           CUE
@@ -164,7 +166,7 @@
 <script setup lang="ts">
 import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
-import WaveformStrips from '@renderer/components/WaveformStrips.vue';
+import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, computed, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
@@ -325,15 +327,17 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 
 .mixer__channels {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   gap: 0.4em;
   width: 100%;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 16em;
 }
 
 .mixer__channel {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -547,20 +551,22 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__fader-row {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: stretch;
   gap: 3px;
+  flex: 1;
+  min-height: 0;
 }
 
 .mixer__ghost_meter {
   width: 5px;
-  height: 14em;
+  height: 100%;
   position: relative;
   overflow: hidden;
 }
 
 .mixer__meter {
   width: 5px;
-  height: 14em;
+  height: 100%;
   background: linear-gradient(
     to top,
     #22c55e 0%,
@@ -597,7 +603,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   writing-mode: vertical-lr;
   direction: rtl;
   width: 30px;
-  height: 14em;
+  height: 100%;
   cursor: pointer;
   background: transparent;
   padding: 0;

@@ -24,7 +24,7 @@
       <span class="edit-view__track-name" :title="deck.trackName || ''">{{
         deck.trackName || 'No track loaded'
       }}</span>
-      <button class="edit-view__close" @click="emit('close')">✕</button>
+      <button class="edit-view__close" tabindex="-1" @click="emit('close')">✕</button>
     </div>
 
     <div v-if="!deck.trackLoaded" class="edit-view__drop-zone">
@@ -52,13 +52,20 @@
     />
 
     <div v-if="deck.trackLoaded" class="edit-view__controls">
-      <button class="edit-view__btn edit-view__btn--set-bpm" @click="bpmModalOpen = true">
+      <button
+        class="edit-view__btn edit-view__btn--set-bpm"
+        tabindex="-1"
+        @click="bpmModalOpen = true"
+      >
         SET BPM
       </button>
-      <button class="edit-view__btn edit-view__btn--set-grid" @click="onSetGrid()">SET GRID</button>
+      <button class="edit-view__btn edit-view__btn--set-grid" tabindex="-1" @click="onSetGrid()">
+        SET GRID
+      </button>
       <button
         class="edit-view__btn edit-view__btn--cue"
         :class="{ 'edit-view__btn--cueing': deck.cueing }"
+        tabindex="-1"
         @mousedown.prevent="deck.cueStart()"
         @mouseup="deck.cueEnd()"
         @mouseleave="deck.cueEnd()"
@@ -68,6 +75,7 @@
       <button
         class="edit-view__btn edit-view__btn--play"
         :class="{ 'edit-view__btn--playing': deck.playing }"
+        tabindex="-1"
         @click="deck.togglePlay()"
       >
         {{ deck.playing ? '⏸' : '▶' }}
@@ -80,9 +88,9 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
-import WaveformDisplay from '@renderer/components/WaveformDisplay.vue';
-import ConfirmModal from '@renderer/components/ConfirmModal.vue';
-import BpmModal from '@renderer/components/BpmModal.vue';
+import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
+import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import BpmModal from '@renderer/components/modals/BpmModal.vue';
 
 const props = defineProps<{ deck: Deck }>();
 const emit = defineEmits<{ close: [] }>();
@@ -174,13 +182,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.6em;
   padding: 0 0.8em;
-  height: 2.2em;
+  height: 44px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-border);
 }
 
 .edit-view__track-name {
-  font-size: 0.6em;
+  font-size: 0.85em;
   color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
@@ -194,7 +202,7 @@ onUnmounted(() => {
   border: none;
   color: var(--color-muted);
   font-family: var(--font);
-  font-size: 0.75em;
+  font-size: 0.85em;
   cursor: pointer;
   flex-shrink: 0;
   padding: 0.2em 0.3em;
@@ -215,9 +223,11 @@ onUnmounted(() => {
 }
 
 .edit-view__drop-hint {
-  font-size: 0.6em;
+  font-size: 1em;
   color: var(--color-muted);
   letter-spacing: 0.1em;
+  opacity: 0.6;
+  font-style: italic;
 }
 
 .edit-view__waveform {
@@ -229,8 +239,9 @@ onUnmounted(() => {
 .edit-view__controls {
   display: flex;
   align-items: center;
-  gap: 0.4em;
-  padding: 8px 12px;
+  gap: 0.5em;
+  padding: 0 12px;
+  height: 44px;
   border-top: 1px solid var(--color-border);
   background: #0d0d0d;
   flex-shrink: 0;
@@ -238,9 +249,9 @@ onUnmounted(() => {
 
 .edit-view__btn {
   font-family: var(--font);
-  font-size: 0.65em;
+  font-size: 0.8em;
   letter-spacing: 0.1em;
-  padding: 0.4em 1.2em;
+  padding: 0.45em 1.2em;
   border-radius: 4px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -251,8 +262,6 @@ onUnmounted(() => {
 .edit-view__btn--set-bpm,
 .edit-view__btn--set-grid {
   color: var(--color-muted);
-  font-size: 0.55em;
-  letter-spacing: 0.1em;
 }
 
 .edit-view__btn--set-bpm:hover,

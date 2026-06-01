@@ -353,8 +353,8 @@ fn fill_output(
     let strip_process: fn(&mut ChannelStrip, f32, f32) -> (f32, f32) = if is_cue { ChannelStrip::process_cue } else { ChannelStrip::process_main };
 
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().unwrap();
-        let mut strip = strip_arc.lock().unwrap();
+        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
+        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         for i in 0..frames {
@@ -414,8 +414,8 @@ fn fill_cue_with_master_tap(
     cue_buf.fill(0.0);
 
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().unwrap();
-        let mut strip = strip_arc.lock().unwrap();
+        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
+        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         for i in 0..frames {
@@ -488,8 +488,8 @@ fn fill_output_combined(
     cue_buf.resize(frames * 2, 0.0);
     cue_buf.fill(0.0);
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().unwrap();
-        let mut strip = strip_arc.lock().unwrap();
+        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
+        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         for i in 0..frames {

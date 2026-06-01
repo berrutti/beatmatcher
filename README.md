@@ -1,8 +1,8 @@
-# beatmatcher
+# Beatmatcher
 
 A desktop app for practicing beat matching. Two or Four independent decks to play local audio.
 
-![beatmatcher screenshot](assets/screenshot.png)
+![Beatmatcher screenshot](assets/screenshot.png)
 
 ## Download
 
@@ -29,7 +29,7 @@ Having the correct BPM of each track is essential for proper mixing.
 
 ## How to play
 
-beatmatcher was designed to be fully operable with pointer (trackpad, mouse) and keyboard.
+Beatmatcher was designed to be fully operable with pointer (trackpad, mouse) and keyboard.
 You can press the following buttons to control the decks.
 
 | Deck C | Deck A | Deck B | Deck D | Function |
@@ -45,7 +45,7 @@ yarn install
 yarn dev
 ```
 
-Built with Tauri + Vue 3 + TypeScript + Vite.
+Built with Tauri + Vue 3 + TypeScript + Vite. See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams of the audio engine, signal chain, and IPC layer.
 
 ## Acknowledgements
 
