@@ -1,8 +1,8 @@
-# beatmatcher
+# Beatmatcher
 
 A desktop app for practicing beat matching. Two or Four independent decks to play local audio.
 
-![beatmatcher screenshot](assets/screenshot.png)
+![Beatmatcher screenshot](assets/screenshot.png)
 
 ## Download
 
@@ -29,7 +29,7 @@ Having the correct BPM of each track is essential for proper mixing.
 
 ## How to play
 
-beatmatcher was designed to be fully operable with pointer (trackpad, mouse) and keyboard.
+Beatmatcher was designed to be fully operable with pointer (trackpad, mouse) and keyboard.
 You can press the following buttons to control the decks.
 
 | Deck C | Deck A | Deck B | Deck D | Function |
@@ -55,7 +55,7 @@ The waveform and meter rendering were inspired by [Mixxx](https://github.com/mix
 
 ## License
 
-beatmatcher - A desktop app for practicing beat matching.  
+Beatmatcher - A desktop app for practicing beat matching.  
 Copyright (C) 2026 Matias Berrutti
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.

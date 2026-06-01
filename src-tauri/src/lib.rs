@@ -136,11 +136,11 @@ pub fn run() {
         .setup(move |app| {
             let icon = app.default_window_icon().cloned();
             let about = AboutMetadataBuilder::new()
-                .name(Some("beatmatcher"))
+                .name(Some("Beatmatcher"))
                 .copyright(Some("Copyright 2026 Matias Berrutti\ngithub.com/berrutti/beatmatcher"))
                 .icon(icon)
                 .build();
-            let app_menu = SubmenuBuilder::new(app, "beatmatcher")
+            let app_menu = SubmenuBuilder::new(app, "Beatmatcher")
                 .item(&PredefinedMenuItem::about(app, None, Some(about))?)
                 .separator()
                 .item(&PredefinedMenuItem::hide(app, None)?)

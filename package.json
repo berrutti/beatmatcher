@@ -1,7 +1,7 @@
 {
   "name": "beatmatcher",
   "version": "5.7.1",
-  "description": "Beat matching trainer app",
+  "description": "A desktop app for practicing beat matching",
   "author": "berrutti",
   "license": "GPL-3.0-or-later",
   "private": true,
