@@ -45,9 +45,16 @@ type DS = {
 
 function makeDS(): DS {
   return {
-    path: null, trackPosSec: 0, rate: 1,
-    loopStartSec: null, loopEndSec: null, loopEngagedAtMs: null,
-    clipStartMs: null, clipTrackStartSec: 0, clipRate: 1, clipPath: null,
+    path: null,
+    trackPosSec: 0,
+    rate: 1,
+    loopStartSec: null,
+    loopEndSec: null,
+    loopEngagedAtMs: null,
+    clipStartMs: null,
+    clipTrackStartSec: 0,
+    clipRate: 1,
+    clipPath: null
   };
 }
 
@@ -69,7 +76,7 @@ function finalizeClip(d: DS, deckId: string, endMs: number, out: Clip[]) {
     playbackRate: d.clipRate,
     loopStartSec: d.loopStartSec,
     loopEndSec: d.loopEndSec,
-    loopEngagedAtMs: d.loopEngagedAtMs,
+    loopEngagedAtMs: d.loopEngagedAtMs
   });
   d.clipStartMs = null;
 }
@@ -89,8 +96,8 @@ function buildClips(events: SessionEvent[]): Clip[] {
         d.path = ev.path ?? null;
         d.rate = ev.playback_rate ?? 1;
         d.trackPosSec = ev.position_sec ?? 0;
-        d.loopStartSec = (ev.loop_active && ev.loop_start_sec != null) ? ev.loop_start_sec : null;
-        d.loopEndSec = (ev.loop_active && ev.loop_end_sec != null) ? ev.loop_end_sec : null;
+        d.loopStartSec = ev.loop_active && ev.loop_start_sec != null ? ev.loop_start_sec : null;
+        d.loopEndSec = ev.loop_active && ev.loop_end_sec != null ? ev.loop_end_sec : null;
         d.loopEngagedAtMs = ev.loop_active ? ev.elapsed_ms : null;
         if (ev.is_playing) startClip(d, ev.elapsed_ms);
         break;

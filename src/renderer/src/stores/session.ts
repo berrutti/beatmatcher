@@ -104,7 +104,12 @@ export const useSessionStore = defineStore('session', () => {
       await Promise.all(
         snapshots.map(async (snap) => {
           if (!snap.deck || !snap.path) return;
-          await invoke('load_track', { deck: snap.deck, path: snap.path, analyze: false, beatOffsetSec: 0 });
+          await invoke('load_track', {
+            deck: snap.deck,
+            path: snap.path,
+            analyze: false,
+            beatOffsetSec: 0
+          });
           // Always seek — never play yet. Playing decks are collected and
           // scheduled at elapsed_ms=0 together with all other events so
           // they share the same time reference and don't drift.
@@ -140,7 +145,9 @@ export const useSessionStore = defineStore('session', () => {
 
     const totalMs = session.value.durationMs;
     if (totalMs > 0) {
-      const endId = setTimeout(() => { isPlaying.value = false; }, totalMs);
+      const endId = setTimeout(() => {
+        isPlaying.value = false;
+      }, totalMs);
       timeouts.push(endId);
     }
   }
@@ -225,7 +232,11 @@ export const useSessionStore = defineStore('session', () => {
       case 'loop_out':
         // set_loop_out no longer accepts params — replay using the exact recorded values.
         if (deck && event.start_sec != null && event.end_sec != null) {
-          await invoke('set_loop_region', { deck, startSec: event.start_sec, endSec: event.end_sec });
+          await invoke('set_loop_region', {
+            deck,
+            startSec: event.start_sec,
+            endSec: event.end_sec
+          });
           await invoke('set_loop_active', { deck, active: true });
         }
         break;

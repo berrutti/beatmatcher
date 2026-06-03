@@ -35,9 +35,7 @@
       @confirm="onConfirmExitSession"
       @cancel="exitSessionPending = false"
     >
-      <p class="app__modal-body">
-        Your current session will be closed and playback will stop.
-      </p>
+      <p class="app__modal-body">Your current session will be closed and playback will stop.</p>
     </Modal>
 
     <TopStrip

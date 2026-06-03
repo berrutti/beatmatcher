@@ -14,12 +14,7 @@
         </template>
       </div>
       <div class="session__header-right">
-        <button
-          class="session__btn"
-          @click="session.openSession()"
-        >
-          Load
-        </button>
+        <button class="session__btn" @click="session.openSession()">Load</button>
         <template v-if="session.session">
           <button
             class="session__btn session__btn--transport"

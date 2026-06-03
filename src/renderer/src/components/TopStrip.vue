@@ -497,7 +497,6 @@ onUnmounted(() => {
   background: color-mix(in srgb, #a855f7 15%, transparent);
 }
 
-
 .topstrip__deck-count-btn {
   background: transparent;
   border: 1px solid var(--color-border);

@@ -13,7 +13,7 @@ const DECK_ACCENT: Record<string, string> = {
   A: '#3b82f6',
   B: '#f97316',
   C: '#208043',
-  D: '#d631b0',
+  D: '#d631b0'
 };
 const ROW_H = 36;
 const LABEL_W = 32;
@@ -115,11 +115,7 @@ function draw() {
       ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
 
       // Loop region overlay
-      if (
-        clip.loopEngagedAtMs != null &&
-        clip.loopStartSec != null &&
-        clip.loopEndSec != null
-      ) {
+      if (clip.loopEngagedAtMs != null && clip.loopStartSec != null && clip.loopEndSec != null) {
         const loopDurSec = clip.loopEndSec - clip.loopStartSec;
         const loopDurMs = (loopDurSec / clip.playbackRate) * 1000;
         const loopOffsetSec = clip.loopStartSec - clip.trackStartSec;
@@ -179,10 +175,7 @@ function draw() {
 }
 
 function chooseTickInterval(totalMs: number, availPx: number): number {
-  const candidates = [
-    1000, 2000, 5000, 10000, 15000, 30000,
-    60000, 120000, 300000, 600000,
-  ];
+  const candidates = [1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000];
   const minGapPx = 60;
   for (const ms of candidates) {
     if ((ms / totalMs) * availPx >= minGapPx) return ms;
@@ -207,9 +200,13 @@ onUnmounted(() => {
   ro?.disconnect();
 });
 
-watch(() => [props.clips, props.durationMs, props.playheadMs], () => {
-  requestAnimationFrame(draw);
-}, { deep: true });
+watch(
+  () => [props.clips, props.durationMs, props.playheadMs],
+  () => {
+    requestAnimationFrame(draw);
+  },
+  { deep: true }
+);
 </script>
 
 <style scoped>
