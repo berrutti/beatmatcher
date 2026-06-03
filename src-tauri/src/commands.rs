@@ -268,6 +268,7 @@ pub(crate) async fn load_track(
         "deck": deck,
         "path": path_for_log,
         "duration": duration,
+        "beat_offset_sec": beat_offset_sec,
     }));
 
     Ok(TrackInfo {
@@ -816,7 +817,12 @@ pub(crate) fn start_recording(
             None
         };
         if let Some(logger) = session.as_mut() {
-            logger.log("recording_start", serde_json::json!({}));
+            // 0 means "driver default"; macOS Core Audio default is 512 frames.
+            let buf = state.audio.get_buffer_frames();
+            let buffer_size_frames = if buf == 0 { 512 } else { buf };
+            logger.log("recording_start", serde_json::json!({
+                "buffer_size_frames": buffer_size_frames,
+            }));
             for deck_id in ["A", "B", "C", "D"] {
                 let Some(arc) = state.audio.deck(deck_id) else { continue };
                 let deck_state = arc.lock().expect("deck mutex poisoned");

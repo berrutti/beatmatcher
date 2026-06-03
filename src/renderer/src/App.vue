@@ -18,27 +18,37 @@
 
     <Modal
       :open="enterSessionPending"
-      title="Enter Session mode?"
+      title="Enter Session view?"
       confirm-label="Enter Session"
-      @confirm="onConfirmSessionMode"
+      @confirm="onConfirmEnterSession"
       @cancel="enterSessionPending = false"
     >
       <p class="app__modal-body">
-        Decks are playing. Entering Session mode will stop all playback.
+        All loaded tracks will be unloaded. You can reload them when you return to Performance mode.
+      </p>
+    </Modal>
+
+    <Modal
+      :open="exitSessionPending"
+      title="Exit Session view?"
+      confirm-label="Exit Session"
+      @confirm="onConfirmExitSession"
+      @cancel="exitSessionPending = false"
+    >
+      <p class="app__modal-body">
+        Your current session will be closed and playback will stop.
       </p>
     </Modal>
 
     <TopStrip
       :edit-mode="decksStore.editMode"
-      :session-mode="sessionStore.sessionMode"
       @toggle-edit="tryToggleEditMode"
-      @toggle-session="tryToggleSessionMode"
       @open-settings="settingsStore.isOpen = true"
     />
     <SettingsModal v-if="settingsStore.isOpen" />
 
     <div class="app__body">
-      <SessionView v-if="sessionStore.sessionMode" @close="sessionStore.exit()" />
+      <SessionView v-if="sessionStore.sessionMode" @close="tryExitSession" />
       <EditView
         v-else-if="decksStore.editMode"
         :deck="decksStore.deckE"
@@ -53,6 +63,10 @@
         <Deck class="app__deck-b" :deck="decksStore.deckB" />
         <Deck v-if="mixerStore.deckCount === 4" class="app__deck-d" :deck="decksStore.deckD" />
       </div>
+    </div>
+
+    <div v-if="!sessionStore.sessionMode && !decksStore.editMode" class="app__session-entry">
+      <button class="app__session-btn" @click="tryEnterSession">SESSION VIEW</button>
     </div>
 
     <button class="app__collection-bar" @click="collectionStore.toggle()">
@@ -101,6 +115,7 @@ onUnmounted(() => decksStore.destroy());
 
 const enterEditPending = ref(false);
 const enterSessionPending = ref(false);
+const exitSessionPending = ref(false);
 const collectionHeight = ref(storageGet<number>(STORAGE_KEYS.collectionHeight, 200));
 
 function onResizeStart(e: PointerEvent) {
@@ -133,22 +148,34 @@ function onConfirmEditMode() {
   decksStore.enterEditMode();
 }
 
-function tryToggleSessionMode() {
-  if (sessionStore.sessionMode) {
-    sessionStore.exit();
-    return;
-  }
-  if (decksStore.anyDeckActive) {
+function tryEnterSession() {
+  const anyLoaded = ['A', 'B', 'C', 'D'].some(
+    (id) => decksStore[`deck${id}` as 'deckA'].loadedPath != null
+  );
+  if (anyLoaded) {
     enterSessionPending.value = true;
   } else {
     sessionStore.enter();
   }
 }
 
-async function onConfirmSessionMode() {
+async function onConfirmEnterSession() {
   enterSessionPending.value = false;
-  await sessionStore.stopAllDecks();
+  await sessionStore.ejectAllDecks();
   sessionStore.enter();
+}
+
+function tryExitSession() {
+  if (sessionStore.session) {
+    exitSessionPending.value = true;
+  } else {
+    sessionStore.exit();
+  }
+}
+
+async function onConfirmExitSession() {
+  exitSessionPending.value = false;
+  await sessionStore.exit();
 }
 </script>
 
@@ -235,6 +262,33 @@ async function onConfirmSessionMode() {
   flex-direction: column;
   border-left: 1px solid var(--color-border);
   border-right: 1px solid var(--color-border);
+}
+
+.app__session-entry {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  border-top: 1px solid var(--color-border);
+}
+
+.app__session-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.5;
+}
+
+.app__session-btn:hover {
+  color: #06b6d4;
+  opacity: 1;
 }
 
 .app__collection-bar {

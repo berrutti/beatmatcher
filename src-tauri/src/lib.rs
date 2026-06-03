@@ -1,5 +1,6 @@
 mod audio;
 mod commands;
+pub mod offline_render;
 
 use audio::AppAudio;
 use std::sync::Arc;

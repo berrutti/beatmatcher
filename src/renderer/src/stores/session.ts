@@ -42,8 +42,6 @@ const SKIP_TYPES = new Set([
   'recording_start',
   'recording_stop',
   'deck_snapshot',
-  'cue_preview_start',
-  'cue_preview_end',
   'cue_move',
   'set_cue_active'
 ]);
@@ -90,19 +88,31 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function play(): Promise<void> {
-    if (!session.value || isPlaying.value) return;
+    if (!session.value) return;
+
+    // Clear any previous playback before starting fresh.
+    timeouts.forEach(clearTimeout);
+    timeouts = [];
+    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('stop', { deck })));
+    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('eject_track', { deck })));
+    isPlaying.value = false;
 
     const snapshots = session.value.events.filter((e) => e.type === 'deck_snapshot');
+    const snapshotPlays: Array<{ deck: string; fromSec: number }> = [];
 
     if (snapshots.length > 0) {
       await Promise.all(
         snapshots.map(async (snap) => {
           if (!snap.deck || !snap.path) return;
-          await invoke('load_track', { deck: snap.deck, path: snap.path, analyze: false });
-          if (snap.is_playing && snap.position_sec != null) {
-            await invoke('play', { deck: snap.deck, fromSec: snap.position_sec });
-          } else if (snap.position_sec != null) {
+          await invoke('load_track', { deck: snap.deck, path: snap.path, analyze: false, beatOffsetSec: 0 });
+          // Always seek — never play yet. Playing decks are collected and
+          // scheduled at elapsed_ms=0 together with all other events so
+          // they share the same time reference and don't drift.
+          if (snap.position_sec != null) {
             await invoke('seek', { deck: snap.deck, sec: snap.position_sec });
+          }
+          if (snap.is_playing) {
+            snapshotPlays.push({ deck: snap.deck, fromSec: snap.position_sec ?? 0 });
           }
           if (snap.playback_rate != null && snap.playback_rate !== 1) {
             await invoke('set_playback_rate', { deck: snap.deck, rate: snap.playback_rate });
@@ -113,6 +123,13 @@ export const useSessionStore = defineStore('session', () => {
 
     isPlaying.value = true;
 
+    // Start decks that were playing at recording time at t=0, same reference
+    // as every other scheduled event.
+    for (const { deck, fromSec } of snapshotPlays) {
+      const id = setTimeout(() => invoke('play', { deck, fromSec }), 0);
+      timeouts.push(id);
+    }
+
     for (const event of session.value.events) {
       if (SKIP_TYPES.has(event.type)) continue;
       const delay = event.elapsed_ms;
@@ -120,11 +137,27 @@ export const useSessionStore = defineStore('session', () => {
       const id = setTimeout(() => executeEvent(event), delay);
       timeouts.push(id);
     }
+
+    const totalMs = session.value.durationMs;
+    if (totalMs > 0) {
+      const endId = setTimeout(() => { isPlaying.value = false; }, totalMs);
+      timeouts.push(endId);
+    }
   }
 
   async function executeEvent(event: SessionEvent): Promise<void> {
     const { type, deck } = event;
     switch (type) {
+      case 'cue_preview_start':
+        if (deck && event.cue_point_sec != null)
+          await invoke('play', { deck, fromSec: event.cue_point_sec });
+        break;
+      case 'cue_preview_end':
+        if (deck) {
+          await invoke('stop', { deck });
+          if (event.cue_point_sec != null) await invoke('seek', { deck, sec: event.cue_point_sec });
+        }
+        break;
       case 'play':
         if (deck) await invoke('play', { deck });
         break;
@@ -143,7 +176,7 @@ export const useSessionStore = defineStore('session', () => {
         break;
       case 'load_track':
         if (deck && event.path)
-          await invoke('load_track', { deck, path: event.path, analyze: false });
+          await invoke('load_track', { deck, path: event.path, analyze: false, beatOffsetSec: 0 });
         break;
       case 'eject_track':
         if (deck) await invoke('eject_track', { deck });
@@ -182,10 +215,19 @@ export const useSessionStore = defineStore('session', () => {
           });
         break;
       case 'loop_in':
-        if (deck) await invoke('set_loop_in', { deck, quantize: event.quantized ?? false });
+        // set_loop_in no longer accepts params — replay by setting region directly.
+        // cue_sec from the event is the exact (possibly quantized) value that was recorded.
+        if (deck && event.cue_sec != null) {
+          await invoke('set_loop_region', { deck, startSec: event.cue_sec, endSec: 0 });
+          await invoke('set_loop_active', { deck, active: false });
+        }
         break;
       case 'loop_out':
-        if (deck) await invoke('set_loop_out', { deck, quantize: event.quantized ?? false });
+        // set_loop_out no longer accepts params — replay using the exact recorded values.
+        if (deck && event.start_sec != null && event.end_sec != null) {
+          await invoke('set_loop_region', { deck, startSec: event.start_sec, endSec: event.end_sec });
+          await invoke('set_loop_active', { deck, active: true });
+        }
         break;
       case 'reloop':
         if (deck) await invoke('set_reloop', { deck });
@@ -205,6 +247,11 @@ export const useSessionStore = defineStore('session', () => {
 
   async function stopAllDecks(): Promise<void> {
     await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('stop', { deck })));
+  }
+
+  async function ejectAllDecks(): Promise<void> {
+    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('stop', { deck })));
+    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('eject_track', { deck })));
   }
 
   function enter(): void {
@@ -228,6 +275,7 @@ export const useSessionStore = defineStore('session', () => {
     play,
     stop,
     stopAllDecks,
+    ejectAllDecks,
     enter,
     exit
   };

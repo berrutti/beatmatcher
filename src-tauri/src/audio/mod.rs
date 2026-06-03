@@ -172,6 +172,10 @@ impl AppAudio {
         self.bpm_max.store(max, Ordering::Relaxed);
     }
 
+    pub fn get_buffer_frames(&self) -> u32 {
+        self.buffer_frames.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn set_buffer_frames(&self, frames: u32) -> Result<(), String> {
         log::info!("set_buffer_frames: {}", frames);
         self.buffer_frames.store(frames, Ordering::Relaxed);

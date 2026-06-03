@@ -19,14 +19,6 @@
       EDIT
     </button>
 
-    <button
-      class="topstrip__session-btn"
-      :class="{ 'topstrip__session-btn--active': sessionMode }"
-      @click="emit('toggle-session')"
-    >
-      SESSION
-    </button>
-
     <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
       {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
     </button>
@@ -168,8 +160,8 @@ import { useMixerStore } from '@renderer/stores/mixer';
 import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
-defineProps<{ editMode: boolean; sessionMode: boolean }>();
-const emit = defineEmits<{ 'toggle-edit': []; 'toggle-session': []; 'open-settings': [] }>();
+defineProps<{ editMode: boolean }>();
+const emit = defineEmits<{ 'toggle-edit': []; 'open-settings': [] }>();
 
 const mixer = useMixerStore();
 const decks = useDecksStore();
@@ -505,28 +497,6 @@ onUnmounted(() => {
   background: color-mix(in srgb, #a855f7 15%, transparent);
 }
 
-.topstrip__session-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  padding: 2px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.topstrip__session-btn:hover {
-  border-color: #06b6d4;
-  color: #06b6d4;
-}
-
-.topstrip__session-btn--active {
-  border-color: #06b6d4;
-  color: #06b6d4;
-  background: color-mix(in srgb, #06b6d4 15%, transparent);
-}
 
 .topstrip__deck-count-btn {
   background: transparent;
