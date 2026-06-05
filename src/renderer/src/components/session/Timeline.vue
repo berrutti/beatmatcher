@@ -1,6 +1,6 @@
 <template>
   <div class="timeline" ref="containerEl">
-    <canvas ref="canvasEl" class="timeline__canvas" />
+    <canvas ref="canvasEl" class="timeline__canvas" @click="onCanvasClick" />
   </div>
 </template>
 
@@ -25,6 +25,18 @@ const props = defineProps<{
   clips: Clip[];
   playheadMs: number;
 }>();
+
+const emit = defineEmits<{ seek: [ms: number] }>();
+
+function onCanvasClick(e: MouseEvent) {
+  if (!props.durationMs || !canvasEl.value) return;
+  const rect = canvasEl.value.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const trackW = rect.width - LABEL_W;
+  if (trackW <= 0) return;
+  const frac = Math.max(0, Math.min(1, (x - LABEL_W) / trackW));
+  emit('seek', frac * props.durationMs);
+}
 
 const containerEl = ref<HTMLDivElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);

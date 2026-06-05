@@ -199,9 +199,9 @@ const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
 
 pub(crate) struct EqState {
     sample_rate: f32,
-    low_stage1:  [Biquad; 2],
-    low_stage2:  [Biquad; 2],
-    mid:         [Biquad; 2],
+    low_stage1: [Biquad; 2],
+    low_stage2: [Biquad; 2],
+    mid: [Biquad; 2],
     high_stage1: [Biquad; 2],
     high_stage2: [Biquad; 2],
 }
@@ -210,9 +210,9 @@ impl EqState {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
-            low_stage1:  [Biquad::identity(), Biquad::identity()],
-            low_stage2:  [Biquad::identity(), Biquad::identity()],
-            mid:         [Biquad::identity(), Biquad::identity()],
+            low_stage1: [Biquad::identity(), Biquad::identity()],
+            low_stage2: [Biquad::identity(), Biquad::identity()],
+            mid: [Biquad::identity(), Biquad::identity()],
             high_stage1: [Biquad::identity(), Biquad::identity()],
             high_stage2: [Biquad::identity(), Biquad::identity()],
         }
@@ -365,7 +365,8 @@ impl FilterState {
         if self.coeff_refresh_counter == 0 {
             self.update_filters();
         }
-        self.coeff_refresh_counter = (self.coeff_refresh_counter + 1) % FILTER_COEFF_REFRESH_INTERVAL;
+        self.coeff_refresh_counter =
+            (self.coeff_refresh_counter + 1) % FILTER_COEFF_REFRESH_INTERVAL;
 
         // Kill gain: fade to 0 as the sweep enters the last 20% of its range so the
         // extreme position always reaches -infinity regardless of biquad slope.
@@ -388,7 +389,10 @@ impl FilterState {
 
         self.crossfade += (self.crossfade_target - self.crossfade) * self.crossfade_coeff;
         let cf = self.crossfade;
-        (l * cf + l_filtered * (1.0 - cf), r * cf + r_filtered * (1.0 - cf))
+        (
+            l * cf + l_filtered * (1.0 - cf),
+            r * cf + r_filtered * (1.0 - cf),
+        )
     }
 }
 
@@ -419,7 +423,11 @@ impl LimiterState {
     #[inline]
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         let peak = l.abs().max(r.abs());
-        let target_gr = if peak > 0.0 { (Self::THRESHOLD / peak).min(1.0) } else { 1.0 };
+        let target_gr = if peak > 0.0 {
+            (Self::THRESHOLD / peak).min(1.0)
+        } else {
+            1.0
+        };
         if target_gr < self.gain_reduction {
             self.gain_reduction = target_gr;
         } else {
@@ -493,7 +501,11 @@ mod tests {
             sum_sq += y * y;
         }
         let rms = (sum_sq / 4096.0).sqrt();
-        assert!(rms < 0.1, "LPF@1kHz should strongly attenuate 4kHz, got RMS={}", rms);
+        assert!(
+            rms < 0.1,
+            "LPF@1kHz should strongly attenuate 4kHz, got RMS={}",
+            rms
+        );
     }
 
     #[test]
@@ -509,7 +521,11 @@ mod tests {
             sum_sq += y * y;
         }
         let rms = (sum_sq / 4096.0).sqrt();
-        assert!(rms < 0.1, "HPF@1kHz should strongly attenuate 250Hz, got RMS={}", rms);
+        assert!(
+            rms < 0.1,
+            "HPF@1kHz should strongly attenuate 250Hz, got RMS={}",
+            rms
+        );
     }
 
     // --- FilterState (regression for the clipping bug) ---
@@ -549,7 +565,9 @@ mod tests {
                 assert!(
                     l.abs() <= 1.0 + 1e-5,
                     "freq={} Hz clipped at sample {}: l={}",
-                    freq, i, l
+                    freq,
+                    i,
+                    l
                 );
             }
         }
@@ -591,7 +609,8 @@ mod tests {
         assert!(
             cut_rms < flat_rms * 0.6,
             "high cut should reduce 8kHz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms, cut_rms
+            flat_rms,
+            cut_rms
         );
     }
 
@@ -614,7 +633,8 @@ mod tests {
         assert!(
             cut_rms < flat_rms * 0.6,
             "low cut should reduce 80Hz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms, cut_rms
+            flat_rms,
+            cut_rms
         );
     }
 
@@ -636,7 +656,10 @@ mod tests {
         let (l, r) = lim.process(2.0, 1.5);
         assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
         assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");
-        assert!((l - LimiterState::THRESHOLD).abs() < 1e-4, "peak should be at threshold");
+        assert!(
+            (l - LimiterState::THRESHOLD).abs() < 1e-4,
+            "peak should be at threshold"
+        );
     }
 
     #[test]
@@ -655,7 +678,10 @@ mod tests {
         let mut lim = LimiterState::new(44100.0);
         lim.process(3.0, 0.0);
         let gr_after_burst = lim.gain_reduction;
-        assert!(gr_after_burst < 0.5, "gain_reduction should be low after 3.0 input");
+        assert!(
+            gr_after_burst < 0.5,
+            "gain_reduction should be low after 3.0 input"
+        );
         for _ in 0..44100 {
             lim.process(0.0, 0.0);
         }
@@ -674,6 +700,9 @@ mod tests {
         }
         let gr = lim.gain_reduction;
         lim.process(1.5, 0.0);
-        assert!((lim.gain_reduction - gr).abs() < 1e-6, "gain_reduction should be stable");
+        assert!(
+            (lim.gain_reduction - gr).abs() < 1e-6,
+            "gain_reduction should be stable"
+        );
     }
 }

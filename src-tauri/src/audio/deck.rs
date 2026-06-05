@@ -1,5 +1,8 @@
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, Ordering}};
 use super::dsp::{EqState, FilterState};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    Arc,
+};
 
 const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
 
@@ -47,9 +50,18 @@ impl ChannelStrip {
 
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
         match band {
-            "low"  => { self.eq.set_low(db);  self.eq_cue.set_low(db); }
-            "mid"  => { self.eq.set_mid(db);  self.eq_cue.set_mid(db); }
-            "high" => { self.eq.set_high(db); self.eq_cue.set_high(db); }
+            "low" => {
+                self.eq.set_low(db);
+                self.eq_cue.set_low(db);
+            }
+            "mid" => {
+                self.eq.set_mid(db);
+                self.eq_cue.set_mid(db);
+            }
+            "high" => {
+                self.eq.set_high(db);
+                self.eq_cue.set_high(db);
+            }
             _ => {}
         }
     }
@@ -68,6 +80,15 @@ impl ChannelStrip {
         self.target_gain = v.clamp(0.0, 1.0);
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.set_gain(1.0);
+        self.set_eq_band("low", 0.0);
+        self.set_eq_band("mid", 0.0);
+        self.set_eq_band("high", 0.0);
+        self.set_filter(0.5);
+        self.set_filter_active(false);
+    }
+
     // Applied to the master output path: EQ, filter, then fader gain.
     #[inline]
     pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
@@ -84,7 +105,11 @@ impl ChannelStrip {
     pub fn process_cue(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = self.eq_cue.process(l, r);
         let (l, r) = self.filter_cue.process(l, r);
-        if self.cue_active { (l, r) } else { (0.0, 0.0) }
+        if self.cue_active {
+            (l, r)
+        } else {
+            (0.0, 0.0)
+        }
     }
 }
 
@@ -117,8 +142,8 @@ pub struct DeckState {
 
     pub(crate) is_playing: bool,
     pub(crate) is_cueing: bool,
-    pub(crate) main_pos: f64, // fractional frame index
-    pub(crate) cue_pos: f64,  // fractional frame index (independent of main_pos)
+    pub(crate) main_pos: f64,  // fractional frame index
+    pub(crate) cue_pos: f64,   // fractional frame index (independent of main_pos)
     pub(crate) cue_point: f64, // in frames; the stored cue point and loop-in position
     pub(crate) loop_active: bool,
     pub(crate) loop_end: f64, // in frames; loop_start is always cue_point
@@ -170,6 +195,28 @@ impl DeckState {
             high_scale: 1.0,
             just_ended: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) fn eject(&mut self) {
+        self.is_playing = false;
+        self.is_cueing = false;
+        self.samples = Arc::new(Vec::new());
+        self.total_frames = 0;
+        self.duration = 0.0;
+        self.main_pos = 0.0;
+        self.cue_pos = 0.0;
+        self.cue_point = 0.0;
+        self.loop_active = false;
+        self.loop_end = 0.0;
+        self.bpm = None;
+        self.beat_offset_frames = 0.0;
+        self.loaded_path = None;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.eject();
+        self.playback_rate = 1.0;
+        self.nudge_factor = 1.0;
     }
 
     // Threshold for "position is at the cue point" used by press_cue.
@@ -291,8 +338,10 @@ impl DeckState {
         } else {
             let lo_idx = lo_frame * self.channels;
             let hi_idx = hi_frame * self.channels;
-            let l = self.samples[lo_idx] + interp_factor * (self.samples[hi_idx] - self.samples[lo_idx]);
-            let r = self.samples[lo_idx + 1] + interp_factor * (self.samples[hi_idx + 1] - self.samples[lo_idx + 1]);
+            let l = self.samples[lo_idx]
+                + interp_factor * (self.samples[hi_idx] - self.samples[lo_idx]);
+            let r = self.samples[lo_idx + 1]
+                + interp_factor * (self.samples[hi_idx + 1] - self.samples[lo_idx + 1]);
             (l, r)
         }
     }
@@ -358,7 +407,10 @@ mod tests {
         d.is_playing = true;
         d.main_pos = (d.total_frames - 1) as f64;
         d.main_tick();
-        assert!(!d.is_playing, "deck should stop when it reaches the last frame");
+        assert!(
+            !d.is_playing,
+            "deck should stop when it reaches the last frame"
+        );
     }
 
     #[test]
@@ -378,7 +430,11 @@ mod tests {
         for _ in 0..1000 {
             d.main_tick();
         }
-        assert!(d.main_pos > 900.0, "expected position to advance, got {}", d.main_pos);
+        assert!(
+            d.main_pos > 900.0,
+            "expected position to advance, got {}",
+            d.main_pos
+        );
     }
 
     // --- ChannelStrip gain smoothing ---
@@ -399,7 +455,11 @@ mod tests {
             strip.process_main(1.0, 1.0);
         }
         let (l, _) = strip.process_main(1.0, 1.0);
-        assert!(l < 0.001, "expected gain near 0.0 after convergence, got {}", l);
+        assert!(
+            l < 0.001,
+            "expected gain near 0.0 after convergence, got {}",
+            l
+        );
     }
 
     #[test]
@@ -527,9 +587,18 @@ mod cue_state_machine {
         d.main_pos = beat_frames() * 5.0;
         let outcome = d.press_cue();
         let new_cue_sec = beat_frames() * 5.0 / SR as f64;
-        assert_eq!(outcome, CuePressOutcome::CueMoved { new_cue_point_sec: new_cue_sec });
+        assert_eq!(
+            outcome,
+            CuePressOutcome::CueMoved {
+                new_cue_point_sec: new_cue_sec
+            }
+        );
         assert!(!d.is_playing);
-        assert_eq!(d.cue_point, beat_frames() * 5.0, "cue_point must update to main_pos");
+        assert_eq!(
+            d.cue_point,
+            beat_frames() * 5.0,
+            "cue_point must update to main_pos"
+        );
     }
 
     #[test]
@@ -539,7 +608,12 @@ mod cue_state_machine {
         d.main_pos = beat_frames() * 7.0;
         let outcome = d.press_cue();
         let cue_sec = d.cue_point / SR as f64;
-        assert_eq!(outcome, CuePressOutcome::StoppedAtCue { cue_point_sec: cue_sec });
+        assert_eq!(
+            outcome,
+            CuePressOutcome::StoppedAtCue {
+                cue_point_sec: cue_sec
+            }
+        );
         assert!(!d.is_playing);
         assert!(!d.is_cueing);
         assert!((d.main_pos - d.cue_point).abs() < 1.0);
@@ -584,7 +658,10 @@ mod cue_state_machine {
         d.release_cue(); // first call
         d.release_cue(); // second call — must also be fine
         assert!(!d.is_playing);
-        assert_eq!(d.main_pos, pos_before, "position must not move on no-op release");
+        assert_eq!(
+            d.main_pos, pos_before,
+            "position must not move on no-op release"
+        );
     }
 
     #[test]
@@ -613,8 +690,14 @@ mod cue_state_machine {
         d.set_cue_and_stop();
         assert!(!d.is_playing);
         assert!(!d.is_cueing);
-        assert!((d.cue_point - beat_frames() * 3.5).abs() < 1.0, "cue_point must be set to playhead");
-        assert!((d.main_pos - d.cue_point).abs() < 1.0, "position must stay at new cue point");
+        assert!(
+            (d.cue_point - beat_frames() * 3.5).abs() < 1.0,
+            "cue_point must be set to playhead"
+        );
+        assert!(
+            (d.main_pos - d.cue_point).abs() < 1.0,
+            "position must stay at new cue point"
+        );
     }
 
     // No-op when already stopped — calling it twice must be safe.
@@ -625,7 +708,11 @@ mod cue_state_machine {
         d.main_pos = beat_frames() * 2.0;
         d.set_cue_and_stop();
         assert!(!d.is_playing);
-        assert_eq!(d.cue_point, beat_frames() * 2.0, "cue_point must not change when stopped");
+        assert_eq!(
+            d.cue_point,
+            beat_frames() * 2.0,
+            "cue_point must not change when stopped"
+        );
     }
 
     // During cueing, set_cue_and_stop ends the preview and locks cue at
@@ -639,7 +726,10 @@ mod cue_state_machine {
         d.set_cue_and_stop();
         assert!(!d.is_playing);
         assert!(!d.is_cueing);
-        assert!((d.cue_point - expected_cue).abs() < 1.0, "cue_point must be set to playhead at time of call");
+        assert!(
+            (d.cue_point - expected_cue).abs() < 1.0,
+            "cue_point must be set to playhead at time of call"
+        );
     }
 
     // ── stop_at_cue ──────────────────────────────────────────────────────────
@@ -711,7 +801,6 @@ mod cue_state_machine {
         d.release_cue();
         assert!((d.main_pos - beat_frames() * 3.0).abs() < 1.0);
     }
-
 }
 
 // ── Loop behaviour ────────────────────────────────────────────────────────────
@@ -748,7 +837,9 @@ mod loop_behavior {
         assert!(
             d.main_pos >= d.cue_point && d.main_pos < d.loop_end,
             "expected position inside loop [{}, {}), got {}",
-            d.cue_point, d.loop_end, d.main_pos,
+            d.cue_point,
+            d.loop_end,
+            d.main_pos,
         );
     }
 

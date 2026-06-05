@@ -7,14 +7,20 @@ pub(crate) fn get_deck(
     state: &tauri::State<'_, AppState>,
     deck: &str,
 ) -> Result<Arc<std::sync::Mutex<audio::DeckState>>, String> {
-    state.audio.deck(deck).ok_or_else(|| format!("unknown deck: {}", deck))
+    state
+        .audio
+        .deck(deck)
+        .ok_or_else(|| format!("unknown deck: {}", deck))
 }
 
 pub(crate) fn get_strip(
     state: &tauri::State<'_, AppState>,
     deck: &str,
 ) -> Result<Arc<std::sync::Mutex<ChannelStrip>>, String> {
-    state.audio.strip(deck).ok_or_else(|| format!("unknown deck: {}", deck))
+    state
+        .audio
+        .strip(deck)
+        .ok_or_else(|| format!("unknown deck: {}", deck))
 }
 
 fn sec_to_frame(sec: f64, sample_rate: u32, total_frames: usize) -> f64 {
@@ -23,7 +29,11 @@ fn sec_to_frame(sec: f64, sample_rate: u32, total_frames: usize) -> f64 {
 
 fn band_normalization_scale(band: &[f32]) -> f32 {
     let max = band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-    if max > 0.0 { 1.0 / max } else { 1.0 }
+    if max > 0.0 {
+        1.0 / max
+    } else {
+        1.0
+    }
 }
 
 // Returned by all transport commands so the frontend can mirror deck state
@@ -58,7 +68,11 @@ impl DeckSyncPayload {
         Self {
             is_playing: deck_state.is_playing,
             is_cueing: deck_state.is_cueing,
-            cue_point_sec: if sr > 0.0 { deck_state.cue_point / sr } else { 0.0 },
+            cue_point_sec: if sr > 0.0 {
+                deck_state.cue_point / sr
+            } else {
+                0.0
+            },
             position_sec: deck_state.position_sec(),
             loop_active: deck_state.loop_active,
             loop_region_cleared,
@@ -83,12 +97,7 @@ pub(crate) struct NudgeResult {
     effective_rate: f64,
 }
 
-pub(crate) fn quantize_to_beat(
-    pos_frames: f64,
-    bpm: f64,
-    beat_offset_frames: f64,
-    sr: f64,
-) -> f64 {
+pub(crate) fn quantize_to_beat(pos_frames: f64, bpm: f64, beat_offset_frames: f64, sr: f64) -> f64 {
     let beat_dur = (60.0 / bpm) * sr;
     let index = ((pos_frames - beat_offset_frames) / beat_dur).round();
     (beat_offset_frames + index * beat_dur).max(0.0)
@@ -139,7 +148,12 @@ pub(crate) fn loop_out_core(
     let start_sec = in_frames / sr;
     let end_sec = out_frames / sr;
     let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
-    Ok(Some(LoopOutResult { start_sec, end_sec, beats, seek_to_sec }))
+    Ok(Some(LoopOutResult {
+        start_sec,
+        end_sec,
+        beats,
+        seek_to_sec,
+    }))
 }
 
 #[tauri::command]
@@ -153,8 +167,14 @@ pub(crate) async fn load_track(
 ) -> Result<TrackInfo, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let device_sample_rate = state.audio.device_sample_rate;
-    let bpm_min = state.audio.bpm_min.load(std::sync::atomic::Ordering::Relaxed) as f64;
-    let bpm_max = state.audio.bpm_max.load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_min = state
+        .audio
+        .bpm_min
+        .load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_max = state
+        .audio
+        .bpm_max
+        .load(std::sync::atomic::Ordering::Relaxed) as f64;
 
     let path_for_log = path.clone();
 
@@ -191,7 +211,14 @@ pub(crate) async fn load_track(
                 audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
             };
 
-            Ok((Arc::new(resampled), channels, bpm, silence_end, native_sr, cover_art))
+            Ok((
+                Arc::new(resampled),
+                channels,
+                bpm,
+                silence_end,
+                native_sr,
+                cover_art,
+            ))
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -264,12 +291,15 @@ pub(crate) async fn load_track(
         app.emit("bands-ready", deck_id).ok();
     });
 
-    state.log("load_track", serde_json::json!({
-        "deck": deck,
-        "path": path_for_log,
-        "duration": duration,
-        "beat_offset_sec": beat_offset_sec,
-    }));
+    state.log(
+        "load_track",
+        serde_json::json!({
+            "deck": deck,
+            "path": path_for_log,
+            "duration": duration,
+            "beat_offset_sec": beat_offset_sec,
+        }),
+    );
 
     Ok(TrackInfo {
         duration,
@@ -295,7 +325,12 @@ pub(crate) fn play(
     } else {
         deck_state.cue_pos = deck_state.main_pos;
     }
-    log::info!("play [{}]: from_sec={:?} main_pos={:.0}", deck, from_sec, deck_state.main_pos);
+    log::info!(
+        "play [{}]: from_sec={:?} main_pos={:.0}",
+        deck,
+        from_sec,
+        deck_state.main_pos
+    );
     deck_state.is_playing = true;
     Ok(())
 }
@@ -336,7 +371,10 @@ pub(crate) fn press_cue(
         CuePressOutcome::CueMoved { new_cue_point_sec } => ("cue_move", new_cue_point_sec),
         CuePressOutcome::StoppedAtCue { cue_point_sec } => ("stopped_at_cue", cue_point_sec),
     };
-    state.log(event, serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }));
+    state.log(
+        event,
+        serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
+    );
     Ok(payload)
 }
 
@@ -422,27 +460,11 @@ pub(crate) fn stop_at_cue(
 }
 
 #[tauri::command]
-pub(crate) fn eject_track(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-) -> Result<(), String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
-        deck_state.is_playing = false;
-        deck_state.is_cueing = false;
-        deck_state.samples = Arc::new(Vec::new());
-        deck_state.total_frames = 0;
-        deck_state.duration = 0.0;
-        deck_state.main_pos = 0.0;
-        deck_state.cue_pos = 0.0;
-        deck_state.cue_point = 0.0;
-        deck_state.loop_active = false;
-        deck_state.loop_end = 0.0;
-        deck_state.bpm = None;
-        deck_state.beat_offset_frames = 0.0;
-        deck_state.loaded_path = None;
-    }
+pub(crate) fn eject_track(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
+    get_deck(&state, &deck)?
+        .lock()
+        .expect("deck mutex poisoned")
+        .eject();
     state.log("eject_track", serde_json::json!({ "deck": deck }));
     Ok(())
 }
@@ -460,9 +482,7 @@ pub(crate) fn seek(
         log::info!("seek [{}]: {:.3}s -> frame {:.0}", deck, sec, pos);
         deck_state.main_pos = pos;
         deck_state.cue_pos = pos;
-        if deck_state.loop_active
-            && (pos < deck_state.cue_point || pos >= deck_state.loop_end)
-        {
+        if deck_state.loop_active && (pos < deck_state.cue_point || pos >= deck_state.loop_end) {
             deck_state.loop_active = false;
         }
         DeckSyncPayload::from_deck(&deck_state, false)
@@ -588,7 +608,10 @@ pub(crate) fn set_volume(
     gain: f32,
 ) -> Result<(), String> {
     get_strip(&state, &deck)?.lock().unwrap().set_gain(gain);
-    state.log("set_volume", serde_json::json!({ "deck": deck, "gain": gain }));
+    state.log(
+        "set_volume",
+        serde_json::json!({ "deck": deck, "gain": gain }),
+    );
     Ok(())
 }
 
@@ -599,7 +622,10 @@ pub(crate) fn set_playback_rate(
     rate: f64,
 ) -> Result<(), String> {
     get_deck(&state, &deck)?.lock().unwrap().playback_rate = rate.max(0.1);
-    state.log("set_playback_rate", serde_json::json!({ "deck": deck, "rate": rate }));
+    state.log(
+        "set_playback_rate",
+        serde_json::json!({ "deck": deck, "rate": rate }),
+    );
     Ok(())
 }
 
@@ -618,7 +644,10 @@ pub(crate) fn set_nudge(
             effective_rate: deck_state.playback_rate * deck_state.nudge_factor,
         }
     };
-    state.log("set_nudge", serde_json::json!({ "deck": deck, "percent": percent }));
+    state.log(
+        "set_nudge",
+        serde_json::json!({ "deck": deck, "percent": percent }),
+    );
     Ok(result)
 }
 
@@ -639,8 +668,14 @@ pub(crate) fn set_eq(
     band: String,
     db: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().set_eq_band(&band, db);
-    state.log("set_eq", serde_json::json!({ "deck": deck, "band": band, "db": db }));
+    get_strip(&state, &deck)?
+        .lock()
+        .unwrap()
+        .set_eq_band(&band, db);
+    state.log(
+        "set_eq",
+        serde_json::json!({ "deck": deck, "band": band, "db": db }),
+    );
     Ok(())
 }
 
@@ -651,7 +686,10 @@ pub(crate) fn set_filter(
     value: f32,
 ) -> Result<(), String> {
     get_strip(&state, &deck)?.lock().unwrap().set_filter(value);
-    state.log("set_filter", serde_json::json!({ "deck": deck, "value": value }));
+    state.log(
+        "set_filter",
+        serde_json::json!({ "deck": deck, "value": value }),
+    );
     Ok(())
 }
 
@@ -661,8 +699,14 @@ pub(crate) fn set_filter_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().set_filter_active(active);
-    state.log("set_filter_active", serde_json::json!({ "deck": deck, "active": active }));
+    get_strip(&state, &deck)?
+        .lock()
+        .unwrap()
+        .set_filter_active(active);
+    state.log(
+        "set_filter_active",
+        serde_json::json!({ "deck": deck, "active": active }),
+    );
     Ok(())
 }
 
@@ -694,8 +738,7 @@ pub(crate) async fn get_spectral_waveform_region(
     };
     let floats = tokio::task::spawn_blocking(move || {
         audio::compute_spectral_waveform_region(
-            &samples, channels, &bass, &mid, &high,
-            device_sr, bass_scale, mid_scale, high_scale,
+            &samples, channels, &bass, &mid, &high, device_sr, bass_scale, mid_scale, high_scale,
             start_sec, end_sec, num_points,
         )
     })
@@ -736,7 +779,10 @@ pub(crate) fn set_cue_active(
     active: bool,
 ) -> Result<(), String> {
     get_strip(&state, &deck)?.lock().unwrap().cue_active = active;
-    state.log("set_cue_active", serde_json::json!({ "deck": deck, "active": active }));
+    state.log(
+        "set_cue_active",
+        serde_json::json!({ "deck": deck, "active": active }),
+    );
     Ok(())
 }
 
@@ -820,13 +866,20 @@ pub(crate) fn start_recording(
             // 0 means "driver default"; macOS Core Audio default is 512 frames.
             let buf = state.audio.get_buffer_frames();
             let buffer_size_frames = if buf == 0 { 512 } else { buf };
-            logger.log("recording_start", serde_json::json!({
-                "buffer_size_frames": buffer_size_frames,
-            }));
+            logger.log(
+                "recording_start",
+                serde_json::json!({
+                    "buffer_size_frames": buffer_size_frames,
+                }),
+            );
             for deck_id in ["A", "B", "C", "D"] {
-                let Some(arc) = state.audio.deck(deck_id) else { continue };
+                let Some(arc) = state.audio.deck(deck_id) else {
+                    continue;
+                };
                 let deck_state = arc.lock().expect("deck mutex poisoned");
-                let Some(ref path) = deck_state.loaded_path else { continue };
+                let Some(ref path) = deck_state.loaded_path else {
+                    continue;
+                };
                 logger.log(
                     "deck_snapshot",
                     serde_json::json!({
@@ -848,9 +901,7 @@ pub(crate) fn start_recording(
 }
 
 #[tauri::command]
-pub(crate) async fn stop_recording(
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+pub(crate) async fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
     {
         let mut session = state.session.lock().expect("session mutex poisoned");
         if let Some(logger) = session.as_mut() {
@@ -868,7 +919,10 @@ pub(crate) async fn stop_recording(
 pub(crate) async fn read_track_tags(path: String) -> audio::TrackTags {
     tokio::task::spawn_blocking(move || audio::read_tags(&path))
         .await
-        .unwrap_or(audio::TrackTags { title: None, artist: None })
+        .unwrap_or(audio::TrackTags {
+            title: None,
+            artist: None,
+        })
 }
 
 #[tauri::command]
@@ -954,7 +1008,9 @@ pub(crate) fn files_info(paths: Vec<String>) -> Vec<Option<u64>> {
 
 fn scan_dir_recursive(dir: &std::path::Path, results: &mut Vec<String>) {
     const AUDIO_EXT: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "m4a", "aif", "aiff"];
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut paths: Vec<_> = entries.flatten().collect();
     paths.sort_by_key(|entry| entry.file_name());
     for entry in paths {
@@ -983,8 +1039,14 @@ pub(crate) async fn analyze_track(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<TrackInfo, String> {
-    let bpm_min = state.audio.bpm_min.load(std::sync::atomic::Ordering::Relaxed) as f64;
-    let bpm_max = state.audio.bpm_max.load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_min = state
+        .audio
+        .bpm_min
+        .load(std::sync::atomic::Ordering::Relaxed) as f64;
+    let bpm_max = state
+        .audio
+        .bpm_max
+        .load(std::sync::atomic::Ordering::Relaxed) as f64;
     tokio::task::spawn_blocking(move || -> Result<TrackInfo, String> {
         let (raw_samples, channels, native_sr) =
             audio::decode_audio(&path).map_err(|e| e.to_string())?;
@@ -1006,7 +1068,13 @@ pub(crate) async fn analyze_track(
         let bpm = audio::detect_bpm(mono, native_sr, bpm_min, bpm_max);
         let silence_end = audio::detect_silence_end(mono, native_sr);
 
-        Ok(TrackInfo { duration, sample_rate: native_sr, bpm, silence_end, cover_art: None })
+        Ok(TrackInfo {
+            duration,
+            sample_rate: native_sr,
+            bpm,
+            silence_end,
+            cover_art: None,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1117,7 +1185,9 @@ mod tests {
         let expected = beat_dur() * 2.0;
         assert_eq!(
             outcome,
-            CuePressOutcome::CueMoved { new_cue_point_sec: expected / SR_F }
+            CuePressOutcome::CueMoved {
+                new_cue_point_sec: expected / SR_F
+            }
         );
         assert!(
             (deck_state.cue_point - expected).abs() < 1.0,
@@ -1375,7 +1445,10 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 6.0);
-        assert!(deck_state.loop_active, "loop must stay armed when seeking inside the region");
+        assert!(
+            deck_state.loop_active,
+            "loop must stay armed when seeking inside the region"
+        );
     }
 
     #[test]
@@ -1385,7 +1458,10 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 2.0);
-        assert!(!deck_state.loop_active, "loop must be disarmed when seeking before cue");
+        assert!(
+            !deck_state.loop_active,
+            "loop must be disarmed when seeking before cue"
+        );
     }
 
     #[test]
@@ -1395,7 +1471,10 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 10.0);
-        assert!(!deck_state.loop_active, "loop must be disarmed when seeking past loop_end");
+        assert!(
+            !deck_state.loop_active,
+            "loop must be disarmed when seeking past loop_end"
+        );
     }
 
     #[test]
@@ -1405,7 +1484,10 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 8.0);
-        assert!(!deck_state.loop_active, "loop_end is exclusive; seeking there must disarm");
+        assert!(
+            !deck_state.loop_active,
+            "loop_end is exclusive; seeking there must disarm"
+        );
     }
 
     #[test]
@@ -1415,7 +1497,10 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = false;
         simulate_seek(&mut deck_state, beat_dur() * 6.0);
-        assert!(!deck_state.loop_active, "seeking inside a disarmed loop must not rearm it");
+        assert!(
+            !deck_state.loop_active,
+            "seeking inside a disarmed loop must not rearm it"
+        );
     }
 
     #[test]
@@ -1425,8 +1510,14 @@ mod tests {
         deck_state.loop_end = beat_dur() * 8.0;
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 1.0);
-        assert!((deck_state.cue_point - beat_dur() * 4.0).abs() < 1e-9, "cue_point must not move");
-        assert!((deck_state.loop_end - beat_dur() * 8.0).abs() < 1e-9, "loop_end must not move");
+        assert!(
+            (deck_state.cue_point - beat_dur() * 4.0).abs() < 1e-9,
+            "cue_point must not move"
+        );
+        assert!(
+            (deck_state.loop_end - beat_dur() * 8.0).abs() < 1e-9,
+            "loop_end must not move"
+        );
     }
 
     // --- load_track initialization (start_pos invariant) ---
@@ -1464,7 +1555,7 @@ mod tests {
         // left cue_point at silence_pos. This caused CueMoved on the first press.
         let mut d = load_deck_at_beat_offset(0.0, 10.0); // silence_pos = 0
         d.main_pos = 1.5 * SR_F; // beatOffset != silence_pos
-        // cue_point is still 0 — the old broken state
+                                 // cue_point is still 0 — the old broken state
         let outcome = d.press_cue();
         assert!(
             matches!(outcome, CuePressOutcome::CueMoved { .. }),
@@ -1496,7 +1587,10 @@ mod tests {
         deck_state.loop_active = true;
         simulate_seek(&mut deck_state, beat_dur() * 2.0);
         assert!(!deck_state.loop_active);
-        assert!(deck_state.loop_end > deck_state.cue_point, "region must still be valid for reloop");
+        assert!(
+            deck_state.loop_end > deck_state.cue_point,
+            "region must still be valid for reloop"
+        );
         deck_state.main_pos = deck_state.cue_point;
         deck_state.cue_pos = deck_state.cue_point;
         deck_state.loop_active = true;

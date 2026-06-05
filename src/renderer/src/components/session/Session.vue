@@ -1,4 +1,14 @@
 <template>
+  <Modal
+    :open="exitPending"
+    title="Exit Session view?"
+    confirm-label="Exit Session"
+    @confirm="onConfirmExit"
+    @cancel="exitPending = false"
+  >
+    <p class="session__modal-body">Your current session will be closed and playback will stop.</p>
+  </Modal>
+
   <div class="session">
     <div class="session__header">
       <span class="session__label">SESSION</span>
@@ -24,7 +34,7 @@
             {{ session.isPlaying ? '■' : '▶' }}
           </button>
         </template>
-        <button class="session__close" @click="emit('close')">✕</button>
+        <button class="session__close" @click="tryExit">✕</button>
       </div>
     </div>
 
@@ -37,6 +47,7 @@
         :duration-ms="session.durationMs"
         :clips="clips"
         :playhead-ms="playheadMs"
+        @seek="onSeek"
       />
     </div>
   </div>
@@ -47,16 +58,32 @@ import { ref, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
-import SessionTimeline from '@renderer/components/session/SessionTimeline.vue';
+import SessionTimeline from '@renderer/components/session/Timeline.vue';
+import Modal from '@renderer/components/modals/Modal.vue';
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ exit: [] }>();
+
 const session = useSessionStore();
 const { session: sessionRef } = storeToRefs(session);
 const { clips } = useSessionTimeline(sessionRef as never);
 
+const exitPending = ref(false);
 const playheadMs = ref(0);
 let rafId = 0;
 let playStartWall = 0;
+
+function tryExit() {
+  if (session.session) {
+    exitPending.value = true;
+  } else {
+    emit('exit');
+  }
+}
+
+function onConfirmExit() {
+  exitPending.value = false;
+  emit('exit');
+}
 
 function formatMs(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -70,6 +97,10 @@ function formatMs(ms: number): string {
 function tickPlayhead() {
   if (!session.isPlaying) return;
   playheadMs.value = performance.now() - playStartWall;
+  if (session.durationMs > 0 && playheadMs.value >= session.durationMs) {
+    playheadMs.value = session.durationMs;
+    return;
+  }
   rafId = requestAnimationFrame(tickPlayhead);
 }
 
@@ -79,8 +110,18 @@ async function onTransport() {
     playheadMs.value = 0;
     await session.stop();
   } else {
-    playStartWall = performance.now();
-    await session.play();
+    playStartWall = performance.now() - playheadMs.value;
+    await session.play(playheadMs.value);
+    rafId = requestAnimationFrame(tickPlayhead);
+  }
+}
+
+async function onSeek(ms: number) {
+  cancelAnimationFrame(rafId);
+  playheadMs.value = ms;
+  if (session.isPlaying) {
+    playStartWall = performance.now() - ms;
+    await session.play(ms);
     rafId = requestAnimationFrame(tickPlayhead);
   }
 }
@@ -225,5 +266,12 @@ onUnmounted(() => cancelAnimationFrame(rafId));
 .session__load-btn:hover {
   border-color: #06b6d4;
   color: #06b6d4;
+}
+
+.session__modal-body {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  line-height: 1.5;
+  margin: 0;
 }
 </style>
