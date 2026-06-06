@@ -8,8 +8,8 @@
   >
     <ConfirmModal
       :open="pendingLoad !== null"
-      title="Load new track?"
-      body="Playback will stop and the current track will be replaced."
+      :title="$t('deck.loadTitle')"
+      :body="$t('deck.loadBody')"
       @confirm="onConfirmLoad"
       @cancel="pendingLoad = null"
     />
@@ -21,7 +21,7 @@
     />
 
     <div v-if="!deck.trackLoaded" class="edit-view__drop-zone">
-      <span class="edit-view__drop-hint">Drop a track from the collection</span>
+      <span class="edit-view__drop-hint">{{ $t('editView.dropHint') }}</span>
     </div>
 
     <WaveformDisplay
@@ -50,10 +50,10 @@
         tabindex="-1"
         @click="bpmModalOpen = true"
       >
-        SET BPM
+        {{ $t('editView.setBpm') }}
       </button>
       <button class="edit-view__btn edit-view__btn--set-grid" tabindex="-1" @click="onSetGrid()">
-        SET GRID
+        {{ $t('editView.setGrid') }}
       </button>
       <button
         class="edit-view__btn edit-view__btn--cue"
@@ -63,7 +63,7 @@
         @mouseup="deck.cueEnd()"
         @mouseleave="deck.cueEnd()"
       >
-        CUE
+        {{ $t('editView.cue') }}
       </button>
       <button
         class="edit-view__btn edit-view__btn--play"
@@ -85,7 +85,7 @@
     </div>
 
     <button class="edit-view__collection-bar" @click="collectionStore.toggle()">
-      <span>COLLECTION</span>
+      <span>{{ $t('editView.collection') }}</span>
       <span>{{ collectionStore.isOpen ? '▾' : '▴' }}</span>
     </button>
     <div

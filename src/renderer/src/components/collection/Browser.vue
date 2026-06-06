@@ -14,7 +14,7 @@
           :class="{ 'collection__tab--active': tab === 'all' }"
           @click="tab = 'all'"
         >
-          ALL
+          {{ $t('browser.all') }}
         </button>
         <button
           tabindex="-1"
@@ -22,7 +22,7 @@
           :class="{ 'collection__tab--active': tab === 'playlists' }"
           @click="tab = 'playlists'"
         >
-          PLAYLISTS
+          {{ $t('browser.playlists') }}
         </button>
       </div>
 
@@ -37,27 +37,27 @@
           class="collection__header-btn"
           @click="store.analyzeAll()"
         >
-          ANALYZE ALL
+          {{ $t('browser.analyzeAll') }}
         </button>
         <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">
-          ADD FILES
+          {{ $t('browser.addFiles') }}
         </button>
         <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">
-          ADD FOLDER
+          {{ $t('browser.addFolder') }}
         </button>
         <button
           tabindex="-1"
           v-if="store.tracks.length > 0"
           class="collection__header-btn collection__header-btn--muted"
-          @click="store.clearAll()"
+          @click="pendingClear = true"
         >
-          CLEAR
+          {{ $t('browser.clear') }}
         </button>
       </template>
 
       <template v-else-if="activePlaylistId === null">
         <button tabindex="-1" class="collection__header-btn" @click="onCreatePlaylist">
-          NEW PLAYLIST
+          {{ $t('browser.newPlaylist') }}
         </button>
       </template>
 
@@ -81,7 +81,7 @@
           style="margin-left: 0"
           @click="activePlaylistId = null"
         >
-          BACK
+          {{ $t('browser.back') }}
         </button>
       </template>
     </div>
@@ -92,9 +92,11 @@
       :style="store.draggingPath ? { overflowY: 'hidden' } : {}"
     >
       <div v-if="store.tracks.length === 0" class="collection__empty">
-        Drop audio files or folders here, or use ADD FILES / ADD FOLDER
+        {{ $t('browser.dropHint') }}
       </div>
-      <div v-else-if="sortedFilteredTracks.length === 0" class="collection__empty">no results</div>
+      <div v-else-if="sortedFilteredTracks.length === 0" class="collection__empty">
+        {{ $t('browser.noResults') }}
+      </div>
       <div v-else class="collection__list">
         <div class="collection__sort-bar">
           <button
@@ -102,13 +104,16 @@
             class="collection__sort-btn collection__sort-btn--title"
             @click="toggleSort('title')"
           >
-            TITLE{{ sortField === 'title' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
+            {{ $t('browser.colTitle')
+            }}{{ sortField === 'title' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
           <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('bpm')">
-            BPM{{ sortField === 'bpm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
+            {{ $t('browser.colBpm')
+            }}{{ sortField === 'bpm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
           <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('added')">
-            ADDED{{ sortField === 'added' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
+            {{ $t('browser.colAdded')
+            }}{{ sortField === 'added' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
           </button>
         </div>
         <div
@@ -127,17 +132,17 @@
             {{ store.getBpm(track)?.toFixed(1) }} BPM
           </span>
           <span v-else-if="track.status === 'analyzing'" class="collection__item-tag">
-            detecting...
+            {{ $t('browser.detecting') }}
           </span>
           <span
             v-else-if="track.status === 'error'"
             class="collection__item-tag collection__item-tag--error"
-            >error</span
+            >{{ $t('browser.statusError') }}</span
           >
           <span
             v-if="track.status === 'missing'"
             class="collection__item-tag collection__item-tag--missing"
-            >missing</span
+            >{{ $t('browser.statusMissing') }}</span
           >
           <Buttons v-if="track.status === 'ready' && track.path" :path="track.path ?? ''" />
           <button
@@ -146,7 +151,7 @@
             tabindex="-1"
             @click.stop="store.analyzeTrack(track.id)"
           >
-            ANALYZE
+            {{ $t('browser.analyze') }}
           </button>
           <button
             v-if="track.status === 'error'"
@@ -154,7 +159,7 @@
             tabindex="-1"
             @click.stop="openBpmModal(track.id)"
           >
-            SET BPM
+            {{ $t('browser.setBpm') }}
           </button>
           <button
             class="collection__item-remove"
@@ -169,7 +174,7 @@
 
     <div v-else-if="activePlaylistId === null" class="collection__body">
       <div v-if="store.playlists.length === 0" class="collection__empty">
-        No playlists yet. Click NEW PLAYLIST to get started.
+        {{ $t('browser.noPlaylists') }}
       </div>
       <div v-else class="collection__list">
         <div
@@ -179,9 +184,9 @@
           @click="openPlaylist(playlist.id)"
         >
           <span class="collection__item-name">{{ playlist.name }}</span>
-          <span class="collection__item-bpm"
-            >{{ playlist.paths.length }} track{{ playlist.paths.length !== 1 ? 's' : '' }}</span
-          >
+          <span class="collection__item-bpm">{{
+            $t('browser.trackCount', playlist.paths.length)
+          }}</span>
           <button
             class="collection__item-remove"
             tabindex="-1"
@@ -200,7 +205,7 @@
         :style="playlistDragFromIdx !== null ? { overflowY: 'hidden' } : {}"
       >
         <div v-if="playlistItems.length === 0" class="collection__empty" style="height: 60px">
-          Empty. Add tracks from the section below.
+          {{ $t('browser.emptyPlaylist') }}
         </div>
         <template v-for="(item, idx) in playlistItems" :key="item.path">
           <div v-if="showDropBefore(idx)" class="collection__drop-line" />
@@ -239,15 +244,15 @@
           tabindex="-1"
           @click="showAddSection = !showAddSection"
         >
-          {{ showAddSection ? '▾' : '▸' }} ADD TRACKS
+          {{ showAddSection ? '▾' : '▸' }} {{ $t('browser.addTracks') }}
         </button>
         <div v-if="showAddSection" class="collection__add-body">
           <Search v-model="addSectionSearch" placeholder="search" :full-width="true" />
           <div v-if="addableTracks.length === 0" class="collection__empty" style="height: 40px">
             {{
               store.tracks.filter((t) => t.status === 'ready').length === 0
-                ? 'No analyzed tracks in collection'
-                : 'All tracks already in playlist'
+                ? $t('browser.noAnalyzed')
+                : $t('browser.allInPlaylist')
             }}
           </div>
           <div
@@ -283,18 +288,26 @@
       @cancel="bpmModalTrackId = null"
     />
     <ConfirmModal
+      :open="pendingClear"
+      :title="$t('browser.clearTitle')"
+      :body="$t('browser.clearBody')"
+      :confirm-label="$t('browser.clearConfirm')"
+      @confirm="confirmClear"
+      @cancel="pendingClear = false"
+    />
+    <ConfirmModal
       :open="pendingDeletePlaylistId !== null"
-      :title="`Delete '${pendingDeletePlaylistName}'?`"
-      body="This cannot be undone. Tracks in your collection are not affected."
-      confirm-label="Delete"
+      :title="$t('browser.deletePlaylistTitle', { name: pendingDeletePlaylistName })"
+      :body="$t('browser.deletePlaylistBody')"
+      :confirm-label="$t('browser.delete')"
       @confirm="confirmDeletePlaylist"
       @cancel="pendingDeletePlaylistId = null"
     />
     <ConfirmModal
       :open="pendingRemoveTrackId !== null"
-      title="Remove track?"
-      body="The track will be removed from your collection along with its saved BPM and grid data."
-      confirm-label="Remove"
+      :title="$t('browser.removeTrackTitle')"
+      :body="$t('browser.removeTrackBody')"
+      :confirm-label="$t('browser.remove')"
       @confirm="confirmRemoveTrack"
       @cancel="pendingRemoveTrackId = null"
     />
@@ -308,11 +321,11 @@
         @click.stop
       >
         <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">
-          Recalculate BPM
+          {{ $t('browser.recalcBpm') }}
         </button>
         <template v-if="store.playlists.length > 0">
           <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
-            <span>Add to playlist</span>
+            <span>{{ $t('browser.addToPlaylist') }}</span>
             <span class="context-menu__arrow">▶</span>
             <div
               class="context-menu__submenu"
@@ -357,6 +370,7 @@ const decksStore = useDecksStore();
 const appModeStore = useAppModeStore();
 
 const isDragOver = ref(false);
+const pendingClear = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
 const searchQuery = ref('');
 
@@ -529,6 +543,11 @@ function loadToDeck(path: string, deckId: string) {
 
 function removeFromActivePlaylist(path: string) {
   if (activePlaylistId.value) store.removeFromPlaylist(activePlaylistId.value, path);
+}
+
+function confirmClear() {
+  store.clearAll();
+  pendingClear.value = false;
 }
 
 function confirmRemoveTrack() {

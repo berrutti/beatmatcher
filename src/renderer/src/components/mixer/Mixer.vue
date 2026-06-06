@@ -95,7 +95,7 @@
           tabindex="-1"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
-          CUE
+          {{ $t('mixer.cue') }}
         </button>
       </div>
     </div>

@@ -4,7 +4,7 @@
       :value="modelValue"
       class="search__input"
       type="text"
-      :placeholder="placeholder"
+      :placeholder="placeholder ?? t('search.placeholder')"
       spellcheck="false"
       @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       @pointerdown="onPointerDown"
@@ -24,6 +24,10 @@
 <script setup lang="ts">
 import { useCollectionStore } from '@renderer/stores/collection';
 
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
+
 withDefaults(
   defineProps<{
     modelValue: string;
@@ -31,7 +35,7 @@ withDefaults(
     fullWidth?: boolean;
   }>(),
   {
-    placeholder: 'Search',
+    placeholder: undefined,
     fullWidth: false
   }
 );

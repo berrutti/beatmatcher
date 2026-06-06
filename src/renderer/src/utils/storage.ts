@@ -11,7 +11,8 @@ export const STORAGE_KEYS = {
 
   // UI state (layout, panel sizes)
   deckCount: 'beatmatcher.ui.deck-count',
-  collectionHeight: 'beatmatcher.ui.collection-height'
+  collectionHeight: 'beatmatcher.ui.collection-height',
+  locale: 'beatmatcher.ui.locale'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

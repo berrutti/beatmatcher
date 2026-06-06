@@ -1,0 +1,189 @@
+{
+  "appBar": {
+    "performance": "ACTUACIÓN",
+    "edit": "EDITAR",
+    "session": "SESIÓN",
+    "settingsTitle": "Configuración (⌘,)",
+    "settingsBtn": "CONFIGURACIÓN ⚙",
+    "editModeTitle": "¿Activar modo edición?",
+    "editModeBody": "La reproducción está en marcha. Se detendrá al entrar en el modo edición.",
+    "sessionModeTitle": "¿Abrir vista de sesión?",
+    "sessionModeBody": "Todos los tracks cargados se descargarán. Podrás recargarlos al volver.",
+    "leaveSessionTitle": "¿Salir de la vista de sesión?",
+    "leaveSessionBody": "La sesión cargada se cerrará y la reproducción se detendrá.",
+    "continue": "Continuar"
+  },
+  "topStrip": {
+    "stopRecording": "Detener grabación",
+    "recordMaster": "Grabar salida maestra",
+    "rec": "REC",
+    "fourDecks": "4 PLATOS",
+    "twoDecks": "2 PLATOS",
+    "swarmHint": "Activar con CapsLock",
+    "swarm": "ENJAMBRE",
+    "vol": "VOL",
+    "master": "MASTER",
+    "notConfigured": "No configurado",
+    "channel": "Can. {n1}-{n2}",
+    "cue": "CUE",
+    "cueMixHint": "CUE/MIX: mezclar señal de escucha con la salida maestra en los auriculares",
+    "mix": "MIX"
+  },
+  "settings": {
+    "title": "CONFIGURACIÓN",
+    "close": "Cerrar",
+    "limiter": {
+      "title": "LIMITADOR MASTER",
+      "on": "ON",
+      "off": "OFF",
+      "hint": "Evita el clipping digital en la salida maestra. Desactivar solo si se usa un limitador externo."
+    },
+    "nudge": {
+      "title": "SENSIBILIDAD DEL NUDGE",
+      "hint": "Desplazamiento de velocidad al mantener pulsada una tecla o botón de nudge."
+    },
+    "pitch": {
+      "title": "RANGO DE PITCH",
+      "hint": "Desviación máxima del slider de pitch respecto al BPM original."
+    },
+    "buffer": {
+      "title": "TAMAÑO DEL BUFFER DE AUDIO",
+      "default": "Por defecto",
+      "hint": "Frames por callback de audio. Valores menores reducen la latencia pero aumentan la carga del procesador. Cambiar esto causa una breve interrupción del audio."
+    },
+    "bpmRange": {
+      "title": "RANGO DE DETECCIÓN DE BPM",
+      "min": "Mín",
+      "max": "Máx",
+      "unit": "BPM",
+      "hint": "Los tracks detectados fuera de este rango se doblarán o dividirán a la mitad hasta encajar. Útil para géneros con tempos fuera del rango predeterminado de 90-180."
+    },
+    "recording": {
+      "title": "FORMATO DE GRABACIÓN",
+      "wav16": "WAV (16 bits)",
+      "wav32": "WAV (32 bits)",
+      "flac": "FLAC",
+      "sessionOnly": "SOLO SESIÓN",
+      "hintWav16": "PCM sin comprimir. Calidad de CD estándar, archivos más pequeños que 32 bits.",
+      "hintWav32": "Float de 32 bits sin comprimir. Rango dinámico completo, archivos más grandes.",
+      "hintFlac": "Compresión sin pérdidas, codificada al detener la grabación. Misma calidad que WAV, archivos más pequeños.",
+      "hintSession": "Solo registra el historial de eventos. No se guarda archivo de audio. Puedes renderizar a WAV o FLAC más tarde desde la vista de sesión.",
+      "bmsCheckbox": "Grabar siempre un archivo .bms junto con el audio",
+      "bmsHint": "Guarda un archivo .bms con el historial completo de eventos del set. Necesario para renderizar o reproducir una sesión."
+    },
+    "deckCount": {
+      "title": "NÚMERO DE PLATOS POR DEFECTO",
+      "unit": "platos",
+      "hint": "Número de platos activos. Tiene efecto inmediato y se recuerda entre sesiones."
+    },
+    "language": {
+      "title": "IDIOMA",
+      "en": "English",
+      "de": "Deutsch",
+      "es": "Español"
+    },
+    "keyboard": {
+      "title": "ASIGNACIÓN DE TECLADO",
+      "hint": "Haz clic o pulsa Enter para reasignar. Las teclas de flecha permiten navegar. Supr restablece el valor por defecto. Doble clic también restablece.",
+      "deck": "PLATO",
+      "pressKey": "Pulsa cualquier tecla. Esc para cancelar",
+      "reset": "Restablecer valores por defecto",
+      "nudgeLeft": "Nudge ←",
+      "nudgeRight": "Nudge →",
+      "cue": "CUE",
+      "play": "PLAY",
+      "loopIn": "Loop IN",
+      "loopOut": "Loop OUT",
+      "conflict": "'{key}' ya está en uso por {deck} / {cmd}"
+    }
+  },
+  "browser": {
+    "all": "TODO",
+    "playlists": "LISTAS",
+    "analyzeAll": "ANALIZAR TODO",
+    "addFiles": "AÑADIR ARCHIVOS",
+    "addFolder": "AÑADIR CARPETA",
+    "clear": "LIMPIAR",
+    "clearTitle": "¿Limpiar la colección?",
+    "clearBody": "Se eliminarán todos los tracks. Las listas no se verán afectadas. Esta acción no se puede deshacer.",
+    "clearConfirm": "Limpiar",
+    "newPlaylist": "NUEVA LISTA",
+    "back": "VOLVER",
+    "dropHint": "Suelta archivos de audio o carpetas aquí, o usa AÑADIR ARCHIVOS / AÑADIR CARPETA",
+    "noResults": "sin resultados",
+    "colTitle": "TÍTULO",
+    "colBpm": "BPM",
+    "colAdded": "AÑADIDO",
+    "detecting": "detectando...",
+    "statusError": "error",
+    "statusMissing": "no encontrado",
+    "analyze": "ANALIZAR",
+    "setBpm": "FIJAR BPM",
+    "noPlaylists": "Aún no hay listas. Haz clic en NUEVA LISTA para empezar.",
+    "trackCount": "{count} track | {count} tracks",
+    "emptyPlaylist": "Vacía. Añade tracks desde la sección de abajo.",
+    "noAnalyzed": "No hay tracks analizados en la colección",
+    "allInPlaylist": "Todos los tracks ya están en la lista",
+    "addTracks": "AÑADIR TRACKS",
+    "deletePlaylistTitle": "¿Eliminar '{name}'?",
+    "deletePlaylistBody": "Esta acción no se puede deshacer. Los tracks de tu colección no se verán afectados.",
+    "delete": "Eliminar",
+    "removeTrackTitle": "¿Quitar track?",
+    "removeTrackBody": "El track se eliminará de tu colección junto con su BPM y datos de grid guardados.",
+    "remove": "Quitar",
+    "recalcBpm": "Recalcular BPM",
+    "addToPlaylist": "Añadir a lista"
+  },
+  "search": {
+    "placeholder": "Buscar"
+  },
+  "modal": {
+    "cancel": "Cancelar",
+    "confirm": "Confirmar"
+  },
+  "bpmModal": {
+    "title": "Fijar BPM del track",
+    "confirmLabel": "Fijar BPM",
+    "placeholder": "ej. 128"
+  },
+  "confirmModal": {
+    "load": "Cargar"
+  },
+  "deck": {
+    "loadTitle": "¿Cargar nuevo track?",
+    "loadBody": "La reproducción se detendrá y el track actual será reemplazado.",
+    "label": "PLATO {id}",
+    "ejectTitle": "Expulsar track",
+    "loading": "Cargando...",
+    "dragHint": "Arrastra un track desde la colección",
+    "cue": "CUE",
+    "bpm": "BPM",
+    "loopIn": "IN",
+    "loopOut": "OUT",
+    "loopExit": "SALIR",
+    "loopReloop": "BUCLE"
+  },
+  "editView": {
+    "setBpm": "FIJAR BPM",
+    "setGrid": "FIJAR GRID",
+    "cue": "CUE",
+    "dropHint": "Arrastra un track desde la colección",
+    "collection": "COLECCIÓN"
+  },
+  "editWaveform": {
+    "noTrackLoaded": "Ningún track cargado"
+  },
+  "mixer": {
+    "cue": "CUE"
+  },
+  "performance": {
+    "collection": "COLECCIÓN"
+  },
+  "session": {
+    "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
+    "noTrackInfo": "Sin info de tracks. Carga tracks en el modo Actuación primero y luego graba.",
+    "rendering": "RENDERIZANDO...",
+    "renderWav": "RENDERIZAR WAV",
+    "renderFlac": "RENDERIZAR FLAC"
+  }
+}

@@ -4,23 +4,23 @@
       <button
         class="topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': isRecording }"
-        :title="isRecording ? 'Stop recording' : 'Record master output'"
+        :title="isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
         tabindex="-1"
         @click="onRecClick"
       >
-        REC
+        {{ $t('topStrip.rec') }}
       </button>
 
       <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
-        {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
+        {{ mixer.deckCount === 4 ? $t('topStrip.fourDecks') : $t('topStrip.twoDecks') }}
       </button>
 
       <div
         class="topstrip__swarm-btn"
         :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
-        title="Activate with CapsLock"
+        :title="$t('topStrip.swarmHint')"
       >
-        SWARM
+        {{ $t('topStrip.swarm') }}
         <span
           v-for="deck in activeDecks"
           :key="deck"
@@ -33,7 +33,7 @@
 
     <div class="topstrip__spacer" />
 
-    <span class="topstrip__label">VOL</span>
+    <span class="topstrip__label">{{ $t('topStrip.vol') }}</span>
     <input
       type="range"
       class="topstrip__master-fader"
@@ -68,13 +68,13 @@
     </div>
 
     <template v-if="mixer.devicesLoaded">
-      <span class="topstrip__label">MASTER</span>
+      <span class="topstrip__label">{{ $t('topStrip.master') }}</span>
       <select
         class="topstrip__select"
         :value="mixer.mainDeviceId"
         @change="(e) => mixer.setMainOutputDevice((e.target as HTMLSelectElement).value, 0)"
       >
-        <option value="">Not configured</option>
+        <option value="">{{ $t('topStrip.notConfigured') }}</option>
         <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
       <select
@@ -90,11 +90,11 @@
         "
       >
         <option v-for="offset in channelPairs(mainDevice.channels)" :key="offset" :value="offset">
-          Ch {{ offset + 1 }}-{{ offset + 2 }}
+          {{ $t('topStrip.channel', { n1: offset + 1, n2: offset + 2 }) }}
         </option>
       </select>
 
-      <span class="topstrip__label topstrip__label--dim">CUE</span>
+      <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.cue') }}</span>
       <input
         type="range"
         class="topstrip__cue-mix-fader"
@@ -104,15 +104,15 @@
         :value="mixer.cueMix"
         @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
         @dblclick="mixer.setCueMix(0)"
-        title="CUE/MIX: blend cue signal with master output in headphones"
+        :title="$t('topStrip.cueMixHint')"
       />
-      <span class="topstrip__label topstrip__label--dim">MIX</span>
+      <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.mix') }}</span>
       <select
         class="topstrip__select"
         :value="mixer.cueDeviceId"
         @change="(e) => mixer.setCueOutputDevice((e.target as HTMLSelectElement).value, 0)"
       >
-        <option value="">Not configured</option>
+        <option value="">{{ $t('topStrip.notConfigured') }}</option>
         <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
       <select
@@ -128,7 +128,7 @@
         "
       >
         <option v-for="offset in channelPairs(cueDevice.channels)" :key="offset" :value="offset">
-          Ch {{ offset + 1 }}-{{ offset + 2 }}
+          {{ $t('topStrip.channel', { n1: offset + 1, n2: offset + 2 }) }}
         </option>
       </select>
 
