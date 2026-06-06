@@ -206,7 +206,6 @@ flowchart TD
     App -- "v-if mode='performance'" --> Perf
     App -- "v-if mode='edit'" --> Edit
     App -- "v-if mode='session'" --> Sess
-    Sess -- "emit exit" --> App
     Sess --> Timeline
     Timeline -- "emit seek(ms)" --> Sess
     Sess -- "start_session_playback(path, fromMs)" --> Scheduler
