@@ -84,8 +84,6 @@ export function useKeyboard() {
       return;
     }
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
-
     if (e.key === 'Tab') {
       e.preventDefault();
       collection.toggle();
@@ -97,7 +95,9 @@ export function useKeyboard() {
       return;
     }
 
-    if (appMode.mode === 'edit' || isTyping(e) || e.repeat) return;
+    if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
+
+    mixer.setSwarmMode(e.getModifierState('CapsLock'));
 
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
@@ -123,14 +123,14 @@ export function useKeyboard() {
   function onKeyUp(e: KeyboardEvent) {
     if (settings.isOpen) return;
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
-
     if (e.key === 'Shift') {
       shiftHeld.value = false;
       return;
     }
 
-    if (appMode.mode === 'edit' || isTyping(e)) return;
+    if (appMode.mode !== 'performance' || isTyping(e)) return;
+
+    mixer.setSwarmMode(e.getModifierState('CapsLock'));
 
     if (mixer.swarmMode) {
       const digitDeck = DIGIT_DECK[e.code];
