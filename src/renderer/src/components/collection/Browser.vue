@@ -120,7 +120,7 @@
           v-for="track in sortedFilteredTracks"
           :key="track.id"
           class="collection__item"
-          :class="`collection__item--${track.status}`"
+          :class="[`collection__item--${track.status}`, { 'collection__item--played': track.path && mixerStore.playedPaths.has(track.path) }]"
           @pointerdown="onItemPointerDown($event, track)"
           @dblclick="onTrackDblClick(track)"
           @contextmenu.prevent="openContextMenu($event, track.id)"
@@ -211,7 +211,7 @@
           <div v-if="showDropBefore(idx)" class="collection__drop-line" />
           <div
             class="collection__item collection__playlist-track"
-            :class="{ 'collection__playlist-track--dragging': playlistDragFromIdx === idx }"
+            :class="{ 'collection__playlist-track--dragging': playlistDragFromIdx === idx, 'collection__item--played': mixerStore.playedPaths.has(item.path) }"
             @pointerdown="onPlaylistTrackPointerDown($event, idx)"
             @dblclick="onTrackDblClickByPath(item.path)"
             @contextmenu.prevent="item.entry && openContextMenu($event, item.entry.id)"
@@ -247,7 +247,7 @@
           {{ showAddSection ? '▾' : '▸' }} {{ $t('browser.addTracks') }}
         </button>
         <div v-if="showAddSection" class="collection__add-body">
-          <Search v-model="addSectionSearch" placeholder="search" :full-width="true" />
+          <Search v-model="addSectionSearch" :full-width="true" />
           <div v-if="addableTracks.length === 0" class="collection__empty" style="height: 40px">
             {{
               store.tracks.filter((t) => t.status === 'ready').length === 0
@@ -359,6 +359,7 @@ import { ref, computed, nextTick } from 'vue';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useMixerStore } from '@renderer/stores/mixer';
 import type { CollectionEntry } from '@renderer/stores/collection';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
@@ -368,6 +369,7 @@ import Buttons from '@renderer/components/collection/Buttons.vue';
 const store = useCollectionStore();
 const decksStore = useDecksStore();
 const appModeStore = useAppModeStore();
+const mixerStore = useMixerStore();
 
 const isDragOver = ref(false);
 const pendingClear = ref(false);
@@ -1032,6 +1034,10 @@ async function openFolderDialog() {
 
 .collection__item--analyzing .collection__item-name {
   opacity: 0.5;
+}
+
+.collection__item--played .collection__item-name {
+  color: var(--color-muted);
 }
 
 .collection__item-btn {

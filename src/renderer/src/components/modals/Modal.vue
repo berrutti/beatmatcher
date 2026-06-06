@@ -20,9 +20,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue';
 
-const props = withDefaults(defineProps<{ open: boolean; title: string; confirmLabel?: string }>(), {
-  confirmLabel: undefined
-});
+const props = defineProps<{ open: boolean; title: string; confirmLabel?: string }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 
 const confirmBtn = ref<HTMLButtonElement | null>(null);

@@ -16,10 +16,7 @@ import { useI18n } from 'vue-i18n';
 
 const { t } = useI18n();
 
-const props = withDefaults(
-  defineProps<{ open: boolean; title: string; body: string; confirmLabel?: string }>(),
-  { confirmLabel: undefined }
-);
+const props = defineProps<{ open: boolean; title: string; body: string; confirmLabel?: string }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 </script>
 
