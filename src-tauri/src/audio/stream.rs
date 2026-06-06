@@ -1,8 +1,8 @@
-use std::sync::{Arc, Mutex, atomic::Ordering};
-use std::collections::HashMap;
-use cpal::traits::{DeviceTrait, HostTrait};
+use super::deck::{ChannelStrip, DeckState};
 use super::dsp::LimiterState;
-use super::deck::{DeckState, ChannelStrip};
+use cpal::traits::{DeviceTrait, HostTrait};
+use std::collections::HashMap;
+use std::sync::{atomic::Ordering, Arc, Mutex};
 
 // ── cpal stream (Send wrapper) ────────────────────────────────────────────────
 //
@@ -20,9 +20,15 @@ pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
 
+type SharedDeck = Arc<Mutex<DeckState>>;
+type SharedStrip = Arc<Mutex<ChannelStrip>>;
+
+type ChannelPair = (SharedDeck, SharedStrip);
+type ChannelPairs = Vec<ChannelPair>;
+
 // -2 dBFS: gives the master bus headroom before the hardware clipping point.
 // 10^(-2/20) = 0.7943...
-const DEFAULT_MASTER_GAIN: f32 = 0.7943;
+pub(crate) const DEFAULT_MASTER_GAIN: f32 = 0.7943;
 
 // ── Master monitor (metering + recording tap) ─────────────────────────────────
 //
@@ -46,7 +52,9 @@ impl MasterMonitor {
         Self {
             level_l: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             level_r: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            master_gain: Arc::new(std::sync::atomic::AtomicU32::new(DEFAULT_MASTER_GAIN.to_bits())),
+            master_gain: Arc::new(std::sync::atomic::AtomicU32::new(
+                DEFAULT_MASTER_GAIN.to_bits(),
+            )),
             cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
@@ -61,11 +69,13 @@ impl MasterMonitor {
     }
 
     pub fn set_master_gain(&self, gain: f32) {
-        self.master_gain.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.master_gain
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn set_cue_mix(&self, mix: f32) {
-        self.cue_mix.store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.cue_mix
+            .store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {
@@ -80,9 +90,9 @@ impl MasterMonitor {
 
 // Build a paired list of (deck, strip) in a consistent order for use in stream callbacks.
 pub(crate) fn channel_pairs(
-    decks: &HashMap<String, Arc<Mutex<DeckState>>>,
-    strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>,
-) -> Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)> {
+    decks: &HashMap<String, SharedDeck>,
+    strips: &HashMap<String, SharedStrip>,
+) -> ChannelPairs {
     let mut ids: Vec<&String> = decks.keys().collect();
     ids.sort();
     ids.into_iter()
@@ -128,37 +138,57 @@ pub(crate) fn best_output_config(
         min_channels,
         preferred_sr,
         all.iter()
-            .map(|c| format!("{}ch/{}-{}Hz", c.channels(), c.min_sample_rate().0, c.max_sample_rate().0))
+            .map(|c| format!(
+                "{}ch/{}-{}Hz",
+                c.channels(),
+                c.min_sample_rate().0,
+                c.max_sample_rate().0
+            ))
             .collect::<Vec<_>>()
             .join(", ")
     );
 
     // Prefer configs that include the current sample rate so loaded tracks play
     // at the right pitch. Fall back to any config with enough channels.
-    if let Some(range) = all.iter()
-        .filter(|c| c.channels() >= min_ch && c.min_sample_rate() <= target_sr && c.max_sample_rate() >= target_sr)
+    if let Some(range) = all
+        .iter()
+        .filter(|c| {
+            c.channels() >= min_ch
+                && c.min_sample_rate() <= target_sr
+                && c.max_sample_rate() >= target_sr
+        })
         .min_by_key(|c| c.channels())
     {
-        let cfg = range.clone().with_sample_rate(target_sr);
-        log::info!("best_output_config: chose {}ch @ {}Hz (sr match)", cfg.channels(), cfg.sample_rate().0);
+        let cfg = (*range).with_sample_rate(target_sr);
+        log::info!(
+            "best_output_config: chose {}ch @ {}Hz (sr match)",
+            cfg.channels(),
+            cfg.sample_rate().0
+        );
         return Ok(cfg);
     }
 
-    if let Some(range) = all.iter()
+    if let Some(range) = all
+        .iter()
         .filter(|c| c.channels() >= min_ch)
         .min_by_key(|c| c.channels())
     {
-        let cfg = range.clone().with_max_sample_rate();
-        log::info!("best_output_config: chose {}ch @ {}Hz (no sr match)", cfg.channels(), cfg.sample_rate().0);
+        let cfg = (*range).with_max_sample_rate();
+        log::info!(
+            "best_output_config: chose {}ch @ {}Hz (no sr match)",
+            cfg.channels(),
+            cfg.sample_rate().0
+        );
         return Ok(cfg);
     }
 
-    // Device has no config with enough channels — fall back to default and let
+    // Device has no config with enough channels. Fall back to default and let
     // mix_frame clamp gracefully (audio will be silent for out-of-range offsets).
     let cfg = device.default_output_config().map_err(|e| e.to_string())?;
     log::warn!(
         "best_output_config: no config with >={} channels, falling back to default ({}ch)",
-        min_channels, cfg.channels()
+        min_channels,
+        cfg.channels()
     );
     Ok(cfg)
 }
@@ -168,10 +198,44 @@ fn f32_to_i16_sample(s: f32) -> i16 {
     (s * i16::MAX as f32) as i16
 }
 
+// Dispatch over sample format once. The caller provides a closure that fills a
+// float buffer; the I16 branch transparently routes through an intermediate buffer.
+fn build_float_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    stream_config: cpal::StreamConfig,
+    mut fill: impl FnMut(&mut [f32]) + Send + 'static,
+) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => Ok(device.build_output_stream(
+            &stream_config,
+            move |data: &mut [f32], _| fill(data),
+            |e| eprintln!("audio stream error: {:?}", e),
+            None,
+        )?),
+        cpal::SampleFormat::I16 => {
+            let mut buf: Vec<f32> = Vec::new();
+            Ok(device.build_output_stream(
+                &stream_config,
+                move |data: &mut [i16], _| {
+                    buf.resize(data.len(), 0.0);
+                    fill(&mut buf);
+                    for (d, s) in data.iter_mut().zip(buf.iter()) {
+                        *d = f32_to_i16_sample(*s);
+                    }
+                },
+                |e| eprintln!("audio stream error: {:?}", e),
+                None,
+            )?)
+        }
+        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
+    }
+}
+
 pub(crate) fn build_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
+    channels: ChannelPairs,
     is_cue: bool,
     channel_offset: usize,
     monitor: Option<MasterMonitor>,
@@ -185,48 +249,30 @@ pub(crate) fn build_stream(
     let label = if is_cue { "cue" } else { "master" };
     log::info!(
         "build_stream [{}]: output_channels={} channel_offset={} format={:?} sample_rate={}",
-        label, output_channels, channel_offset, config.sample_format(), config.sample_rate().0
+        label,
+        output_channels,
+        channel_offset,
+        config.sample_format(),
+        config.sample_rate().0
     );
-
-    let sample_rate = config.sample_rate().0 as f32;
-    match config.sample_format() {
-        cpal::SampleFormat::F32 => {
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _| {
-                    fill_output(data, output_channels, &channels, is_cue, channel_offset, monitor.as_ref(), &mut limiter);
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        cpal::SampleFormat::I16 => {
-            let mut buf: Vec<f32> = Vec::new();
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [i16], _| {
-                    buf.resize(data.len(), 0.0);
-                    fill_output(&mut buf, output_channels, &channels, is_cue, channel_offset, monitor.as_ref(), &mut limiter);
-                    for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = f32_to_i16_sample(*s);
-                    }
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
-    }
+    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    build_float_stream(device, config, stream_config, move |data| {
+        fill_output(
+            data,
+            output_channels,
+            &channels,
+            is_cue,
+            channel_offset,
+            monitor.as_ref(),
+            &mut limiter,
+        );
+    })
 }
 
 pub(crate) fn build_cue_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
+    channels: ChannelPairs,
     channel_offset: usize,
     monitor: Option<MasterMonitor>,
     buffer_frames: u32,
@@ -238,110 +284,101 @@ pub(crate) fn build_cue_stream(
     let output_channels = config.channels() as usize;
     log::info!(
         "build_cue_stream: output_channels={} channel_offset={} master_tap={} format={:?} sr={}",
-        output_channels, channel_offset, monitor.is_some(), config.sample_format(), config.sample_rate().0
+        output_channels,
+        channel_offset,
+        monitor.is_some(),
+        config.sample_format(),
+        config.sample_rate().0
     );
-    let sample_rate = config.sample_rate().0 as f32;
-    match config.sample_format() {
-        cpal::SampleFormat::F32 => {
-            let mut master_mix: Vec<f32> = Vec::new();
-            let mut cue_buf: Vec<f32> = Vec::new();
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _| match &monitor {
-                    Some(m) => fill_cue_with_master_tap(data, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf, &mut limiter),
-                    None    => fill_output(data, output_channels, &channels, true, channel_offset, None, &mut limiter),
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        cpal::SampleFormat::I16 => {
-            let mut buf: Vec<f32> = Vec::new();
-            let mut master_mix: Vec<f32> = Vec::new();
-            let mut cue_buf: Vec<f32> = Vec::new();
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [i16], _| {
-                    buf.resize(data.len(), 0.0);
-                    match &monitor {
-                        Some(m) => fill_cue_with_master_tap(&mut buf, output_channels, &channels, channel_offset, m, &mut master_mix, &mut cue_buf, &mut limiter),
-                        None    => fill_output(&mut buf, output_channels, &channels, true, channel_offset, None, &mut limiter),
-                    }
-                    for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = f32_to_i16_sample(*s);
-                    }
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
-    }
+    let mut master_mix: Vec<f32> = Vec::new();
+    let mut cue_buf: Vec<f32> = Vec::new();
+    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    build_float_stream(device, config, stream_config, move |data| match &monitor {
+        Some(m) => fill_cue_with_master_tap(
+            data,
+            output_channels,
+            &channels,
+            channel_offset,
+            m,
+            &mut master_mix,
+            &mut cue_buf,
+            &mut limiter,
+        ),
+        None => fill_output(
+            data,
+            output_channels,
+            &channels,
+            true,
+            channel_offset,
+            None,
+            &mut limiter,
+        ),
+    })
+}
+
+struct CombinedMixContext<'a> {
+    channels: &'a ChannelPairs,
+    main_offset: usize,
+    cue_offset: usize,
+    monitor: &'a MasterMonitor,
+    cue_buf: &'a mut Vec<f32>,
+    limiter: &'a mut LimiterState,
+}
+
+pub(crate) struct CombinedStreamParams {
+    pub(crate) channels: ChannelPairs,
+    pub(crate) output_channels: usize,
+    pub(crate) main_offset: usize,
+    pub(crate) cue_offset: usize,
+    pub(crate) monitor: MasterMonitor,
+    pub(crate) buffer_frames: u32,
 }
 
 pub(crate) fn build_combined_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    channels: Vec<(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)>,
-    output_channels: usize,
-    main_offset: usize,
-    cue_offset: usize,
-    monitor: MasterMonitor,
-    buffer_frames: u32,
+    params: CombinedStreamParams,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error + Send + Sync>> {
+    let CombinedStreamParams {
+        channels,
+        output_channels,
+        main_offset,
+        cue_offset,
+        monitor,
+        buffer_frames,
+    } = params;
+
     let mut stream_config: cpal::StreamConfig = config.clone().into();
     if buffer_frames > 0 {
         stream_config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
     }
     log::info!(
         "build_combined_stream: output_channels={} main_offset={} cue_offset={} format={:?} sr={}",
-        output_channels, main_offset, cue_offset, config.sample_format(), config.sample_rate().0
+        output_channels,
+        main_offset,
+        cue_offset,
+        config.sample_format(),
+        config.sample_rate().0
     );
-    let sample_rate = config.sample_rate().0 as f32;
-    match config.sample_format() {
-        cpal::SampleFormat::F32 => {
-            let mut cue_buf: Vec<f32> = Vec::new();
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _| {
-                    fill_output_combined(data, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf, &mut limiter);
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        cpal::SampleFormat::I16 => {
-            let mut buf: Vec<f32> = Vec::new();
-            let mut cue_buf: Vec<f32> = Vec::new();
-            let mut limiter = LimiterState::new(sample_rate);
-            let stream = device.build_output_stream(
-                &stream_config,
-                move |data: &mut [i16], _| {
-                    buf.resize(data.len(), 0.0);
-                    fill_output_combined(&mut buf, output_channels, &channels, main_offset, cue_offset, &monitor, &mut cue_buf, &mut limiter);
-                    for (d, s) in data.iter_mut().zip(buf.iter()) {
-                        *d = f32_to_i16_sample(*s);
-                    }
-                },
-                |e| eprintln!("audio stream error: {:?}", e),
-                None,
-            )?;
-            Ok(stream)
-        }
-        fmt => Err(format!("unsupported sample format: {:?}", fmt).into()),
-    }
+    let mut cue_buf: Vec<f32> = Vec::new();
+    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    build_float_stream(device, config, stream_config, move |data| {
+        let mut ctx = CombinedMixContext {
+            channels: &channels,
+            main_offset,
+            cue_offset,
+            monitor: &monitor,
+            cue_buf: &mut cue_buf,
+            limiter: &mut limiter,
+        };
+        fill_output_combined(data, output_channels, &mut ctx);
+    })
 }
 
 fn fill_output(
     data: &mut [f32],
     output_channels: usize,
-    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
+    channels: &[ChannelPair],
     is_cue: bool,
     channel_offset: usize,
     monitor: Option<&MasterMonitor>,
@@ -349,8 +386,16 @@ fn fill_output(
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    let deck_tick: fn(&mut DeckState) -> (f32, f32) = if is_cue { DeckState::cue_tick } else { DeckState::main_tick };
-    let strip_process: fn(&mut ChannelStrip, f32, f32) -> (f32, f32) = if is_cue { ChannelStrip::process_cue } else { ChannelStrip::process_main };
+    let deck_tick: fn(&mut DeckState) -> (f32, f32) = if is_cue {
+        DeckState::cue_tick
+    } else {
+        DeckState::main_tick
+    };
+    let strip_process: fn(&mut ChannelStrip, f32, f32) -> (f32, f32) = if is_cue {
+        ChannelStrip::process_cue
+    } else {
+        ChannelStrip::process_main
+    };
 
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().expect("deck mutex poisoned");
@@ -379,7 +424,11 @@ fn fill_output(
             if base + 1 < data.len() {
                 let l = data[base] * gain;
                 let r = data[base + 1] * gain;
-                let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+                let (l, r) = if use_limiter {
+                    limiter.process(l, r)
+                } else {
+                    (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+                };
                 data[base] = l;
                 data[base + 1] = r;
             }
@@ -396,10 +445,11 @@ fn fill_output(
 // requested. Renders both the cue signal (into `data`) and the master mix (into
 // a temporary stereo buffer), then taps the master mix for metering/recording.
 // Nothing from the master mix is sent to the cue hardware output.
+#[allow(clippy::too_many_arguments)]
 fn fill_cue_with_master_tap(
     data: &mut [f32],
     output_channels: usize,
-    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
+    channels: &[ChannelPair],
     cue_offset: usize,
     monitor: &MasterMonitor,
     master_mix: &mut Vec<f32>,
@@ -439,7 +489,11 @@ fn fill_cue_with_master_tap(
     for i in 0..frames {
         let l = master_mix[i * 2] * gain;
         let r = master_mix[i * 2 + 1] * gain;
-        let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+        let (l, r) = if use_limiter {
+            limiter.process(l, r)
+        } else {
+            (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+        };
         master_mix[i * 2] = l;
         master_mix[i * 2 + 1] = r;
     }
@@ -457,7 +511,14 @@ fn fill_cue_with_master_tap(
 }
 
 #[inline]
-fn mix_frame(data: &mut [f32], frame: usize, channels: usize, channel_offset: usize, l: f32, r: f32) {
+fn mix_frame(
+    data: &mut [f32],
+    frame: usize,
+    channels: usize,
+    channel_offset: usize,
+    l: f32,
+    r: f32,
+) {
     let base = frame * channels + channel_offset;
     let remaining = channels.saturating_sub(channel_offset);
     if remaining == 0 {
@@ -476,59 +537,90 @@ fn mix_frame(data: &mut [f32], frame: usize, channels: usize, channel_offset: us
 fn fill_output_combined(
     data: &mut [f32],
     output_channels: usize,
-    channels: &[(Arc<Mutex<DeckState>>, Arc<Mutex<ChannelStrip>>)],
-    main_offset: usize,
-    cue_offset: usize,
-    monitor: &MasterMonitor,
-    cue_buf: &mut Vec<f32>,
-    limiter: &mut LimiterState,
+    ctx: &mut CombinedMixContext<'_>,
 ) {
     data.fill(0.0);
+
     let frames = data.len() / output_channels.max(1);
-    cue_buf.resize(frames * 2, 0.0);
-    cue_buf.fill(0.0);
-    for (deck_arc, strip_arc) in channels {
+
+    ctx.cue_buf.resize(frames * 2, 0.0);
+    ctx.cue_buf.fill(0.0);
+
+    for (deck_arc, strip_arc) in ctx.channels {
         let mut deck = deck_arc.lock().expect("deck mutex poisoned");
         let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
+
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
+
         for i in 0..frames {
             let (l, r) = deck.main_tick();
             let (ml, mr) = strip.process_main(l, r);
+
             sum_l += ml.abs();
             sum_r += mr.abs();
-            mix_frame(data, i, output_channels, main_offset, ml, mr);
+
+            mix_frame(data, i, output_channels, ctx.main_offset, ml, mr);
+
             let (l, r) = deck.cue_tick();
             let (cl, cr) = strip.process_cue(l, r);
-            cue_buf[i * 2] += cl;
-            cue_buf[i * 2 + 1] += cr;
+
+            ctx.cue_buf[i * 2] += cl;
+            ctx.cue_buf[i * 2 + 1] += cr;
         }
+
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
-    let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
-    let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
+
+    let gain = f32::from_bits(ctx.monitor.master_gain.load(Ordering::Relaxed));
+
+    let use_limiter = ctx.monitor.limiter_enabled.load(Ordering::Relaxed);
+
     for i in 0..frames {
-        let idx = i * output_channels + main_offset;
+        let idx = i * output_channels + ctx.main_offset;
+
         if idx + 1 < data.len() {
             let l = data[idx] * gain;
             let r = data[idx + 1] * gain;
-            let (l, r) = if use_limiter { limiter.process(l, r) } else { (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)) };
+
+            let (l, r) = if use_limiter {
+                ctx.limiter.process(l, r)
+            } else {
+                (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+            };
+
             data[idx] = l;
             data[idx + 1] = r;
         }
     }
-    let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
+
+    let mix = f32::from_bits(ctx.monitor.cue_mix.load(Ordering::Relaxed));
+
     for i in 0..frames {
-        let cl = cue_buf[i * 2].clamp(-1.0, 1.0);
-        let cr = cue_buf[i * 2 + 1].clamp(-1.0, 1.0);
-        let main_idx = i * output_channels + main_offset;
-        let ml = if main_idx + 1 < data.len() { data[main_idx] } else { 0.0 };
-        let mr = if main_idx + 1 < data.len() { data[main_idx + 1] } else { 0.0 };
+        let cl = ctx.cue_buf[i * 2].clamp(-1.0, 1.0);
+        let cr = ctx.cue_buf[i * 2 + 1].clamp(-1.0, 1.0);
+
+        let main_idx = i * output_channels + ctx.main_offset;
+
+        let ml = if main_idx + 1 < data.len() {
+            data[main_idx]
+        } else {
+            0.0
+        };
+
+        let mr = if main_idx + 1 < data.len() {
+            data[main_idx + 1]
+        } else {
+            0.0
+        };
+
         let out_l = cl * (1.0 - mix) + ml * mix;
         let out_r = cr * (1.0 - mix) + mr * mix;
-        mix_frame(data, i, output_channels, cue_offset, out_l, out_r);
+
+        mix_frame(data, i, output_channels, ctx.cue_offset, out_l, out_r);
     }
-    tap_master_output(data, frames, output_channels, main_offset, monitor);
+
+    tap_master_output(data, frames, output_channels, ctx.main_offset, ctx.monitor);
 }
 
 // Reads the final clamped master L/R samples from the output buffer, stores

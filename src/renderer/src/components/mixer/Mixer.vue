@@ -19,7 +19,7 @@
               :min="EQ_MIN_DB"
               :max="EQ_MAX_DB"
               step="0.5"
-              :value="decks.decks[deckId].eq[band]"
+              :value="mixer.eq[deckId][band]"
               orient="vertical"
               :disabled="!decks.decks[deckId].trackLoaded"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
@@ -164,8 +164,8 @@
 </template>
 
 <script setup lang="ts">
-import { useDecksStore, EQ_MIN_DB, EQ_MAX_DB, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { useMixerStore } from '@renderer/stores/mixer';
+import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { useMixerStore, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
 import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, computed, watch, onUnmounted } from 'vue';
@@ -290,19 +290,18 @@ function onFilterReset(deckId: DeckId) {
 
 function onEqInput(deckId: DeckId, band: 'high' | 'mid' | 'low', newVal: number) {
   if (mixer.swarmMode) {
-    const delta = newVal - decks.decks[deckId].eq[band];
-    for (const ch of swarmAffected(deckId))
-      decks.decks[ch].setEq(band, decks.decks[ch].eq[band] + delta);
+    const delta = newVal - mixer.eq[deckId][band];
+    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, mixer.eq[ch][band] + delta);
   } else {
-    decks.decks[deckId].setEq(band, newVal);
+    mixer.setEq(deckId, band, newVal);
   }
 }
 
 function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   if (mixer.swarmMode) {
-    for (const ch of swarmAffected(deckId)) decks.decks[ch].setEq(band, 0);
+    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, 0);
   } else {
-    decks.decks[deckId].setEq(band, 0);
+    mixer.setEq(deckId, band, 0);
   }
 }
 </script>

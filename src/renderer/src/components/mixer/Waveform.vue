@@ -313,7 +313,7 @@ function draw() {
     );
     ctx.restore();
 
-    // Beat grid markers — tBeat is in audio time; divide by rate to get real-time offset
+    // Beat grid markers. tBeat is in audio time; divide by rate to get real-time offset
     const bpm = src.getBpm();
     if (bpm !== null) {
       const beatOffset = src.getBeatOffset();
@@ -341,7 +341,7 @@ function draw() {
       }
     }
 
-    // Horizontal playhead — same y across all strips; alignment = sync
+    // Horizontal playhead. Same y across all strips; alignment = sync
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.9)';
     ctx.beginPath();

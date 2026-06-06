@@ -10,10 +10,7 @@ export type PitchRangeOption = (typeof PITCH_RANGE_OPTIONS)[number];
 export const BUFFER_SIZE_OPTIONS = [0, 128, 256, 512, 1024] as const;
 export type BufferSizeOption = (typeof BUFFER_SIZE_OPTIONS)[number];
 
-export const RECORDING_BIT_DEPTH_OPTIONS = [16, 32] as const;
-export type RecordingBitDepthOption = (typeof RECORDING_BIT_DEPTH_OPTIONS)[number];
-
-export const RECORDING_FORMAT_OPTIONS = ['wav', 'flac'] as const;
+export const RECORDING_FORMAT_OPTIONS = ['wav-16', 'wav-32', 'flac', 'session'] as const;
 export type RecordingFormatOption = (typeof RECORDING_FORMAT_OPTIONS)[number];
 
 type Stored = {
@@ -24,9 +21,8 @@ type Stored = {
   bufferSize?: BufferSizeOption;
   bpmMin?: number;
   bpmMax?: number;
-  recordingBitDepth?: RecordingBitDepthOption;
   recordingFormat?: RecordingFormatOption;
-  recordSession?: boolean;
+  recordBms?: boolean;
 };
 
 export type ConflictInfo = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
@@ -39,9 +35,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const bufferSize = ref<BufferSizeOption>(0);
   const bpmMin = ref<number>(90);
   const bpmMax = ref<number>(180);
-  const recordingBitDepth = ref<RecordingBitDepthOption>(32);
-  const recordingFormat = ref<RecordingFormatOption>('wav');
-  const recordSession = ref<boolean>(false);
+  const recordingFormat = ref<RecordingFormatOption>('wav-32');
+  const recordBms = ref<boolean>(false);
   const isOpen = ref(false);
 
   let store: Store | null = null;
@@ -54,9 +49,8 @@ export const useSettingsStore = defineStore('settings', () => {
     bufferSize.value = stored.bufferSize ?? bufferSize.value;
     bpmMin.value = stored.bpmMin ?? bpmMin.value;
     bpmMax.value = stored.bpmMax ?? bpmMax.value;
-    recordingBitDepth.value = stored.recordingBitDepth ?? recordingBitDepth.value;
     recordingFormat.value = stored.recordingFormat ?? recordingFormat.value;
-    recordSession.value = stored.recordSession ?? recordSession.value;
+    recordBms.value = stored.recordBms ?? recordBms.value;
   }
 
   async function init(): Promise<void> {
@@ -79,9 +73,8 @@ export const useSettingsStore = defineStore('settings', () => {
       bufferSize: bufferSize.value,
       bpmMin: bpmMin.value,
       bpmMax: bpmMax.value,
-      recordingBitDepth: recordingBitDepth.value,
       recordingFormat: recordingFormat.value,
-      recordSession: recordSession.value
+      recordBms: recordBms.value
     } satisfies Stored);
     await store.save();
   }
@@ -154,18 +147,13 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
-  function setRecordingBitDepth(value: RecordingBitDepthOption): void {
-    recordingBitDepth.value = value;
-    trySave();
-  }
-
   function setRecordingFormat(value: RecordingFormatOption): void {
     recordingFormat.value = value;
     trySave();
   }
 
-  function setRecordSession(value: boolean): void {
-    recordSession.value = value;
+  function setRecordBms(value: boolean): void {
+    recordBms.value = value;
     trySave();
   }
 
@@ -178,9 +166,8 @@ export const useSettingsStore = defineStore('settings', () => {
     limiterEnabled,
     nudgeSensitivity,
     pitchRange,
-    recordingBitDepth,
     recordingFormat,
-    recordSession,
+    recordBms,
     init,
     resetToDefaults,
     setBpmRange,
@@ -189,8 +176,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setLimiterEnabled,
     setNudgeSensitivity,
     setPitchRange,
-    setRecordingBitDepth,
     setRecordingFormat,
-    setRecordSession
+    setRecordBms
   };
 });

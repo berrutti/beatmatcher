@@ -6,7 +6,7 @@
         <button class="settings-close" title="Close" @click="close">✕</button>
       </div>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">MASTER LIMITER</div>
         <label class="settings-toggle">
           <input
@@ -24,7 +24,7 @@
         </p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">NUDGE SENSITIVITY</div>
         <div class="settings-row">
           <input
@@ -41,7 +41,7 @@
         <p class="settings-hint">Speed offset applied while holding a nudge key or button.</p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">PITCH RANGE</div>
         <div class="settings-row">
           <button
@@ -57,7 +57,7 @@
         <p class="settings-hint">Maximum pitch slider deviation from original BPM.</p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">AUDIO BUFFER SIZE</div>
         <div class="settings-row">
           <button
@@ -76,7 +76,7 @@
         </p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">BPM DETECTION RANGE</div>
         <div class="settings-row">
           <label class="settings-range-label">Min</label>
@@ -111,7 +111,7 @@
         </p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">RECORDING FORMAT</div>
         <div class="settings-row">
           <button
@@ -121,46 +121,29 @@
             :class="{ 'settings-chip--active': settings.recordingFormat === opt }"
             @click="settings.setRecordingFormat(opt)"
           >
-            {{ opt.toUpperCase() }}
+            {{ RECORDING_FORMAT_LABELS[opt] }}
           </button>
         </div>
-        <template v-if="settings.recordingFormat === 'wav'">
-          <div class="settings-row" style="margin-top: 6px">
-            <button
-              v-for="opt in RECORDING_BIT_DEPTH_OPTIONS"
-              :key="opt"
-              class="settings-chip"
-              :class="{ 'settings-chip--active': settings.recordingBitDepth === opt }"
-              @click="settings.setRecordingBitDepth(opt)"
-            >
-              {{ opt }}-bit
-            </button>
-          </div>
-          <p class="settings-hint">
-            32-bit float preserves full dynamic range. 16-bit PCM is standard CD quality and
-            produces smaller files.
-          </p>
-        </template>
-        <p v-else class="settings-hint">
-          Lossless compression. PCM is streamed to a temp file during recording, then encoded
-          block-by-block when you stop. Minimal memory use. 32-bit mode encodes at 24-bit; 16-bit at
-          16-bit.
-        </p>
-        <label class="settings-checkbox-row">
+        <p class="settings-hint">{{ RECORDING_FORMAT_HINTS[settings.recordingFormat] }}</p>
+        <label
+          class="settings-checkbox-row"
+          :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+        >
           <input
             type="checkbox"
-            :checked="settings.recordSession"
-            @change="settings.setRecordSession(($event.target as HTMLInputElement).checked)"
+            :checked="settings.recordingFormat === 'session' || settings.recordBms"
+            :disabled="settings.recordingFormat === 'session'"
+            @change="settings.setRecordBms(($event.target as HTMLInputElement).checked)"
           />
-          <span>Record session log (Experimental)</span>
+          <span>Always record a .bms alongside audio</span>
         </label>
         <p class="settings-hint">
-          Saves a .session.json file alongside the recording with a full event log of every action
-          taken during the set.
+          Saves a .bms file with a full event log of every action taken during the set. Required for
+          rendering or replaying a session.
         </p>
       </section>
 
-      <section class="settings-section settings-section--inline">
+      <section class="settings-section">
         <div class="settings-section-label">DEFAULT DECK COUNT</div>
         <div class="settings-row">
           <button
@@ -178,7 +161,7 @@
         </p>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section settings-section--keyboard">
         <div class="settings-section-label">KEYBOARD MAPPING</div>
         <p class="settings-hint">
           Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click
@@ -225,7 +208,7 @@
         <div class="settings-footer">
           <span v-if="conflictError" class="settings-error">{{ conflictError }}</span>
           <span v-else-if="capturingSlot" class="settings-capture-hint"
-            >Press any key — Esc to cancel</span
+            >Press any key. Esc to cancel</span
           >
           <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true">·</span>
           <button class="settings-reset-btn" @click="settings.resetToDefaults()">
@@ -243,12 +226,27 @@ import {
   useSettingsStore,
   PITCH_RANGE_OPTIONS,
   BUFFER_SIZE_OPTIONS,
-  RECORDING_BIT_DEPTH_OPTIONS,
-  RECORDING_FORMAT_OPTIONS
+  RECORDING_FORMAT_OPTIONS,
+  type RecordingFormatOption
 } from '@renderer/stores/settings';
 import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
+
+const RECORDING_FORMAT_LABELS: Record<RecordingFormatOption, string> = {
+  'wav-16': 'WAV (16-bit)',
+  'wav-32': 'WAV (32-bit)',
+  flac: 'FLAC',
+  session: 'SESSION ONLY'
+};
+
+const RECORDING_FORMAT_HINTS: Record<RecordingFormatOption, string> = {
+  'wav-16': 'Uncompressed PCM. Standard CD quality, smaller files than 32-bit.',
+  'wav-32': 'Uncompressed 32-bit float. Full dynamic range, largest files.',
+  flac: 'Lossless compression, encoded after you stop. Same quality as WAV, smaller files.',
+  session:
+    'Records only the event log. No audio file is saved. You can render to WAV or FLAC later from the session view.'
+};
 
 const settings = useSettingsStore();
 const decks = useDecksStore();
@@ -319,8 +317,6 @@ function close() {
   settings.isOpen = false;
 }
 
-// ── Keyboard grid navigation ───────────────────────────────────────
-
 const GRID_ROWS = COMMAND_LAYOUT.length;
 const GRID_COLS = 2;
 const GRID_PER_DECK = GRID_ROWS * GRID_COLS;
@@ -374,8 +370,6 @@ function onGridKeydown(e: KeyboardEvent) {
 
   buttons[nDeck * GRID_PER_DECK + nRow * GRID_COLS + nCol]?.focus();
 }
-
-// ── Window-level keydown: capture mode + Escape + Tab focus trap ───
 
 const IGNORED_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Enter']);
 
@@ -509,16 +503,15 @@ onUnmounted(() => {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
-.settings-section--inline {
-  gap: 8px;
+.settings-section--keyboard {
+  gap: 12px;
 }
 
 .settings-section + .settings-section {
   border-top: 1px solid var(--color-border);
-  padding-top: 14px;
 }
 
 .settings-section-label {
@@ -543,10 +536,13 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--color-text);
   user-select: none;
-  margin-top: 8px;
 }
 
-/* ── Toggle ──────────────────────────────────────────────────────── */
+.settings-checkbox-row--disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
 
 .settings-toggle {
   display: flex;
@@ -588,7 +584,6 @@ onUnmounted(() => {
   transition: transform 0.15s;
 }
 
-.settings-toggle input:checked ~ .settings-toggle-track .settings-toggle-thumb,
 .settings-toggle input:checked + .settings-toggle-track .settings-toggle-thumb {
   transform: translateX(13px);
 }
@@ -600,8 +595,6 @@ onUnmounted(() => {
   color: var(--color-muted);
   min-width: 18px;
 }
-
-/* ── Row + slider + chips ────────────────────────────────────────── */
 
 .settings-row {
   display: flex;
@@ -693,8 +686,6 @@ onUnmounted(() => {
   border-color: var(--color-text);
 }
 
-/* ── Deck groups ─────────────────────────────────────────────────── */
-
 .settings-decks {
   display: flex;
   gap: 16px;
@@ -721,8 +712,6 @@ onUnmounted(() => {
   width: 100%;
 }
 
-/* ── Key slot buttons ────────────────────────────────────────────── */
-
 .settings-btn {
   display: flex;
   flex-direction: column;
@@ -731,7 +720,7 @@ onUnmounted(() => {
   gap: 4px;
   height: 46px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius, 4px);
+  border-radius: 4px;
   background: var(--color-surface);
   color: var(--color-text);
   font-family: var(--font);
@@ -792,8 +781,6 @@ onUnmounted(() => {
   line-height: 1;
 }
 
-/* ── Footer ──────────────────────────────────────────────────────── */
-
 .settings-footer {
   display: flex;
   align-items: center;
@@ -835,10 +822,6 @@ onUnmounted(() => {
   border-color: var(--color-text);
   color: var(--color-text);
 }
-
-/* ── Focus visibility (keyboard navigation) ──────────────────────── */
-/* The global stylesheet removes outlines everywhere. Re-enable them  */
-/* inside this modal for all interactive elements.                    */
 
 .settings-close:focus-visible,
 .settings-reset-btn:focus-visible,

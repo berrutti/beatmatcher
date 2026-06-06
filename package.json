@@ -9,12 +9,13 @@
   "scripts": {
     "dev": "tauri dev",
     "dist": "tauri build",
-    "format": "prettier . --write",
-    "format:check": "prettier . --check",
+    "format": "prettier . --write && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "prettier . --check && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "icon": "tauri icon build/icon.png",
     "lint:fix": "eslint . --fix",
     "lint": "eslint .",
     "lint:ci": "eslint . --max-warnings=0",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "test:watch": "vitest",
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
@@ -28,7 +29,7 @@
     "vue": "^3.5.34"
   },
   "simple-git-hooks": {
-    "pre-commit": "yarn lint && yarn format"
+    "pre-commit": "yarn lint && yarn lint:rust && yarn format"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

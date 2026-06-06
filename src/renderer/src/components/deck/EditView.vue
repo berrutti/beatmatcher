@@ -20,15 +20,8 @@
       @cancel="bpmModalOpen = false"
     />
 
-    <div class="edit-view__header">
-      <span class="edit-view__track-name" :title="deck.trackName || ''">{{
-        deck.trackName || 'No track loaded'
-      }}</span>
-      <button class="edit-view__close" tabindex="-1" @click="emit('close')">✕</button>
-    </div>
-
     <div v-if="!deck.trackLoaded" class="edit-view__drop-zone">
-      <span class="edit-view__drop-hint">Drag a track from the collection</span>
+      <span class="edit-view__drop-hint">Drop a track from the collection</span>
     </div>
 
     <WaveformDisplay
@@ -80,7 +73,31 @@
       >
         {{ deck.playing ? '⏸' : '▶' }}
       </button>
+      <div class="edit-view__controls-right">
+        <button
+          class="edit-view__btn edit-view__btn--eject"
+          tabindex="-1"
+          @click="deck.ejectTrack()"
+        >
+          ⏏
+        </button>
+      </div>
     </div>
+
+    <button class="edit-view__collection-bar" @click="collectionStore.toggle()">
+      <span>COLLECTION</span>
+      <span>{{ collectionStore.isOpen ? '▾' : '▴' }}</span>
+    </button>
+    <div
+      v-if="collectionStore.isOpen"
+      class="edit-view__resize-handle"
+      @pointerdown.prevent="onResizeStart"
+    />
+    <Browser
+      v-show="collectionStore.isOpen"
+      class="edit-view__collection"
+      :style="{ height: collectionStore.isOpen ? collectionHeight + 'px' : '0px' }"
+    />
   </div>
 </template>
 
@@ -88,12 +105,13 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
+import Browser from '@renderer/components/collection/Browser.vue';
 
 const props = defineProps<{ deck: Deck }>();
-const emit = defineEmits<{ close: [] }>();
 
 const viewEl = ref<HTMLElement | null>(null);
 const pendingLoad = ref<LoadableTrack | null>(null);
@@ -101,6 +119,30 @@ const isDragOver = ref(false);
 const bpmModalOpen = ref(false);
 
 const collectionStore = useCollectionStore();
+const collectionHeight = ref(storageGet<number>(STORAGE_KEYS.collectionHeight, 200));
+
+const MIN_COLLECTION_H = 120;
+const MAX_COLLECTION_H_RATIO = 0.65;
+
+function onResizeStart(e: PointerEvent) {
+  const startY = e.clientY;
+  const startHeight = collectionHeight.value;
+
+  function onMove(ev: PointerEvent) {
+    const delta = startY - ev.clientY;
+    const maxH = Math.floor(window.innerHeight * MAX_COLLECTION_H_RATIO);
+    collectionHeight.value = Math.max(MIN_COLLECTION_H, Math.min(maxH, startHeight + delta));
+  }
+
+  function onUp() {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    storageSet(STORAGE_KEYS.collectionHeight, collectionHeight.value);
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
 
 function onWindowPointerMove(e: PointerEvent) {
   if (!viewEl.value) return;
@@ -164,12 +206,13 @@ onUnmounted(() => {
 
 <style scoped>
 .edit-view {
-  flex: 1;
-  min-height: 0;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   overflow: hidden;
+  font-family: var(--font);
 }
 
 .edit-view--drag-over {
@@ -177,49 +220,12 @@ onUnmounted(() => {
   outline-offset: -4px;
 }
 
-.edit-view__header {
-  display: flex;
-  align-items: center;
-  gap: 0.6em;
-  padding: 0 0.8em;
-  height: 44px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.edit-view__track-name {
-  font-size: 0.85em;
-  color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-
-.edit-view__close {
-  background: transparent;
-  border: none;
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 0.85em;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0.2em 0.3em;
-  line-height: 1;
-  opacity: 0.5;
-}
-
-.edit-view__close:hover {
-  opacity: 1;
-  color: var(--color-text);
-}
-
 .edit-view__drop-zone {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 0;
 }
 
 .edit-view__drop-hint {
@@ -286,5 +292,59 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
   border-color: var(--deck-accent);
   color: var(--deck-accent);
+}
+
+.edit-view__controls-right {
+  margin-left: auto;
+}
+
+.edit-view__btn--eject:hover {
+  color: var(--color-text);
+  border-color: var(--color-text);
+}
+
+.edit-view__collection-bar {
+  width: 100%;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  cursor: pointer;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-family: var(--font);
+  font-size: clamp(10px, 1vw, 12px);
+  letter-spacing: 0.15em;
+  color: var(--color-muted);
+  user-select: none;
+  flex-shrink: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
+
+.edit-view__collection-bar:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.edit-view__resize-handle {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+  background: var(--color-border);
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.edit-view__resize-handle:hover {
+  opacity: 0.9;
+}
+
+.edit-view__collection {
+  flex-shrink: 0;
+  overflow: hidden;
+  font-size: clamp(11px, 1.1vw, 14px);
 }
 </style>

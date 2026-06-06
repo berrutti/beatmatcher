@@ -3,6 +3,7 @@ import { Deck, useDecksStore, type DeckId } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { useAppModeStore } from '@renderer/stores/appMode';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -21,6 +22,7 @@ export function useKeyboard() {
   const mixer = useMixerStore();
   const collection = useCollectionStore();
   const settings = useSettingsStore();
+  const appMode = useAppModeStore();
 
   function getDeckCommandFromKey(key: string): DeckCommand {
     for (const [deckId, bindings] of Object.entries(settings.keybindings) as [
@@ -82,8 +84,6 @@ export function useKeyboard() {
       return;
     }
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
-
     if (e.key === 'Tab') {
       e.preventDefault();
       collection.toggle();
@@ -95,7 +95,9 @@ export function useKeyboard() {
       return;
     }
 
-    if (store.editMode || isTyping(e) || e.repeat) return;
+    if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
+
+    mixer.setSwarmMode(e.getModifierState('CapsLock'));
 
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
@@ -113,7 +115,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck || deck.loading) return;
+    if (!deck || !deck.acceptsCommands) return;
 
     handleDeckCommand(deck, deckCommand.command, e.shiftKey);
   }
@@ -121,14 +123,14 @@ export function useKeyboard() {
   function onKeyUp(e: KeyboardEvent) {
     if (settings.isOpen) return;
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
-
     if (e.key === 'Shift') {
       shiftHeld.value = false;
       return;
     }
 
-    if (store.editMode || isTyping(e)) return;
+    if (appMode.mode !== 'performance' || isTyping(e)) return;
+
+    mixer.setSwarmMode(e.getModifierState('CapsLock'));
 
     if (mixer.swarmMode) {
       const digitDeck = DIGIT_DECK[e.code];
@@ -142,7 +144,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck || deck.loading) return;
+    if (!deck || !deck.acceptsCommands) return;
 
     if (
       deckCommand.command === commands.NUDGE_BACK ||

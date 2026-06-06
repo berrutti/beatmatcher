@@ -12,6 +12,9 @@ src-tauri/target/
 *.local
 .vite/
 
+# typescript
+*.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db

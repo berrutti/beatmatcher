@@ -34,7 +34,7 @@ describe('vuParam', () => {
 });
 
 describe('smoothParam', () => {
-  it('attacks immediately — jumps straight to a higher value', () => {
+  it('attacks immediately. jumps straight to a higher value', () => {
     expect(smoothParam(0.3, 0.8)).toBe(0.8);
     expect(smoothParam(0, 1)).toBe(1);
   });

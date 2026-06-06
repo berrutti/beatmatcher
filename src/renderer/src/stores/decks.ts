@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref, computed } from 'vue';
+import { reactive, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -30,9 +30,6 @@ export type LoadableTrack = {
   beatOffset: number;
   onBeatOffsetChange: (sec: number) => void;
 };
-
-export const EQ_MIN_DB = -26;
-export const EQ_MAX_DB = 6;
 
 // Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
 // typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
@@ -161,7 +158,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
-    eq: { low: 0, mid: 0, high: 0 },
 
     get trackPosition(): number | null {
       return state.loopPlaying ? interpolatedPosition() : null;
@@ -369,12 +365,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       invoke('set_quantize', { deck: id, quantize: state.quantized });
     },
 
-    setEq(band: 'low' | 'mid' | 'high', db: number) {
-      const clamped = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
-      state.eq[band] = clamped;
-      invoke('set_eq', { deck: id, band, db: clamped });
-    },
-
     async nudgeStart(direction: 'back' | 'forward') {
       if (!state.trackLoaded) return;
       state.nudging = direction;
@@ -402,6 +392,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     get playing(): boolean {
       return state.loopPlaying && !state.cueing;
+    },
+
+    get acceptsCommands(): boolean {
+      return !state.loading;
     },
 
     getSpectralWaveformRegion(
@@ -491,8 +485,6 @@ export const useDecksStore = defineStore('decks', () => {
     D: deckD,
     E: deckE
   };
-  const editMode = ref(false);
-
   const anyDeckActive = computed(
     () =>
       deckA.loopPlaying ||
@@ -502,9 +494,15 @@ export const useDecksStore = defineStore('decks', () => {
       deckC.loopPlaying ||
       deckC.cueing ||
       deckD.loopPlaying ||
-      deckD.cueing ||
-      deckE.loopPlaying ||
-      deckE.cueing
+      deckD.cueing
+  );
+
+  const anyDeckLoaded = computed(
+    () =>
+      deckA.loadedPath !== null ||
+      deckB.loadedPath !== null ||
+      deckC.loadedPath !== null ||
+      deckD.loadedPath !== null
   );
 
   listen<string>('track-ended', (event) => {
@@ -513,33 +511,12 @@ export const useDecksStore = defineStore('decks', () => {
     deck.returnToCue();
   });
 
-  function tryToggleEditMode(): boolean {
-    if (editMode.value) {
-      editMode.value = false;
-      return true;
-    }
-    if (deckA.loopPlaying || deckB.loopPlaying || deckC.loopPlaying || deckD.loopPlaying) {
-      return false;
-    }
-    editMode.value = true;
-    return true;
+  async function ejectAll(): Promise<void> {
+    await Promise.all(DECKS_DISPOSITION.map((id) => decks[id].ejectTrack()));
   }
 
-  async function enterEditMode() {
-    await Promise.all(
-      DECKS_DISPOSITION.filter((deckId) => decks[deckId].loopPlaying).map((deckId) =>
-        decks[deckId].stop()
-      )
-    );
-    editMode.value = true;
-  }
-
-  function exitEditMode() {
-    editMode.value = false;
-  }
-
-  function bestAvailableDeck(): DeckId | null {
-    if (editMode.value) return 'E';
+  function bestAvailableDeck(inEditMode: boolean): DeckId | null {
+    if (inEditMode) return 'E';
     return (
       DECKS_DISPOSITION.find((id) => !decks[id].trackLoaded) ??
       DECKS_DISPOSITION.find((id) => !decks[id].loopPlaying) ??
@@ -562,12 +539,10 @@ export const useDecksStore = defineStore('decks', () => {
     deckD,
     deckE,
     decks,
-    editMode,
     anyDeckActive,
+    anyDeckLoaded,
+    ejectAll,
     bestAvailableDeck,
-    enterEditMode,
-    exitEditMode,
-    tryToggleEditMode,
     destroy
   };
 });

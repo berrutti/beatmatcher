@@ -1,5 +1,5 @@
 // All localStorage keys the app uses, in one place.
-// Format: beatmatcher.<group>.<item> — all lowercase kebab-case.
+// Format: beatmatcher.<group>.<item>all lowercase kebab-case.
 export const STORAGE_KEYS = {
   // User-facing settings persisted across sessions
   settings: 'beatmatcher.settings',

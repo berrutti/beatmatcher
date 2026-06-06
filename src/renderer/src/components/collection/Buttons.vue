@@ -1,6 +1,6 @@
 <template>
   <div class="deck-buttons">
-    <template v-if="decksStore.editMode">
+    <template v-if="appModeStore.mode === 'edit'">
       <button
         class="deck-btn"
         :class="{ 'deck-btn--loaded': deckLoaded('E') }"
@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/stores/decks';
+import { useAppModeStore } from '@renderer/stores/appMode';
 
 const props = defineProps<{
   path: string;
@@ -41,6 +42,7 @@ const props = defineProps<{
 }>();
 
 const decksStore = useDecksStore();
+const appModeStore = useAppModeStore();
 
 function deckLoaded(deckId: string): boolean {
   return decksStore.decks[deckId as DeckId].loadedPath === props.path;

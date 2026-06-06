@@ -47,7 +47,7 @@ pub fn compute_spectral_bands(
 // Compute per-pixel spectral color data for the region [start_sec, end_sec].
 // Returns a flat Vec of length num_points * 4: [r, g, b, amplitude, ...] per pixel.
 //
-// Design choices (each one tuned from experiment — revisit together if any
+// Design choices (each one tuned from experiment. Revisit together if any
 // change):
 //
 // Bar height uses RMS energy (sqrt of mean square) rather than peak amplitude.
@@ -76,6 +76,7 @@ pub fn compute_spectral_bands(
 const AMP_DISPLAY_BOOST: f32 = 1.0;
 const BAND_DISPLAY_BOOST: f32 = 1.0;
 
+#[allow(clippy::too_many_arguments)]
 pub fn compute_spectral_waveform_region(
     samples: &[f32],
     channels: usize,
@@ -211,9 +212,17 @@ fn interval_to_bpm(interval: usize, sample_rate: u32, bpm_min: f64, bpm_max: f64
         return None;
     }
     let mut bpm = 60.0 * sample_rate as f64 / interval as f64;
-    while bpm < bpm_min { bpm *= 2.0; }
-    while bpm > bpm_max { bpm /= 2.0; }
-    if bpm >= bpm_min && bpm <= bpm_max { Some(bpm) } else { None }
+    while bpm < bpm_min {
+        bpm *= 2.0;
+    }
+    while bpm > bpm_max {
+        bpm /= 2.0;
+    }
+    if bpm >= bpm_min && bpm <= bpm_max {
+        Some(bpm)
+    } else {
+        None
+    }
 }
 
 struct BpmCluster {
@@ -236,7 +245,8 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
         return None;
     }
 
-    let mut interval_counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut interval_counts: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
     for i in 0..peaks.len() {
         let limit = (i + NEIGHBOR_COUNT + 1).min(peaks.len());
         for j in (i + 1)..limit {
@@ -247,7 +257,7 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
 
     // For intervals whose raw BPM falls below BPM_MIN, the energy peaks are landing
     // only on every other beat. Add synthetic votes for interval/2 so the actual beat
-    // period becomes visible to the clusterer. Only /2 — dividing by 3 would introduce
+    // period becomes visible to the clusterer. Only /2. Dividing by 3 would introduce
     // spurious fractional-BPM candidates for common syncopated patterns.
     let long_intervals: Vec<(usize, usize)> = interval_counts
         .iter()
@@ -277,7 +287,10 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
                 }
             }
             if !merged {
-                clusters.push(BpmCluster { weighted_bpm_sum: bpm * count as f64, count });
+                clusters.push(BpmCluster {
+                    weighted_bpm_sum: bpm * count as f64,
+                    count,
+                });
             }
         }
     }
@@ -288,9 +301,18 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
         let bpm_b = b.weighted_bpm_sum / b.count as f64;
         let frac_a = (bpm_a - bpm_a.round()).abs();
         let frac_b = (bpm_b - bpm_b.round()).abs();
-        b.count.cmp(&a.count)
-            .then_with(|| frac_a.partial_cmp(&frac_b).unwrap_or(std::cmp::Ordering::Equal))
-            .then_with(|| bpm_b.partial_cmp(&bpm_a).unwrap_or(std::cmp::Ordering::Equal))
+        b.count
+            .cmp(&a.count)
+            .then_with(|| {
+                frac_a
+                    .partial_cmp(&frac_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                bpm_b
+                    .partial_cmp(&bpm_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
     let result = clusters.first().map(|cluster| {
         let bpm = cluster.weighted_bpm_sum / cluster.count as f64;
@@ -456,7 +478,8 @@ mod tests {
         assert!(
             (detected - true_bpm).abs() < 2.0,
             "expected ~{} BPM, got {} (fractional alias?)",
-            true_bpm, detected
+            true_bpm,
+            detected
         );
         assert_eq!(
             detected,

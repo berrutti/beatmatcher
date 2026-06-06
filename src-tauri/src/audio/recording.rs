@@ -27,18 +27,27 @@ pub(crate) fn wav_writer_thread(
     let format_tag: u16 = if bit_depth == 32 { 3 } else { 1 }; // 3=IEEE float, 1=PCM
 
     buf.write_all(b"RIFF").map_err(|e| e.to_string())?;
-    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&0u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     buf.write_all(b"WAVE").map_err(|e| e.to_string())?;
     buf.write_all(b"fmt ").map_err(|e| e.to_string())?;
-    buf.write_all(&16u32.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&format_tag.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&channels.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&sample_rate.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&byte_rate.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&block_align.to_le_bytes()).map_err(|e| e.to_string())?;
-    buf.write_all(&bit_depth.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&16u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&format_tag.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&channels.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&sample_rate.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&byte_rate.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&block_align.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(&bit_depth.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     buf.write_all(b"data").map_err(|e| e.to_string())?;
-    buf.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?;
+    buf.write_all(&0u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
 
     let mut data_bytes = 0u32;
 
@@ -46,7 +55,8 @@ pub(crate) fn wav_writer_thread(
         for &s in &chunk {
             if bit_depth == 16 {
                 let sample = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                buf.write_all(&sample.to_le_bytes()).map_err(|e| e.to_string())?;
+                buf.write_all(&sample.to_le_bytes())
+                    .map_err(|e| e.to_string())?;
                 data_bytes = data_bytes.saturating_add(2);
             } else {
                 buf.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
@@ -60,9 +70,11 @@ pub(crate) fn wav_writer_thread(
     let riff_size = data_bytes.saturating_add(36);
     let mut file = buf.into_inner().map_err(|e| e.to_string())?;
     file.seek(SeekFrom::Start(4)).map_err(|e| e.to_string())?;
-    file.write_all(&riff_size.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&riff_size.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     file.seek(SeekFrom::Start(40)).map_err(|e| e.to_string())?;
-    file.write_all(&data_bytes.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&data_bytes.to_le_bytes())
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -81,7 +93,7 @@ pub(crate) fn flac_writer_thread(
 
     let pcm_path = format!("{}.pcm", path);
     const MAX_24BIT: f32 = 8_388_607.0; // 2^23 - 1
-    const MAX_16BIT: f32 = 32_767.0;    // 2^15 - 1
+    const MAX_16BIT: f32 = 32_767.0; // 2^15 - 1
     let (scale, flac_bits): (f32, usize) = if bit_depth == 32 {
         (MAX_24BIT, 24)
     } else {
@@ -102,8 +114,14 @@ pub(crate) fn flac_writer_thread(
         buf.flush().map_err(|e| e.to_string())?;
     }
 
-    let source = PcmFileSource::open(&pcm_path, 2, flac_bits, sample_rate as usize, total_samples_per_channel)
-        .map_err(|e| e.to_string())?;
+    let source = PcmFileSource::open(
+        &pcm_path,
+        2,
+        flac_bits,
+        sample_rate as usize,
+        total_samples_per_channel,
+    )
+    .map_err(|e| e.to_string())?;
 
     use flacenc::bitsink::ByteSink;
     use flacenc::component::BitRepr;
@@ -117,7 +135,9 @@ pub(crate) fn flac_writer_thread(
         .map_err(|e| format!("FLAC encode error: {:?}", e))?;
 
     let mut sink = ByteSink::with_capacity(stream.count_bits());
-    stream.write(&mut sink).map_err(|e| format!("FLAC write error: {:?}", e))?;
+    stream
+        .write(&mut sink)
+        .map_err(|e| format!("FLAC write error: {:?}", e))?;
 
     let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
     out.write_all(sink.as_slice()).map_err(|e| e.to_string())?;
@@ -156,10 +176,18 @@ impl PcmFileSource {
 }
 
 impl flacenc::source::Source for PcmFileSource {
-    fn channels(&self) -> usize { self.channels }
-    fn bits_per_sample(&self) -> usize { self.bits_per_sample }
-    fn sample_rate(&self) -> usize { self.sample_rate }
-    fn len_hint(&self) -> Option<usize> { Some(self.total_samples_per_channel) }
+    fn channels(&self) -> usize {
+        self.channels
+    }
+    fn bits_per_sample(&self) -> usize {
+        self.bits_per_sample
+    }
+    fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
+    fn len_hint(&self) -> Option<usize> {
+        Some(self.total_samples_per_channel)
+    }
 
     fn read_samples<F: flacenc::source::Fill>(
         &mut self,

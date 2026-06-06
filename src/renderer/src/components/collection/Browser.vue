@@ -345,6 +345,7 @@
 import { ref, computed, nextTick } from 'vue';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useDecksStore } from '@renderer/stores/decks';
+import { useAppModeStore } from '@renderer/stores/appMode';
 import type { CollectionEntry } from '@renderer/stores/collection';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
@@ -353,6 +354,7 @@ import Buttons from '@renderer/components/collection/Buttons.vue';
 
 const store = useCollectionStore();
 const decksStore = useDecksStore();
+const appModeStore = useAppModeStore();
 
 const isDragOver = ref(false);
 const bpmModalTrackId = ref<string | null>(null);
@@ -546,7 +548,7 @@ function confirmDeletePlaylist() {
 
 function onTrackDblClick(track: CollectionEntry) {
   if (track.status !== 'ready' || !track.path) return;
-  const target = decksStore.bestAvailableDeck();
+  const target = decksStore.bestAvailableDeck(appModeStore.mode === 'edit');
   if (!target) return;
   loadToDeck(track.path, target);
 }
@@ -554,7 +556,7 @@ function onTrackDblClick(track: CollectionEntry) {
 function onTrackDblClickByPath(path: string) {
   const entry = store.tracks.find((t) => t.path === path);
   if (!entry || entry.status !== 'ready') return;
-  const target = decksStore.bestAvailableDeck();
+  const target = decksStore.bestAvailableDeck(appModeStore.mode === 'edit');
   if (!target) return;
   loadToDeck(path, target);
 }

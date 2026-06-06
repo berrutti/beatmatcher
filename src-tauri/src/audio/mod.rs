@@ -1,27 +1,34 @@
-mod dsp;
-mod deck;
-mod stream;
-mod recording;
-mod io;
 mod analysis;
+mod deck;
+mod dsp;
+mod io;
+mod recording;
+mod stream;
 
-pub use deck::{DeckState, ChannelStrip, CuePressOutcome};
-pub use stream::MasterMonitor;
-pub use io::TrackTags;
-pub use io::{decode_audio, resample_linear, read_tags, read_cover_art};
 pub use analysis::{
-    compute_spectral_bands, compute_spectral_waveform_region,
-    detect_bpm, detect_silence_end,
+    compute_spectral_bands, compute_spectral_waveform_region, detect_bpm, detect_silence_end,
 };
+pub use deck::{ChannelStrip, CuePressOutcome, DeckState};
+pub(crate) use dsp::LimiterState;
+pub use io::TrackTags;
+pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
+pub use stream::MasterMonitor;
+pub(crate) use stream::DEFAULT_MASTER_GAIN;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    Arc, Mutex,
+};
 
-use stream::{SendStream, MasterMonitor as Monitor, channel_pairs, find_output_device, best_output_config, build_stream, build_cue_stream, build_combined_stream};
-use recording::{RecordingState, wav_writer_thread, flac_writer_thread};
-use analysis::{BPM_MIN, BPM_MAX};
+use analysis::{BPM_MAX, BPM_MIN};
+use recording::{flac_writer_thread, wav_writer_thread, RecordingState};
+use stream::{
+    best_output_config, build_combined_stream, build_cue_stream, build_stream, channel_pairs,
+    find_output_device, MasterMonitor as Monitor, SendStream,
+};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +59,7 @@ pub struct AppAudio {
     default_device_id: String,
     current_main_id: Mutex<String>,
     current_main_offset: Mutex<usize>,
-    current_cue_id: Mutex<String>,   // empty string = no cue device configured
+    current_cue_id: Mutex<String>, // empty string = no cue device configured
     current_cue_offset: Mutex<usize>,
     buffer_frames: Arc<AtomicU32>,
     pub bpm_min: Arc<AtomicU32>,
@@ -87,12 +94,23 @@ impl AppAudio {
             let mut deck = DeckState::empty(device_sample_rate);
             deck.just_ended = flag;
             decks.insert(id.to_string(), Arc::new(Mutex::new(deck)));
-            strips.insert(id.to_string(), Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))));
+            strips.insert(
+                id.to_string(),
+                Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))),
+            );
         }
 
         let monitor = Monitor::new();
         let channels = channel_pairs(&decks, &strips);
-        let main_stream = build_stream(&device, &config, channels, false, 0, Some(monitor.clone()), 0)?;
+        let main_stream = build_stream(
+            &device,
+            &config,
+            channels,
+            false,
+            0,
+            Some(monitor.clone()),
+            0,
+        )?;
         main_stream.play()?;
 
         Ok(Self {
@@ -136,10 +154,9 @@ impl AppAudio {
                     .filter_map(|d| {
                         let name = d.name().ok()?;
                         let mut configs = d.supported_output_configs().ok()?.peekable();
-                        if configs.peek().is_none() {
-                            return None;
-                        }
-                        let max_channels = configs.map(|c| c.channels() as usize).max().unwrap_or(2);
+                        configs.peek()?;
+                        let max_channels =
+                            configs.map(|c| c.channels() as usize).max().unwrap_or(2);
                         let is_default = name == self.default_device_id;
                         Some(DeviceInfo {
                             id: name.clone(),
@@ -154,22 +171,47 @@ impl AppAudio {
     }
 
     pub fn set_cue_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
-        log::info!("set_cue_device: id='{}' channel_offset={}", device_id, channel_offset);
-        *self.current_cue_id.lock().expect("stream id mutex poisoned") = device_id.to_string();
-        *self.current_cue_offset.lock().expect("stream offset mutex poisoned") = channel_offset;
+        log::info!(
+            "set_cue_device: id='{}' channel_offset={}",
+            device_id,
+            channel_offset
+        );
+        *self
+            .current_cue_id
+            .lock()
+            .expect("stream id mutex poisoned") = device_id.to_string();
+        *self
+            .current_cue_offset
+            .lock()
+            .expect("stream offset mutex poisoned") = channel_offset;
         self.rebuild_streams()
     }
 
     pub fn set_main_device(&self, device_id: &str, channel_offset: usize) -> Result<(), String> {
-        log::info!("set_main_device: id='{}' channel_offset={}", device_id, channel_offset);
-        *self.current_main_id.lock().expect("stream id mutex poisoned") = device_id.to_string();
-        *self.current_main_offset.lock().expect("stream offset mutex poisoned") = channel_offset;
+        log::info!(
+            "set_main_device: id='{}' channel_offset={}",
+            device_id,
+            channel_offset
+        );
+        *self
+            .current_main_id
+            .lock()
+            .expect("stream id mutex poisoned") = device_id.to_string();
+        *self
+            .current_main_offset
+            .lock()
+            .expect("stream offset mutex poisoned") = channel_offset;
         self.rebuild_streams()
     }
 
     pub fn set_bpm_range(&self, min: u32, max: u32) {
         self.bpm_min.store(min, Ordering::Relaxed);
         self.bpm_max.store(max, Ordering::Relaxed);
+    }
+
+    pub fn get_buffer_frames(&self) -> u32 {
+        self.buffer_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_buffer_frames(&self, frames: u32) -> Result<(), String> {
@@ -185,40 +227,93 @@ impl AppAudio {
     // two separate CoreAudio render callbacks from interfering: a cue callback
     // that writes zeros doesn't blank out the main output buffer.
     fn rebuild_streams(&self) -> Result<(), String> {
-        let main_id  = self.current_main_id.lock().expect("stream id mutex poisoned").clone();
-        let main_off = *self.current_main_offset.lock().expect("stream offset mutex poisoned");
-        let cue_id   = self.current_cue_id.lock().expect("stream id mutex poisoned").clone();
-        let cue_off  = *self.current_cue_offset.lock().expect("stream offset mutex poisoned");
+        let main_id = self
+            .current_main_id
+            .lock()
+            .expect("stream id mutex poisoned")
+            .clone();
+        let main_off = *self
+            .current_main_offset
+            .lock()
+            .expect("stream offset mutex poisoned");
+        let cue_id = self
+            .current_cue_id
+            .lock()
+            .expect("stream id mutex poisoned")
+            .clone();
+        let cue_off = *self
+            .current_cue_offset
+            .lock()
+            .expect("stream offset mutex poisoned");
         let buf_frames = self.buffer_frames.load(Ordering::Relaxed);
 
-        log::info!("rebuild_streams: main='{}' off={} | cue='{}' off={} buf={}", main_id, main_off, cue_id, cue_off, buf_frames);
+        log::info!(
+            "rebuild_streams: main='{}' off={} | cue='{}' off={} buf={}",
+            main_id,
+            main_off,
+            cue_id,
+            cue_off,
+            buf_frames
+        );
 
         let ch = channel_pairs(&self.decks, &self.strips);
         let monitor = self.monitor.clone();
 
         if !cue_id.is_empty() && cue_id == main_id {
-            // Same device — one combined stream handles both master (ch main_off/main_off+1)
+            // Same device. One combined stream handles both master (ch main_off/main_off+1)
             // and cue (ch cue_off/cue_off+1) in a single callback.
             let device = find_output_device(&main_id)?;
             let min_ch = (main_off + 2).max(cue_off + 2);
             let config = best_output_config(&device, min_ch, self.device_sample_rate)?;
-            log::info!("rebuild_streams: combined config ch={} sr={} fmt={:?}",
-                config.channels(), config.sample_rate().0, config.sample_format());
-            let stream = build_combined_stream(&device, &config, ch, config.channels() as usize, main_off, cue_off, monitor, buf_frames)
-                .map_err(|e| e.to_string())?;
+            log::info!(
+                "rebuild_streams: combined config ch={} sr={} fmt={:?}",
+                config.channels(),
+                config.sample_rate().0,
+                config.sample_format()
+            );
+            let stream = build_combined_stream(
+                &device,
+                &config,
+                stream::CombinedStreamParams {
+                    channels: ch,
+                    output_channels: config.channels() as usize,
+                    main_offset: main_off,
+                    cue_offset: cue_off,
+                    monitor,
+                    buffer_frames: buf_frames,
+                },
+            )
+            .map_err(|e| e.to_string())?;
 
             // Pause all old streams, sync positions, then start the new combined stream.
-            if let Some(s) = self._main_stream.lock().expect("main stream mutex poisoned").as_ref() { s.0.pause().ok(); }
+            if let Some(s) = self
+                ._main_stream
+                .lock()
+                .expect("main stream mutex poisoned")
+                .as_ref()
+            {
+                s.0.pause().ok();
+            }
             {
                 let mut guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
-                if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
+                if let Some(s) = guard.as_ref() {
+                    s.0.pause().ok();
+                }
                 *guard = None;
             }
             self.sync_cue_positions();
             {
-                let mut guard = self._main_stream.lock().expect("main stream mutex poisoned");
+                let mut guard = self
+                    ._main_stream
+                    .lock()
+                    .expect("main stream mutex poisoned");
                 *guard = Some(SendStream(stream));
-                guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
+                guard
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .play()
+                    .map_err(|e| e.to_string())?;
             }
             log::info!("rebuild_streams: combined stream playing");
         } else {
@@ -226,11 +321,26 @@ impl AppAudio {
             // Build all new streams before pausing anything so the gap is minimal.
             let new_main_stream = if !main_id.is_empty() {
                 let main_device = find_output_device(&main_id)?;
-                let main_cfg    = best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
-                log::info!("rebuild_streams: master config ch={} sr={} fmt={:?}",
-                    main_cfg.channels(), main_cfg.sample_rate().0, main_cfg.sample_format());
-                Some(build_stream(&main_device, &main_cfg, ch.clone(), false, main_off, Some(monitor.clone()), buf_frames)
-                    .map_err(|e| e.to_string())?)
+                let main_cfg =
+                    best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
+                log::info!(
+                    "rebuild_streams: master config ch={} sr={} fmt={:?}",
+                    main_cfg.channels(),
+                    main_cfg.sample_rate().0,
+                    main_cfg.sample_format()
+                );
+                Some(
+                    build_stream(
+                        &main_device,
+                        &main_cfg,
+                        ch.clone(),
+                        false,
+                        main_off,
+                        Some(monitor.clone()),
+                        buf_frames,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
             } else {
                 log::info!("rebuild_streams: no master output configured");
                 None
@@ -238,32 +348,60 @@ impl AppAudio {
 
             let new_cue_stream = if !cue_id.is_empty() {
                 let cue_device = find_output_device(&cue_id)?;
-                let cue_cfg    = best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
-                log::info!("rebuild_streams: cue config ch={} sr={} fmt={:?}",
-                    cue_cfg.channels(), cue_cfg.sample_rate().0, cue_cfg.sample_format());
+                let cue_cfg =
+                    best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
+                log::info!(
+                    "rebuild_streams: cue config ch={} sr={} fmt={:?}",
+                    cue_cfg.channels(),
+                    cue_cfg.sample_rate().0,
+                    cue_cfg.sample_format()
+                );
                 // When there is no main output, the cue stream also drives the
                 // master mix render so that recording and metering still work.
-                let cue_monitor = if main_id.is_empty() { Some(monitor) } else { None };
-                Some(build_cue_stream(&cue_device, &cue_cfg, ch, cue_off, cue_monitor, buf_frames)
-                    .map_err(|e| e.to_string())?)
+                let cue_monitor = if main_id.is_empty() {
+                    Some(monitor)
+                } else {
+                    None
+                };
+                Some(
+                    build_cue_stream(&cue_device, &cue_cfg, ch, cue_off, cue_monitor, buf_frames)
+                        .map_err(|e| e.to_string())?,
+                )
             } else {
                 None
             };
 
             // Pause all old streams, sync cue_pos to main_pos, then start new streams.
-            if let Some(s) = self._main_stream.lock().expect("main stream mutex poisoned").as_ref() { s.0.pause().ok(); }
+            if let Some(s) = self
+                ._main_stream
+                .lock()
+                .expect("main stream mutex poisoned")
+                .as_ref()
+            {
+                s.0.pause().ok();
+            }
             {
                 let guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
-                if let Some(s) = guard.as_ref() { s.0.pause().ok(); }
+                if let Some(s) = guard.as_ref() {
+                    s.0.pause().ok();
+                }
             }
             self.sync_cue_positions();
 
             {
-                let mut guard = self._main_stream.lock().expect("main stream mutex poisoned");
+                let mut guard = self
+                    ._main_stream
+                    .lock()
+                    .expect("main stream mutex poisoned");
                 match new_main_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
-                        guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
+                        guard
+                            .as_ref()
+                            .unwrap()
+                            .0
+                            .play()
+                            .map_err(|e| e.to_string())?;
                     }
                     None => *guard = None,
                 }
@@ -273,7 +411,12 @@ impl AppAudio {
                 match new_cue_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
-                        guard.as_ref().unwrap().0.play().map_err(|e| e.to_string())?;
+                        guard
+                            .as_ref()
+                            .unwrap()
+                            .0
+                            .play()
+                            .map_err(|e| e.to_string())?;
                     }
                     None => *guard = None,
                 }
@@ -296,9 +439,18 @@ impl AppAudio {
     }
 
     pub fn get_deck_levels(&self) -> HashMap<String, [f32; 2]> {
-        self.strips.iter().map(|(id, strip)| {
-            (id.clone(), strip.lock().expect("channel strip mutex poisoned").get_level())
-        }).collect()
+        self.strips
+            .iter()
+            .map(|(id, strip)| {
+                (
+                    id.clone(),
+                    strip
+                        .lock()
+                        .expect("channel strip mutex poisoned")
+                        .get_level(),
+                )
+            })
+            .collect()
     }
 
     pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
@@ -317,7 +469,11 @@ impl AppAudio {
             .into_owned();
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
-        *self.monitor.record_tx.lock().expect("recording channel mutex poisoned") = Some(tx);
+        *self
+            .monitor
+            .record_tx
+            .lock()
+            .expect("recording channel mutex poisoned") = Some(tx);
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
         let thread = if use_flac {
@@ -330,10 +486,20 @@ impl AppAudio {
     }
 
     pub fn stop_recording(&self) -> Result<String, String> {
-        self.monitor.record_tx.lock().expect("recording channel mutex poisoned").take();
-        let state = self.recording.lock().expect("recording mutex poisoned").take();
+        self.monitor
+            .record_tx
+            .lock()
+            .expect("recording channel mutex poisoned")
+            .take();
+        let state = self
+            .recording
+            .lock()
+            .expect("recording mutex poisoned")
+            .take();
         if let Some(s) = state {
-            s.thread.join().map_err(|_| "recorder thread panicked".to_string())??;
+            s.thread
+                .join()
+                .map_err(|_| "recorder thread panicked".to_string())??;
             Ok(s.temp_path)
         } else {
             Err("not recording".to_string())
@@ -341,6 +507,9 @@ impl AppAudio {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.recording.lock().expect("recording mutex poisoned").is_some()
+        self.recording
+            .lock()
+            .expect("recording mutex poisoned")
+            .is_some()
     }
 }

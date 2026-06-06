@@ -18,7 +18,10 @@ fn open_format(
     let file = std::fs::File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
-    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         hint.with_extension(ext);
     }
     Ok(symphonia::default::get_probe().format(
@@ -59,7 +62,11 @@ pub fn decode_audio(
     // audio is mono, which would cause wrong chunk-size when mixing to mono.
     let mut actual_channels: Option<usize> = None;
 
-    log::info!("decode_audio: opening '{}', native_sr={}", path, sample_rate);
+    log::info!(
+        "decode_audio: opening '{}', native_sr={}",
+        path,
+        sample_rate
+    );
 
     loop {
         let packet = match format.next_packet() {
@@ -83,7 +90,11 @@ pub fn decode_audio(
                 // Lock in the channel count from the first packet.
                 let out_channels = *actual_channels.get_or_insert_with(|| {
                     let ch = src_channels.min(2);
-                    log::info!("decode_audio: first packet spec src_channels={} out_channels={}", src_channels, ch);
+                    log::info!(
+                        "decode_audio: first packet spec src_channels={} out_channels={}",
+                        src_channels,
+                        ch
+                    );
                     ch
                 });
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
@@ -118,12 +129,7 @@ pub fn decode_audio(
     Ok((samples, channels, sample_rate))
 }
 
-pub fn resample_linear(
-    input: &[f32],
-    in_channels: usize,
-    in_rate: u32,
-    out_rate: u32,
-) -> Vec<f32> {
+pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate: u32) -> Vec<f32> {
     let in_frames = input.len() / in_channels;
     let ratio = in_rate as f64 / out_rate as f64;
     let out_frames = (in_frames as f64 / ratio).ceil() as usize;
@@ -168,7 +174,12 @@ fn fill_tags_from_slice(
 pub fn read_tags(path: &str) -> TrackTags {
     let mut probed = match open_format(path) {
         Ok(p) => p,
-        Err(_) => return TrackTags { title: None, artist: None },
+        Err(_) => {
+            return TrackTags {
+                title: None,
+                artist: None,
+            }
+        }
     };
 
     let mut title: Option<String> = None;
@@ -199,8 +210,16 @@ pub fn read_cover_art(path: &str) -> Option<String> {
             .iter()
             .find(|v| v.usage == Some(StandardVisualKey::FrontCover))
             .or_else(|| visuals.first())?;
-        let media_type = if v.media_type.is_empty() { "image/jpeg" } else { &v.media_type };
-        Some(format!("data:{};base64,{}", media_type, STANDARD.encode(&*v.data)))
+        let media_type = if v.media_type.is_empty() {
+            "image/jpeg"
+        } else {
+            &v.media_type
+        };
+        Some(format!(
+            "data:{};base64,{}",
+            media_type,
+            STANDARD.encode(&*v.data)
+        ))
     }
 
     let mut probed = open_format(path).ok()?;
@@ -255,10 +274,14 @@ mod tests {
             "expected ~6 frames, got {}",
             output.len()
         );
-        // output[1] sits halfway between input[0]=0.0 and input[1]=1.0 — the
+        // output[1] sits halfway between input[0]=0.0 and input[1]=1.0. The
         // true interpolated midpoint. output[2] lands exactly on input[1]=1.0
         // (interp factor = 0.0) so checking [2] would always equal 1.0.
-        assert!((output[1] - 0.5).abs() < 0.01, "interpolated midpoint={}", output[1]);
+        assert!(
+            (output[1] - 0.5).abs() < 0.01,
+            "interpolated midpoint={}",
+            output[1]
+        );
     }
 
     #[test]

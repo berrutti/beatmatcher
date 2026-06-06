@@ -1,42 +1,35 @@
 <template>
   <div class="topstrip">
-    <button
-      class="topstrip__rec-btn"
-      :class="{ 'topstrip__rec-btn--active': isRecording }"
-      :title="isRecording ? 'Stop recording' : 'Record master output'"
-      tabindex="-1"
-      @click="onRecClick"
-    >
-      REC
-    </button>
-
-    <button
-      class="topstrip__edit-btn"
-      :class="{ 'topstrip__edit-btn--active': editMode }"
-      tabindex="-1"
-      @click="emit('toggle-edit')"
-    >
-      EDIT
-    </button>
-
-    <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
-      {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
-    </button>
-
-    <div
-      class="topstrip__swarm-btn"
-      :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
-      title="Activate with CapsLock"
-    >
-      SWARM
-      <span
-        v-for="deck in activeDecks"
-        :key="deck"
-        class="topstrip__swarm-deck"
-        :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
-        >{{ deck }}</span
+    <template v-if="appMode.mode === 'performance'">
+      <button
+        class="topstrip__rec-btn"
+        :class="{ 'topstrip__rec-btn--active': isRecording }"
+        :title="isRecording ? 'Stop recording' : 'Record master output'"
+        tabindex="-1"
+        @click="onRecClick"
       >
-    </div>
+        REC
+      </button>
+
+      <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
+        {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
+      </button>
+
+      <div
+        class="topstrip__swarm-btn"
+        :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
+        title="Activate with CapsLock"
+      >
+        SWARM
+        <span
+          v-for="deck in activeDecks"
+          :key="deck"
+          class="topstrip__swarm-deck"
+          :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
+          >{{ deck }}</span
+        >
+      </div>
+    </template>
 
     <div class="topstrip__spacer" />
 
@@ -142,29 +135,18 @@
       <button class="topstrip__refresh" tabindex="-1" @click="mixer.loadOutputDevices()">↻</button>
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
     </template>
-
-    <button
-      class="topstrip__settings-btn"
-      tabindex="-1"
-      title="Settings (⌘,)"
-      @click="emit('open-settings')"
-    >
-      ⚙
-    </button>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { useAppModeStore } from '@renderer/stores/appMode';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
-defineProps<{ editMode: boolean }>();
-const emit = defineEmits<{ 'toggle-edit': []; 'open-settings': [] }>();
-
 const mixer = useMixerStore();
-const decks = useDecksStore();
+const appMode = useAppModeStore();
 
 const activeDecks = computed<DeckId[]>(() =>
   mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
@@ -191,14 +173,6 @@ const peakR = ref<PeakState>({ value: 0, holdMs: 0 });
 let rafId = 0;
 
 async function pollLevels() {
-  if (!decks.anyDeckActive) {
-    paramL.value = 0;
-    paramR.value = 0;
-    peakL.value = { value: 0, holdMs: 0 };
-    peakR.value = { value: 0, holdMs: 0 };
-    rafId = 0;
-    return;
-  }
   const [l, r] = await mixer.getMasterLevel();
   const newParamL = vuParam(l);
   const newParamR = vuParam(r);
@@ -208,13 +182,6 @@ async function pollLevels() {
   peakR.value = stepPeak(peakR.value, newParamR);
   rafId = requestAnimationFrame(pollLevels);
 }
-
-watch(
-  () => decks.anyDeckActive,
-  (active) => {
-    if (active && rafId === 0) rafId = requestAnimationFrame(pollLevels);
-  }
-);
 
 const isRecording = ref(false);
 
@@ -236,6 +203,7 @@ async function onRecClick() {
 
 onMounted(() => {
   mixer.loadOutputDevices();
+  rafId = requestAnimationFrame(pollLevels);
 });
 
 onUnmounted(() => {
@@ -246,7 +214,7 @@ onUnmounted(() => {
 <style scoped>
 .topstrip {
   width: 100%;
-  height: var(--topstrip-h);
+  height: var(--topstrip-h, 28px);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -313,7 +281,8 @@ onUnmounted(() => {
   font-family: var(--font);
   font-size: 10px;
   letter-spacing: 0.12em;
-  padding: 2px 8px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 3px;
   cursor: not-allowed;
   user-select: none;
@@ -447,7 +416,8 @@ onUnmounted(() => {
   font-family: var(--font);
   font-size: 10px;
   letter-spacing: 0.12em;
-  padding: 2px 8px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 3px;
   cursor: pointer;
 }
@@ -474,29 +444,6 @@ onUnmounted(() => {
   }
 }
 
-.topstrip__edit-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  padding: 2px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.topstrip__edit-btn:hover {
-  border-color: #a855f7;
-  color: #a855f7;
-}
-
-.topstrip__edit-btn--active {
-  border-color: #a855f7;
-  color: #a855f7;
-  background: color-mix(in srgb, #a855f7 15%, transparent);
-}
-
 .topstrip__deck-count-btn {
   background: transparent;
   border: 1px solid var(--color-border);
@@ -504,7 +451,8 @@ onUnmounted(() => {
   font-family: var(--font);
   font-size: 10px;
   letter-spacing: 0.12em;
-  padding: 2px 8px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 3px;
   cursor: pointer;
 }
@@ -536,29 +484,5 @@ onUnmounted(() => {
 .topstrip__error {
   color: #e55;
   font-size: 10px;
-}
-
-.topstrip__settings-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-size: 13px;
-  width: 22px;
-  height: 22px;
-  border-radius: 3px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  flex-shrink: 0;
-  transition:
-    border-color 0.1s,
-    color 0.1s;
-}
-
-.topstrip__settings-btn:hover {
-  border-color: var(--color-text);
-  color: var(--color-text);
 }
 </style>
