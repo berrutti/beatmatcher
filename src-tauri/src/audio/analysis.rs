@@ -47,7 +47,7 @@ pub fn compute_spectral_bands(
 // Compute per-pixel spectral color data for the region [start_sec, end_sec].
 // Returns a flat Vec of length num_points * 4: [r, g, b, amplitude, ...] per pixel.
 //
-// Design choices (each one tuned from experiment — revisit together if any
+// Design choices (each one tuned from experiment. Revisit together if any
 // change):
 //
 // Bar height uses RMS energy (sqrt of mean square) rather than peak amplitude.
@@ -257,7 +257,7 @@ pub fn detect_bpm(mono: &[f32], sample_rate: u32, bpm_min: f64, bpm_max: f64) ->
 
     // For intervals whose raw BPM falls below BPM_MIN, the energy peaks are landing
     // only on every other beat. Add synthetic votes for interval/2 so the actual beat
-    // period becomes visible to the clusterer. Only /2 — dividing by 3 would introduce
+    // period becomes visible to the clusterer. Only /2. Dividing by 3 would introduce
     // spurious fractional-BPM candidates for common syncopated patterns.
     let long_intervals: Vec<(usize, usize)> = interval_counts
         .iter()

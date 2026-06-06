@@ -19,9 +19,10 @@ graph TD
     end
 
     subgraph Backend ["Backend (Rust)"]
-        AppState["AppState\n(Arc<AppAudio> + SessionLogger)"]:::backend
+        AppState["AppState\n(Arc<AppAudio> + SessionLogger\n+ session_track_cache\n+ session_snapshots\n+ session_playback_cancel)"]:::backend
         Audio["AppAudio\n(decks, strips, streams)"]:::backend
         Engine["Audio Engine\n(deck.rs, stream.rs, dsp.rs)"]:::backend
+        Scheduler["Session Scheduler\n(tokio task, session_playback.rs)"]:::backend
     end
 
     UI --> Stores
@@ -31,6 +32,8 @@ graph TD
     AppState --> Audio
     Audio --> Engine
     Engine -- "emit track-ended" --> Events
+    Commands -- "start_session_playback" --> Scheduler
+    Scheduler -- "direct AppState access" --> Audio
 ```
 
 ## Audio signal chain (per deck)
@@ -157,6 +160,13 @@ graph LR
         discard_recording:::recording
     end
 
+    subgraph Session
+        open_session_dialog:::io
+        preload_session:::io
+        start_session_playback:::transport
+        stop_session_playback:::transport
+    end
+
     subgraph Device
         list_audio_devices:::device
         set_main_device:::device
@@ -165,3 +175,45 @@ graph LR
         set_bpm_range:::device
     end
 ```
+
+## Session view
+
+The app has two full-page modes. `App.vue` orchestrates transitions. `Performance` and `Session` emit `exit`, and `App` handles the deck eject / playback stop in between.
+
+```mermaid
+flowchart TD
+    classDef app fill:#64748b,stroke:#475569,color:#fff
+    classDef perf fill:#3b82f6,stroke:#1d4ed8,color:#fff
+    classDef session fill:#06b6d4,stroke:#0891b2,color:#fff
+    classDef rust fill:#f97316,stroke:#ea580c,color:#fff
+
+    App["App.vue\n"]:::app
+    Perf["Performance.vue\n(decks, mixer, collection)"]:::perf
+    Sess["Session.vue\n(header, transport, timeline)"]:::session
+    Timeline["Timeline.vue\n(canvas, click-to-scrub)"]:::session
+    Scheduler["Rust session scheduler\n(tokio task)"]:::rust
+    Snapshots["SessionSnapshot[]\n(one per event, in AppState)"]:::rust
+
+    App -- "v-if mode='performance'" --> Perf
+    App -- "v-if mode='session'" --> Sess
+    Perf -- "emit exit" --> App
+    Sess -- "emit exit" --> App
+    Sess --> Timeline
+    Timeline -- "emit seek(ms)" --> Sess
+    Sess -- "start_session_playback(path, fromMs)" --> Scheduler
+    Scheduler -- "binary search" --> Snapshots
+    Snapshots -- "snapshot state applied\nto live AppAudio" --> Scheduler
+```
+
+## Session playback: scrubbing and snapshot state machine
+
+On session open, `preload_session` decodes all referenced audio files into a persistent cache and builds a `SessionSnapshot` after every event in the session log. Each snapshot captures the complete state of all decks (position, rate, nudge, loop) and all channel strips (gain, EQ, filter).
+
+When `start_session_playback(fromMs)` is called the scheduler:
+1. Finds the last snapshot with `elapsed_ms ≤ fromMs` (binary search)
+2. Resets all decks and strips
+3. Applies the snapshot's strip/master state to the live engine
+4. Replays the few events between the snapshot and `fromMs` through the analytical position simulation
+5. Sets final deck positions and starts the tokio timer loop for events after `fromMs`
+
+Position simulation rule: any event that changes playback speed or position (`play`, `stop`, `seek`, `set_playback_rate`, `set_nudge`) commits the current analytically-computed position before updating the relevant parameter. This ensures each segment between events is computed with the correct rate and nudge factor.

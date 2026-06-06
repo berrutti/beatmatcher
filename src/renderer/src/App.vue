@@ -1,6 +1,6 @@
 <template>
-  <Session v-if="sessionMode" @exit="onExitSession" />
-  <Performance v-else @enter-session="onEnterSession" />
+  <Session v-if="mode" @exit="onExitSession" />
+  <Performance v-else @exit="onExitPerformance" />
 </template>
 
 <script setup lang="ts">
@@ -15,18 +15,18 @@ const decksStore = useDecksStore();
 const settingsStore = useSettingsStore();
 const sessionStore = useSessionStore();
 
-const sessionMode = ref(false);
+const mode = ref<'performance' | 'session'>('performance');
 
 onMounted(() => settingsStore.init());
 onUnmounted(() => decksStore.destroy());
 
-async function onEnterSession() {
+async function onExitPerformance() {
   await sessionStore.ejectAllDecks();
-  sessionMode.value = true;
+  mode.value= 'session'
 }
 
 async function onExitSession() {
   await sessionStore.exit();
-  sessionMode.value = false;
+  mode.value= 'performance'
 }
 </script>

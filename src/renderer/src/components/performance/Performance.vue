@@ -12,7 +12,7 @@
       @cancel="enterEditPending = false"
     >
       <p class="perf__modal-body">
-        Playback is running. You can still hear the decks while in Edit mode.
+        Playback is running. Playback will stop in Edit mode.
       </p>
     </Modal>
 
@@ -57,7 +57,7 @@
     </div>
 
     <div v-if="!decksStore.editMode" class="perf__session-entry">
-      <button class="perf__session-btn" @click="tryEnterSession">SESSION VIEW</button>
+      <button class="perf__session-btn" @click="tryLeavePerformance">SESSION VIEW</button>
     </div>
 
     <button class="perf__collection-bar" @click="collectionStore.toggle()">
@@ -89,7 +89,7 @@ import EditView from '@renderer/components/deck/EditView.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 
-const emit = defineEmits<{ 'enter-session': [] }>();
+const emit = defineEmits<{ 'exit': [] }>();
 
 const MIN_COLLECTION_H = 120;
 const MAX_COLLECTION_H_RATIO = 0.65;
@@ -135,20 +135,20 @@ function onConfirmEditMode() {
   decksStore.enterEditMode();
 }
 
-function tryEnterSession() {
+function tryLeavePerformance() {
   const anyLoaded = ['A', 'B', 'C', 'D'].some(
     (id) => decksStore[`deck${id}` as 'deckA'].loadedPath != null
   );
   if (anyLoaded) {
     enterSessionPending.value = true;
   } else {
-    emit('enter-session');
+    emit('exit');
   }
 }
 
 function onConfirmEnterSession() {
   enterSessionPending.value = false;
-  emit('enter-session');
+  emit('exit');
 }
 </script>
 

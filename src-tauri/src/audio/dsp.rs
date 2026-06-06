@@ -3,12 +3,12 @@
 // Implements H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)
 // Coefficients follow the Audio EQ Cookbook (Robert Bristow-Johnson).
 //
-// b0/b1/b2  — feedforward: how much of the current and past INPUT samples
+// b0/b1/b2 . Feedforward: how much of the current and past INPUT samples
 //             contribute to the output. Together they shape the frequency
 //             response (e.g. low-pass attenuates high-frequency input).
-// a1/a2     — feedback: how much of the past OUTPUT samples feed back into
+// a1/a2    . Feedback: how much of the past OUTPUT samples feed back into
 //             the filter. This creates resonance/poles in the response.
-// delay1/2  — the two internal memory cells that carry state between samples.
+// delay1/2 . The two internal memory cells that carry state between samples.
 
 #[derive(Copy, Clone)]
 pub(crate) struct Biquad {
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn limiter_instantaneous_attack_prevents_clipping() {
         let mut lim = LimiterState::new(44100.0);
-        // First sample is loud — must be limited in the same sample, not the next one.
+        // First sample is loud. Must be limited in the same sample, not the next one.
         let (l, r) = lim.process(2.0, 1.5);
         assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
         assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");

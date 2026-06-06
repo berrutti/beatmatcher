@@ -225,7 +225,7 @@
         <div class="settings-footer">
           <span v-if="conflictError" class="settings-error">{{ conflictError }}</span>
           <span v-else-if="capturingSlot" class="settings-capture-hint"
-            >Press any key — Esc to cancel</span
+            >Press any key. Esc to cancel</span
           >
           <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true">·</span>
           <button class="settings-reset-btn" @click="settings.resetToDefaults()">

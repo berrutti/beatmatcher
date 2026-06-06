@@ -260,7 +260,7 @@ impl AppAudio {
         let monitor = self.monitor.clone();
 
         if !cue_id.is_empty() && cue_id == main_id {
-            // Same device — one combined stream handles both master (ch main_off/main_off+1)
+            // Same device. One combined stream handles both master (ch main_off/main_off+1)
             // and cue (ch cue_off/cue_off+1) in a single callback.
             let device = find_output_device(&main_id)?;
             let min_ch = (main_off + 2).max(cue_off + 2);

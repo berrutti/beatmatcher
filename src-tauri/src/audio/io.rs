@@ -274,7 +274,7 @@ mod tests {
             "expected ~6 frames, got {}",
             output.len()
         );
-        // output[1] sits halfway between input[0]=0.0 and input[1]=1.0 — the
+        // output[1] sits halfway between input[0]=0.0 and input[1]=1.0. The
         // true interpolated midpoint. output[2] lands exactly on input[1]=1.0
         // (interp factor = 0.0) so checking [2] would always equal 1.0.
         assert!(

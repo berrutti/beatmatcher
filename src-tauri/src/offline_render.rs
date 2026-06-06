@@ -634,7 +634,7 @@ fn apply_event(
         }
 
         "cue_preview_start" => {
-            // Holding CUE plays from the cue point through the main path — audible in the recording.
+            // Holding CUE plays from the cue point through the main path. Audible in the recording.
             let Some(ref id) = ev.deck else {
                 return Ok(());
             };

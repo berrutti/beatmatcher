@@ -534,7 +534,7 @@ mod cue_state_machine {
         assert!(!d.is_cueing);
     }
 
-    // Pressing PLAY during cue preview "latches on" — playback continues from
+    // Pressing PLAY during cue preview "latches on". Playback continues from
     // the current position instead of returning to the cue point.
     #[test]
     fn toggle_play_during_cue_preview_latches_to_playing() {
@@ -619,7 +619,7 @@ mod cue_state_machine {
         assert!((d.main_pos - d.cue_point).abs() < 1.0);
     }
 
-    // Pressing CUE again during preview is a no-op — you can't start another
+    // Pressing CUE again during preview is a no-op. You can't start another
     // preview while one is already running.
     #[test]
     fn press_cue_during_preview_is_noop() {
@@ -656,7 +656,7 @@ mod cue_state_machine {
         d.main_pos = beat_frames() * 3.0;
         let pos_before = d.main_pos;
         d.release_cue(); // first call
-        d.release_cue(); // second call — must also be fine
+        d.release_cue(); // second call. Must also be fine
         assert!(!d.is_playing);
         assert_eq!(
             d.main_pos, pos_before,
@@ -700,7 +700,7 @@ mod cue_state_machine {
         );
     }
 
-    // No-op when already stopped — calling it twice must be safe.
+    // No-op when already stopped. Calling it twice must be safe.
     #[test]
     fn set_cue_and_stop_when_stopped_is_noop() {
         let mut d = stopped(10.0);
@@ -753,7 +753,7 @@ mod cue_state_machine {
         d.cue_point = beat_frames() * 2.0;
         d.main_pos = beat_frames() * 4.0; // position away from cue
         d.stop_at_cue(); // first call
-        d.stop_at_cue(); // second call — must not change anything further
+        d.stop_at_cue(); // second call. Must not change anything further
         assert!(!d.is_playing);
     }
 

@@ -1,6 +1,6 @@
 // Rust tokio-based session playback scheduler.
 // Replaces the JS setTimeout loop: one Tauri command starts a background task
-// that applies events directly to AppState via tokio::time::sleep — no IPC per event.
+// that applies events directly to AppState via tokio::time::sleep. No IPC per event.
 //
 // State preprocessing: on session load, `preload_session` simulates the entire
 // event stream and captures full mixer+deck state every 500ms. Scrubbing to any
@@ -21,7 +21,7 @@ pub(crate) type SampleCache = HashMap<String, (Arc<Vec<f32>>, usize)>;
 
 use crate::audio::DEFAULT_MASTER_GAIN;
 
-// Internal simulation state — not stored long-term.
+// Internal simulation state. Not stored long-term.
 #[derive(Clone)]
 struct DeckSim {
     path: Option<String>,
@@ -99,7 +99,6 @@ impl SimState {
     }
 }
 
-// Persistent snapshot stored in AppState — one per 500ms interval.
 #[derive(Clone, Default)]
 pub struct DeckSnap {
     pub path: Option<String>,
@@ -757,8 +756,8 @@ fn snap_at(state: &SimState, at_ms: f64, sr_f: f64) -> SessionSnapshot {
 }
 
 // Build one snapshot per event, capturing state AFTER the event fires.
-// Scrubbing to time T finds the last snapshot with elapsed_ms <= T and loads it —
-// the exact post-event state, so no event is ever missing or double-applied.
+// Scrubbing to time T finds the last snapshot with elapsed_ms <= T and loads it.
+// The exact post-event state, so no event is ever missing or double-applied.
 // Events are sorted before simulation so the state machine progresses correctly
 // regardless of order in the source JSON.
 fn build_snapshots(events: &[SessionEvent], sr: u32, cache: &SampleCache) -> Vec<SessionSnapshot> {
@@ -1510,7 +1509,7 @@ mod tests {
     fn round_trip_preserves_playing_deck_position() {
         let path = "/fake/track.mp3".to_string();
         let mut cache: SampleCache = HashMap::new();
-        // 10 seconds of silence at 44100 Hz, mono — enough room to advance 2s.
+        // 10 seconds of silence at 44100 Hz, mono. Enough room to advance 2s.
         cache.insert(path.clone(), (Arc::new(vec![0.0f32; 441_000]), 1));
 
         let events = vec![SessionEvent {

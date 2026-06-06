@@ -27,7 +27,7 @@ fn main() {
                 Some(div_frame) => {
                     let div_ms = div_frame as f64 * 1000.0 / r.sample_rate as f64;
                     println!("first divergence : frame {} (~{:.1} ms)", div_frame, div_ms);
-                    println!("\nresult: FAIL — reconstruction diverges from reference");
+                    println!("\nresult: FAIL. Reconstruction diverges from reference");
 
                     println!("\n--- events near divergence ({:.0} ms ± 3s) ---", div_ms);
                     dump_events_near(session_path, div_ms);

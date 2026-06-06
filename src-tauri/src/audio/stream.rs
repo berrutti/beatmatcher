@@ -182,7 +182,7 @@ pub(crate) fn best_output_config(
         return Ok(cfg);
     }
 
-    // Device has no config with enough channels — fall back to default and let
+    // Device has no config with enough channels. Fall back to default and let
     // mix_frame clamp gracefully (audio will be silent for out-of-range offsets).
     let cfg = device.default_output_config().map_err(|e| e.to_string())?;
     log::warn!(

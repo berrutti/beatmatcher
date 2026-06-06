@@ -36,7 +36,7 @@ jobs:
             | macOS | `.dmg` below |
             | Windows | `.exe` below |
 
-            ### macOS — first launch
+            ### macOS first launch
             The app is not code-signed. After dragging it to Applications, run once in Terminal:
             ```bash
             xattr -cr /Applications/Beatmatcher.app

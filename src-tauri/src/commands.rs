@@ -41,12 +41,12 @@ fn band_normalization_scale(band: &[f32]) -> f32 {
 //
 // loop_active vs loop_region_cleared are independent and mean different things:
 //
-//   loop_active       — whether the loop is currently armed (playback loops).
+//   loop_active         whether the loop is currently armed (playback loops).
 //                       Can be false while a region is still defined, e.g. after
 //                       seeking outside the region or calling exitLoop. The region
 //                       persists so reloop can re-enter it.
 //
-//   loop_region_cleared — the region itself was destroyed and the frontend should
+//   loop_region_cleared the region itself was destroyed and the frontend should
 //                       discard its cached loopRegion entirely (waveform overlay
 //                       disappears). Only true when the cue point moves to a new
 //                       position (CueMoved) or loop_in is pressed, because those
@@ -1555,7 +1555,7 @@ mod tests {
         // left cue_point at silence_pos. This caused CueMoved on the first press.
         let mut d = load_deck_at_beat_offset(0.0, 10.0); // silence_pos = 0
         d.main_pos = 1.5 * SR_F; // beatOffset != silence_pos
-                                 // cue_point is still 0 — the old broken state
+                                 // cue_point is still 0. the old broken state
         let outcome = d.press_cue();
         assert!(
             matches!(outcome, CuePressOutcome::CueMoved { .. }),

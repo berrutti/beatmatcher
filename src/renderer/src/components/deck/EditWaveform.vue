@@ -197,7 +197,7 @@ async function doFetchOnDemand() {
   const numPoints = Math.max(64, Math.ceil((rEnd - rStart) * rate));
   try {
     const result = await props.getSpectralWaveformRegion(rStart, rEnd, numPoints);
-    // Only apply if this fetch still covers the current view — a later
+    // Only apply if this fetch still covers the current view. A later
     // pan/zoom might have moved us outside the fetched range.
     if (rStart <= viewStartSec + 1e-6 && rEnd >= viewEndSec - 1e-6) {
       cachedPeaks = new Float32Array(result);
@@ -212,7 +212,7 @@ async function doFetchOnDemand() {
   if (pendingFetch) {
     pendingFetch = false;
     // Re-check: dense LOD may have arrived, or the view may have moved
-    // back inside the current cache — in either case we skip the IPC.
+    // back inside the current cache. In either case we skip the IPC.
     if (!cacheCoversView() && !ensureCachedFromDense()) {
       doFetchOnDemand();
     }
@@ -240,7 +240,7 @@ async function buildBitmap(peaks: Float32Array, bitmapW: number, canvasH: number
     const bmp = await createImageBitmap(imgData);
     if (cachedPeaks === peaks) waveImgBitmap = bmp;
   } catch {
-    // createImageBitmap failure — skip this bitmap update
+    // createImageBitmap failure. Skip this bitmap update
   } finally {
     bitmapBuildInFlight = false;
   }
