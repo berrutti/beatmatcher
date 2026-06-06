@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Beatmatcher",
-  "version": "5.7.2",
+  "version": "6.0.0",
   "identifier": "com.berrutti.beatmatcher",
   "build": {
     "frontendDist": "../dist-tauri",
