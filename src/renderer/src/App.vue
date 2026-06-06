@@ -22,11 +22,11 @@ onUnmounted(() => decksStore.destroy());
 
 async function onExitPerformance() {
   await sessionStore.ejectAllDecks();
-  mode.value= 'session'
+  mode.value = 'session';
 }
 
 async function onExitSession() {
   await sessionStore.exit();
-  mode.value= 'performance'
+  mode.value = 'performance';
 }
 </script>

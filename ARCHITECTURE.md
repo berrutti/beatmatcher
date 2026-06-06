@@ -210,6 +210,7 @@ flowchart TD
 On session open, `preload_session` decodes all referenced audio files into a persistent cache and builds a `SessionSnapshot` after every event in the session log. Each snapshot captures the complete state of all decks (position, rate, nudge, loop) and all channel strips (gain, EQ, filter).
 
 When `start_session_playback(fromMs)` is called the scheduler:
+
 1. Finds the last snapshot with `elapsed_ms ≤ fromMs` (binary search)
 2. Resets all decks and strips
 3. Applies the snapshot's strip/master state to the live engine

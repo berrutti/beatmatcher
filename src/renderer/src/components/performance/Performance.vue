@@ -11,9 +11,7 @@
       @confirm="onConfirmEditMode"
       @cancel="enterEditPending = false"
     >
-      <p class="perf__modal-body">
-        Playback is running. Playback will stop in Edit mode.
-      </p>
+      <p class="perf__modal-body">Playback is running. Playback will stop in Edit mode.</p>
     </Modal>
 
     <Modal
@@ -89,7 +87,7 @@ import EditView from '@renderer/components/deck/EditView.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 
-const emit = defineEmits<{ 'exit': [] }>();
+const emit = defineEmits<{ exit: [] }>();
 
 const MIN_COLLECTION_H = 120;
 const MAX_COLLECTION_H_RATIO = 0.65;
