@@ -12,14 +12,18 @@
       >
         <span class="session__drop-hint">Drop a recorded session here, or click to open</span>
       </div>
-      <SessionTimeline
-        v-else
-        :duration-ms="session.durationMs"
-        :clips="clips"
-        :loaded-spans="loadedSpans"
-        :playhead-ms="playheadMs"
-        @seek="onSeek"
-      />
+      <template v-else>
+        <div v-if="!session.hasTrackInfo" class="session__no-track-info">
+          No track info. Load tracks in Performance mode first, then record.
+        </div>
+        <SessionTimeline
+          :duration-ms="session.durationMs"
+          :clips="clips"
+          :loaded-spans="loadedSpans"
+          :playhead-ms="playheadMs"
+          @seek="onSeek"
+        />
+      </template>
     </div>
 
     <div v-if="session.session" class="session__controls">
@@ -63,13 +67,14 @@ import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
+import { formatMs } from '@renderer/utils/time';
 
 const session = useSessionStore();
 const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans } = useSessionTimeline(sessionRef as never, (path) =>
+const { clips, loadedSpans } = useSessionTimeline(sessionRef, (path) =>
   collection.getName(path)
 );
 
@@ -92,14 +97,6 @@ async function onFileDrop(e: DragEvent) {
   }
 }
 
-function formatMs(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
 
 function tickPlayhead() {
   if (!session.isPlaying) return;
@@ -163,6 +160,15 @@ onUnmounted(() => cancelAnimationFrame(rafId));
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.session__no-track-info {
+  padding: 8px 16px;
+  font-size: 0.8em;
+  color: var(--color-muted);
+  background: color-mix(in srgb, #f97316 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #f97316 30%, transparent);
+  letter-spacing: 0.05em;
 }
 
 .session__drop-zone {

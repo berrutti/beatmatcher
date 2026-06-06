@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Clip, LoadedSpan } from '@renderer/composables/useSessionTimeline';
+import { formatMs } from '@renderer/utils/time';
 
 const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
 const DECK_ACCENT: Record<string, string> = {
@@ -58,7 +59,8 @@ function draw() {
   canvas.style.width = w + 'px';
   canvas.style.height = h + 'px';
 
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
@@ -182,12 +184,6 @@ function chooseTickInterval(totalMs: number, availPx: number): number {
   return candidates[candidates.length - 1];
 }
 
-function formatMs(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
 
 onMounted(() => {
   ro = new ResizeObserver(() => requestAnimationFrame(draw));

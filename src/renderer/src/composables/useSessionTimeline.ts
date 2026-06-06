@@ -1,23 +1,5 @@
 import { computed, type Ref } from 'vue';
-
-type SessionEvent = {
-  elapsed_ms: number;
-  type: string;
-  deck?: string;
-  path?: string;
-  sec?: number;
-  rate?: number;
-  is_playing?: boolean;
-  position_sec?: number;
-  cue_point_sec?: number;
-  playback_rate?: number;
-  active?: boolean;
-  loop_active?: boolean;
-  loop_start_sec?: number;
-  loop_end_sec?: number;
-  start_sec?: number;
-  end_sec?: number;
-};
+import type { SessionEvent, ParsedSession } from '@renderer/stores/session';
 
 export type Clip = {
   deck: string;
@@ -100,6 +82,8 @@ function loopExitTrackPos(deck: DeckState, endMs: number): number {
   if (loopDurMs <= 0) return deck.trackPosSec;
   const elapsedMs = endMs - deck.loopEngagedMs;
   const partialMs = elapsedMs % loopDurMs;
+  // nudge_factor is not tracked here; loop duration may be slightly off during an active nudge,
+  // but nudge is transient so the error is negligible over full iterations
   return deck.loopStartSec + (partialMs / 1000) * deck.clipRate;
 }
 
@@ -174,7 +158,21 @@ function finalizeLoadedSpan(
   deck.loadSpanPath = null;
 }
 
-function buildClips(
+// Shared sequence for all loop-exit events: compute where in the loop we landed,
+// finalize the loop iterations as clips, then start a new regular clip.
+function exitLoopAndContinue(
+  deck: DeckState,
+  deckId: string,
+  ms: number,
+  clips: Clip[],
+  nameForPath: (path: string) => string
+) {
+  deck.trackPosSec = loopExitTrackPos(deck, ms);
+  finalizeClip(deck, deckId, ms, clips, nameForPath);
+  startClip(deck, ms);
+}
+
+export function buildClips(
   events: SessionEvent[],
   nameForPath: (path: string) => string
 ): { clips: Clip[]; loadedSpans: LoadedSpan[] } {
@@ -193,9 +191,9 @@ function buildClips(
         deck.path = ev.path ?? null;
         deck.rate = ev.playback_rate ?? 1;
         deck.trackPosSec = ev.position_sec ?? 0;
-        deck.loopStartSec =
-          ev.loop_active && ev.loop_start_sec !== undefined ? ev.loop_start_sec : null;
-        deck.loopEndSec = ev.loop_active && ev.loop_end_sec !== undefined ? ev.loop_end_sec : null;
+        // loop start = cue_point by invariant; deck_snapshot logs cue_point_sec, not loop_start_sec
+        deck.loopStartSec = ev.loop_active ? (ev.cue_point_sec ?? null) : null;
+        deck.loopEndSec = ev.loop_active ? (ev.loop_end_sec ?? null) : null;
         if (deck.path !== null && deck.loadSpanStartMs === null) {
           deck.loadSpanStartMs = 0;
           deck.loadSpanPath = deck.path;
@@ -242,12 +240,24 @@ function buildClips(
       case 'stop':
       case 'stopped_at_cue':
       case 'stop_at_cue':
+      case 'cue_set_and_stop':
+        // cue_set_and_stop: user pressed CUE while playing, stops and moves cue to current position
         finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
         if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
         break;
 
       case 'cue_preview_end':
         finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+        if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
+        break;
+
+      // cue_move fires when the user presses CUE while stopped and away from the cue point;
+      // the deck is not playing, so no clip to finalize. Rust also clears any active loop region.
+      case 'cue_move':
+        deck.loopStartSec = null;
+        deck.loopEndSec = null;
+        deck.loopActive = false;
+        deck.loopEngagedMs = null;
         if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
         break;
 
@@ -268,6 +278,7 @@ function buildClips(
         break;
 
       case 'loop_out':
+        // start_sec is the loop start (= cue_point in Rust at the moment loop_out fires)
         deck.loopStartSec = ev.start_sec ?? null;
         deck.loopEndSec = ev.end_sec ?? null;
         if (deck.loopStartSec !== null && deck.loopEndSec !== null) {
@@ -277,20 +288,18 @@ function buildClips(
         break;
 
       case 'loop_in':
+        // loop_in always clears the loop region in Rust; if we were looping, exit first
         if (deck.loopActive) {
-          deck.trackPosSec = loopExitTrackPos(deck, ev.elapsed_ms);
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
-          startClip(deck, ev.elapsed_ms);
+          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath);
         }
         deck.loopStartSec = null;
         deck.loopEndSec = null;
         break;
 
       case 'exit_loop':
+        // set_loop_active(false) also logs exit_loop, so both paths reach here
         if (deck.loopActive) {
-          deck.trackPosSec = loopExitTrackPos(deck, ev.elapsed_ms);
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
-          startClip(deck, ev.elapsed_ms);
+          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath);
         }
         break;
 
@@ -299,27 +308,6 @@ function buildClips(
           finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
           engageLoop(deck, ev.elapsed_ms);
         }
-        break;
-
-      case 'set_loop_active':
-        if (
-          ev.active &&
-          !deck.loopActive &&
-          deck.loopStartSec !== null &&
-          deck.loopEndSec !== null
-        ) {
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
-          engageLoop(deck, ev.elapsed_ms);
-        } else if (!ev.active && deck.loopActive) {
-          deck.trackPosSec = loopExitTrackPos(deck, ev.elapsed_ms);
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
-          startClip(deck, ev.elapsed_ms);
-        }
-        break;
-
-      case 'set_loop_region':
-        deck.loopStartSec = ev.start_sec ?? null;
-        deck.loopEndSec = ev.end_sec ?? null;
         break;
     }
   }
@@ -333,10 +321,7 @@ function buildClips(
   return { clips, loadedSpans };
 }
 
-export type ParsedSession = {
-  events: SessionEvent[];
-  durationMs: number;
-};
+export type { ParsedSession };
 
 function defaultNameForPath(path: string): string {
   return (

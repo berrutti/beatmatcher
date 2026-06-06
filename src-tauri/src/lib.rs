@@ -217,6 +217,7 @@ pub fn run() {
             commands::pick_save_path,
             commands::play,
             commands::press_cue,
+            commands::read_file,
             commands::read_track_tags,
             commands::release_cue,
             commands::save_recording,

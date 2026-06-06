@@ -2,7 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 
-type SessionEvent = {
+export type SessionEvent = {
   elapsed_ms: number;
   type: string;
   deck?: string;
@@ -23,14 +23,13 @@ type SessionEvent = {
   position_sec?: number;
   cue_point_sec?: number;
   loop_active?: boolean;
-  loop_start_sec?: number;
   loop_end_sec?: number;
   bpm?: number;
   playback_rate?: number;
   duration?: number;
 };
 
-type ParsedSession = {
+export type ParsedSession = {
   version: number;
   startedAt: string;
   events: SessionEvent[];

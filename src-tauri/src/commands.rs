@@ -1124,6 +1124,11 @@ pub(crate) async fn analyze_track(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub(crate) fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
