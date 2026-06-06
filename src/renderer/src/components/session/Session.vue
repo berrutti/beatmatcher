@@ -74,9 +74,7 @@ const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans } = useSessionTimeline(sessionRef, (path) =>
-  collection.getName(path)
-);
+const { clips, loadedSpans } = useSessionTimeline(sessionRef, (path) => collection.getName(path));
 
 const isFileDragOver = ref(false);
 const isRendering = ref<boolean>(false);
@@ -96,7 +94,6 @@ async function onFileDrop(e: DragEvent) {
     await session.openSession();
   }
 }
-
 
 function tickPlayhead() {
   if (!session.isPlaying) return;

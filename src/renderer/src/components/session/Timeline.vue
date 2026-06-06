@@ -184,7 +184,6 @@ function chooseTickInterval(totalMs: number, availPx: number): number {
   return candidates[candidates.length - 1];
 }
 
-
 onMounted(() => {
   ro = new ResizeObserver(() => requestAnimationFrame(draw));
   if (containerEl.value) ro.observe(containerEl.value);

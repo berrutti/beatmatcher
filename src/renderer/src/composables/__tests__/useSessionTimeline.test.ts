@@ -7,7 +7,11 @@ vi.mock('@tauri-apps/plugin-store', () => ({ load: vi.fn() }));
 import { buildClips } from '../useSessionTimeline';
 import type { SessionEvent } from '@renderer/stores/session';
 
-const name = (path: string) => path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? path;
+const name = (path: string) =>
+  path
+    .split('/')
+    .pop()
+    ?.replace(/\.[^.]+$/, '') ?? path;
 
 function ev(overrides: Partial<SessionEvent> & { elapsed_ms: number; type: string }): SessionEvent {
   return overrides as SessionEvent;
@@ -19,7 +23,7 @@ describe('buildClips', () => {
       const events = [
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/tracks/song.mp3' }),
         ev({ elapsed_ms: 1000, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A', cue_point_sec: 4.0 }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A', cue_point_sec: 4.0 })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(1);
@@ -30,7 +34,7 @@ describe('buildClips', () => {
         trackPath: '/tracks/song.mp3',
         trackName: 'song',
         trackStartSec: 0,
-        playbackRate: 1,
+        playbackRate: 1
       });
     });
 
@@ -39,7 +43,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
         ev({ elapsed_ms: 100, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 200, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 500, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 500, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(1);
@@ -50,7 +54,7 @@ describe('buildClips', () => {
       const events = [
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
         ev({ elapsed_ms: 500, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 3000, type: 'recording_stop', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'recording_stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(1);
@@ -64,12 +68,16 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 2000, type: 'seek', deck: 'A', sec: 10 }),
-        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(2);
       expect(clips[0]).toMatchObject({ sessionStartMs: 0, sessionEndMs: 2000, trackStartSec: 0 });
-      expect(clips[1]).toMatchObject({ sessionStartMs: 2000, sessionEndMs: 4000, trackStartSec: 10 });
+      expect(clips[1]).toMatchObject({
+        sessionStartMs: 2000,
+        sessionEndMs: 4000,
+        trackStartSec: 10
+      });
     });
   });
 
@@ -80,7 +88,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 2000, type: 'loop_out', deck: 'A', start_sec: 4, end_sec: 6 }),
         ev({ elapsed_ms: 8000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 10000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 10000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 4);
@@ -96,11 +104,11 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 1000, type: 'loop_out', deck: 'A', start_sec: 2, end_sec: 4 }),
         ev({ elapsed_ms: 5000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 2);
-      const loopDurMs = (4 - 2) / 1 * 1000;
+      const loopDurMs = ((4 - 2) / 1) * 1000;
       const fullIterations = loopClips.filter(
         (c) => Math.abs(c.sessionEndMs - c.sessionStartMs - loopDurMs) < 1
       );
@@ -113,7 +121,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 0, type: 'loop_out', deck: 'A', start_sec: 0, end_sec: 2 }),
         ev({ elapsed_ms: 5000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.sessionStartMs < 5000);
@@ -127,7 +135,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 0, type: 'loop_out', deck: 'A', start_sec: 1, end_sec: 3 }),
         ev({ elapsed_ms: 6000, type: 'loop_in', deck: 'A' }),
-        ev({ elapsed_ms: 9000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 9000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const postLoop = clips.find((c) => c.sessionStartMs === 6000);
@@ -143,7 +151,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 4000, type: 'exit_loop', deck: 'A' }),
         ev({ elapsed_ms: 5000, type: 'reloop', deck: 'A' }),
         ev({ elapsed_ms: 7000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const reloopClips = clips.filter(
@@ -166,9 +174,9 @@ describe('buildClips', () => {
           is_playing: true,
           loop_active: true,
           loop_end_sec: 6,
-          playback_rate: 1,
+          playback_rate: 1
         }),
-        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 4);
@@ -188,9 +196,9 @@ describe('buildClips', () => {
           is_playing: true,
           loop_active: true,
           loop_end_sec: 8,
-          playback_rate: 1,
+          playback_rate: 1
         }),
-        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 4);
@@ -208,9 +216,9 @@ describe('buildClips', () => {
           cue_point_sec: 10,
           is_playing: true,
           loop_active: false,
-          playback_rate: 1,
+          playback_rate: 1
         }),
-        ev({ elapsed_ms: 2000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 2000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(1);
@@ -225,7 +233,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 3000, type: 'load_track', deck: 'A', path: '/t/b.mp3' }),
         ev({ elapsed_ms: 4000, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       expect(clips).toHaveLength(2);
@@ -238,7 +246,7 @@ describe('buildClips', () => {
     it('spans the full time a track is loaded', () => {
       const events = [
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
-        ev({ elapsed_ms: 5000, type: 'eject_track', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'eject_track', deck: 'A' })
       ];
       const { loadedSpans } = buildClips(events, name);
       expect(loadedSpans).toHaveLength(1);
@@ -254,9 +262,9 @@ describe('buildClips', () => {
           path: '/t/a.mp3',
           position_sec: 0,
           is_playing: false,
-          playback_rate: 1,
+          playback_rate: 1
         }),
-        ev({ elapsed_ms: 3000, type: 'eject_track', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'eject_track', deck: 'A' })
       ];
       const { loadedSpans } = buildClips(events, name);
       expect(loadedSpans).toHaveLength(1);
@@ -272,7 +280,7 @@ describe('buildClips', () => {
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
         ev({ elapsed_ms: 1000, type: 'play', deck: 'B' }),
         ev({ elapsed_ms: 3000, type: 'stop', deck: 'A' }),
-        ev({ elapsed_ms: 5000, type: 'stop', deck: 'B' }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'B' })
       ];
       const { clips } = buildClips(events, name);
       const deckA = clips.filter((c) => c.deck === 'A');
