@@ -6,7 +6,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
-import type { Clip } from '@renderer/composables/useSessionTimeline';
+import type { Clip, LoadedSpan } from '@renderer/composables/useSessionTimeline';
 
 const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
 const DECK_ACCENT: Record<string, string> = {
@@ -23,6 +23,7 @@ const PADDING = 8;
 const props = defineProps<{
   durationMs: number;
   clips: Clip[];
+  loadedSpans: LoadedSpan[];
   playheadMs: number;
 }>();
 
@@ -78,14 +79,14 @@ function draw() {
 
   const tickIntervalMs = chooseTickInterval(totalMs, trackW);
   ctx.font = `9px monospace`;
-  ctx.fillStyle = '#555';
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   for (let ms = 0; ms <= totalMs; ms += tickIntervalMs) {
     const x = msToX(ms);
     ctx.fillStyle = '#333';
     ctx.fillRect(x, 0, 1, TICK_H);
     ctx.fillStyle = '#555';
-    ctx.fillText(formatMs(ms), x, TICK_H - 3);
+    ctx.fillText(formatMs(ms), x + 3, TICK_H - 3);
   }
 
   // Deck rows
@@ -109,7 +110,35 @@ function draw() {
     ctx.fillStyle = '#222';
     ctx.fillRect(0, y + ROW_H - 1, w, 1);
 
-    // Clips for this deck
+    // Loaded spans (track-on-deck background)
+    const deckSpans = props.loadedSpans.filter((s) => s.deck === deckId);
+    for (const span of deckSpans) {
+      const sx = msToX(span.startMs);
+      const sw = Math.max(2, msToX(span.endMs) - sx);
+      const sy = y + 4;
+      const sh = ROW_H - 8;
+
+      ctx.fillStyle = accent + '18';
+      ctx.fillRect(sx, sy, sw, sh);
+
+      ctx.strokeStyle = accent + '40';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+
+      if (sw > 40) {
+        ctx.font = `9px monospace`;
+        ctx.fillStyle = accent + '55';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.save();
+        ctx.rect(sx + 3, sy, sw - 6, sh);
+        ctx.clip();
+        ctx.fillText(span.trackName, sx + 3, sy + sh / 2);
+        ctx.restore();
+      }
+    }
+
+    // Clips (actual playback rectangles)
     const deckClips = props.clips.filter((c) => c.deck === deckId);
     for (const clip of deckClips) {
       const cx = msToX(clip.sessionStartMs);
@@ -117,54 +146,12 @@ function draw() {
       const cy = y + 4;
       const ch = ROW_H - 8;
 
-      // Clip body
-      ctx.fillStyle = accent + '33';
+      ctx.fillStyle = accent + '55';
       ctx.fillRect(cx, cy, cw, ch);
 
-      // Clip border
-      ctx.strokeStyle = accent + '99';
+      ctx.strokeStyle = accent + 'cc';
       ctx.lineWidth = 1;
       ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
-
-      // Loop region overlay
-      if (clip.loopEngagedAtMs !== null && clip.loopStartSec !== null && clip.loopEndSec !== null) {
-        const loopDurSec = clip.loopEndSec - clip.loopStartSec;
-        const loopDurMs = (loopDurSec / clip.playbackRate) * 1000;
-        const loopOffsetSec = clip.loopStartSec - clip.trackStartSec;
-        const loopOffsetMs = (loopOffsetSec / clip.playbackRate) * 1000;
-        const loopX = cx + (loopOffsetMs / (clip.sessionEndMs - clip.sessionStartMs)) * cw;
-        const loopW = (loopDurMs / (clip.sessionEndMs - clip.sessionStartMs)) * cw;
-
-        if (loopW > 1) {
-          ctx.fillStyle = accent + '66';
-          ctx.fillRect(loopX, cy, loopW, ch);
-
-          // Loop bracket lines
-          ctx.strokeStyle = accent;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(loopX + 0.75, cy);
-          ctx.lineTo(loopX + 0.75, cy + ch);
-          ctx.moveTo(loopX + loopW - 0.75, cy);
-          ctx.lineTo(loopX + loopW - 0.75, cy + ch);
-          ctx.stroke();
-        }
-      }
-
-      // Track filename (if clip is wide enough)
-      if (cw > 40) {
-        const filename = clip.trackPath.split('/').pop() ?? '';
-        const label = filename.replace(/\.[^.]+$/, '');
-        ctx.font = `9px monospace`;
-        ctx.fillStyle = accent + 'cc';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.save();
-        ctx.rect(cx + 3, cy, cw - 6, ch);
-        ctx.clip();
-        ctx.fillText(label, cx + 3, cy + ch / 2);
-        ctx.restore();
-      }
     }
   }
 
@@ -213,7 +200,7 @@ onUnmounted(() => {
 });
 
 watch(
-  () => [props.clips, props.durationMs, props.playheadMs],
+  () => [props.clips, props.loadedSpans, props.durationMs, props.playheadMs],
   () => {
     requestAnimationFrame(draw);
   },

@@ -207,10 +207,11 @@ export const useMixerStore = defineStore('mixer', () => {
 
   async function startRecording(): Promise<void> {
     const settings = useSettingsStore();
+    const fmt = settings.recordingFormat;
     await invoke('start_recording', {
-      bitDepth: settings.recordingBitDepth,
-      useFlac: settings.recordingFormat === 'flac',
-      recordSession: settings.recordSession
+      bitDepth: fmt === 'wav-16' ? 16 : 32,
+      useFlac: fmt === 'flac',
+      recordSession: fmt === 'session' || settings.recordBms
     });
   }
 
@@ -220,15 +221,34 @@ export const useMixerStore = defineStore('mixer', () => {
 
   async function pickSavePath(): Promise<string | null> {
     const settings = useSettingsStore();
-    return invoke<string | null>('pick_save_path', { format: settings.recordingFormat });
+    const fmt = settings.recordingFormat;
+    const dialogFormat = fmt === 'flac' ? 'flac' : fmt === 'session' ? 'session' : 'wav';
+    return invoke<string | null>('pick_save_path', { format: dialogFormat });
   }
 
   async function saveRecording(src: string, dest: string): Promise<void> {
-    await invoke('save_recording', { src, dest });
+    const settings = useSettingsStore();
+    if (settings.recordingFormat === 'session') {
+      await invoke('save_bms_only', { src, dest });
+    } else {
+      await invoke('save_recording', { src, dest });
+    }
   }
 
   async function discardRecording(path: string): Promise<void> {
     await invoke('discard_recording', { path });
+  }
+
+  async function renderSession(
+    sessionPath: string,
+    outputPath: string,
+    useFlac: boolean
+  ): Promise<void> {
+    await invoke('render_session_to_file', { sessionPath, outputPath, useFlac });
+  }
+
+  async function pickRenderOutputPath(useFlac: boolean): Promise<string | null> {
+    return invoke<string | null>('pick_save_path', { format: useFlac ? 'flac' : 'wav' });
   }
 
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
@@ -291,7 +311,9 @@ export const useMixerStore = defineStore('mixer', () => {
     getDeckLevels,
     getMasterLevel,
     loadOutputDevices,
+    pickRenderOutputPath,
     pickSavePath,
+    renderSession,
     reset,
     saveRecording,
     setCueActive,

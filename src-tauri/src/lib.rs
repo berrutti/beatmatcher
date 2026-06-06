@@ -204,6 +204,8 @@ pub fn run() {
             commands::analyze_track,
             commands::clear_loop_region,
             commands::discard_recording,
+            commands::render_session_to_file,
+            commands::save_bms_only,
             commands::eject_track,
             commands::files_info,
             commands::get_deck_levels,

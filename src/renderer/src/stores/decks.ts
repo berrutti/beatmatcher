@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref, computed } from 'vue';
+import { reactive, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -485,8 +485,6 @@ export const useDecksStore = defineStore('decks', () => {
     D: deckD,
     E: deckE
   };
-  const editMode = ref(false);
-
   const anyDeckActive = computed(
     () =>
       deckA.loopPlaying ||
@@ -496,9 +494,7 @@ export const useDecksStore = defineStore('decks', () => {
       deckC.loopPlaying ||
       deckC.cueing ||
       deckD.loopPlaying ||
-      deckD.cueing ||
-      deckE.loopPlaying ||
-      deckE.cueing
+      deckD.cueing
   );
 
   const anyDeckLoaded = computed(
@@ -519,23 +515,8 @@ export const useDecksStore = defineStore('decks', () => {
     await Promise.all(DECKS_DISPOSITION.map((id) => decks[id].ejectTrack()));
   }
 
-  async function requestEditMode(force = false): Promise<boolean> {
-    if (!force && anyDeckActive.value) return false;
-    await Promise.all(
-      DECKS_DISPOSITION.filter((deckId) => decks[deckId].loopPlaying).map((deckId) =>
-        decks[deckId].stop()
-      )
-    );
-    editMode.value = true;
-    return true;
-  }
-
-  function exitEditMode() {
-    editMode.value = false;
-  }
-
-  function bestAvailableDeck(): DeckId | null {
-    if (editMode.value) return 'E';
+  function bestAvailableDeck(inEditMode: boolean): DeckId | null {
+    if (inEditMode) return 'E';
     return (
       DECKS_DISPOSITION.find((id) => !decks[id].trackLoaded) ??
       DECKS_DISPOSITION.find((id) => !decks[id].loopPlaying) ??
@@ -558,13 +539,10 @@ export const useDecksStore = defineStore('decks', () => {
     deckD,
     deckE,
     decks,
-    editMode,
     anyDeckActive,
     anyDeckLoaded,
     ejectAll,
     bestAvailableDeck,
-    requestEditMode,
-    exitEditMode,
     destroy
   };
 });

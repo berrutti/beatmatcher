@@ -52,13 +52,10 @@ export const useSessionStore = defineStore('session', () => {
       false
   );
 
-  async function openSession(): Promise<boolean> {
-    const file = await invoke<{ path: string; content: string } | null>('open_session_dialog');
-    if (!file) return false;
-
+  async function loadFromFile(path: string, content: string): Promise<boolean> {
     let raw: { version: number; startedAt: string; events: SessionEvent[] };
     try {
-      raw = JSON.parse(file.content);
+      raw = JSON.parse(content);
     } catch {
       return false;
     }
@@ -66,8 +63,8 @@ export const useSessionStore = defineStore('session', () => {
     const events: SessionEvent[] = raw.events ?? [];
     const lastEvent = events[events.length - 1];
     const durationMs = lastEvent?.elapsed_ms ?? 0;
-    const parts = file.path.split('/');
-    const filename = parts[parts.length - 1] ?? 'session.json';
+    const parts = path.split('/');
+    const filename = parts[parts.length - 1] ?? 'session.bms';
 
     session.value = {
       version: raw.version ?? 1,
@@ -75,12 +72,24 @@ export const useSessionStore = defineStore('session', () => {
       events,
       durationMs,
       filename,
-      path: file.path
+      path
     };
 
-    invoke('preload_session', { path: file.path }).catch(() => {});
+    invoke('preload_session', { path }).catch(() => {});
 
     return true;
+  }
+
+  async function openSession(): Promise<boolean> {
+    const file = await invoke<{ path: string; content: string } | null>('open_session_dialog');
+    if (!file) return false;
+    return loadFromFile(file.path, file.content);
+  }
+
+  async function openSessionFromPath(path: string): Promise<boolean> {
+    const content = await invoke<string>('read_file', { path }).catch(() => null);
+    if (!content) return openSession();
+    return loadFromFile(path, content);
   }
 
   async function play(fromMs = 0): Promise<void> {
@@ -118,10 +127,13 @@ export const useSessionStore = defineStore('session', () => {
     await invoke('stop_session_playback');
   }
 
-  async function exit(): Promise<void> {
-    await stop();
+  async function unload(): Promise<void> {
+    if (isPlaying.value) await stop();
     session.value = null;
-    isPlaying.value = false;
+  }
+
+  async function exit(): Promise<void> {
+    await unload();
   }
 
   return {
@@ -130,8 +142,10 @@ export const useSessionStore = defineStore('session', () => {
     durationMs,
     hasTrackInfo,
     openSession,
+    openSessionFromPath,
     play,
     stop,
+    unload,
     exit
   };
 });

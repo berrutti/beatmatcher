@@ -825,6 +825,8 @@ pub(crate) async fn open_file_dialog() -> Option<String> {
 pub(crate) async fn pick_save_path(format: String) -> Option<String> {
     let (label, ext, name) = if format == "flac" {
         ("FLAC Audio", "flac", "mix.flac")
+    } else if format == "session" {
+        ("Beatmatcher Session", "bms", "mix.bms")
     } else {
         ("WAV Audio", "wav", "mix.wav")
     };
@@ -949,7 +951,7 @@ pub(crate) fn save_recording(
             .or_else(|| dest.strip_suffix(".flac"))
             .or_else(|| dest.strip_suffix(".FLAC"))
             .unwrap_or(&dest);
-        let log_dest = format!("{}.session.json", stem);
+        let log_dest = format!("{}.bms", stem);
         std::fs::write(&log_dest, log.as_bytes()).ok();
     }
     Ok(())
@@ -967,6 +969,48 @@ pub(crate) fn discard_recording(
         .as_mut()
         .and_then(|l| l.take_pending());
     std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn save_bms_only(
+    state: tauri::State<'_, AppState>,
+    src: String,
+    dest: String,
+) -> Result<(), String> {
+    std::fs::remove_file(&src).ok();
+    if let Some(log) = state
+        .session
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|l| l.take_pending())
+    {
+        std::fs::write(&dest, log.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn render_session_to_file(
+    session_path: String,
+    output_path: String,
+    use_flac: bool,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let json =
+            std::fs::read_to_string(&session_path).map_err(|e| format!("{session_path}: {e}"))?;
+        let session: crate::offline_render::SessionFile =
+            serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+        let sample_rate = 44100u32;
+        let rendered = crate::offline_render::render_session(&session, sample_rate, 0)?;
+        if use_flac {
+            crate::offline_render::write_flac_f32(&output_path, &rendered, sample_rate)
+        } else {
+            crate::offline_render::write_wav_f32(&output_path, &rendered, sample_rate, 2)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

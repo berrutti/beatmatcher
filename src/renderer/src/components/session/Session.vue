@@ -1,54 +1,56 @@
 <template>
-  <Modal
-    :open="exitPending"
-    title="Exit Session view?"
-    confirm-label="Exit Session"
-    @confirm="onConfirmExit"
-    @cancel="exitPending = false"
-  >
-    <p class="session__modal-body">Your current session will be closed and playback will stop.</p>
-  </Modal>
-
   <div class="session">
-    <div class="session__header">
-      <span class="session__label">SESSION</span>
-      <div class="session__header-center">
-        <template v-if="session.session">
-          <span class="session__filename">{{ session.session.filename }}</span>
-          <span class="session__duration">
-            {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
-          </span>
-          <span v-if="!session.hasTrackInfo" class="session__warning">
-            No track info. Load tracks manually in Performance mode first.
-          </span>
-        </template>
-      </div>
-      <div class="session__header-right">
-        <button class="session__btn" @click="session.openSession()">Load</button>
-        <template v-if="session.session">
-          <button
-            class="session__btn session__btn--transport"
-            :class="{ 'session__btn--active': session.isPlaying }"
-            @click="onTransport"
-          >
-            {{ session.isPlaying ? '■' : '▶' }}
-          </button>
-        </template>
-        <button class="session__close" @click="tryExit">✕</button>
-      </div>
-    </div>
-
     <div class="session__body">
-      <div v-if="!session.session" class="session__empty">
-        <button class="session__load-btn" @click="session.openSession()">Load session file</button>
+      <div
+        v-if="!session.session"
+        class="session__drop-zone"
+        :class="{ 'session__drop-zone--hover': isFileDragOver }"
+        @click="session.openSession()"
+        @dragover.prevent="isFileDragOver = true"
+        @dragleave="isFileDragOver = false"
+        @drop.prevent="onFileDrop"
+      >
+        <span class="session__drop-hint">Drop a recorded session here, or click to open</span>
       </div>
       <SessionTimeline
         v-else
         :duration-ms="session.durationMs"
         :clips="clips"
+        :loaded-spans="loadedSpans"
         :playhead-ms="playheadMs"
         @seek="onSeek"
       />
+    </div>
+
+    <div v-if="session.session" class="session__controls">
+      <button
+        class="session__btn session__btn--transport"
+        :class="{ 'session__btn--active': session.isPlaying }"
+        @click="onTransport"
+      >
+        {{ session.isPlaying ? '■' : '▶' }}
+      </button>
+      <span class="session__duration">
+        {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
+      </span>
+      <span class="session__filename">{{ session.session.filename }}</span>
+      <div class="session__controls-right">
+        <button
+          class="session__btn session__btn--render"
+          :disabled="isRendering"
+          @click="onRender(false)"
+        >
+          {{ isRendering ? 'RENDERING...' : 'RENDER WAV' }}
+        </button>
+        <button
+          class="session__btn session__btn--render"
+          :disabled="isRendering"
+          @click="onRender(true)"
+        >
+          {{ isRendering ? 'RENDERING...' : 'RENDER FLAC' }}
+        </button>
+        <button class="session__btn session__btn--eject" @click="session.unload()">⏏</button>
+      </div>
     </div>
   </div>
 </template>
@@ -57,32 +59,37 @@
 import { ref, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useSessionStore } from '@renderer/stores/session';
+import { useCollectionStore } from '@renderer/stores/collection';
+import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
-import Modal from '@renderer/components/modals/Modal.vue';
-
-const emit = defineEmits<{ exit: [] }>();
 
 const session = useSessionStore();
+const collection = useCollectionStore();
+const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
-const { clips } = useSessionTimeline(sessionRef as never);
 
-const exitPending = ref(false);
+const { clips, loadedSpans } = useSessionTimeline(sessionRef as never, (path) =>
+  collection.getName(path)
+);
+
+const isFileDragOver = ref(false);
+const isRendering = ref<boolean>(false);
 const playheadMs = ref(0);
 let rafId = 0;
 let playStartWall = 0;
 
-function tryExit() {
-  if (session.session) {
-    exitPending.value = true;
+async function onFileDrop(e: DragEvent) {
+  isFileDragOver.value = false;
+  const file = e.dataTransfer?.files[0];
+  if (!file) return;
+  // Tauri exposes a .path property on dropped File objects
+  const path = (file as File & { path?: string }).path;
+  if (path) {
+    await session.openSessionFromPath(path);
   } else {
-    emit('exit');
+    await session.openSession();
   }
-}
-
-function onConfirmExit() {
-  exitPending.value = false;
-  emit('exit');
 }
 
 function formatMs(ms: number): string {
@@ -99,6 +106,7 @@ function tickPlayhead() {
   playheadMs.value = performance.now() - playStartWall;
   if (session.durationMs > 0 && playheadMs.value >= session.durationMs) {
     playheadMs.value = session.durationMs;
+    void session.stop();
     return;
   }
   rafId = requestAnimationFrame(tickPlayhead);
@@ -107,7 +115,6 @@ function tickPlayhead() {
 async function onTransport() {
   if (session.isPlaying) {
     cancelAnimationFrame(rafId);
-    playheadMs.value = 0;
     await session.stop();
   } else {
     playStartWall = performance.now() - playheadMs.value;
@@ -126,6 +133,18 @@ async function onSeek(ms: number) {
   }
 }
 
+async function onRender(useFlac: boolean) {
+  if (!session.session || isRendering.value) return;
+  const outputPath = await mixer.pickRenderOutputPath(useFlac);
+  if (!outputPath) return;
+  isRendering.value = true;
+  try {
+    await mixer.renderSession(session.session.path, outputPath, useFlac);
+  } finally {
+    isRendering.value = false;
+  }
+}
+
 onUnmounted(() => cancelAnimationFrame(rafId));
 </script>
 
@@ -139,104 +158,6 @@ onUnmounted(() => cancelAnimationFrame(rafId));
   background: var(--color-bg);
 }
 
-.session__header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 12px;
-  height: 32px;
-  border-bottom: 1px solid var(--color-border);
-  flex-shrink: 0;
-}
-
-.session__label {
-  font-size: 10px;
-  letter-spacing: 0.15em;
-  color: #06b6d4;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.session__header-center {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.session__filename {
-  font-size: 11px;
-  color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session__duration {
-  font-size: 10px;
-  color: var(--color-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.session__warning {
-  font-size: 10px;
-  color: #f59e0b;
-  white-space: nowrap;
-}
-
-.session__header-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.session__btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-family: var(--font);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  padding: 2px 10px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.session__btn:hover {
-  border-color: #06b6d4;
-  color: #06b6d4;
-}
-
-.session__btn--transport {
-  min-width: 28px;
-  text-align: center;
-}
-
-.session__btn--active {
-  border-color: #06b6d4;
-  color: #06b6d4;
-  background: color-mix(in srgb, #06b6d4 12%, transparent);
-}
-
-.session__close {
-  background: transparent;
-  border: none;
-  color: var(--color-muted);
-  font-size: 13px;
-  cursor: pointer;
-  padding: 2px 4px;
-  line-height: 1;
-}
-
-.session__close:hover {
-  color: var(--color-text);
-}
-
 .session__body {
   flex: 1;
   min-height: 0;
@@ -244,34 +165,103 @@ onUnmounted(() => cancelAnimationFrame(rafId));
   flex-direction: column;
 }
 
-.session__empty {
+.session__drop-zone {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
+  border: 2px dashed transparent;
+  transition: border-color 0.15s;
 }
 
-.session__load-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
+.session__drop-zone:hover,
+.session__drop-zone--hover {
+  border-color: var(--color-border);
+}
+
+.session__drop-zone--hover {
+  border-color: #06b6d4;
+}
+
+.session__drop-hint {
+  font-size: 1em;
   color: var(--color-muted);
+  letter-spacing: 0.1em;
+  opacity: 0.6;
+  font-style: italic;
+  pointer-events: none;
+}
+
+.session__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0 12px;
+  height: 44px;
+  border-top: 1px solid var(--color-border);
+  background: #0d0d0d;
+  flex-shrink: 0;
+}
+
+.session__btn {
   font-family: var(--font);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  padding: 8px 24px;
-  border-radius: 3px;
+  font-size: 0.8em;
+  letter-spacing: 0.1em;
+  padding: 0.45em 1.2em;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
   cursor: pointer;
 }
 
-.session__load-btn:hover {
+.session__btn--transport:hover,
+.session__btn--active {
+  background: color-mix(in srgb, #06b6d4 15%, transparent);
   border-color: #06b6d4;
   color: #06b6d4;
 }
 
-.session__modal-body {
-  font-size: 0.75rem;
+.session__duration {
+  font-size: 0.8em;
   color: var(--color-muted);
-  line-height: 1.5;
-  margin: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
+.session__filename {
+  font-size: 0.75em;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  opacity: 0.6;
+}
+
+.session__controls-right {
+  margin-left: auto;
+}
+
+.session__btn--render {
+  color: var(--color-muted);
+}
+
+.session__btn--render:hover:not(:disabled) {
+  background: color-mix(in srgb, #06b6d4 15%, transparent);
+  border-color: #06b6d4;
+  color: #06b6d4;
+}
+
+.session__btn--render:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.session__btn--eject:hover {
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 </style>

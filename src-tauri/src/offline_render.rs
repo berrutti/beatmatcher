@@ -155,6 +155,78 @@ pub fn write_wav_f32(
     Ok(())
 }
 
+pub fn write_flac_f32(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+    use flacenc::bitsink::ByteSink;
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+    use std::io::Write;
+
+    const MAX_24BIT: f32 = 8_388_607.0;
+    let source = SliceSource {
+        samples: samples
+            .iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * MAX_24BIT) as i32)
+            .collect(),
+        channels: 2,
+        bits_per_sample: 24,
+        sample_rate: sample_rate as usize,
+        pos: 0,
+    };
+
+    let config = flacenc::config::Encoder::default()
+        .into_verified()
+        .map_err(|e| format!("FLAC config error: {e:?}"))?;
+    let block_size = config.block_size;
+    let stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
+        .map_err(|e| format!("FLAC encode error: {e:?}"))?;
+
+    let mut sink = ByteSink::with_capacity(stream.count_bits());
+    stream
+        .write(&mut sink)
+        .map_err(|e| format!("FLAC write error: {e:?}"))?;
+
+    std::fs::File::create(path)
+        .and_then(|mut f| f.write_all(sink.as_slice()))
+        .map_err(|e| format!("{path}: {e}"))
+}
+
+struct SliceSource {
+    samples: Vec<i32>,
+    channels: usize,
+    bits_per_sample: usize,
+    sample_rate: usize,
+    pos: usize,
+}
+
+impl flacenc::source::Source for SliceSource {
+    fn channels(&self) -> usize {
+        self.channels
+    }
+    fn bits_per_sample(&self) -> usize {
+        self.bits_per_sample
+    }
+    fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
+    fn len_hint(&self) -> Option<usize> {
+        Some(self.samples.len() / self.channels)
+    }
+
+    fn read_samples<F: flacenc::source::Fill>(
+        &mut self,
+        block_size: usize,
+        dest: &mut F,
+    ) -> Result<usize, flacenc::error::SourceError> {
+        let n = (block_size * self.channels).min(self.samples.len() - self.pos);
+        if n == 0 {
+            return Ok(0);
+        }
+        dest.fill_interleaved(&self.samples[self.pos..self.pos + n])?;
+        self.pos += n;
+        Ok(n / self.channels)
+    }
+}
+
 // ── Session JSON ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -292,7 +364,7 @@ fn diff_signals(a: &[f32], b: &[f32]) -> CompareResult {
 const DECK_IDS: &[&str] = &["A", "B", "C", "D"];
 const CHUNK: usize = 512;
 
-fn render_session(
+pub fn render_session(
     session: &SessionFile,
     sample_rate: u32,
     reference_len: usize,

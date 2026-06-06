@@ -157,7 +157,7 @@ pub(crate) struct OpenedFile {
 #[tauri::command]
 pub async fn open_session_dialog() -> Option<OpenedFile> {
     let handle = rfd::AsyncFileDialog::new()
-        .add_filter("Session", &["json"])
+        .add_filter("Beatmatcher Session", &["bms"])
         .pick_file()
         .await?;
     let content = std::fs::read_to_string(handle.path()).ok()?;

@@ -3,6 +3,7 @@ import { Deck, useDecksStore, type DeckId } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { useAppModeStore } from '@renderer/stores/appMode';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -21,6 +22,7 @@ export function useKeyboard() {
   const mixer = useMixerStore();
   const collection = useCollectionStore();
   const settings = useSettingsStore();
+  const appMode = useAppModeStore();
 
   function getDeckCommandFromKey(key: string): DeckCommand {
     for (const [deckId, bindings] of Object.entries(settings.keybindings) as [
@@ -95,7 +97,7 @@ export function useKeyboard() {
       return;
     }
 
-    if (store.editMode || isTyping(e) || e.repeat) return;
+    if (appMode.mode === 'edit' || isTyping(e) || e.repeat) return;
 
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
@@ -128,7 +130,7 @@ export function useKeyboard() {
       return;
     }
 
-    if (store.editMode || isTyping(e)) return;
+    if (appMode.mode === 'edit' || isTyping(e)) return;
 
     if (mixer.swarmMode) {
       const digitDeck = DIGIT_DECK[e.code];

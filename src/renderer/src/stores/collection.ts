@@ -308,6 +308,17 @@ export const useCollectionStore = defineStore('collection', () => {
     updateSaved(path, patch);
   }
 
+  function getName(path: string): string {
+    const entry = tracks.find((t) => t.path === path);
+    if (entry) return entry.title ?? entry.name;
+    return (
+      path
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '') ?? path
+    );
+  }
+
   function getLoadable(path: string): Omit<LoadableTrack, 'onBeatOffsetChange'> | null {
     const saved = getSaved(path);
     if (!saved) return null;
@@ -406,6 +417,8 @@ export const useCollectionStore = defineStore('collection', () => {
     deletePlaylist,
     endDrag,
     getBpm,
+    getName,
+    getSaved,
     getLoadableTrack,
     moveInPlaylist,
     reanalyzeTrack,
