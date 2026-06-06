@@ -5,7 +5,7 @@
     :style="{ '--accent': props.accent }"
   >
     <div v-show="!props.trackData" class="waveform__empty">
-      <span class="waveform__empty-text">No track loaded</span>
+      <span class="waveform__empty-text">{{ $t('editWaveform.noTrackLoaded') }}</span>
     </div>
 
     <div v-show="props.trackData" class="waveform__content">

@@ -1,8 +1,8 @@
 <template>
   <Modal
     :open="open"
-    title="Set track BPM"
-    confirm-label="Set BPM"
+    :title="$t('bpmModal.title')"
+    :confirm-label="$t('bpmModal.confirmLabel')"
     @confirm="submit"
     @cancel="emit('cancel')"
   >
@@ -13,7 +13,7 @@
       min="60"
       max="200"
       step="0.1"
-      placeholder="e.g. 128"
+      :placeholder="$t('bpmModal.placeholder')"
       @keydown.enter="submit"
       @keydown.escape="emit('cancel')"
     />

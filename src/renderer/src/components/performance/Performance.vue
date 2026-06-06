@@ -17,7 +17,7 @@
     </div>
 
     <button class="perf__collection-bar" @click="collectionStore.toggle()">
-      <span class="perf__collection-bar-label">COLLECTION</span>
+      <span class="perf__collection-bar-label">{{ $t('performance.collection') }}</span>
       <span>{{ collectionStore.isOpen ? '▾' : '▴' }}</span>
     </button>
     <div

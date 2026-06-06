@@ -5,9 +5,11 @@
         <div class="modal__title">{{ title }}</div>
         <slot />
         <div class="modal__actions">
-          <button class="modal__btn modal__btn--cancel" @click="emit('cancel')">Cancel</button>
+          <button class="modal__btn modal__btn--cancel" @click="emit('cancel')">
+            {{ $t('modal.cancel') }}
+          </button>
           <button ref="confirmBtn" class="modal__btn modal__btn--confirm" @click="emit('confirm')">
-            {{ confirmLabel }}
+            {{ confirmLabel ?? $t('modal.confirm') }}
           </button>
         </div>
       </div>
@@ -18,9 +20,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue';
 
-const props = withDefaults(defineProps<{ open: boolean; title: string; confirmLabel?: string }>(), {
-  confirmLabel: 'Confirm'
-});
+const props = defineProps<{ open: boolean; title: string; confirmLabel?: string }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 
 const confirmBtn = ref<HTMLButtonElement | null>(null);

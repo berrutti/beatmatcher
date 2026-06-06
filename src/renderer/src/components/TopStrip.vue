@@ -3,24 +3,24 @@
     <template v-if="appMode.mode === 'performance'">
       <button
         class="topstrip__rec-btn"
-        :class="{ 'topstrip__rec-btn--active': isRecording }"
-        :title="isRecording ? 'Stop recording' : 'Record master output'"
+        :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
+        :title="mixer.isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
         tabindex="-1"
         @click="onRecClick"
       >
-        REC
+        {{ $t('topStrip.rec') }}
       </button>
 
       <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
-        {{ mixer.deckCount === 4 ? '4 DECKS' : '2 DECKS' }}
+        {{ mixer.deckCount === 4 ? $t('topStrip.fourDecks') : $t('topStrip.twoDecks') }}
       </button>
 
       <div
         class="topstrip__swarm-btn"
         :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
-        title="Activate with CapsLock"
+        :title="$t('topStrip.swarmHint')"
       >
-        SWARM
+        {{ $t('topStrip.swarm') }}
         <span
           v-for="deck in activeDecks"
           :key="deck"
@@ -33,7 +33,7 @@
 
     <div class="topstrip__spacer" />
 
-    <span class="topstrip__label">VOL</span>
+    <span class="topstrip__label">{{ $t('topStrip.vol') }}</span>
     <input
       type="range"
       class="topstrip__master-fader"
@@ -68,13 +68,13 @@
     </div>
 
     <template v-if="mixer.devicesLoaded">
-      <span class="topstrip__label">MASTER</span>
+      <span class="topstrip__label">{{ $t('topStrip.master') }}</span>
       <select
         class="topstrip__select"
         :value="mixer.mainDeviceId"
         @change="(e) => mixer.setMainOutputDevice((e.target as HTMLSelectElement).value, 0)"
       >
-        <option value="">Not configured</option>
+        <option value="">{{ $t('topStrip.notConfigured') }}</option>
         <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
       </select>
       <select
@@ -90,47 +90,49 @@
         "
       >
         <option v-for="offset in channelPairs(mainDevice.channels)" :key="offset" :value="offset">
-          Ch {{ offset + 1 }}-{{ offset + 2 }}
+          {{ $t('topStrip.channel', { n1: offset + 1, n2: offset + 2 }) }}
         </option>
       </select>
 
-      <span class="topstrip__label topstrip__label--dim">CUE</span>
-      <input
-        type="range"
-        class="topstrip__cue-mix-fader"
-        min="0"
-        max="1"
-        step="0.01"
-        :value="mixer.cueMix"
-        @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
-        @dblclick="mixer.setCueMix(0)"
-        title="CUE/MIX: blend cue signal with master output in headphones"
-      />
-      <span class="topstrip__label topstrip__label--dim">MIX</span>
-      <select
-        class="topstrip__select"
-        :value="mixer.cueDeviceId"
-        @change="(e) => mixer.setCueOutputDevice((e.target as HTMLSelectElement).value, 0)"
-      >
-        <option value="">Not configured</option>
-        <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
-      </select>
-      <select
-        v-if="cueDevice && cueDevice.channels > 2"
-        class="topstrip__select topstrip__select--ch"
-        :value="mixer.cueChannelOffset"
-        @change="
-          (e) =>
-            mixer.setCueOutputDevice(
-              mixer.cueDeviceId,
-              parseInt((e.target as HTMLSelectElement).value)
-            )
-        "
-      >
-        <option v-for="offset in channelPairs(cueDevice.channels)" :key="offset" :value="offset">
-          Ch {{ offset + 1 }}-{{ offset + 2 }}
-        </option>
-      </select>
+      <template v-if="appMode.mode === 'performance'">
+        <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.cue') }}</span>
+        <input
+          type="range"
+          class="topstrip__cue-mix-fader"
+          min="0"
+          max="1"
+          step="0.01"
+          :value="mixer.cueMix"
+          @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
+          @dblclick="mixer.setCueMix(0)"
+          :title="$t('topStrip.cueMixHint')"
+        />
+        <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.mix') }}</span>
+        <select
+          class="topstrip__select"
+          :value="mixer.cueDeviceId"
+          @change="(e) => mixer.setCueOutputDevice((e.target as HTMLSelectElement).value, 0)"
+        >
+          <option value="">{{ $t('topStrip.notConfigured') }}</option>
+          <option v-for="d in mixer.outputDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
+        </select>
+        <select
+          v-if="cueDevice && cueDevice.channels > 2"
+          class="topstrip__select topstrip__select--ch"
+          :value="mixer.cueChannelOffset"
+          @change="
+            (e) =>
+              mixer.setCueOutputDevice(
+                mixer.cueDeviceId,
+                parseInt((e.target as HTMLSelectElement).value)
+              )
+          "
+        >
+          <option v-for="offset in channelPairs(cueDevice.channels)" :key="offset" :value="offset">
+            {{ $t('topStrip.channel', { n1: offset + 1, n2: offset + 2 }) }}
+          </option>
+        </select>
+      </template>
 
       <button class="topstrip__refresh" tabindex="-1" @click="mixer.loadOutputDevices()">↻</button>
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
@@ -139,14 +141,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watchEffect, onMounted, onUnmounted } from 'vue';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { DECKS_DISPOSITION, useDecksStore, type DeckId } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const mixer = useMixerStore();
+const decksStore = useDecksStore();
 const appMode = useAppModeStore();
+
+watchEffect(() => {
+  for (const id of DECKS_DISPOSITION) {
+    const path = decksStore.decks[id].loadedPath;
+    if (path) mixer.markPlayed(path);
+  }
+});
 
 const activeDecks = computed<DeckId[]>(() =>
   mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
@@ -183,11 +193,8 @@ async function pollLevels() {
   rafId = requestAnimationFrame(pollLevels);
 }
 
-const isRecording = ref(false);
-
 async function onRecClick() {
-  if (isRecording.value) {
-    isRecording.value = false;
+  if (mixer.isRecording) {
     const tempPath = await mixer.stopRecording();
     const destPath = await mixer.pickSavePath();
     if (destPath) {
@@ -195,9 +202,9 @@ async function onRecClick() {
     } else {
       await mixer.discardRecording(tempPath);
     }
+    mixer.isRecording = false;
   } else {
     await mixer.startRecording();
-    isRecording.value = true;
   }
 }
 

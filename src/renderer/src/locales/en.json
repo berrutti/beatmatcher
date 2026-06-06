@@ -1,0 +1,189 @@
+{
+  "appBar": {
+    "performance": "PERFORMANCE",
+    "edit": "EDIT",
+    "session": "SESSION",
+    "settingsTitle": "Settings (⌘,)",
+    "settingsBtn": "SETTINGS ⚙",
+    "editModeTitle": "Enter Edit mode?",
+    "editModeBody": "Playback is running. Playback will stop when entering Edit mode.",
+    "sessionModeTitle": "Enter Session view?",
+    "sessionModeBody": "All loaded tracks will be unloaded. You can reload them when you return.",
+    "leaveSessionTitle": "Leave Session view?",
+    "leaveSessionBody": "The loaded session will be closed and playback will stop.",
+    "continue": "Continue"
+  },
+  "topStrip": {
+    "stopRecording": "Stop recording",
+    "recordMaster": "Record master output",
+    "rec": "REC",
+    "fourDecks": "4 DECKS",
+    "twoDecks": "2 DECKS",
+    "swarmHint": "Activate with CapsLock",
+    "swarm": "SWARM",
+    "vol": "VOL",
+    "master": "MASTER",
+    "notConfigured": "Not configured",
+    "channel": "Ch {n1}-{n2}",
+    "cue": "CUE",
+    "cueMixHint": "CUE/MIX: blend cue signal with master output in headphones",
+    "mix": "MIX"
+  },
+  "settings": {
+    "title": "SETTINGS",
+    "close": "Close",
+    "limiter": {
+      "title": "MASTER LIMITER",
+      "on": "ON",
+      "off": "OFF",
+      "hint": "Prevents digital clipping on the master output. Disable only if using an external limiter."
+    },
+    "nudge": {
+      "title": "NUDGE SENSITIVITY",
+      "hint": "Speed offset applied while holding a nudge key or button."
+    },
+    "pitch": {
+      "title": "PITCH RANGE",
+      "hint": "Maximum pitch slider deviation from original BPM."
+    },
+    "buffer": {
+      "title": "AUDIO BUFFER SIZE",
+      "default": "Default",
+      "hint": "Frames per audio callback. Smaller values reduce latency but increase CPU load. Changing this causes a brief audio gap."
+    },
+    "bpmRange": {
+      "title": "BPM DETECTION RANGE",
+      "min": "Min",
+      "max": "Max",
+      "unit": "BPM",
+      "hint": "Tracks detected outside this range will be doubled or halved until they fit. Useful for genres with tempos outside the 90-180 default."
+    },
+    "recording": {
+      "title": "RECORDING FORMAT",
+      "wav16": "WAV (16-bit)",
+      "wav32": "WAV (32-bit)",
+      "flac": "FLAC",
+      "sessionOnly": "SESSION ONLY",
+      "hintWav16": "Uncompressed PCM. Standard CD quality, smaller files than 32-bit.",
+      "hintWav32": "Uncompressed 32-bit float. Full dynamic range, largest files.",
+      "hintFlac": "Lossless compression, encoded after you stop. Same quality as WAV, smaller files.",
+      "hintSession": "Records only the event log. No audio file is saved. You can render to WAV or FLAC later from the session view.",
+      "bmsCheckbox": "Always record a .bms alongside audio",
+      "bmsHint": "Saves a .bms file with a full event log of every action taken during the set. Required for rendering or replaying a session."
+    },
+    "deckCount": {
+      "title": "DEFAULT DECK COUNT",
+      "unit": "decks",
+      "hint": "Number of active decks. Takes effect immediately and is remembered across sessions."
+    },
+    "language": {
+      "title": "LANGUAGE",
+      "en": "English",
+      "de": "Deutsch",
+      "es": "Español"
+    },
+    "keyboard": {
+      "title": "KEYBOARD MAPPING",
+      "hint": "Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click also resets.",
+      "deck": "DECK",
+      "pressKey": "Press any key. Esc to cancel",
+      "reset": "Reset to defaults",
+      "nudgeLeft": "Nudge ←",
+      "nudgeRight": "Nudge →",
+      "cue": "CUE",
+      "play": "PLAY",
+      "loopIn": "Loop IN",
+      "loopOut": "Loop OUT",
+      "conflict": "'{key}' is already used by {deck} / {cmd}"
+    }
+  },
+  "browser": {
+    "all": "ALL",
+    "playlists": "PLAYLISTS",
+    "analyzeAll": "ANALYZE ALL",
+    "addFiles": "ADD FILES",
+    "addFolder": "ADD FOLDER",
+    "clear": "CLEAR",
+    "clearTitle": "Clear collection?",
+    "clearBody": "All tracks will be removed. Playlists are not affected. This cannot be undone.",
+    "clearConfirm": "Clear",
+    "newPlaylist": "NEW PLAYLIST",
+    "back": "BACK",
+    "dropHint": "Drop audio files or folders here, or use ADD FILES / ADD FOLDER",
+    "noResults": "no results",
+    "colTitle": "TITLE",
+    "colBpm": "BPM",
+    "colAdded": "ADDED",
+    "detecting": "detecting...",
+    "statusError": "error",
+    "statusMissing": "missing",
+    "analyze": "ANALYZE",
+    "setBpm": "SET BPM",
+    "noPlaylists": "No playlists yet. Click NEW PLAYLIST to get started.",
+    "trackCount": "{count} track | {count} tracks",
+    "emptyPlaylist": "Empty. Add tracks from the section below.",
+    "noAnalyzed": "No analyzed tracks in collection",
+    "allInPlaylist": "All tracks already in playlist",
+    "addTracks": "ADD TRACKS",
+    "deletePlaylistTitle": "Delete '{name}'?",
+    "deletePlaylistBody": "This cannot be undone. Tracks in your collection are not affected.",
+    "delete": "Delete",
+    "removeTrackTitle": "Remove track?",
+    "removeTrackBody": "The track will be removed from your collection along with its saved BPM and grid data.",
+    "remove": "Remove",
+    "recalcBpm": "Recalculate BPM",
+    "addToPlaylist": "Add to playlist"
+  },
+  "search": {
+    "placeholder": "Search"
+  },
+  "modal": {
+    "cancel": "Cancel",
+    "confirm": "Confirm"
+  },
+  "bpmModal": {
+    "title": "Set track BPM",
+    "confirmLabel": "Set BPM",
+    "placeholder": "e.g. 128"
+  },
+  "confirmModal": {
+    "load": "Load"
+  },
+  "deck": {
+    "loadTitle": "Load new track?",
+    "loadBody": "Playback will stop and the current track will be replaced.",
+    "label": "DECK {id}",
+    "ejectTitle": "Eject track",
+    "loading": "Loading...",
+    "dragHint": "Drag a track from the collection",
+    "cue": "CUE",
+    "bpm": "BPM",
+    "loopIn": "IN",
+    "loopOut": "OUT",
+    "loopExit": "EXIT",
+    "loopReloop": "RELOOP"
+  },
+  "editView": {
+    "setBpm": "SET BPM",
+    "setGrid": "SET GRID",
+    "cue": "CUE",
+    "dropHint": "Drop a track from the collection",
+    "collection": "COLLECTION"
+  },
+  "editWaveform": {
+    "noTrackLoaded": "No track loaded"
+  },
+  "mixer": {
+    "cue": "CUE"
+  },
+  "performance": {
+    "collection": "COLLECTION"
+  },
+  "session": {
+    "dropHint": "Drop a recorded session here, or click to open",
+    "noTrackInfo": "No track info. Load tracks in Performance mode first, then record.",
+    "rendering": "RENDERING...",
+    "renderWav": "RENDER WAV",
+    "renderFlac": "RENDER FLAC"
+  }
+}

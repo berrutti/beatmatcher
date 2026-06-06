@@ -205,7 +205,15 @@ export const useMixerStore = defineStore('mixer', () => {
     return invoke<[number, number]>('get_master_level');
   }
 
+  const isRecording = ref(false);
+  const playedPaths = reactive(new Set<string>());
+
+  function markPlayed(path: string): void {
+    playedPaths.add(path);
+  }
+
   async function startRecording(): Promise<void> {
+    isRecording.value = true;
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
     await invoke('start_recording', {
@@ -307,6 +315,9 @@ export const useMixerStore = defineStore('mixer', () => {
     swarmMode,
     swarmSelected,
     volume,
+    isRecording,
+    playedPaths,
+    markPlayed,
     discardRecording,
     getDeckLevels,
     getMasterLevel,

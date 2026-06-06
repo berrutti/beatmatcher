@@ -2,7 +2,7 @@
   <Modal
     :open="open"
     :title="title"
-    :confirm-label="confirmLabel"
+    :confirm-label="props.confirmLabel ?? t('confirmModal.load')"
     @confirm="emit('confirm')"
     @cancel="emit('cancel')"
   >
@@ -12,10 +12,11 @@
 
 <script setup lang="ts">
 import Modal from './Modal.vue';
+import { useI18n } from 'vue-i18n';
 
-withDefaults(defineProps<{ open: boolean; title: string; body: string; confirmLabel?: string }>(), {
-  confirmLabel: 'Load'
-});
+const { t } = useI18n();
+
+const props = defineProps<{ open: boolean; title: string; body: string; confirmLabel?: string }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 </script>
 

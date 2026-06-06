@@ -2,12 +2,27 @@
   <div class="settings-overlay" @click.self="close">
     <div ref="modalEl" class="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
       <div class="settings-header">
-        <span class="settings-title">SETTINGS</span>
-        <button class="settings-close" title="Close" @click="close">✕</button>
+        <span class="settings-title">{{ $t('settings.title') }}</span>
+        <button class="settings-close" :title="$t('settings.close')" @click="close">✕</button>
       </div>
 
       <section class="settings-section">
-        <div class="settings-section-label">MASTER LIMITER</div>
+        <div class="settings-section-label">{{ $t('settings.language.title') }}</div>
+        <div class="settings-row">
+          <button
+            v-for="lang in LANGUAGES"
+            :key="lang.code"
+            class="settings-chip"
+            :class="{ 'settings-chip--active': locale === lang.code }"
+            @click="locale = lang.code"
+          >
+            {{ lang.label() }}
+          </button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-label">{{ $t('settings.limiter.title') }}</div>
         <label class="settings-toggle">
           <input
             type="checkbox"
@@ -17,15 +32,17 @@
           <span class="settings-toggle-track">
             <span class="settings-toggle-thumb" />
           </span>
-          <span class="settings-toggle-label">{{ settings.limiterEnabled ? 'ON' : 'OFF' }}</span>
+          <span class="settings-toggle-label">{{
+            settings.limiterEnabled ? $t('settings.limiter.on') : $t('settings.limiter.off')
+          }}</span>
         </label>
         <p class="settings-hint">
-          Prevents digital clipping on the master output. Disable only if using an external limiter.
+          {{ $t('settings.limiter.hint') }}
         </p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">NUDGE SENSITIVITY</div>
+        <div class="settings-section-label">{{ $t('settings.nudge.title') }}</div>
         <div class="settings-row">
           <input
             type="range"
@@ -38,11 +55,11 @@
           />
           <span class="settings-value">{{ settings.nudgeSensitivity }}%</span>
         </div>
-        <p class="settings-hint">Speed offset applied while holding a nudge key or button.</p>
+        <p class="settings-hint">{{ $t('settings.nudge.hint') }}</p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">PITCH RANGE</div>
+        <div class="settings-section-label">{{ $t('settings.pitch.title') }}</div>
         <div class="settings-row">
           <button
             v-for="opt in PITCH_RANGE_OPTIONS"
@@ -54,11 +71,11 @@
             ±{{ opt }}%
           </button>
         </div>
-        <p class="settings-hint">Maximum pitch slider deviation from original BPM.</p>
+        <p class="settings-hint">{{ $t('settings.pitch.hint') }}</p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">AUDIO BUFFER SIZE</div>
+        <div class="settings-section-label">{{ $t('settings.buffer.title') }}</div>
         <div class="settings-row">
           <button
             v-for="opt in BUFFER_SIZE_OPTIONS"
@@ -67,19 +84,18 @@
             :class="{ 'settings-chip--active': settings.bufferSize === opt }"
             @click="settings.setBufferSize(opt)"
           >
-            {{ opt === 0 ? 'Default' : opt }}
+            {{ opt === 0 ? $t('settings.buffer.default') : opt }}
           </button>
         </div>
         <p class="settings-hint">
-          Frames per audio callback. Smaller values reduce latency but increase CPU load. Changing
-          this causes a brief audio gap.
+          {{ $t('settings.buffer.hint') }}
         </p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">BPM DETECTION RANGE</div>
+        <div class="settings-section-label">{{ $t('settings.bpmRange.title') }}</div>
         <div class="settings-row">
-          <label class="settings-range-label">Min</label>
+          <label class="settings-range-label">{{ $t('settings.bpmRange.min') }}</label>
           <input
             type="number"
             class="settings-number"
@@ -91,7 +107,7 @@
               settings.setBpmRange(+($event.target as HTMLInputElement).value, settings.bpmMax)
             "
           />
-          <label class="settings-range-label">Max</label>
+          <label class="settings-range-label">{{ $t('settings.bpmRange.max') }}</label>
           <input
             type="number"
             class="settings-number"
@@ -103,16 +119,15 @@
               settings.setBpmRange(settings.bpmMin, +($event.target as HTMLInputElement).value)
             "
           />
-          <span class="settings-value">BPM</span>
+          <span class="settings-value">{{ $t('settings.bpmRange.unit') }}</span>
         </div>
         <p class="settings-hint">
-          Tracks detected outside this range will be doubled or halved until they fit. Useful for
-          genres with tempos outside the 90-180 default.
+          {{ $t('settings.bpmRange.hint') }}
         </p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">RECORDING FORMAT</div>
+        <div class="settings-section-label">{{ $t('settings.recording.title') }}</div>
         <div class="settings-row">
           <button
             v-for="opt in RECORDING_FORMAT_OPTIONS"
@@ -135,16 +150,15 @@
             :disabled="settings.recordingFormat === 'session'"
             @change="settings.setRecordBms(($event.target as HTMLInputElement).checked)"
           />
-          <span>Always record a .bms alongside audio</span>
+          <span>{{ $t('settings.recording.bmsCheckbox') }}</span>
         </label>
         <p class="settings-hint">
-          Saves a .bms file with a full event log of every action taken during the set. Required for
-          rendering or replaying a session.
+          {{ $t('settings.recording.bmsHint') }}
         </p>
       </section>
 
       <section class="settings-section">
-        <div class="settings-section-label">DEFAULT DECK COUNT</div>
+        <div class="settings-section-label">{{ $t('settings.deckCount.title') }}</div>
         <div class="settings-row">
           <button
             v-for="count in [2, 4] as const"
@@ -153,20 +167,17 @@
             :class="{ 'settings-chip--active': mixer.deckCount === count }"
             @click="mixer.setDeckCount(count)"
           >
-            {{ count }} decks
+            {{ count }} {{ $t('settings.deckCount.unit') }}
           </button>
         </div>
         <p class="settings-hint">
-          Number of active decks. Takes effect immediately and is remembered across sessions.
+          {{ $t('settings.deckCount.hint') }}
         </p>
       </section>
 
       <section class="settings-section settings-section--keyboard">
-        <div class="settings-section-label">KEYBOARD MAPPING</div>
-        <p class="settings-hint">
-          Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click
-          also resets.
-        </p>
+        <div class="settings-section-label">{{ $t('settings.keyboard.title') }}</div>
+        <p class="settings-hint">{{ $t('settings.keyboard.hint') }}</p>
 
         <div ref="decksEl" class="settings-decks" role="grid" @keydown="onGridKeydown">
           <div
@@ -176,7 +187,7 @@
             role="rowgroup"
           >
             <div class="settings-deck-label" :style="{ color: accent(deckId) }">
-              DECK {{ deckId }}
+              {{ $t('settings.keyboard.deck') }} {{ deckId }}
             </div>
             <div class="settings-deck-grid" role="row">
               <template v-for="row in COMMAND_LAYOUT" :key="row[0]">
@@ -189,7 +200,7 @@
                     'settings-btn--conflict': isConflict(deckId, command)
                   }"
                   :style="{ '--accent': accent(deckId) }"
-                  :aria-label="`Deck ${deckId} ${COMMAND_LABEL[command]}: ${settings.keybindings[deckId][command]}`"
+                  :aria-label="`${$t('settings.keyboard.deck')} ${deckId} ${COMMAND_LABEL[command]}: ${settings.keybindings[deckId][command]}`"
                   role="gridcell"
                   @click="startCapture(deckId, command)"
                   @dblclick.prevent="resetSlot(deckId, command)"
@@ -207,12 +218,12 @@
 
         <div class="settings-footer">
           <span v-if="conflictError" class="settings-error">{{ conflictError }}</span>
-          <span v-else-if="capturingSlot" class="settings-capture-hint"
-            >Press any key. Esc to cancel</span
-          >
+          <span v-else-if="capturingSlot" class="settings-capture-hint">{{
+            $t('settings.keyboard.pressKey')
+          }}</span>
           <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true">·</span>
           <button class="settings-reset-btn" @click="settings.resetToDefaults()">
-            Reset to defaults
+            {{ $t('settings.keyboard.reset') }}
           </button>
         </div>
       </section>
@@ -221,7 +232,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import {
   useSettingsStore,
   PITCH_RANGE_OPTIONS,
@@ -233,20 +246,33 @@ import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/
 import { useMixerStore } from '@renderer/stores/mixer';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
 
-const RECORDING_FORMAT_LABELS: Record<RecordingFormatOption, string> = {
-  'wav-16': 'WAV (16-bit)',
-  'wav-32': 'WAV (32-bit)',
-  flac: 'FLAC',
-  session: 'SESSION ONLY'
-};
+const { t, locale } = useI18n();
 
-const RECORDING_FORMAT_HINTS: Record<RecordingFormatOption, string> = {
-  'wav-16': 'Uncompressed PCM. Standard CD quality, smaller files than 32-bit.',
-  'wav-32': 'Uncompressed 32-bit float. Full dynamic range, largest files.',
-  flac: 'Lossless compression, encoded after you stop. Same quality as WAV, smaller files.',
-  session:
-    'Records only the event log. No audio file is saved. You can render to WAV or FLAC later from the session view.'
-};
+watch(locale, (val) => storageSet(STORAGE_KEYS.locale, val));
+
+const LANGUAGES = [
+  { code: 'en', label: () => t('settings.language.en') },
+  { code: 'de', label: () => t('settings.language.de') },
+  { code: 'es', label: () => t('settings.language.es') }
+] as const;
+
+const RECORDING_FORMAT_LABELS = computed(
+  (): Record<RecordingFormatOption, string> => ({
+    'wav-16': t('settings.recording.wav16'),
+    'wav-32': t('settings.recording.wav32'),
+    flac: t('settings.recording.flac'),
+    session: t('settings.recording.sessionOnly')
+  })
+);
+
+const RECORDING_FORMAT_HINTS = computed(
+  (): Record<RecordingFormatOption, string> => ({
+    'wav-16': t('settings.recording.hintWav16'),
+    'wav-32': t('settings.recording.hintWav32'),
+    flac: t('settings.recording.hintFlac'),
+    session: t('settings.recording.hintSession')
+  })
+);
 
 const settings = useSettingsStore();
 const decks = useDecksStore();
@@ -267,14 +293,16 @@ const COMMAND_DISPLAY: Record<Command, string> = {
   LOOP_OUT_EXIT: 'OUT'
 };
 
-const COMMAND_LABEL: Record<Command, string> = {
-  NUDGE_BACK: 'Nudge ←',
-  NUDGE_FORWARD: 'Nudge →',
-  CUE: 'CUE',
-  PLAY: 'PLAY',
-  LOOP_IN: 'Loop IN',
-  LOOP_OUT_EXIT: 'Loop OUT'
-};
+const COMMAND_LABEL = computed(
+  (): Record<Command, string> => ({
+    NUDGE_BACK: t('settings.keyboard.nudgeLeft'),
+    NUDGE_FORWARD: t('settings.keyboard.nudgeRight'),
+    CUE: t('settings.keyboard.cue'),
+    PLAY: t('settings.keyboard.play'),
+    LOOP_IN: t('settings.keyboard.loopIn'),
+    LOOP_OUT_EXIT: t('settings.keyboard.loopOut')
+  })
+);
 
 function accent(deckId: DeckId): string {
   return decks.decks[deckId]?.accent ?? '#ffffff';
@@ -418,9 +446,13 @@ function onWindowKeydown(e: KeyboardEvent) {
   const conflict = settings.setKey(deckId, command, key);
 
   if (conflict) {
-    const conflictDeck = `Deck ${conflict.deckId}`;
-    const conflictCmd = COMMAND_LABEL[conflict.command];
-    conflictError.value = `'${key.toUpperCase()}' is already used by ${conflictDeck} / ${conflictCmd}`;
+    const conflictDeck = `${t('settings.keyboard.deck')} ${conflict.deckId}`;
+    const conflictCmd = COMMAND_LABEL.value[conflict.command];
+    conflictError.value = t('settings.keyboard.conflict', {
+      key: key.toUpperCase(),
+      deck: conflictDeck,
+      cmd: conflictCmd
+    });
     conflictSlot.value = conflict;
     if (conflictTimer) clearTimeout(conflictTimer);
     conflictTimer = setTimeout(() => {

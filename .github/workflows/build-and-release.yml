@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: yarn
 
       - uses: dtolnay/rust-toolchain@stable
@@ -54,7 +54,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: yarn
 
       - uses: dtolnay/rust-toolchain@stable

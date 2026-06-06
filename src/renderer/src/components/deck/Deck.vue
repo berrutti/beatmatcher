@@ -12,14 +12,14 @@
   >
     <ConfirmModal
       :open="pendingLoad !== null"
-      title="Load new track?"
-      body="Playback will stop and the current track will be replaced."
+      :title="$t('deck.loadTitle')"
+      :body="$t('deck.loadBody')"
       @confirm="onConfirmLoad"
       @cancel="pendingLoad = null"
     />
 
     <div class="deck__header">
-      <span class="deck__label">DECK {{ props.deck.id }}</span>
+      <span class="deck__label">{{ $t('deck.label', { id: props.deck.id }) }}</span>
       <div v-if="props.deck.trackName" class="deck__track-info">
         <div class="deck__status-dot" :class="{ 'deck__status-dot--on': props.deck.playing }" />
         <span class="deck__track-name" :title="props.deck.trackName">{{
@@ -56,13 +56,13 @@
             >{{ props.deck.targetBpm?.toFixed(1) ?? '--.-' }}</span
           >
         </div>
-        <span class="deck__bpm-unit-header">BPM</span>
+        <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
       </div>
       <button
         v-if="props.deck.trackLoaded"
         class="deck__eject-btn"
         :tabindex="-1"
-        title="Eject track"
+        :title="$t('deck.ejectTitle')"
         @click="props.deck.ejectTrack()"
       >
         ⏏
@@ -73,7 +73,7 @@
 
     <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
       <span class="deck__drop-hint">{{
-        props.deck.loading ? 'Loading...' : 'Drag a track from the collection'
+        props.deck.loading ? $t('deck.loading') : $t('deck.dragHint')
       }}</span>
     </div>
 
@@ -144,7 +144,7 @@
               @mouseleave="onCueMouseLeave"
             >
               <span class="deck__btn-key">{{ keybindings.CUE }}</span>
-              <span>CUE</span>
+              <span>{{ $t('deck.cue') }}</span>
             </button>
             <button
               class="deck__btn deck__btn--play"
@@ -167,7 +167,7 @@
               @click="props.deck.setLoopIn()"
             >
               <span class="deck__btn-key">{{ keybindings.LOOP_IN }}</span>
-              <span class="deck__btn-icon">IN</span>
+              <span class="deck__btn-icon">{{ $t('deck.loopIn') }}</span>
             </button>
             <button
               class="deck__btn deck__btn--loop-out"
@@ -205,6 +205,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -213,6 +214,8 @@ import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/deck/PhaseRing.vue';
 import TrackWaveform from '@renderer/components/deck/TrackWaveform.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+
+const { t } = useI18n();
 
 const PRIMARY_BUTTON = 1;
 
@@ -264,9 +267,9 @@ function onNudgeStart(direction: 'back' | 'forward') {
 }
 
 function loopOutLabel(): string {
-  if (shiftHeld.value && props.deck.loopActive) return 'EXIT';
-  if (shiftHeld.value && props.deck.loopRegion) return 'RELOOP';
-  return 'OUT';
+  if (shiftHeld.value && props.deck.loopActive) return t('deck.loopExit');
+  if (shiftHeld.value && props.deck.loopRegion) return t('deck.loopReloop');
+  return t('deck.loopOut');
 }
 
 function onLoopOutClick() {

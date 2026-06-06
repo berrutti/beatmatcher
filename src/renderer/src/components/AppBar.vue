@@ -2,7 +2,7 @@
   <Modal
     :open="confirmPending !== null"
     :title="confirmPending?.title ?? ''"
-    confirm-label="Continue"
+    :confirm-label="$t('appBar.continue')"
     @confirm="onConfirm"
     @cancel="confirmPending = null"
   >
@@ -20,16 +20,17 @@
     <button
       class="appbar__settings-btn"
       tabindex="-1"
-      title="Settings (⌘,)"
+      :title="$t('appBar.settingsTitle')"
       @click="settingsStore.isOpen = true"
     >
-      SETTINGS ⚙
+      {{ $t('appBar.settingsBtn') }}
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useAppModeStore, type AppMode } from '@renderer/stores/appMode';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSessionStore } from '@renderer/stores/session';
@@ -37,6 +38,7 @@ import { useSettingsStore } from '@renderer/stores/settings';
 import Dropdown from '@renderer/components/Dropdown.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 
+const { t } = useI18n();
 const appMode = useAppModeStore();
 const decksStore = useDecksStore();
 const sessionStore = useSessionStore();
@@ -45,40 +47,30 @@ const settingsStore = useSettingsStore();
 type ConfirmPayload = { title: string; body: string; next: AppMode };
 const confirmPending = ref<ConfirmPayload | null>(null);
 
-const modeItems = [
-  { value: 'performance', label: 'PERFORMANCE' },
-  { value: 'edit', label: 'EDIT' },
-  { value: 'session', label: 'SESSION' }
-];
+const modeItems = computed(() => [
+  { value: 'performance', label: t('appBar.performance') },
+  { value: 'edit', label: t('appBar.edit') },
+  { value: 'session', label: t('appBar.session') }
+]);
 
-const modeLabel = computed(() => modeItems.find((m) => m.value === appMode.mode)?.label ?? '');
+const modeLabel = computed(
+  () => modeItems.value.find((m) => m.value === appMode.mode)?.label ?? ''
+);
 
 function needsConfirm(next: AppMode): ConfirmPayload | null {
   const prev = appMode.mode;
   if (prev === next) return null;
 
   if (next === 'edit' && decksStore.anyDeckActive) {
-    return {
-      title: 'Enter Edit mode?',
-      body: 'Playback is running. Playback will stop when entering Edit mode.',
-      next
-    };
+    return { title: t('appBar.editModeTitle'), body: t('appBar.editModeBody'), next };
   }
 
   if (next === 'session' && decksStore.anyDeckLoaded) {
-    return {
-      title: 'Enter Session view?',
-      body: 'All loaded tracks will be unloaded. You can reload them when you return.',
-      next
-    };
+    return { title: t('appBar.sessionModeTitle'), body: t('appBar.sessionModeBody'), next };
   }
 
   if (prev === 'session' && sessionStore.session !== null) {
-    return {
-      title: 'Leave Session view?',
-      body: 'The loaded session will be closed and playback will stop.',
-      next
-    };
+    return { title: t('appBar.leaveSessionTitle'), body: t('appBar.leaveSessionBody'), next };
   }
 
   return null;

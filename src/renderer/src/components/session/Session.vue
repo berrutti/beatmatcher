@@ -10,11 +10,11 @@
         @dragleave="isFileDragOver = false"
         @drop.prevent="onFileDrop"
       >
-        <span class="session__drop-hint">Drop a recorded session here, or click to open</span>
+        <span class="session__drop-hint">{{ $t('session.dropHint') }}</span>
       </div>
       <template v-else>
         <div v-if="!session.hasTrackInfo" class="session__no-track-info">
-          No track info. Load tracks in Performance mode first, then record.
+          {{ $t('session.noTrackInfo') }}
         </div>
         <SessionTimeline
           :duration-ms="session.durationMs"
@@ -44,14 +44,14 @@
           :disabled="isRendering"
           @click="onRender(false)"
         >
-          {{ isRendering ? 'RENDERING...' : 'RENDER WAV' }}
+          {{ isRendering ? $t('session.rendering') : $t('session.renderWav') }}
         </button>
         <button
           class="session__btn session__btn--render"
           :disabled="isRendering"
           @click="onRender(true)"
         >
-          {{ isRendering ? 'RENDERING...' : 'RENDER FLAC' }}
+          {{ isRendering ? $t('session.rendering') : $t('session.renderFlac') }}
         </button>
         <button class="session__btn session__btn--eject" @click="session.unload()">⏏</button>
       </div>
