@@ -120,7 +120,10 @@
           v-for="track in sortedFilteredTracks"
           :key="track.id"
           class="collection__item"
-          :class="[`collection__item--${track.status}`, { 'collection__item--played': track.path && mixerStore.playedPaths.has(track.path) }]"
+          :class="[
+            `collection__item--${track.status}`,
+            { 'collection__item--played': track.path && mixerStore.playedPaths.has(track.path) }
+          ]"
           @pointerdown="onItemPointerDown($event, track)"
           @dblclick="onTrackDblClick(track)"
           @contextmenu.prevent="openContextMenu($event, track.id)"
@@ -211,7 +214,10 @@
           <div v-if="showDropBefore(idx)" class="collection__drop-line" />
           <div
             class="collection__item collection__playlist-track"
-            :class="{ 'collection__playlist-track--dragging': playlistDragFromIdx === idx, 'collection__item--played': mixerStore.playedPaths.has(item.path) }"
+            :class="{
+              'collection__playlist-track--dragging': playlistDragFromIdx === idx,
+              'collection__item--played': mixerStore.playedPaths.has(item.path)
+            }"
             @pointerdown="onPlaylistTrackPointerDown($event, idx)"
             @dblclick="onTrackDblClickByPath(item.path)"
             @contextmenu.prevent="item.entry && openContextMenu($event, item.entry.id)"
