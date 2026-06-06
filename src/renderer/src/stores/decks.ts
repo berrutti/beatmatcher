@@ -31,9 +31,6 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-export const EQ_MIN_DB = -26;
-export const EQ_MAX_DB = 6;
-
 // Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
 // typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
 // of Float32 data; for 10 minutes ~2.1 MB. Anything zoomed deeper than the
@@ -161,7 +158,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     nudging: null as 'back' | 'forward' | null,
     cueing: false,
-    eq: { low: 0, mid: 0, high: 0 },
 
     get trackPosition(): number | null {
       return state.loopPlaying ? interpolatedPosition() : null;
@@ -369,12 +365,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       invoke('set_quantize', { deck: id, quantize: state.quantized });
     },
 
-    setEq(band: 'low' | 'mid' | 'high', db: number) {
-      const clamped = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
-      state.eq[band] = clamped;
-      invoke('set_eq', { deck: id, band, db: clamped });
-    },
-
     async nudgeStart(direction: 'back' | 'forward') {
       if (!state.trackLoaded) return;
       state.nudging = direction;
@@ -402,6 +392,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     get playing(): boolean {
       return state.loopPlaying && !state.cueing;
+    },
+
+    get acceptsCommands(): boolean {
+      return !state.loading;
     },
 
     getSpectralWaveformRegion(
@@ -507,31 +501,33 @@ export const useDecksStore = defineStore('decks', () => {
       deckE.cueing
   );
 
+  const anyDeckLoaded = computed(
+    () =>
+      deckA.loadedPath !== null ||
+      deckB.loadedPath !== null ||
+      deckC.loadedPath !== null ||
+      deckD.loadedPath !== null
+  );
+
   listen<string>('track-ended', (event) => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
     deck.returnToCue();
   });
 
-  function tryToggleEditMode(): boolean {
-    if (editMode.value) {
-      editMode.value = false;
-      return true;
-    }
-    if (deckA.loopPlaying || deckB.loopPlaying || deckC.loopPlaying || deckD.loopPlaying) {
-      return false;
-    }
-    editMode.value = true;
-    return true;
+  async function ejectAll(): Promise<void> {
+    await Promise.all(DECKS_DISPOSITION.map((id) => decks[id].ejectTrack()));
   }
 
-  async function enterEditMode() {
+  async function requestEditMode(force = false): Promise<boolean> {
+    if (!force && anyDeckActive.value) return false;
     await Promise.all(
       DECKS_DISPOSITION.filter((deckId) => decks[deckId].loopPlaying).map((deckId) =>
         decks[deckId].stop()
       )
     );
     editMode.value = true;
+    return true;
   }
 
   function exitEditMode() {
@@ -564,10 +560,11 @@ export const useDecksStore = defineStore('decks', () => {
     decks,
     editMode,
     anyDeckActive,
+    anyDeckLoaded,
+    ejectAll,
     bestAvailableDeck,
-    enterEditMode,
+    requestEditMode,
     exitEditMode,
-    tryToggleEditMode,
     destroy
   };
 });

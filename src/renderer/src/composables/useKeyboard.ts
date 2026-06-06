@@ -113,7 +113,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck || deck.loading) return;
+    if (!deck || !deck.acceptsCommands) return;
 
     handleDeckCommand(deck, deckCommand.command, e.shiftKey);
   }
@@ -142,7 +142,7 @@ export function useKeyboard() {
     if (!deckCommand) return;
 
     const deck = store.decks[deckCommand.deckId];
-    if (!deck || deck.loading) return;
+    if (!deck || !deck.acceptsCommands) return;
 
     if (
       deckCommand.command === commands.NUDGE_BACK ||

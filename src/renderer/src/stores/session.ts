@@ -88,7 +88,7 @@ export const useSessionStore = defineStore('session', () => {
 
     isPlaying.value = true;
 
-    if (autoStopTimeout != null) {
+    if (autoStopTimeout !== null) {
       clearTimeout(autoStopTimeout);
       autoStopTimeout = null;
     }
@@ -111,16 +111,11 @@ export const useSessionStore = defineStore('session', () => {
 
   async function stop(): Promise<void> {
     isPlaying.value = false;
-    if (autoStopTimeout != null) {
+    if (autoStopTimeout !== null) {
       clearTimeout(autoStopTimeout);
       autoStopTimeout = null;
     }
     await invoke('stop_session_playback');
-  }
-
-  async function ejectAllDecks(): Promise<void> {
-    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('stop', { deck })));
-    await Promise.all(['A', 'B', 'C', 'D'].map((deck) => invoke('eject_track', { deck })));
   }
 
   async function exit(): Promise<void> {
@@ -137,7 +132,6 @@ export const useSessionStore = defineStore('session', () => {
     openSession,
     play,
     stop,
-    ejectAllDecks,
     exit
   };
 });

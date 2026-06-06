@@ -6,9 +6,16 @@ import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore } from '@renderer/stores/settings';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
+type EqBand = 'low' | 'mid' | 'high';
+type EqState = { low: number; mid: number; high: number };
 
 // -2 dBFS: must match DEFAULT_MASTER_GAIN in audio.rs
 const DEFAULT_MASTER_GAIN = 0.7943;
+
+export const EQ_MIN_DB = -26;
+export const EQ_MAX_DB = 6;
+
+const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
 
 export const useMixerStore = defineStore('mixer', () => {
   const outputDevices = ref<DeviceInfo[]>([]);
@@ -34,6 +41,13 @@ export const useMixerStore = defineStore('mixer', () => {
     C: false,
     D: false,
     E: false // can never be active
+  });
+  const eq = reactive<Record<DeckId, EqState>>({
+    A: { low: 0, mid: 0, high: 0 },
+    B: { low: 0, mid: 0, high: 0 },
+    C: { low: 0, mid: 0, high: 0 },
+    D: { low: 0, mid: 0, high: 0 },
+    E: { low: 0, mid: 0, high: 0 }
   });
 
   const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
@@ -103,6 +117,25 @@ export const useMixerStore = defineStore('mixer', () => {
   function toggleFilter(deckId: DeckId) {
     filterEnabled[deckId] = !filterEnabled[deckId];
     invoke('set_filter_active', { deck: deckId, active: filterEnabled[deckId] });
+  }
+
+  function setEq(deckId: DeckId, band: EqBand, db: number) {
+    eq[deckId][band] = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
+    invoke('set_eq', { deck: deckId, band, db: eq[deckId][band] });
+  }
+
+  function reset(): void {
+    for (const deckId of LIVE_DECKS) {
+      setVolume(deckId, 1);
+      setEq(deckId, 'low', 0);
+      setEq(deckId, 'mid', 0);
+      setEq(deckId, 'high', 0);
+      setFilter(deckId, 0);
+      filterEnabled[deckId] = false;
+      invoke('set_filter_active', { deck: deckId, active: false });
+      cueActive[deckId] = false;
+      invoke('set_cue_active', { deck: deckId, active: false });
+    }
   }
 
   async function loadOutputDevices(): Promise<void> {
@@ -244,6 +277,7 @@ export const useMixerStore = defineStore('mixer', () => {
     deckCount,
     deviceError,
     devicesLoaded,
+    eq,
     filter,
     filterEnabled,
     mainChannelOffset,
@@ -258,11 +292,13 @@ export const useMixerStore = defineStore('mixer', () => {
     getMasterLevel,
     loadOutputDevices,
     pickSavePath,
+    reset,
     saveRecording,
     setCueActive,
     setCueMix,
     setCueOutputDevice,
     setDeckCount,
+    setEq,
     setFilter,
     setMainOutputDevice,
     setMasterGain,

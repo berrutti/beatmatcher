@@ -28,7 +28,7 @@
 
     <TopStrip
       :edit-mode="decksStore.editMode"
-      @toggle-edit="tryToggleEditMode"
+      @toggle-edit="onToggleEditMode"
       @open-settings="settingsStore.isOpen = true"
     />
     <SettingsModal v-if="settingsStore.isOpen" />
@@ -123,21 +123,21 @@ function onResizeStart(e: PointerEvent) {
   window.addEventListener('pointerup', onUp);
 }
 
-function tryToggleEditMode() {
-  const entered = decksStore.tryToggleEditMode();
-  if (!entered) enterEditPending.value = true;
+async function onToggleEditMode() {
+  if (decksStore.editMode) {
+    decksStore.exitEditMode();
+  } else if (!(await decksStore.requestEditMode())) {
+    enterEditPending.value = true;
+  }
 }
 
-function onConfirmEditMode() {
+async function onConfirmEditMode() {
   enterEditPending.value = false;
-  decksStore.enterEditMode();
+  await decksStore.requestEditMode(true);
 }
 
 function tryLeavePerformance() {
-  const anyLoaded = ['A', 'B', 'C', 'D'].some(
-    (id) => decksStore[`deck${id}` as 'deckA'].loadedPath != null
-  );
-  if (anyLoaded) {
+  if (decksStore.anyDeckLoaded) {
     enterSessionPending.value = true;
   } else {
     emit('exit');

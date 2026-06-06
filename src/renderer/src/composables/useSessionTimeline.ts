@@ -66,7 +66,7 @@ function startClip(d: DS, ms: number) {
 }
 
 function finalizeClip(d: DS, deckId: string, endMs: number, out: Clip[]) {
-  if (d.clipStartMs == null || d.clipPath == null || endMs <= d.clipStartMs) return;
+  if (d.clipStartMs === null || d.clipPath === null || endMs <= d.clipStartMs) return;
   out.push({
     deck: deckId,
     sessionStartMs: d.clipStartMs,
@@ -96,8 +96,9 @@ function buildClips(events: SessionEvent[]): Clip[] {
         d.path = ev.path ?? null;
         d.rate = ev.playback_rate ?? 1;
         d.trackPosSec = ev.position_sec ?? 0;
-        d.loopStartSec = ev.loop_active && ev.loop_start_sec != null ? ev.loop_start_sec : null;
-        d.loopEndSec = ev.loop_active && ev.loop_end_sec != null ? ev.loop_end_sec : null;
+        d.loopStartSec =
+          ev.loop_active && ev.loop_start_sec !== undefined ? ev.loop_start_sec : null;
+        d.loopEndSec = ev.loop_active && ev.loop_end_sec !== undefined ? ev.loop_end_sec : null;
         d.loopEngagedAtMs = ev.loop_active ? ev.elapsed_ms : null;
         if (ev.is_playing) startClip(d, ev.elapsed_ms);
         break;
@@ -118,19 +119,19 @@ function buildClips(events: SessionEvent[]): Clip[] {
         break;
 
       case 'play':
-        if (d.clipStartMs == null) startClip(d, ev.elapsed_ms);
+        if (d.clipStartMs === null) startClip(d, ev.elapsed_ms);
         break;
 
       case 'stop':
       case 'stopped_at_cue':
       case 'stop_at_cue':
         finalizeClip(d, id, ev.elapsed_ms, clips);
-        if (ev.cue_point_sec != null) d.trackPosSec = ev.cue_point_sec;
+        if (ev.cue_point_sec !== undefined) d.trackPosSec = ev.cue_point_sec;
         break;
 
       case 'seek':
-        if (ev.sec != null) {
-          if (d.clipStartMs != null) {
+        if (ev.sec !== undefined) {
+          if (d.clipStartMs !== null) {
             finalizeClip(d, id, ev.elapsed_ms, clips);
             d.trackPosSec = ev.sec;
             startClip(d, ev.elapsed_ms);
@@ -141,7 +142,7 @@ function buildClips(events: SessionEvent[]): Clip[] {
         break;
 
       case 'set_playback_rate':
-        if (ev.rate != null) d.rate = ev.rate;
+        if (ev.rate !== undefined) d.rate = ev.rate;
         break;
 
       case 'loop_out':
@@ -161,7 +162,7 @@ function buildClips(events: SessionEvent[]): Clip[] {
         break;
 
       case 'reloop':
-        if (d.loopStartSec != null) d.loopEngagedAtMs = ev.elapsed_ms;
+        if (d.loopStartSec !== null) d.loopEngagedAtMs = ev.elapsed_ms;
         break;
     }
   }

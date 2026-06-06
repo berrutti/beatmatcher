@@ -127,7 +127,7 @@ function draw() {
       ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
 
       // Loop region overlay
-      if (clip.loopEngagedAtMs != null && clip.loopStartSec != null && clip.loopEndSec != null) {
+      if (clip.loopEngagedAtMs !== null && clip.loopStartSec !== null && clip.loopEndSec !== null) {
         const loopDurSec = clip.loopEndSec - clip.loopStartSec;
         const loopDurMs = (loopDurSec / clip.playbackRate) * 1000;
         const loopOffsetSec = clip.loopStartSec - clip.trackStartSec;
