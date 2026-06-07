@@ -75,7 +75,7 @@ impl SessionLogger {
     }
 
     fn log(&mut self, event_type: &str, payload: serde_json::Value) {
-        let t = (self.start.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0;
+        let t = self.start.elapsed().as_secs_f64() * 1000.0;
         let mut obj = serde_json::Map::new();
         obj.insert("elapsed_ms".into(), serde_json::json!(t));
         obj.insert("type".into(), serde_json::json!(event_type));
@@ -103,6 +103,7 @@ impl SessionLogger {
 pub struct AppState {
     pub audio: Arc<AppAudio>,
     pub session_playback_cancel: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    pub session_playback_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub session_track_cache: TrackCache,
     pub session_snapshots: std::sync::Mutex<
         std::collections::HashMap<String, Vec<crate::session_playback::SessionSnapshot>>,
@@ -148,6 +149,7 @@ pub fn run() {
         audio: Arc::new(audio),
         session: std::sync::Mutex::new(None),
         session_playback_cancel: std::sync::Mutex::new(None),
+        session_playback_handle: std::sync::Mutex::new(None),
         session_track_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
     };

@@ -371,6 +371,26 @@ impl DeckState {
 
         new_pos
     }
+
+    // Advance a playing deck by `overshoot_frames` of master-output time (scaled
+    // by the effective rate), wrapping inside an active loop and clamping to the
+    // track end. Session playback uses this to keep a deck that was started or
+    // repositioned a fraction of a buffer late aligned with decks already playing.
+    pub(crate) fn compensate_late_start(&mut self, overshoot_frames: f64) {
+        if !self.is_playing || overshoot_frames <= 0.0 {
+            return;
+        }
+        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.nudge_factor;
+        if self.loop_active && self.loop_end > self.cue_point && pos >= self.loop_end {
+            let dur = self.loop_end - self.cue_point;
+            pos = self.cue_point + (pos - self.loop_end).rem_euclid(dur);
+        }
+        if self.total_frames > 0 {
+            pos = pos.min(self.total_frames as f64 - 1.0);
+        }
+        self.main_pos = pos;
+        self.cue_pos = pos;
+    }
 }
 
 #[cfg(test)]

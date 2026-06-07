@@ -6,9 +6,6 @@
         class="session__drop-zone"
         :class="{ 'session__drop-zone--hover': isFileDragOver }"
         @click="session.openSession()"
-        @dragover.prevent="isFileDragOver = true"
-        @dragleave="isFileDragOver = false"
-        @drop.prevent="onFileDrop"
       >
         <span class="session__drop-hint">{{ $t('session.dropHint') }}</span>
       </div>
@@ -32,7 +29,7 @@
         :class="{ 'session__btn--active': session.isPlaying }"
         @click="onTransport"
       >
-        {{ session.isPlaying ? '■' : '▶' }}
+        {{ session.isPlaying ? '⏸' : '▶' }}
       </button>
       <span class="session__duration">
         {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
@@ -60,7 +57,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
 import { useSessionStore } from '@renderer/stores/session';
 import { useCollectionStore } from '@renderer/stores/collection';
@@ -81,26 +80,33 @@ const isRendering = ref<boolean>(false);
 const playheadMs = ref(0);
 let rafId = 0;
 let playStartWall = 0;
+let unlistenDrop: UnlistenFn | null = null;
 
-async function onFileDrop(e: DragEvent) {
-  isFileDragOver.value = false;
-  const file = e.dataTransfer?.files[0];
-  if (!file) return;
-  // Tauri exposes a .path property on dropped File objects
-  const path = (file as File & { path?: string }).path;
-  if (path) {
-    await session.openSessionFromPath(path);
-  } else {
-    await session.openSession();
-  }
-}
+// OS file drops are handled by Tauri's native drag-drop, not HTML5 DnD
+// (dragDropEnabled is on, and File.path no longer exists in Tauri v2), so the
+// absolute path comes from the webview drag-drop event.
+onMounted(async () => {
+  unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+    const payload = event.payload;
+    if (payload.type === 'enter' || payload.type === 'over') {
+      if (!session.session) isFileDragOver.value = true;
+    } else if (payload.type === 'leave') {
+      isFileDragOver.value = false;
+    } else if (payload.type === 'drop') {
+      isFileDragOver.value = false;
+      const bms = payload.paths.find((p) => p.toLowerCase().endsWith('.bms'));
+      if (bms) await session.openSessionFromPath(bms);
+    }
+  });
+});
 
 function tickPlayhead() {
   if (!session.isPlaying) return;
   playheadMs.value = performance.now() - playStartWall;
   if (session.durationMs > 0 && playheadMs.value >= session.durationMs) {
-    playheadMs.value = session.durationMs;
-    void session.stop();
+    // Reaching the end rewinds to the start; pausing keeps position.
+    session.stop().catch(() => {});
+    playheadMs.value = 0;
     return;
   }
   rafId = requestAnimationFrame(tickPlayhead);
@@ -139,7 +145,10 @@ async function onRender(useFlac: boolean) {
   }
 }
 
-onUnmounted(() => cancelAnimationFrame(rafId));
+onUnmounted(() => {
+  cancelAnimationFrame(rafId);
+  unlistenDrop?.();
+});
 </script>
 
 <style scoped>
@@ -246,6 +255,8 @@ onUnmounted(() => cancelAnimationFrame(rafId));
 
 .session__controls-right {
   margin-left: auto;
+  display: flex;
+  gap: 0.5em;
 }
 
 .session__btn--render {

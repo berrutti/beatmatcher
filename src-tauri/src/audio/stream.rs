@@ -45,6 +45,10 @@ pub struct MasterMonitor {
     pub cue_mix: Arc<std::sync::atomic::AtomicU32>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
+    // Free-running count of master output frames produced by the audio device.
+    // It is the soundcard's own clock; session playback schedules events against
+    // it instead of wall-clock time so replay stays locked to the audio output.
+    pub output_frames: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl MasterMonitor {
@@ -58,7 +62,12 @@ impl MasterMonitor {
             cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
+            output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    pub fn output_frames(&self) -> u64 {
+        self.output_frames.load(Ordering::Relaxed)
     }
 
     pub fn get_levels(&self) -> [f32; 2] {
@@ -646,6 +655,12 @@ fn tap_master_output(
     }
     let n = counted.max(1) as f32;
     monitor.store_levels(sum_l / n, sum_r / n);
+
+    // Advance the master output frame clock. Runs once per master buffer in
+    // every routing mode (main, combined, cue-with-master-tap).
+    monitor
+        .output_frames
+        .fetch_add(frames as u64, Ordering::Relaxed);
 
     if let Ok(guard) = monitor.record_tx.try_lock() {
         if let Some(ref tx) = *guard {
