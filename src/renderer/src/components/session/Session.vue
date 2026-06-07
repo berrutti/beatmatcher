@@ -29,7 +29,7 @@
         :class="{ 'session__btn--active': session.isPlaying }"
         @click="onTransport"
       >
-        {{ session.isPlaying ? '■' : '▶' }}
+        {{ session.isPlaying ? '⏸' : '▶' }}
       </button>
       <span class="session__duration">
         {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
@@ -104,8 +104,9 @@ function tickPlayhead() {
   if (!session.isPlaying) return;
   playheadMs.value = performance.now() - playStartWall;
   if (session.durationMs > 0 && playheadMs.value >= session.durationMs) {
-    playheadMs.value = session.durationMs;
-    void session.stop();
+    // Reaching the end rewinds to the start; pausing keeps position.
+    session.stop().catch(() => {});
+    playheadMs.value = 0;
     return;
   }
   rafId = requestAnimationFrame(tickPlayhead);
@@ -254,6 +255,8 @@ onUnmounted(() => {
 
 .session__controls-right {
   margin-left: auto;
+  display: flex;
+  gap: 0.5em;
 }
 
 .session__btn--render {

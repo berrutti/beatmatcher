@@ -16,7 +16,7 @@ const DECK_ACCENT: Record<string, string> = {
   C: '#208043',
   D: '#d631b0'
 };
-const ROW_H = 36;
+const ROW_H = 44;
 const LABEL_W = 32;
 const TICK_H = 16;
 const PADDING = 8;
@@ -157,17 +157,17 @@ function draw() {
     }
   }
 
-  // Playhead
   if (props.playheadMs > 0) {
     const px = msToX(props.playheadMs);
-    ctx.strokeStyle = '#ffffff88';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
+    const rowsBottom = TICK_H + DECK_ORDER.length * ROW_H;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.9;
     ctx.beginPath();
     ctx.moveTo(px, 0);
-    ctx.lineTo(px, h);
+    ctx.lineTo(px, rowsBottom);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
   }
 
   // Separator between labels and track area
