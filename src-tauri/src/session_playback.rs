@@ -222,7 +222,11 @@ pub async fn start_session_playback(
     let session: crate::offline_render::SessionFile =
         serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
 
-    // Cancel any previous playback task.
+    // Cancel any previous playback task AND wait for it to fully exit before we
+    // touch the engine. The async runtime is multi-threaded, so without this the
+    // old task could apply a stale event to a deck after the new task has already
+    // reset and re-placed it, corrupting one deck's position (audible desync that
+    // varies per scrub). Serializing the tasks removes that race entirely.
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut guard = state
@@ -233,6 +237,14 @@ pub async fn start_session_playback(
             old.store(true, Ordering::Release);
         }
         *guard = Some(cancel.clone());
+    }
+    let old_handle = state
+        .session_playback_handle
+        .lock()
+        .expect("session_playback handle mutex poisoned")
+        .take();
+    if let Some(handle) = old_handle {
+        let _ = handle.await;
     }
 
     let audio = state.audio.clone();
@@ -263,7 +275,7 @@ pub async fn start_session_playback(
         }
     };
 
-    tauri::async_runtime::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
         reset_all(&audio);
 
         let mut sorted_events = session.events;
@@ -290,64 +302,95 @@ pub async fn start_session_playback(
             match ev.event_type.as_str() {
                 "set_volume" | "set_eq" | "set_filter" | "set_filter_active"
                 | "set_master_gain" => {
-                    apply_event_live(ev, &audio, sr, &cache);
+                    apply_event_live(ev, &audio, sr, &cache, 0);
                 }
                 _ => {}
             }
             sim_apply_event(ev, &mut sim, &cache, sr);
         }
 
-        let sr_f = sr as f64;
-        for (id, deck_sim) in &sim.decks {
-            let pos = sim_pos(deck_sim, from_ms, sr_f);
-            let Some(ref path) = deck_sim.path else {
+        let sr_f = sr.max(1) as f64;
+
+        // Place every deck at its reconstructed state, then start them together.
+        // Decks are locked in sorted-id order (matching the audio callback's lock
+        // order, so no deadlock). Pass 1 does the heavy per-deck setup under brief
+        // individual locks with is_playing left false, so nothing is audible
+        // mid-setup. Pass 2 flips is_playing for the decks that should play, under
+        // all their locks held at once (just bool writes, nanoseconds): every deck
+        // begins on the same output buffer, sample-locked, without stalling the
+        // audio callback (no priority inversion).
+        let mut ids: Vec<&String> = sim.decks.keys().collect();
+        ids.sort();
+        let mut to_start: Vec<Arc<std::sync::Mutex<audio::DeckState>>> = Vec::new();
+        for id in ids {
+            let ds = &sim.decks[id];
+            let (Some(path), Some(arc)) = (ds.path.as_ref(), audio.deck(id)) else {
                 continue;
             };
             let Some((samples, channels)) = cache.get(path) else {
                 continue;
             };
             let total_frames = samples.len() / channels;
-            if let Some(deck_arc) = audio.deck(id) {
-                let mut d = deck_arc.lock().expect("deck mutex poisoned");
+            {
+                let mut d = arc.lock().expect("deck mutex poisoned");
                 d.samples = samples.clone();
                 d.channels = *channels;
                 d.device_sample_rate = sr;
                 d.total_frames = total_frames;
-                d.duration = total_frames as f64 / sr as f64;
+                d.duration = total_frames as f64 / sr_f;
                 d.loaded_path = Some(path.clone());
-                d.main_pos = pos.min(total_frames as f64);
+                d.main_pos = sim_pos(ds, from_ms, sr_f).min(total_frames as f64);
                 d.cue_pos = d.main_pos;
-                d.cue_point = deck_sim.cue_point.min(total_frames as f64);
-                d.loop_active = deck_sim.loop_active;
-                d.loop_end = deck_sim.loop_end.min(total_frames as f64);
-                d.playback_rate = deck_sim.rate;
-                d.nudge_factor = deck_sim.nudge_factor;
-                d.bpm = deck_sim.bpm;
-                d.beat_offset_frames = deck_sim.beat_offset_frames;
-                d.is_playing = deck_sim.is_playing;
+                d.cue_point = ds.cue_point.min(total_frames as f64);
+                d.loop_active = ds.loop_active;
+                d.loop_end = ds.loop_end.min(total_frames as f64);
+                d.playback_rate = ds.rate;
+                d.nudge_factor = ds.nudge_factor;
+                d.bpm = ds.bpm;
+                d.beat_offset_frames = ds.beat_offset_frames;
+                d.is_playing = false;
                 d.is_cueing = false;
+            }
+            if ds.is_playing {
+                to_start.push(arc);
+            }
+        }
+        {
+            let mut guards: Vec<_> = to_start
+                .iter()
+                .map(|a| a.lock().expect("deck mutex poisoned"))
+                .collect();
+            for d in guards.iter_mut() {
+                d.is_playing = true;
             }
         }
 
-        let start = tokio::time::Instant::now();
+        // Schedule events against the master output frame clock instead of
+        // wall-clock time. The decks advance on the soundcard's sample clock
+        // inside the audio callback, so referencing that same clock keeps event
+        // application locked to the audio output (no OS-clock-vs-soundcard drift,
+        // no tokio sleep jitter). base_frame is the clock value at loop start.
+        let base_frame = audio.monitor.output_frames();
 
         for event in sorted_events.iter().filter(|e| e.elapsed_ms > from_ms) {
             if cancel.load(Ordering::Acquire) {
                 break;
             }
 
-            let target =
-                std::time::Duration::from_secs_f64((event.elapsed_ms - from_ms).max(0.0) / 1000.0);
-            let elapsed = start.elapsed();
-            if target > elapsed {
-                tokio::time::sleep(target - elapsed).await;
-            }
+            let target_offset = ((event.elapsed_ms - from_ms).max(0.0) / 1000.0 * sr_f).round();
+            let target_frame = base_frame.saturating_add(target_offset as u64);
+            wait_until_frame(&audio.monitor, target_frame, sr, &cancel).await;
 
             if cancel.load(Ordering::Acquire) {
                 break;
             }
 
-            apply_event_live(event, &audio, sr, &cache);
+            // How far the audio clock is already past this event's target frame
+            // (the event only takes effect on the next callback). Used to
+            // sample-align a deck that starts/repositions here with decks that
+            // were already playing.
+            let overshoot = audio.monitor.output_frames().saturating_sub(target_frame);
+            apply_event_live(event, &audio, sr, &cache, overshoot);
         }
 
         if !cancel.load(Ordering::Acquire) {
@@ -358,6 +401,11 @@ pub async fn start_session_playback(
             }
         }
     });
+
+    *state
+        .session_playback_handle
+        .lock()
+        .expect("session_playback handle mutex poisoned") = Some(handle);
 
     Ok(())
 }
@@ -622,6 +670,11 @@ fn sim_apply_event(ev: &SessionEvent, state: &mut SimState, cache: &SampleCache,
         }
         "loop_in" => {
             let sim = state.decks.entry(id).or_default();
+            // Commit the current (possibly looped) position before clearing
+            // loop_active, otherwise sim_pos would fall back to its raw linear
+            // anchor and jump to where the deck would be had it never looped.
+            sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
+            sim.play_start_ms = ev.elapsed_ms;
             if let Some(cs) = ev.cue_sec {
                 sim.loop_start = cs * sr_f;
                 sim.cue_point = cs * sr_f;
@@ -641,7 +694,13 @@ fn sim_apply_event(ev: &SessionEvent, state: &mut SimState, cache: &SampleCache,
             sim.loop_active = true;
         }
         "exit_loop" => {
-            state.decks.entry(id).or_default().loop_active = false;
+            let sim = state.decks.entry(id).or_default();
+            // Commit the current looped position before leaving the loop, so the
+            // subsequent linear sim_pos continues from inside the loop region
+            // instead of jumping to the un-looped linear position.
+            sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
+            sim.play_start_ms = ev.elapsed_ms;
+            sim.loop_active = false;
         }
         "reloop" => {
             let sim = state.decks.entry(id).or_default();
@@ -786,10 +845,60 @@ fn build_snapshots(events: &[SessionEvent], sr: u32, cache: &SampleCache) -> Vec
     snapshots
 }
 
+// Wait until the master output frame clock reaches `target_frame`, sleeping in
+// short steps sized to the remaining frames. Returns early on cancel, and also
+// if the clock stalls for 500ms (no audio device producing) so playback can
+// never hang waiting on a clock that isn't ticking.
+async fn wait_until_frame(
+    monitor: &audio::MasterMonitor,
+    target_frame: u64,
+    sr: u32,
+    cancel: &AtomicBool,
+) {
+    let sr_f = sr.max(1) as f64;
+    let mut last_seen = monitor.output_frames();
+    let mut last_change = std::time::Instant::now();
+
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return;
+        }
+        let now = monitor.output_frames();
+        if now >= target_frame {
+            return;
+        }
+        if now != last_seen {
+            last_seen = now;
+            last_change = std::time::Instant::now();
+        } else if last_change.elapsed() > std::time::Duration::from_millis(500) {
+            return;
+        }
+        let remaining = target_frame - now;
+        let secs = remaining as f64 / sr_f;
+        // Cap the step so a pending cancel (e.g. a new scrub waiting on this task
+        // to exit) is noticed within ~10ms instead of up to a full step.
+        tokio::time::sleep(std::time::Duration::from_secs_f64(secs.clamp(0.0005, 0.01))).await;
+    }
+}
+
 // ── Live event application (used by the timer loop) ───────────────────────────
 
-fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: &SampleCache) {
+// `overshoot_frames` is how many master output frames the audio clock is already
+// past this event's target frame when it gets applied (the event only takes
+// effect on the next audio callback, so it is up to one buffer "late"). For
+// events that start or reposition a *playing* deck, the deck must be advanced by
+// overshoot*rate so it lands where it belongs relative to decks that were already
+// playing, instead of a fraction of a buffer behind them. Pass 0 when timing
+// doesn't matter (e.g. reconstruction replay of past mixer events).
+fn apply_event_live(
+    ev: &SessionEvent,
+    audio: &audio::AppAudio,
+    sr: u32,
+    cache: &SampleCache,
+    overshoot_frames: u64,
+) {
     let sr_f = sr as f64;
+    let overshoot_f = overshoot_frames as f64;
 
     macro_rules! deck_arc {
         ($id:expr) => {
@@ -883,6 +992,7 @@ fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: 
                 d.cue_pos = d.main_pos;
             }
             d.is_playing = true;
+            d.compensate_late_start(overshoot_f);
         }
 
         "stop" => {
@@ -916,6 +1026,7 @@ fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: 
                 if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
                     d.loop_active = false;
                 }
+                d.compensate_late_start(overshoot_f);
             }
         }
 
@@ -1039,6 +1150,7 @@ fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: 
                 if d.is_playing {
                     d.loop_active = true;
                 }
+                d.compensate_late_start(overshoot_f);
             }
         }
 
@@ -1053,6 +1165,7 @@ fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: 
             d.cue_pos = f;
             d.is_playing = true;
             d.is_cueing = true;
+            d.compensate_late_start(overshoot_f);
         }
 
         "cue_preview_end" => {
@@ -1074,6 +1187,7 @@ fn apply_event_live(ev: &SessionEvent, audio: &audio::AppAudio, sr: u32, cache: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::DeckState;
     use crate::offline_render::SessionEvent;
 
     const SR: u32 = 44100;
@@ -1086,6 +1200,407 @@ mod tests {
             deck: Some(deck.to_string()),
             ..Default::default()
         }
+    }
+
+    // ── scrub vs full-playthrough reconstruction parity ───────────────────────
+    //
+    // "Playing through to T" applies every event up to T then reads sim_pos(T).
+    // "Scrubbing to T" is what start_session_playback does: find the nearest
+    // snapshot, replay only the events between it and T, then read sim_pos(T).
+    // The two MUST agree for every deck at every T, otherwise scrubbing lands a
+    // deck at a different position than continuous playback would.
+
+    fn playthrough_pos(
+        events: &[SessionEvent],
+        from_ms: f64,
+        cache: &SampleCache,
+        deck: &str,
+    ) -> Option<f64> {
+        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
+        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
+        let mut state = SimState::new();
+        for ev in sorted.iter().filter(|e| e.elapsed_ms <= from_ms) {
+            sim_apply_event(ev, &mut state, cache, SR);
+        }
+        state.decks.get(deck).map(|d| sim_pos(d, from_ms, SR_F))
+    }
+
+    fn scrub_pos(
+        events: &[SessionEvent],
+        from_ms: f64,
+        cache: &SampleCache,
+        deck: &str,
+    ) -> Option<f64> {
+        let snaps = build_snapshots(events, SR, cache);
+        let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
+        let (mut sim, snapshot_ms) = match idx.checked_sub(1) {
+            Some(i) => (sim_state_from_snapshot(&snaps[i]), snaps[i].elapsed_ms),
+            None => (SimState::new(), 0.0),
+        };
+        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
+        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
+        for ev in sorted
+            .iter()
+            .filter(|e| e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms)
+        {
+            sim_apply_event(ev, &mut sim, cache, SR);
+        }
+        sim.decks.get(deck).map(|d| sim_pos(d, from_ms, SR_F))
+    }
+
+    #[test]
+    fn scrub_matches_playthrough_for_realistic_session() {
+        let path = "/fake/a.wav".to_string();
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            path.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+
+        let mk = |t: f64, ty: &str, deck: &str| SessionEvent {
+            event_type: ty.to_string(),
+            elapsed_ms: t,
+            deck: Some(deck.to_string()),
+            ..Default::default()
+        };
+
+        let events = vec![
+            SessionEvent {
+                path: Some(path.clone()),
+                is_playing: Some(true),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                ..mk(0.0, "deck_snapshot", "A")
+            },
+            SessionEvent {
+                rate: Some(1.03),
+                ..mk(4000.0, "set_playback_rate", "A")
+            },
+            SessionEvent {
+                start_sec: Some(8.0),
+                end_sec: Some(10.0),
+                ..mk(10_000.0, "loop_out", "A")
+            },
+            mk(18_000.0, "exit_loop", "A"),
+            SessionEvent {
+                sec: Some(20.0),
+                ..mk(20_000.0, "seek", "A")
+            },
+        ];
+
+        for step in 0..=300 {
+            let t = step as f64 * 100.0; // every 100ms up to 30s
+            let pt = playthrough_pos(&events, t, &cache, "A");
+            let sc = scrub_pos(&events, t, &cache, "A");
+            match (pt, sc) {
+                (Some(p), Some(s)) => assert!(
+                    (p - s).abs() < 1.0,
+                    "t={t}ms playthrough={p} scrub={s} diff={}",
+                    p - s
+                ),
+                (None, None) => {}
+                _ => panic!("t={t}ms one path produced a deck and the other didn't"),
+            }
+        }
+    }
+
+    // ── sim_pos vs the real DeckState audio engine ────────────────────────────
+    //
+    // Continuous playback advances the real DeckState frame by frame. Scrubbing
+    // instead drops the playhead at sim_pos(T). If sim_pos disagrees with where
+    // the real engine would be at T, scrubbing desyncs decks that continuous
+    // playback keeps tight. This drives the real engine once and checks every
+    // 100ms checkpoint against sim_pos.
+
+    fn apply_deck_event(d: &mut DeckState, ev: &SessionEvent, cache: &SampleCache) {
+        let srf = SR_F;
+        let clamp = |f: f64, d: &DeckState| f.min(d.total_frames as f64);
+        match ev.event_type.as_str() {
+            "deck_snapshot" => {
+                let path = ev.path.as_ref().unwrap();
+                let (samples, ch) = cache.get(path).unwrap();
+                d.samples = samples.clone();
+                d.channels = *ch;
+                d.total_frames = samples.len() / ch;
+                d.device_sample_rate = SR;
+                if let Some(p) = ev.position_sec {
+                    let f = clamp(p * srf, d);
+                    d.main_pos = f;
+                }
+                if let Some(c) = ev.cue_point_sec {
+                    d.cue_point = clamp(c * srf, d);
+                }
+                if let Some(r) = ev.playback_rate {
+                    d.playback_rate = r.max(0.1);
+                }
+                if let Some(la) = ev.loop_active {
+                    d.loop_active = la;
+                }
+                if let Some(le) = ev.loop_end_sec {
+                    d.loop_end = clamp(le * srf, d);
+                }
+                if ev.is_playing == Some(true) {
+                    d.is_playing = true;
+                }
+            }
+            "play" => {
+                if let Some(s) = ev.sec {
+                    d.main_pos = clamp(s * srf, d);
+                }
+                d.is_playing = true;
+            }
+            "stop" => d.is_playing = false,
+            "seek" => {
+                if let Some(s) = ev.sec {
+                    let f = clamp(s * srf, d);
+                    d.main_pos = f;
+                    if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
+                        d.loop_active = false;
+                    }
+                }
+            }
+            "set_playback_rate" => {
+                if let Some(r) = ev.rate {
+                    d.playback_rate = r.max(0.1);
+                }
+            }
+            "loop_out" => {
+                if let Some(ss) = ev.start_sec {
+                    d.cue_point = clamp(ss * srf, d);
+                }
+                if let Some(es) = ev.end_sec {
+                    d.loop_end = clamp(es * srf, d);
+                }
+                d.loop_active = true;
+            }
+            "exit_loop" => d.loop_active = false,
+            "set_nudge" => {
+                if let Some(p) = ev.percent {
+                    d.nudge_factor = 1.0 + p / 100.0;
+                }
+            }
+            "stopped_at_cue" | "stop_at_cue" => {
+                d.is_playing = false;
+                if let Some(c) = ev.cue_point_sec {
+                    d.main_pos = clamp(c * srf, d);
+                }
+            }
+            "cue_preview_start" => {
+                let cp = ev.cue_point_sec.unwrap_or(d.cue_point / srf);
+                let f = clamp(cp * srf, d);
+                d.cue_point = f;
+                d.main_pos = f;
+                d.is_playing = true;
+            }
+            "cue_preview_end" => {
+                let cp = ev.cue_point_sec.unwrap_or(d.cue_point / srf);
+                let f = clamp(cp * srf, d);
+                d.is_playing = false;
+                d.main_pos = f;
+            }
+            _ => {}
+        }
+    }
+
+    fn check_sim_vs_engine(events: &[SessionEvent], cache: &SampleCache, seconds: usize) {
+        check_sim_vs_engine_deck(events, cache, seconds, "A");
+    }
+
+    fn check_sim_vs_engine_deck(
+        events: &[SessionEvent],
+        cache: &SampleCache,
+        seconds: usize,
+        deck: &str,
+    ) {
+        let (max_diff, worst_t) = max_sim_engine_divergence(events, cache, seconds, deck);
+        assert!(
+            max_diff < 2.0,
+            "sim_pos diverges from real engine by {max_diff} frames at t={worst_t}ms"
+        );
+    }
+
+    fn max_sim_engine_divergence(
+        events: &[SessionEvent],
+        cache: &SampleCache,
+        seconds: usize,
+        deck: &str,
+    ) -> (f64, f64) {
+        let mut sorted: Vec<&SessionEvent> = events
+            .iter()
+            .filter(|e| e.deck.as_deref() == Some(deck))
+            .collect();
+        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
+
+        let mut d = DeckState::empty(SR);
+        let total_frames = seconds * SR as usize;
+        let mut ei = 0usize;
+        let mut max_diff = 0.0f64;
+        let mut worst_t = 0.0f64;
+        for n in 0..total_frames {
+            let cur_ms = n as f64 / SR_F * 1000.0;
+            while ei < sorted.len() && sorted[ei].elapsed_ms <= cur_ms {
+                apply_deck_event(&mut d, sorted[ei], cache);
+                ei += 1;
+            }
+            if n % (SR as usize / 10) == 0 && n > 0 {
+                if let Some(sim) = playthrough_pos(events, cur_ms, cache, deck) {
+                    let mut actual = d.main_pos;
+                    if d.loop_active && d.loop_end > d.cue_point && actual >= d.loop_end {
+                        let dur = d.loop_end - d.cue_point;
+                        actual = d.cue_point + (actual - d.loop_end) % dur;
+                    }
+                    let diff = (sim - actual).abs();
+                    if diff > max_diff {
+                        max_diff = diff;
+                        worst_t = cur_ms;
+                    }
+                }
+            }
+            d.main_tick();
+        }
+        (max_diff, worst_t)
+    }
+
+    #[test]
+    fn sim_pos_matches_real_engine_for_realistic_session() {
+        let path = "/fake/a.wav".to_string();
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            path.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+
+        let mk = |t: f64, ty: &str| SessionEvent {
+            event_type: ty.to_string(),
+            elapsed_ms: t,
+            deck: Some("A".to_string()),
+            ..Default::default()
+        };
+
+        let events = vec![
+            SessionEvent {
+                path: Some(path.clone()),
+                is_playing: Some(true),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                ..mk(0.0, "deck_snapshot")
+            },
+            SessionEvent {
+                rate: Some(1.03),
+                ..mk(4000.0, "set_playback_rate")
+            },
+            SessionEvent {
+                start_sec: Some(8.0),
+                end_sec: Some(10.0),
+                ..mk(10_000.0, "loop_out")
+            },
+            mk(18_000.0, "exit_loop"),
+        ];
+
+        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
+        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
+
+        // Drive the real engine once to 25s, checking sim_pos every 100ms.
+        let mut d = DeckState::empty(SR);
+        let total_frames = 25 * SR as usize;
+        let mut ei = 0usize;
+        let mut max_diff = 0.0f64;
+        let mut worst_t = 0.0f64;
+        for n in 0..total_frames {
+            let cur_ms = n as f64 / SR_F * 1000.0;
+            while ei < sorted.len() && sorted[ei].elapsed_ms <= cur_ms {
+                apply_deck_event(&mut d, sorted[ei], &cache);
+                ei += 1;
+            }
+            if n % (SR as usize / 10) == 0 && n > 0 {
+                let sim = playthrough_pos(&events, cur_ms, &cache, "A").unwrap();
+                // Fold a not-yet-wrapped loop overshoot the same way next_pos
+                // will on the following tick, so we compare steady-state
+                // positions rather than the one-tick engagement transient.
+                let mut actual = d.main_pos;
+                if d.loop_active && d.loop_end > d.cue_point && actual >= d.loop_end {
+                    let dur = d.loop_end - d.cue_point;
+                    actual = d.cue_point + (actual - d.loop_end) % dur;
+                }
+                let diff = (sim - actual).abs();
+                if diff > max_diff {
+                    max_diff = diff;
+                    worst_t = cur_ms;
+                }
+            }
+            d.main_tick();
+        }
+        assert!(
+            max_diff < 2.0,
+            "sim_pos diverges from real engine by {max_diff} frames at t={worst_t}ms"
+        );
+    }
+
+    #[test]
+    fn sim_pos_matches_real_engine_non_loop_beatmatch() {
+        let path = "/fake/a.wav".to_string();
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            path.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+
+        let mk = |t: f64, ty: &str| SessionEvent {
+            event_type: ty.to_string(),
+            elapsed_ms: t,
+            deck: Some("A".to_string()),
+            ..Default::default()
+        };
+
+        // No loops: snapshot playing, rate trims, nudges (held + released),
+        // a cue preview (press/release), a stop/play, and a seek.
+        let events = vec![
+            SessionEvent {
+                path: Some(path.clone()),
+                is_playing: Some(true),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                cue_point_sec: Some(0.0),
+                ..mk(0.0, "deck_snapshot")
+            },
+            SessionEvent {
+                rate: Some(1.021),
+                ..mk(3000.0, "set_playback_rate")
+            },
+            SessionEvent {
+                percent: Some(3.0),
+                ..mk(5000.0, "set_nudge")
+            },
+            SessionEvent {
+                percent: Some(0.0),
+                ..mk(5350.0, "set_nudge")
+            },
+            SessionEvent {
+                percent: Some(-2.5),
+                ..mk(8000.0, "set_nudge")
+            },
+            SessionEvent {
+                percent: Some(0.0),
+                ..mk(8200.0, "set_nudge")
+            },
+            SessionEvent {
+                cue_point_sec: Some(4.0),
+                ..mk(12_000.0, "cue_preview_start")
+            },
+            SessionEvent {
+                cue_point_sec: Some(4.0),
+                ..mk(12_800.0, "cue_preview_end")
+            },
+            mk(14_000.0, "play"),
+            mk(16_000.0, "stop"),
+            mk(18_000.0, "play"),
+            SessionEvent {
+                sec: Some(25.0),
+                ..mk(20_000.0, "seek")
+            },
+        ];
+
+        check_sim_vs_engine(&events, &cache, 24);
     }
 
     // ── sim_pos ──────────────────────────────────────────────────────────────

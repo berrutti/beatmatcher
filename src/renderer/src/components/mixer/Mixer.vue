@@ -21,7 +21,6 @@
               step="0.5"
               :value="mixer.eq[deckId][band]"
               orient="vertical"
-              :disabled="!decks.decks[deckId].trackLoaded"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
               @input="
                 (e) => onEqInput(deckId, band, parseFloat((e.target as HTMLInputElement).value))

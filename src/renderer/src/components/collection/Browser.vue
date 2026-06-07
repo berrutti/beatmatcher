@@ -1,11 +1,5 @@
 <template>
-  <div
-    class="collection"
-    :class="{ 'collection--drag-over': isDragOver }"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
-    @drop="onDrop"
-  >
+  <div class="collection" :class="{ 'collection--drag-over': isDragOver }">
     <div class="collection__header">
       <div class="collection__tabs">
         <button
@@ -361,7 +355,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
@@ -681,54 +677,38 @@ function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
   window.addEventListener('pointercancel', onCancel);
 }
 
-function isAudio(file: File): boolean {
-  return file.type.startsWith('audio/') || /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i.test(file.name);
+const AUDIO_EXT = /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i;
+
+// OS file/folder drops come through Tauri's native drag-drop (HTML5 DnD can't see
+// absolute paths in Tauri v2). Dropped audio files are added directly; dropped
+// folders are scanned, same as the file/folder dialogs. Internal track drags
+// (store.draggingPath) are pointer-based and never fire this event.
+async function onFilesDropped(paths: string[]) {
+  if (store.draggingPath) return;
+  const audioFiles = paths.filter((p) => AUDIO_EXT.test(p));
+  const folders = paths.filter((p) => !AUDIO_EXT.test(p));
+  if (audioFiles.length > 0) store.addFilesFromPaths(audioFiles);
+  if (folders.length > 0) {
+    const scanned = await store.scanFolders(folders);
+    if (scanned.length > 0) store.addFilesFromPaths(scanned);
+  }
 }
 
-async function readEntry(entry: FileSystemEntry): Promise<File[]> {
-  if (entry.isFile) {
-    return new Promise((resolve) => {
-      (entry as FileSystemFileEntry).file(
-        (f) => resolve(isAudio(f) ? [f] : []),
-        () => resolve([])
-      );
-    });
-  }
-  if (entry.isDirectory) {
-    const reader = (entry as FileSystemDirectoryEntry).createReader();
-    const all: FileSystemEntry[] = [];
-    while (true) {
-      const batch = await new Promise<FileSystemEntry[]>((resolve) => {
-        reader.readEntries(resolve, () => resolve([]));
-      });
-      if (batch.length === 0) break;
-      all.push(...batch);
+let unlistenDrop: UnlistenFn | null = null;
+onMounted(async () => {
+  unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+    const payload = event.payload;
+    if (payload.type === 'enter' || payload.type === 'over') {
+      if (!store.draggingPath) isDragOver.value = true;
+    } else if (payload.type === 'leave') {
+      isDragOver.value = false;
+    } else if (payload.type === 'drop') {
+      isDragOver.value = false;
+      await onFilesDropped(payload.paths);
     }
-    return (await Promise.all(all.map(readEntry))).flat();
-  }
-  return [];
-}
-
-function onDragOver(e: DragEvent) {
-  if (store.draggingPath) return;
-  e.preventDefault();
-  isDragOver.value = true;
-}
-
-function onDragLeave() {
-  isDragOver.value = false;
-}
-
-async function onDrop(e: DragEvent) {
-  if (store.draggingPath) return;
-  e.preventDefault();
-  e.stopPropagation();
-  isDragOver.value = false;
-  const items = Array.from(e.dataTransfer?.items ?? []);
-  const entries = items.map((i) => i.webkitGetAsEntry()).filter(Boolean) as FileSystemEntry[];
-  const files = (await Promise.all(entries.map(readEntry))).flat();
-  if (files.length > 0) store.addFiles(files);
-}
+  });
+});
+onUnmounted(() => unlistenDrop?.());
 
 // Movement below this threshold is treated as a click, not a drag start.
 const DRAG_THRESHOLD = 5;
