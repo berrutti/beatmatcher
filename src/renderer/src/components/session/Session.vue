@@ -18,6 +18,10 @@
           :clips="clips"
           :loaded-spans="loadedSpans"
           :playhead-ms="playheadMs"
+          :show-automation="showAutomation"
+          :deck-automation="deckAutomation"
+          :master-automation="masterAutomation"
+          :deck-nudges="deckNudges"
           @seek="onSeek"
         />
       </template>
@@ -36,6 +40,13 @@
       </span>
       <span class="session__filename">{{ session.session.filename }}</span>
       <div class="session__controls-right">
+        <button
+          class="session__btn session__btn--automation"
+          :class="{ 'session__btn--active': showAutomation }"
+          @click="toggleAutomation"
+        >
+          {{ $t('session.automation') }}
+        </button>
         <button
           class="session__btn session__btn--render"
           :disabled="isRendering"
@@ -67,17 +78,27 @@ import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import { formatMs } from '@renderer/utils/time';
+import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 const session = useSessionStore();
 const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans } = useSessionTimeline(sessionRef, (path) => collection.getName(path));
+const { clips, loadedSpans, deckAutomation, masterAutomation, deckNudges } = useSessionTimeline(
+  sessionRef,
+  (path) => collection.getName(path)
+);
 
 const isFileDragOver = ref(false);
 const isRendering = ref<boolean>(false);
+const showAutomation = ref(storageGet(STORAGE_KEYS.sessionAutomationVisible, false));
 const playheadMs = ref(0);
+
+function toggleAutomation() {
+  showAutomation.value = !showAutomation.value;
+  storageSet(STORAGE_KEYS.sessionAutomationVisible, showAutomation.value);
+}
 let rafId = 0;
 let playStartWall = 0;
 let unlistenDrop: UnlistenFn | null = null;
@@ -259,11 +280,13 @@ onUnmounted(() => {
   gap: 0.5em;
 }
 
-.session__btn--render {
+.session__btn--render,
+.session__btn--automation {
   color: var(--color-muted);
 }
 
-.session__btn--render:hover:not(:disabled) {
+.session__btn--render:hover:not(:disabled),
+.session__btn--automation:hover {
   background: color-mix(in srgb, #06b6d4 15%, transparent);
   border-color: #06b6d4;
   color: #06b6d4;

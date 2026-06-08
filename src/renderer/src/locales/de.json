@@ -182,6 +182,14 @@
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",
     "noTrackInfo": "Keine Track-Info. Bitte zuerst Tracks im Performance-Modus laden, dann aufnehmen.",
+    "automation": "AUTOMATION",
+    "automationLanes": {
+      "gain": "Lautstärke",
+      "filter": "Filter",
+      "eqLow": "EQ Bass",
+      "eqMid": "EQ Mitten",
+      "eqHigh": "EQ Höhen"
+    },
     "rendering": "WIRD GERENDERT...",
     "renderWav": "ALS WAV RENDERN",
     "renderFlac": "ALS FLAC RENDERN"

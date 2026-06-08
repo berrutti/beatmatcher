@@ -182,6 +182,14 @@
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
     "noTrackInfo": "Sin info de tracks. Carga tracks en el modo Actuación primero y luego graba.",
+    "automation": "AUTOMATIZACIÓN",
+    "automationLanes": {
+      "gain": "Volumen",
+      "filter": "Filtro",
+      "eqLow": "EQ Graves",
+      "eqMid": "EQ Medios",
+      "eqHigh": "EQ Agudos"
+    },
     "rendering": "RENDERIZANDO...",
     "renderWav": "RENDERIZAR WAV",
     "renderFlac": "RENDERIZAR FLAC"

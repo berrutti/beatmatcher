@@ -44,8 +44,8 @@ const props = defineProps<{
 const decksStore = useDecksStore();
 const appModeStore = useAppModeStore();
 
-function deckLoaded(deckId: string): boolean {
-  return decksStore.decks[deckId as DeckId].loadedPath === props.path;
+function deckLoaded(deckId: DeckId): boolean {
+  return decksStore.decks[deckId].loadedPath === props.path;
 }
 
 function load(deckId: string) {
