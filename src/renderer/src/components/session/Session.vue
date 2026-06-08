@@ -18,8 +18,8 @@
           :clips="clips"
           :loaded-spans="loadedSpans"
           :playhead-ms="playheadMs"
-          :deck-automation="deckAutomation"
-          :master-automation="masterAutomation"
+          :deck-lanes="deckLanes"
+          :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
           @seek="onSeek"
         />
@@ -76,7 +76,7 @@ const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans, deckAutomation, masterAutomation, deckNudges } = useSessionTimeline(
+const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path)
 );

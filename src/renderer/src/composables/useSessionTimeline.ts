@@ -19,23 +19,23 @@ export type LoadedSpan = {
   endMs: number;
 };
 
-export type AutomationPoint = { ms: number; value: number };
+export type LanePoint = { ms: number; value: number };
 
 export type FilterActiveSpan = { startMs: number; endMs: number };
 
 export type NudgeSpan = { startMs: number; endMs: number; percent: number };
 
-export type DeckAutomation = {
-  gain: AutomationPoint[];
-  eqLow: AutomationPoint[];
-  eqMid: AutomationPoint[];
-  eqHigh: AutomationPoint[];
-  filter: AutomationPoint[];
+export type DeckLanes = {
+  gain: LanePoint[];
+  eqLow: LanePoint[];
+  eqMid: LanePoint[];
+  eqHigh: LanePoint[];
+  filter: LanePoint[];
   filterActive: FilterActiveSpan[];
 };
 
-export type MasterAutomation = {
-  gain: AutomationPoint[];
+export type MasterLanes = {
+  gain: LanePoint[];
 };
 
 const DEFAULT_GAIN = 1;
@@ -345,7 +345,7 @@ export function buildClips(
   return { clips, loadedSpans };
 }
 
-function makeDeckAutomation(): DeckAutomation {
+function makeDeckLanes(): DeckLanes {
   return {
     gain: [{ ms: 0, value: DEFAULT_GAIN }],
     eqLow: [{ ms: 0, value: DEFAULT_EQ_DB }],
@@ -356,33 +356,33 @@ function makeDeckAutomation(): DeckAutomation {
   };
 }
 
-function extendToEnd(points: AutomationPoint[], durationMs: number) {
+function extendToEnd(points: LanePoint[], durationMs: number) {
   const last = points[points.length - 1];
   if (last && last.ms < durationMs) points.push({ ms: durationMs, value: last.value });
 }
 
-export function buildAutomation(
+export function buildLanes(
   events: SessionEvent[],
   durationMs: number
 ): {
-  deckAutomation: Record<string, DeckAutomation>;
-  masterAutomation: MasterAutomation;
+  deckLanes: Record<string, DeckLanes>;
+  masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
 } {
-  const deckAutomation: Record<string, DeckAutomation> = {};
+  const deckLanes: Record<string, DeckLanes> = {};
   const filterActiveSinceMs: Record<string, number | null> = {};
   const nudgeSince: Record<string, { startMs: number; percent: number } | null> = {};
   const deckNudges: Record<string, NudgeSpan[]> = {};
-  const masterAutomation: MasterAutomation = { gain: [{ ms: 0, value: DEFAULT_MASTER_GAIN }] };
+  const masterLanes: MasterLanes = { gain: [{ ms: 0, value: DEFAULT_MASTER_GAIN }] };
 
   const getOrCreate = (id: string) => {
-    if (!deckAutomation[id]) {
-      deckAutomation[id] = makeDeckAutomation();
+    if (!deckLanes[id]) {
+      deckLanes[id] = makeDeckLanes();
       filterActiveSinceMs[id] = null;
       nudgeSince[id] = null;
       deckNudges[id] = [];
     }
-    return deckAutomation[id];
+    return deckLanes[id];
   };
 
   for (const ev of events) {
@@ -415,7 +415,7 @@ export function buildAutomation(
           if (ev.active && filterActiveSinceMs[deckId] === null) {
             filterActiveSinceMs[deckId] = ev.elapsed_ms;
           } else if (!ev.active && filterActiveSinceMs[deckId] !== null) {
-            deckAutomation[deckId].filterActive.push({
+            deckLanes[deckId].filterActive.push({
               startMs: filterActiveSinceMs[deckId]!,
               endMs: ev.elapsed_ms
             });
@@ -449,13 +449,13 @@ export function buildAutomation(
 
       case 'set_master_gain':
         if (ev.gain !== undefined) {
-          masterAutomation.gain.push({ ms: ev.elapsed_ms, value: ev.gain });
+          masterLanes.gain.push({ ms: ev.elapsed_ms, value: ev.gain });
         }
         break;
     }
   }
 
-  for (const [deckId, auto] of Object.entries(deckAutomation)) {
+  for (const [deckId, auto] of Object.entries(deckLanes)) {
     const sinceMs = filterActiveSinceMs[deckId];
     if (sinceMs !== null && sinceMs !== undefined) {
       auto.filterActive.push({ startMs: sinceMs, endMs: durationMs });
@@ -474,9 +474,9 @@ export function buildAutomation(
     extendToEnd(auto.eqHigh, durationMs);
     extendToEnd(auto.filter, durationMs);
   }
-  extendToEnd(masterAutomation.gain, durationMs);
+  extendToEnd(masterLanes.gain, durationMs);
 
-  return { deckAutomation, masterAutomation, deckNudges };
+  return { deckLanes, masterLanes, deckNudges };
 }
 
 export type { ParsedSession };
@@ -499,22 +499,22 @@ export function useSessionTimeline(
     return buildClips(session.value.events, nameForPath);
   });
 
-  const automationBuilt = computed<{
-    deckAutomation: Record<string, DeckAutomation>;
-    masterAutomation: MasterAutomation;
+  const lanesBuilt = computed<{
+    deckLanes: Record<string, DeckLanes>;
+    masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
   }>(() => {
     if (!session.value) {
-      return { deckAutomation: {}, masterAutomation: { gain: [] }, deckNudges: {} };
+      return { deckLanes: {}, masterLanes: { gain: [] }, deckNudges: {} };
     }
-    return buildAutomation(session.value.events, session.value.durationMs);
+    return buildLanes(session.value.events, session.value.durationMs);
   });
 
   const clips = computed(() => built.value.clips);
   const loadedSpans = computed(() => built.value.loadedSpans);
-  const deckAutomation = computed(() => automationBuilt.value.deckAutomation);
-  const masterAutomation = computed(() => automationBuilt.value.masterAutomation);
-  const deckNudges = computed(() => automationBuilt.value.deckNudges);
+  const deckLanes = computed(() => lanesBuilt.value.deckLanes);
+  const masterLanes = computed(() => lanesBuilt.value.masterLanes);
+  const deckNudges = computed(() => lanesBuilt.value.deckNudges);
 
-  return { clips, loadedSpans, deckAutomation, masterAutomation, deckNudges };
+  return { clips, loadedSpans, deckLanes, masterLanes, deckNudges };
 }

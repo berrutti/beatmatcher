@@ -43,9 +43,9 @@ import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type {
   Clip,
   LoadedSpan,
-  DeckAutomation,
-  MasterAutomation,
-  AutomationPoint,
+  DeckLanes,
+  MasterLanes,
+  LanePoint,
   NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
 import { EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
@@ -117,8 +117,8 @@ const props = defineProps<{
   clips: Clip[];
   loadedSpans: LoadedSpan[];
   playheadMs: number;
-  deckAutomation: Record<string, DeckAutomation>;
-  masterAutomation: MasterAutomation;
+  deckLanes: Record<string, DeckLanes>;
+  masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
 }>();
 
@@ -546,12 +546,12 @@ function draw() {
     }
 
     if (lanes.length > 0) {
-      drawDeckAutomation(
+      drawDeckLanes(
         ctx,
         canvasW,
         rowY + ROW_H,
         msToX,
-        props.deckAutomation[deckId],
+        props.deckLanes[deckId],
         lanes,
         viewStart,
         viewEnd
@@ -562,9 +562,9 @@ function draw() {
   }
   rowLayout = newRowLayout;
 
-  drawAutomationSteps(
+  drawLaneSteps(
     ctx,
-    props.masterAutomation.gain,
+    props.masterLanes.gain,
     masterTopY + 2,
     MASTER_ROW_H - 4,
     0,
@@ -680,9 +680,9 @@ function valueToY(laneY: number, laneH: number, minVal: number, maxVal: number, 
 // the next point's time, then jumps. This matches how these parameters actually
 // change, recorded session events fire at the moment a value changes, not gradually
 // beforehand, so a held-then-jump shape is accurate while a straight diagonal is not.
-function drawAutomationSteps(
+function drawLaneSteps(
   ctx: CanvasRenderingContext2D,
-  points: AutomationPoint[],
+  points: LanePoint[],
   laneY: number,
   laneH: number,
   minVal: number,
@@ -729,13 +729,13 @@ function filterColorFor(value: number): string {
 function drawFilterLane(
   ctx: CanvasRenderingContext2D,
   w: number,
-  automation: DeckAutomation,
+  deckData: DeckLanes,
   laneY: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
 ) {
-  for (const span of automation.filterActive) {
+  for (const span of deckData.filterActive) {
     if (!overlapsRange(span.startMs, span.endMs, viewStart, viewEnd)) continue;
     const sx = msToX(span.startMs);
     const sw = Math.max(1, msToX(span.endMs) - sx);
@@ -751,9 +751,9 @@ function drawFilterLane(
   ctx.lineTo(w - PADDING, centerY);
   ctx.stroke();
 
-  drawAutomationSteps(
+  drawLaneSteps(
     ctx,
-    automation.filter,
+    deckData.filter,
     laneY,
     SUBLANE_H,
     -1,
@@ -767,14 +767,14 @@ function drawFilterLane(
 
 function drawEqLane(
   ctx: CanvasRenderingContext2D,
-  points: AutomationPoint[],
+  points: LanePoint[],
   color: string,
   laneY: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
 ) {
-  drawAutomationSteps(
+  drawLaneSteps(
     ctx,
     points,
     laneY,
@@ -791,7 +791,7 @@ function drawEqLane(
 type LaneDrawer = (
   ctx: CanvasRenderingContext2D,
   w: number,
-  automation: DeckAutomation,
+  deckData: DeckLanes,
   laneY: number,
   msToX: (ms: number) => number,
   viewStart: number,
@@ -799,10 +799,10 @@ type LaneDrawer = (
 ) => void;
 
 const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _w, automation, laneY, msToX, viewStart, viewEnd) =>
-    drawAutomationSteps(
+  gain: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
+    drawLaneSteps(
       ctx,
-      automation.gain,
+      deckData.gain,
       laneY,
       SUBLANE_H,
       0,
@@ -813,25 +813,25 @@ const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
       viewEnd
     ),
   filter: drawFilterLane,
-  eqLow: (ctx, _w, automation, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, automation.eqLow, EQ_BAND_COLORS.low, laneY, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _w, automation, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, automation.eqMid, EQ_BAND_COLORS.mid, laneY, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _w, automation, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, automation.eqHigh, EQ_BAND_COLORS.high, laneY, msToX, viewStart, viewEnd)
+  eqLow: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS.low, laneY, msToX, viewStart, viewEnd),
+  eqMid: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS.mid, laneY, msToX, viewStart, viewEnd),
+  eqHigh: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS.high, laneY, msToX, viewStart, viewEnd)
 };
 
-function drawDeckAutomation(
+function drawDeckLanes(
   ctx: CanvasRenderingContext2D,
   w: number,
   laneTopY: number,
   msToX: (ms: number) => number,
-  automation: DeckAutomation | undefined,
+  deckData: DeckLanes | undefined,
   lanes: LaneKey[],
   viewStart: number,
   viewEnd: number
 ) {
-  if (!automation) return;
+  if (!deckData) return;
 
   let laneY = laneTopY;
   for (let laneIdx = 0; laneIdx < lanes.length; laneIdx++) {
@@ -847,7 +847,7 @@ function drawDeckAutomation(
       ctx.fillRect(LABEL_W, laneY, w - LABEL_W - PADDING, 1);
     }
 
-    LANE_DRAWERS[lanes[laneIdx]](ctx, w, automation, laneY, msToX, viewStart, viewEnd);
+    LANE_DRAWERS[lanes[laneIdx]](ctx, w, deckData, laneY, msToX, viewStart, viewEnd);
     laneY += SUBLANE_H;
   }
 }
@@ -889,8 +889,8 @@ watch(
     props.loadedSpans,
     props.durationMs,
     props.playheadMs,
-    props.deckAutomation,
-    props.masterAutomation,
+    props.deckLanes,
+    props.masterLanes,
     props.deckNudges,
     laneVisibility.value,
     viewStartMs.value,
