@@ -18,6 +18,9 @@
           :clips="clips"
           :loaded-spans="loadedSpans"
           :playhead-ms="playheadMs"
+          :deck-lanes="deckLanes"
+          :master-lanes="masterLanes"
+          :deck-nudges="deckNudges"
           @seek="onSeek"
         />
       </template>
@@ -73,7 +76,10 @@ const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans } = useSessionTimeline(sessionRef, (path) => collection.getName(path));
+const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
+  sessionRef,
+  (path) => collection.getName(path)
+);
 
 const isFileDragOver = ref(false);
 const isRendering = ref<boolean>(false);

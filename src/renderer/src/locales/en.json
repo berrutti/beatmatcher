@@ -182,6 +182,13 @@
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",
     "noTrackInfo": "No track info. Load tracks in Performance mode first, then record.",
+    "lanes": {
+      "gain": "Gain",
+      "filter": "Filter",
+      "eqLow": "EQ Low",
+      "eqMid": "EQ Mid",
+      "eqHigh": "EQ High"
+    },
     "rendering": "RENDERING...",
     "renderWav": "RENDER WAV",
     "renderFlac": "RENDER FLAC"
