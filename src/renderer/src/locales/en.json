@@ -182,8 +182,7 @@
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",
     "noTrackInfo": "No track info. Load tracks in Performance mode first, then record.",
-    "automation": "AUTOMATION",
-    "automationLanes": {
+    "lanes": {
       "gain": "Gain",
       "filter": "Filter",
       "eqLow": "EQ Low",

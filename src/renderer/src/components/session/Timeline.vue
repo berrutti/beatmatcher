@@ -26,7 +26,7 @@
         @click="toggleLane(laneMenu.deck, key)"
       >
         <span class="lane-menu__check">{{ isLaneVisible(laneMenu.deck, key) ? '✓' : '' }}</span>
-        {{ $t(`session.automationLanes.${key}`) }}
+        {{ $t(`session.lanes.${key}`) }}
       </button>
     </div>
     <div
@@ -117,7 +117,6 @@ const props = defineProps<{
   clips: Clip[];
   loadedSpans: LoadedSpan[];
   playheadMs: number;
-  showAutomation: boolean;
   deckAutomation: Record<string, DeckAutomation>;
   masterAutomation: MasterAutomation;
   deckNudges: Record<string, NudgeSpan[]>;
@@ -318,7 +317,7 @@ function onCanvasClick(e: MouseEvent) {
 }
 
 const laneVisibility = ref<Record<string, LaneVisibility>>(
-  storageGet(STORAGE_KEYS.sessionAutomationLanes, {})
+  storageGet(STORAGE_KEYS.sessionLaneVisibility, {})
 );
 
 function isLaneVisible(deck: string, lane: LaneKey): boolean {
@@ -335,7 +334,7 @@ function toggleLane(deck: string, lane: LaneKey) {
     ...laneVisibility.value,
     [deck]: { ...current, [lane]: !isLaneVisible(deck, lane) }
   };
-  storageSet(STORAGE_KEYS.sessionAutomationLanes, laneVisibility.value);
+  storageSet(STORAGE_KEYS.sessionLaneVisibility, laneVisibility.value);
 }
 
 type LaneMenu = { deck: string; x: number; y: number };
@@ -346,7 +345,7 @@ function closeLaneMenu() {
 }
 
 function onCanvasContextMenu(e: MouseEvent) {
-  if (!props.showAutomation || !canvasEl.value) return;
+  if (!canvasEl.value) return;
   const rect = canvasEl.value.getBoundingClientRect();
   const y = e.clientY - rect.top;
   const row = rowLayout.find((r) => y >= r.top && y < r.top + r.height);
@@ -431,7 +430,7 @@ function draw() {
   let rowY = TICK_H;
   for (let ri = 0; ri < DECK_ORDER.length; ri++) {
     const deckId = DECK_ORDER[ri];
-    const lanes = props.showAutomation ? visibleLanesFor(deckId) : [];
+    const lanes = visibleLanesFor(deckId);
     const rowH = ROW_H + lanes.length * SUBLANE_H;
     newRowLayout.push({ deck: deckId, top: rowY, height: rowH, lanes });
 
@@ -458,16 +457,14 @@ function draw() {
 
   // Master row background + label (outside clip so label at LABEL_W/2 is not hidden)
   const masterTopY = rowY;
-  if (props.showAutomation) {
-    ctx.fillStyle = '#101010';
-    ctx.fillRect(0, masterTopY, canvasW, MASTER_ROW_H);
+  ctx.fillStyle = '#101010';
+  ctx.fillRect(0, masterTopY, canvasW, MASTER_ROW_H);
 
-    ctx.font = `bold 9px monospace`;
-    ctx.fillStyle = '#888';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('M', LABEL_W / 2, masterTopY + MASTER_ROW_H / 2);
-  }
+  ctx.font = `bold 9px monospace`;
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('M', LABEL_W / 2, masterTopY + MASTER_ROW_H / 2);
 
   // Second pass: track content clipped to [LABEL_W, trackW] so it never bleeds into the label column
   ctx.save();
@@ -565,23 +562,19 @@ function draw() {
   }
   rowLayout = newRowLayout;
 
-  let bottomY = rowY;
-
-  if (props.showAutomation) {
-    drawAutomationSteps(
-      ctx,
-      props.masterAutomation.gain,
-      masterTopY + 2,
-      MASTER_ROW_H - 4,
-      0,
-      1,
-      GAIN_COLOR,
-      msToX,
-      viewStart,
-      viewEnd
-    );
-    bottomY = masterTopY + MASTER_ROW_H;
-  }
+  drawAutomationSteps(
+    ctx,
+    props.masterAutomation.gain,
+    masterTopY + 2,
+    MASTER_ROW_H - 4,
+    0,
+    1,
+    GAIN_COLOR,
+    msToX,
+    viewStart,
+    viewEnd
+  );
+  const bottomY = masterTopY + MASTER_ROW_H;
 
   ctx.restore();
 
@@ -591,10 +584,8 @@ function draw() {
     ctx.fillRect(0, row.top + row.height - 2, canvasW, 2);
   }
 
-  if (props.showAutomation) {
-    ctx.fillStyle = '#222';
-    ctx.fillRect(0, masterTopY + MASTER_ROW_H - 1, canvasW, 1);
-  }
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0, masterTopY + MASTER_ROW_H - 1, canvasW, 1);
 
   const overviewY = canvasH - OVERVIEW_H;
   const rowsBottom = Math.min(bottomY, overviewY - OVERVIEW_GAP);
@@ -898,7 +889,6 @@ watch(
     props.loadedSpans,
     props.durationMs,
     props.playheadMs,
-    props.showAutomation,
     props.deckAutomation,
     props.masterAutomation,
     props.deckNudges,

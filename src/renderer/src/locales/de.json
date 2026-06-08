@@ -182,8 +182,7 @@
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",
     "noTrackInfo": "Keine Track-Info. Bitte zuerst Tracks im Performance-Modus laden, dann aufnehmen.",
-    "automation": "AUTOMATION",
-    "automationLanes": {
+    "lanes": {
       "gain": "Lautstärke",
       "filter": "Filter",
       "eqLow": "EQ Bass",

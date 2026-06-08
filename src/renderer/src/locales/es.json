@@ -182,8 +182,7 @@
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
     "noTrackInfo": "Sin info de tracks. Carga tracks en el modo Actuación primero y luego graba.",
-    "automation": "AUTOMATIZACIÓN",
-    "automationLanes": {
+    "lanes": {
       "gain": "Volumen",
       "filter": "Filtro",
       "eqLow": "EQ Graves",
