@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, computed } from 'vue';
+import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -532,9 +532,32 @@ export const useDecksStore = defineStore('decks', () => {
     );
   }
 
+  const settingsStore = useSettingsStore();
+
+  watch(
+    () => settingsStore.deckAccents,
+    (accents) => {
+      for (const [id, color] of Object.entries(accents)) {
+        const deck = decks[id as DeckId];
+        if (deck) deck.accent = color;
+      }
+    },
+    { immediate: true }
+  );
+
   function setDeckAccent(id: string, color: string): void {
     const deck = decks[id as DeckId];
-    if (deck) deck.accent = color;
+    if (!deck) return;
+    deck.accent = color;
+    settingsStore.setDeckAccents({ ...settingsStore.deckAccents, [id]: color });
+  }
+
+  function resetDeckAccents(): void {
+    for (const [id, color] of Object.entries(DECK_ACCENTS)) {
+      const deck = decks[id as DeckId];
+      if (deck) deck.accent = color;
+    }
+    settingsStore.setDeckAccents({});
   }
 
   function destroy() {
@@ -557,6 +580,7 @@ export const useDecksStore = defineStore('decks', () => {
     ejectAll,
     bestAvailableDeck,
     setDeckAccent,
+    resetDeckAccents,
     destroy
   };
 });

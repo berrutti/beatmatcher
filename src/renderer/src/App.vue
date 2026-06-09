@@ -22,7 +22,6 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
@@ -60,7 +59,7 @@ const quitModalBody = computed(() =>
 
 async function onQuitConfirmed(): Promise<void> {
   quitModalOpen.value = false;
-  await invoke('confirm_quit');
+  await appMode.confirmQuit();
 }
 
 function onQuitCancelled(): void {
@@ -69,7 +68,7 @@ function onQuitCancelled(): void {
 
 function handleQuitRequested(): void {
   if (!isPlayingNow()) {
-    invoke('confirm_quit').catch(() => {});
+    appMode.confirmQuit().catch(() => {});
     return;
   }
   quitModalOpen.value = true;

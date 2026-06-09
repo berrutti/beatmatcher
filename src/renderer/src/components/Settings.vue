@@ -190,13 +190,13 @@
               type="color"
               class="settings-color-input settings-color-input--lg"
               :value="accent(deckId)"
-              @input="settings.setDeckAccent(deckId, ($event.target as HTMLInputElement).value)"
+              @input="decks.setDeckAccent(deckId, ($event.target as HTMLInputElement).value)"
             />
           </label>
         </div>
         <div class="settings-footer" style="margin-top: 4px">
           <span />
-          <button class="settings-reset-btn" @click="settings.resetDeckAccents()">
+          <button class="settings-reset-btn" @click="decks.resetDeckAccents()">
             {{ $t('settings.deckColors.reset') }}
           </button>
         </div>

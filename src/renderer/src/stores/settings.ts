@@ -43,7 +43,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   let store: Store | null = null;
 
-  async function applyStored(stored: Stored): Promise<void> {
+  function applyStored(stored: Stored): void {
     if (stored.keybindings) keybindings.value = stored.keybindings;
     limiterEnabled.value = stored.limiterEnabled ?? limiterEnabled.value;
     nudgeSensitivity.value = stored.nudgeSensitivity ?? nudgeSensitivity.value;
@@ -53,21 +53,14 @@ export const useSettingsStore = defineStore('settings', () => {
     bpmMax.value = stored.bpmMax ?? bpmMax.value;
     recordingFormat.value = stored.recordingFormat ?? recordingFormat.value;
     recordBms.value = stored.recordBms ?? recordBms.value;
-    if (stored.deckAccents) {
-      const { useDecksStore } = await import('@renderer/stores/decks');
-      const decks = useDecksStore();
-      deckAccents.value = { ...stored.deckAccents };
-      for (const [id, color] of Object.entries(stored.deckAccents)) {
-        decks.setDeckAccent(id, color);
-      }
-    }
+    deckAccents.value = stored.deckAccents ?? deckAccents.value;
   }
 
   async function init(): Promise<void> {
     try {
       store = await load('settings.json', { autoSave: false, defaults: {} });
       const saved = await store.get<Stored>('v1');
-      if (saved) await applyStored(saved);
+      if (saved) applyStored(saved);
     } catch {
       // use defaults
     }
@@ -168,20 +161,8 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
-  async function setDeckAccent(id: string, color: string): Promise<void> {
-    deckAccents.value = { ...deckAccents.value, [id]: color };
-    const { useDecksStore } = await import('@renderer/stores/decks');
-    useDecksStore().setDeckAccent(id, color);
-    trySave();
-  }
-
-  async function resetDeckAccents(): Promise<void> {
-    const { useDecksStore, DECK_ACCENTS } = await import('@renderer/stores/decks');
-    const decks = useDecksStore();
-    for (const id of Object.keys(DECK_ACCENTS)) {
-      decks.setDeckAccent(id, DECK_ACCENTS[id]);
-    }
-    deckAccents.value = {};
+  function setDeckAccents(accents: Record<string, string>): void {
+    deckAccents.value = accents;
     trySave();
   }
 
@@ -189,6 +170,7 @@ export const useSettingsStore = defineStore('settings', () => {
     bpmMax,
     bpmMin,
     bufferSize,
+    deckAccents,
     isOpen,
     keybindings,
     limiterEnabled,
@@ -206,7 +188,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setPitchRange,
     setRecordingFormat,
     setRecordBms,
-    setDeckAccent,
-    resetDeckAccents
+    setDeckAccents
   };
 });
