@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export type SessionEvent = {
   elapsed_ms: number;
@@ -41,8 +42,6 @@ export type ParsedSession = {
 export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
-
-  let autoStopTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const durationMs = computed(() => session.value?.durationMs ?? 0);
   const hasTrackInfo = computed(
@@ -91,38 +90,22 @@ export const useSessionStore = defineStore('session', () => {
     return loadFromFile(path, content);
   }
 
+  listen('session-playback-ended', () => {
+    isPlaying.value = false;
+  }).catch(() => {});
+
   async function play(fromMs = 0): Promise<void> {
     if (!session.value) return;
-
     isPlaying.value = true;
-
-    if (autoStopTimeout !== null) {
-      clearTimeout(autoStopTimeout);
-      autoStopTimeout = null;
-    }
-
     try {
       await invoke('start_session_playback', { path: session.value.path, fromMs });
     } catch {
       isPlaying.value = false;
-      return;
-    }
-
-    const remaining = session.value.durationMs - fromMs;
-    if (remaining > 0) {
-      autoStopTimeout = setTimeout(() => {
-        isPlaying.value = false;
-        autoStopTimeout = null;
-      }, remaining);
     }
   }
 
   async function stop(): Promise<void> {
     isPlaying.value = false;
-    if (autoStopTimeout !== null) {
-      clearTimeout(autoStopTimeout);
-      autoStopTimeout = null;
-    }
     await invoke('stop_session_playback');
   }
 

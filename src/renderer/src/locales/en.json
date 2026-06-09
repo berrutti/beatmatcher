@@ -82,6 +82,10 @@
       "de": "Deutsch",
       "es": "Español"
     },
+    "deckColors": {
+      "title": "DECK COLORS",
+      "reset": "Restore defaults"
+    },
     "keyboard": {
       "title": "KEYBOARD MAPPING",
       "hint": "Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click also resets.",

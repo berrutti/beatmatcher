@@ -82,6 +82,10 @@
       "de": "Deutsch",
       "es": "Español"
     },
+    "deckColors": {
+      "title": "DECK-FARBEN",
+      "reset": "Standard wiederherstellen"
+    },
     "keyboard": {
       "title": "TASTATURBELEGUNG",
       "hint": "Klicken oder Enter drücken zum Neu-Belegen. Pfeiltasten zur Navigation. Entf setzt auf Standard zurück. Doppelklick setzt ebenfalls zurück.",

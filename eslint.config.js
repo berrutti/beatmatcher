@@ -33,6 +33,24 @@ export default [
     }
   },
   {
+    files: ['**/*.ts', '**/*.vue'],
+    ignores: ['**/stores/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@tauri-apps/api/core',
+              importNames: ['invoke'],
+              message: 'invoke must only be called from Pinia stores (src/renderer/src/stores/).'
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     rules: {
       eqeqeq: 'error',
       'no-unused-vars': 'off',

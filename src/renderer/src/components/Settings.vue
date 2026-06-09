@@ -175,6 +175,33 @@
         </p>
       </section>
 
+      <section class="settings-section">
+        <div class="settings-section-label">{{ $t('settings.deckColors.title') }}</div>
+        <div class="settings-decks">
+          <label
+            v-for="deckId in DECKS_DISPOSITION"
+            :key="deckId"
+            class="settings-deck settings-color-label"
+          >
+            <span class="settings-deck-label" :style="{ color: accent(deckId) }">
+              {{ $t('settings.keyboard.deck') }} {{ deckId }}
+            </span>
+            <input
+              type="color"
+              class="settings-color-input settings-color-input--lg"
+              :value="accent(deckId)"
+              @input="settings.setDeckAccent(deckId, ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+        </div>
+        <div class="settings-footer" style="margin-top: 4px">
+          <span />
+          <button class="settings-reset-btn" @click="settings.resetDeckAccents()">
+            {{ $t('settings.deckColors.reset') }}
+          </button>
+        </div>
+      </section>
+
       <section class="settings-section settings-section--keyboard">
         <div class="settings-section-label">{{ $t('settings.keyboard.title') }}</div>
         <p class="settings-hint">{{ $t('settings.keyboard.hint') }}</p>
@@ -853,6 +880,36 @@ onUnmounted(() => {
 .settings-reset-btn:hover {
   border-color: var(--color-text);
   color: var(--color-text);
+}
+
+.settings-color-label {
+  cursor: pointer;
+}
+
+.settings-color-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 32px;
+  height: 24px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.settings-color-input--lg {
+  width: 100%;
+  height: 36px;
+}
+
+.settings-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.settings-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
 }
 
 .settings-close:focus-visible,

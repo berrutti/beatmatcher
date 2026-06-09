@@ -21,6 +21,7 @@
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
+          :waveforms="waveforms"
           @seek="onSeek"
         />
       </template>
@@ -60,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
@@ -68,6 +69,7 @@ import { useSessionStore } from '@renderer/stores/session';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
+import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import { formatMs } from '@renderer/utils/time';
 
@@ -79,6 +81,35 @@ const { session: sessionRef } = storeToRefs(session);
 const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path)
+);
+
+const waveforms = ref(new Map<string, TrackWaveform>());
+const pendingPaths = new Set<string>();
+
+async function fetchWaveform(path: string) {
+  pendingPaths.add(path);
+  try {
+    const result = await collection.getAmplitudeWaveform(path);
+    const map = new Map(waveforms.value);
+    map.set(path, result);
+    waveforms.value = map;
+  } catch {
+    // ignore fetch failures
+  } finally {
+    pendingPaths.delete(path);
+  }
+}
+
+watch(
+  clips,
+  (list) => {
+    const paths = new Set(list.map((c) => c.trackPath));
+    for (const path of paths) {
+      if (waveforms.value.has(path) || pendingPaths.has(path)) continue;
+      fetchWaveform(path);
+    }
+  },
+  { immediate: true }
 );
 
 const isFileDragOver = ref(false);
@@ -107,14 +138,15 @@ onMounted(async () => {
 });
 
 function tickPlayhead() {
-  if (!session.isPlaying) return;
   playheadMs.value = performance.now() - playStartWall;
   if (session.durationMs > 0 && playheadMs.value >= session.durationMs) {
-    // Reaching the end rewinds to the start; pausing keeps position.
-    session.stop().catch(() => {});
+    // Works whether this RAF fires first, or Rust emits session-playback-ended
+    // and sets isPlaying=false before this RAF runs.
+    if (session.isPlaying) session.stop().catch(() => {});
     playheadMs.value = 0;
     return;
   }
+  if (!session.isPlaying) return;
   rafId = requestAnimationFrame(tickPlayhead);
 }
 

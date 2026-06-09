@@ -6,7 +6,8 @@ mod recording;
 mod stream;
 
 pub use analysis::{
-    compute_spectral_bands, compute_spectral_waveform_region, detect_bpm, detect_silence_end,
+    compute_amplitude_waveform, compute_spectral_bands, compute_spectral_waveform_region,
+    detect_bpm, detect_silence_end,
 };
 pub use deck::{ChannelStrip, CuePressOutcome, DeckState};
 pub(crate) use dsp::LimiterState;

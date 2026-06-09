@@ -213,6 +213,7 @@ pub fn run() {
             commands::get_deck_levels,
             commands::get_master_level,
             commands::get_spectral_waveform_region,
+            commands::get_track_amplitude_waveform,
             commands::list_audio_devices,
             commands::load_track,
             commands::open_file_dialog,
