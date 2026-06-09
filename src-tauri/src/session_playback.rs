@@ -14,10 +14,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tauri::Emitter;
 
 pub(crate) type SampleCache = HashMap<String, (Arc<Vec<f32>>, usize)>;
-
-// ── Snapshot types ────────────────────────────────────────────────────────────
 
 use crate::audio::DEFAULT_MASTER_GAIN;
 
@@ -146,8 +145,6 @@ pub struct SessionSnapshot {
     pub master_gain: f32,
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
 #[derive(serde::Serialize)]
 pub(crate) struct OpenedFile {
     path: String,
@@ -155,7 +152,7 @@ pub(crate) struct OpenedFile {
 }
 
 #[tauri::command]
-pub async fn open_session_dialog() -> Option<OpenedFile> {
+pub(crate) async fn open_session_dialog() -> Option<OpenedFile> {
     let handle = rfd::AsyncFileDialog::new()
         .add_filter("Beatmatcher Session", &["bms"])
         .pick_file()
@@ -168,7 +165,7 @@ pub async fn open_session_dialog() -> Option<OpenedFile> {
 }
 
 #[tauri::command]
-pub async fn preload_session(
+pub(crate) async fn preload_session(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
@@ -205,7 +202,8 @@ pub async fn preload_session(
 }
 
 #[tauri::command]
-pub async fn start_session_playback(
+pub(crate) async fn start_session_playback(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
     from_ms: f64,
@@ -275,6 +273,7 @@ pub async fn start_session_playback(
         }
     };
 
+    let app_handle = app.clone();
     let handle = tauri::async_runtime::spawn(async move {
         reset_all(&audio);
 
@@ -399,6 +398,7 @@ pub async fn start_session_playback(
                     deck_arc.lock().expect("deck mutex poisoned").is_playing = false;
                 }
             }
+            app_handle.emit("session-playback-ended", ()).ok();
         }
     });
 
@@ -411,7 +411,7 @@ pub async fn start_session_playback(
 }
 
 #[tauri::command]
-pub fn stop_session_playback(state: tauri::State<'_, AppState>) {
+pub(crate) fn stop_session_playback(state: tauri::State<'_, AppState>) {
     let mut guard = state
         .session_playback_cancel
         .lock()
@@ -425,8 +425,6 @@ pub fn stop_session_playback(state: tauri::State<'_, AppState>) {
         }
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -880,8 +878,6 @@ async fn wait_until_frame(
         tokio::time::sleep(std::time::Duration::from_secs_f64(secs.clamp(0.0005, 0.01))).await;
     }
 }
-
-// ── Live event application (used by the timer loop) ───────────────────────────
 
 // `overshoot_frames` is how many master output frames the audio clock is already
 // past this event's target frame when it gets applied (the event only takes

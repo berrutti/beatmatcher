@@ -82,6 +82,10 @@
       "de": "Deutsch",
       "es": "Español"
     },
+    "deckColors": {
+      "title": "DECK COLORS",
+      "reset": "Restore defaults"
+    },
     "keyboard": {
       "title": "KEYBOARD MAPPING",
       "hint": "Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click also resets.",
@@ -192,5 +196,11 @@
     "rendering": "RENDERING...",
     "renderWav": "RENDER WAV",
     "renderFlac": "RENDER FLAC"
+  },
+  "quitModal": {
+    "title": "Quit Beatmatcher?",
+    "bodyPlaying": "A track is currently playing. Quit anyway?",
+    "bodySession": "The session is currently playing. Quit anyway?",
+    "confirm": "Quit"
   }
 }

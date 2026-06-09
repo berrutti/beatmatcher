@@ -337,7 +337,10 @@ pub(crate) fn play(
 
 #[tauri::command]
 pub(crate) fn stop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().is_playing = false;
+    get_deck(&state, &deck)?
+        .lock()
+        .expect("deck mutex poisoned")
+        .is_playing = false;
     Ok(())
 }
 
@@ -607,7 +610,10 @@ pub(crate) fn set_volume(
     deck: String,
     gain: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().set_gain(gain);
+    get_strip(&state, &deck)?
+        .lock()
+        .expect("strip mutex poisoned")
+        .set_gain(gain);
     state.log(
         "set_volume",
         serde_json::json!({ "deck": deck, "gain": gain }),
@@ -621,7 +627,10 @@ pub(crate) fn set_playback_rate(
     deck: String,
     rate: f64,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().playback_rate = rate.max(0.1);
+    get_deck(&state, &deck)?
+        .lock()
+        .expect("deck mutex poisoned")
+        .playback_rate = rate.max(0.1);
     state.log(
         "set_playback_rate",
         serde_json::json!({ "deck": deck, "rate": rate }),
@@ -657,7 +666,10 @@ pub(crate) fn set_quantize(
     deck: String,
     quantize: bool,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?.lock().unwrap().quantize = quantize;
+    get_deck(&state, &deck)?
+        .lock()
+        .expect("deck mutex poisoned")
+        .quantize = quantize;
     Ok(())
 }
 
@@ -670,7 +682,7 @@ pub(crate) fn set_eq(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .unwrap()
+        .expect("strip mutex poisoned")
         .set_eq_band(&band, db);
     state.log(
         "set_eq",
@@ -685,7 +697,10 @@ pub(crate) fn set_filter(
     deck: String,
     value: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().set_filter(value);
+    get_strip(&state, &deck)?
+        .lock()
+        .expect("strip mutex poisoned")
+        .set_filter(value);
     state.log(
         "set_filter",
         serde_json::json!({ "deck": deck, "value": value }),
@@ -701,7 +716,7 @@ pub(crate) fn set_filter_active(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .unwrap()
+        .expect("strip mutex poisoned")
         .set_filter_active(active);
     state.log(
         "set_filter_active",
@@ -778,7 +793,10 @@ pub(crate) fn set_cue_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?.lock().unwrap().cue_active = active;
+    get_strip(&state, &deck)?
+        .lock()
+        .expect("strip mutex poisoned")
+        .cue_active = active;
     state.log(
         "set_cue_active",
         serde_json::json!({ "deck": deck, "active": active }),
@@ -823,12 +841,10 @@ pub(crate) async fn open_file_dialog() -> Option<String> {
 
 #[tauri::command]
 pub(crate) async fn pick_save_path(format: String) -> Option<String> {
-    let (label, ext, name) = if format == "flac" {
-        ("FLAC Audio", "flac", "mix.flac")
-    } else if format == "session" {
-        ("Beatmatcher Session", "bms", "mix.bms")
-    } else {
-        ("WAV Audio", "wav", "mix.wav")
+    let (label, ext, name) = match format.as_str() {
+        "flac" => ("FLAC Audio", "flac", "mix.flac"),
+        "session" => ("Beatmatcher Session", "bms", "mix.bms"),
+        _ => ("WAV Audio", "wav", "mix.wav"),
     };
     rfd::AsyncFileDialog::new()
         .add_filter(label, &[ext])
@@ -941,7 +957,7 @@ pub(crate) fn save_recording(
     if let Some(log) = state
         .session
         .lock()
-        .unwrap()
+        .expect("session mutex poisoned")
         .as_mut()
         .and_then(|l| l.take_pending())
     {
@@ -965,7 +981,7 @@ pub(crate) fn discard_recording(
     state
         .session
         .lock()
-        .unwrap()
+        .expect("session mutex poisoned")
         .as_mut()
         .and_then(|l| l.take_pending());
     std::fs::remove_file(&path).map_err(|e| e.to_string())
@@ -981,7 +997,7 @@ pub(crate) fn save_bms_only(
     if let Some(log) = state
         .session
         .lock()
-        .unwrap()
+        .expect("session mutex poisoned")
         .as_mut()
         .and_then(|l| l.take_pending())
     {
@@ -1127,6 +1143,30 @@ pub(crate) async fn analyze_track(
 #[tauri::command]
 pub(crate) fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrackAmplitudeWaveform {
+    duration_sec: f64,
+    amps: Vec<f32>,
+}
+
+#[tauri::command]
+pub(crate) async fn get_track_amplitude_waveform(
+    path: String,
+    num_points: usize,
+) -> Result<TrackAmplitudeWaveform, String> {
+    tokio::task::spawn_blocking(move || {
+        let (samples, channels, sample_rate) =
+            audio::decode_audio(&path).map_err(|e| e.to_string())?;
+        let total_frames = samples.len() / channels;
+        let duration_sec = total_frames as f64 / sample_rate as f64;
+        let amps = audio::compute_amplitude_waveform(&samples, channels, num_points);
+        Ok(TrackAmplitudeWaveform { duration_sec, amps })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

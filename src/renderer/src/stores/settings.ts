@@ -23,6 +23,7 @@ type Stored = {
   bpmMax?: number;
   recordingFormat?: RecordingFormatOption;
   recordBms?: boolean;
+  deckAccents?: Record<string, string>;
 };
 
 export type ConflictInfo = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
@@ -37,6 +38,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const bpmMax = ref<number>(180);
   const recordingFormat = ref<RecordingFormatOption>('wav-32');
   const recordBms = ref<boolean>(false);
+  const deckAccents = ref<Record<string, string>>({});
   const isOpen = ref(false);
 
   let store: Store | null = null;
@@ -51,6 +53,7 @@ export const useSettingsStore = defineStore('settings', () => {
     bpmMax.value = stored.bpmMax ?? bpmMax.value;
     recordingFormat.value = stored.recordingFormat ?? recordingFormat.value;
     recordBms.value = stored.recordBms ?? recordBms.value;
+    deckAccents.value = stored.deckAccents ?? deckAccents.value;
   }
 
   async function init(): Promise<void> {
@@ -74,7 +77,8 @@ export const useSettingsStore = defineStore('settings', () => {
       bpmMin: bpmMin.value,
       bpmMax: bpmMax.value,
       recordingFormat: recordingFormat.value,
-      recordBms: recordBms.value
+      recordBms: recordBms.value,
+      deckAccents: Object.keys(deckAccents.value).length > 0 ? deckAccents.value : undefined
     } satisfies Stored);
     await store.save();
   }
@@ -157,10 +161,16 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
+  function setDeckAccents(accents: Record<string, string>): void {
+    deckAccents.value = accents;
+    trySave();
+  }
+
   return {
     bpmMax,
     bpmMin,
     bufferSize,
+    deckAccents,
     isOpen,
     keybindings,
     limiterEnabled,
@@ -177,6 +187,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setNudgeSensitivity,
     setPitchRange,
     setRecordingFormat,
-    setRecordBms
+    setRecordBms,
+    setDeckAccents
   };
 });

@@ -14,7 +14,12 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 }));
 
 vi.mock('@renderer/stores/settings', () => ({
-  useSettingsStore: () => ({ pitchRange: 8, nudgeSensitivity: 4 })
+  useSettingsStore: () => ({
+    pitchRange: 8,
+    nudgeSensitivity: 4,
+    deckAccents: {},
+    setDeckAccents: vi.fn()
+  })
 }));
 
 vi.mock('@renderer/utils/storage', () => ({

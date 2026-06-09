@@ -7,7 +7,9 @@ use audio::AppAudio;
 use std::sync::Arc;
 
 type TrackCache = std::sync::Mutex<session_playback::SampleCache>;
-use tauri::menu::{AboutMetadataBuilder, MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::Emitter;
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
@@ -167,16 +169,25 @@ pub fn run() {
                 ))
                 .icon(icon)
                 .build();
+            let quit_item = MenuItemBuilder::new("Quit Beatmatcher")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let quit_id = quit_item.id().clone();
             let app_menu = SubmenuBuilder::new(app, "Beatmatcher")
                 .item(&PredefinedMenuItem::about(app, None, Some(about))?)
                 .separator()
                 .item(&PredefinedMenuItem::hide(app, None)?)
                 .item(&PredefinedMenuItem::hide_others(app, None)?)
                 .separator()
-                .item(&PredefinedMenuItem::quit(app, None)?)
+                .item(&quit_item)
                 .build()?;
             let menu = MenuBuilder::new(app).item(&app_menu).build()?;
             app.set_menu(menu)?;
+            app.on_menu_event(move |app, event| {
+                if event.id() == &quit_id {
+                    app.emit("quit-requested", ()).ok();
+                }
+            });
 
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -203,6 +214,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            confirm_quit,
             commands::analyze_track,
             commands::clear_loop_region,
             commands::discard_recording,
@@ -213,6 +225,7 @@ pub fn run() {
             commands::get_deck_levels,
             commands::get_master_level,
             commands::get_spectral_waveform_region,
+            commands::get_track_amplitude_waveform,
             commands::list_audio_devices,
             commands::load_track,
             commands::open_file_dialog,
@@ -259,6 +272,11 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn confirm_quit(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[cfg(test)]

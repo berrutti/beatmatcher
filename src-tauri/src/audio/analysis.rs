@@ -149,8 +149,27 @@ pub fn compute_spectral_waveform_region(
     result
 }
 
-// ── BPM detection ─────────────────────────────────────────────────────────────
-//
+pub fn compute_amplitude_waveform(samples: &[f32], channels: usize, num_points: usize) -> Vec<f32> {
+    if samples.is_empty() || channels == 0 || num_points == 0 {
+        return vec![0.0; num_points];
+    }
+    let total_frames = samples.len() / channels;
+    let frames_per_point = total_frames as f64 / num_points as f64;
+    let mut result = Vec::with_capacity(num_points);
+    for point_index in 0..num_points {
+        let bin_start = (point_index as f64 * frames_per_point) as usize;
+        let bin_end = ((point_index + 1) as f64 * frames_per_point) as usize;
+        let bin_end = bin_end.min(total_frames).max(bin_start + 1);
+        let sample_count = ((bin_end - bin_start) * channels) as f32;
+        let sum_of_squares: f32 = samples[bin_start * channels..bin_end * channels]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum();
+        result.push((sum_of_squares / sample_count).sqrt().min(1.0));
+    }
+    result
+}
+
 // Isolate kick drum energy for onset detection. Bass drum fundamentals sit
 // between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
 // would create false beat intervals.

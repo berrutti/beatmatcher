@@ -32,8 +32,8 @@
     <div
       v-if="laneMenu"
       class="lane-menu__backdrop"
-      @click="closeLaneMenu"
-      @contextmenu.prevent="closeLaneMenu"
+      @click="laneMenu = null"
+      @contextmenu.prevent="laneMenu = null"
     />
   </Teleport>
 </template>
@@ -45,11 +45,9 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
-  LanePoint,
   NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
-import { EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
-import { formatMs } from '@renderer/utils/time';
+import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import {
   type ViewWindow,
@@ -61,56 +59,48 @@ import {
   resizeRightEdge,
   followTarget,
   overlapsRange,
-  msToFrac,
   fracToMs,
   clampFrac,
   hitTestOverview,
-  chooseTickInterval,
-  sliceVisiblePoints
+  chooseTickInterval
 } from '@renderer/utils/timelineView';
+import {
+  DECK_ORDER,
+  LANE_KEYS,
+  LANE_SHORT_LABELS,
+  ROW_H,
+  LABEL_W,
+  TICK_H,
+  PADDING,
+  SUBLANE_H,
+  MASTER_ROW_H,
+  OVERVIEW_H,
+  OVERVIEW_GAP,
+  type LaneKey,
+  type LaneVisibility,
+  type RowLayout,
+  type OverviewRect,
+  formatTickLabel,
+  drawLoadedSpan,
+  drawLoadedSpanLabel,
+  drawClip,
+  drawNudgeSpans,
+  drawDeckLanes,
+  drawMasterGainLane,
+  drawOverview,
+  makeMsToX
+} from '@renderer/utils/timelineDraw';
+import { DECK_ACCENTS, DeckId, useDecksStore } from '@renderer/stores/decks';
 
-const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
-const DECK_ACCENT: Record<string, string> = {
-  A: '#3b82f6',
-  B: '#f97316',
-  C: '#208043',
-  D: '#d631b0'
-};
-const ROW_H = 44;
-const LABEL_W = 32;
-const TICK_H = 16;
-const PADDING = 12;
+type DragMode = 'track' | 'overview-move' | 'overview-resize-left' | 'overview-resize-right' | null;
+type DragState = { mode: DragMode; startClientX: number; startView: ViewWindow; dragged: boolean };
+type LaneMenu = { deck: string; x: number; y: number };
 
 const MIN_VIEW_MS = 200;
-const OVERVIEW_H = 22;
-const OVERVIEW_GAP = 4;
 const ZOOM_SENSITIVITY = 0.0015;
 const DRAG_THRESHOLD_PX = 3;
 const EDGE_GRAB_PX = 6;
-
-const SUBLANE_H = 16;
-const MASTER_ROW_H = SUBLANE_H * 2;
-const GAIN_COLOR = '#e5e5e5';
-const FILTER_DEAD_ZONE = 0.05;
-const FILTER_LPF_COLOR = '#38bdf8';
-const FILTER_HPF_COLOR = '#fb923c';
-const FILTER_NEUTRAL_COLOR = '#666666';
-const FILTER_ACTIVE_FILL = '#ffffff10';
-const EQ_BAND_COLORS: Record<string, string> = { low: '#ef4444', mid: '#eab308', high: '#3b82f6' };
-const NUDGE_COLOR = '#fbbf24';
-const NUDGE_LINE_W = 2;
-
-const LANE_KEYS = ['gain', 'filter', 'eqLow', 'eqMid', 'eqHigh'] as const;
-type LaneKey = (typeof LANE_KEYS)[number];
-const LANE_GROUP: Record<LaneKey, number> = { gain: 0, filter: 1, eqLow: 2, eqMid: 2, eqHigh: 2 };
-type LaneVisibility = Partial<Record<LaneKey, boolean>>;
-const LANE_SHORT_LABELS: Record<LaneKey, string> = {
-  gain: 'G',
-  filter: 'F',
-  eqLow: 'LO',
-  eqMid: 'MD',
-  eqHigh: 'HI'
-};
+const FOLLOW_LEAD_IN_FRACTION = 0.1;
 
 const props = defineProps<{
   durationMs: number;
@@ -120,19 +110,31 @@ const props = defineProps<{
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  waveforms: Map<string, TrackWaveform>;
 }>();
 
 const emit = defineEmits<{ seek: [ms: number] }>();
 
+const decks = useDecksStore();
+
+function getDeckAccent(id: DeckId): string {
+  return decks.decks[id]?.accent ?? DECK_ACCENTS[id];
+}
+
 const viewStartMs = ref(0);
 const viewDurationMs = ref(1);
+
+const dragState: DragState = {
+  mode: null,
+  startClientX: 0,
+  startView: { start: 0, duration: 1 },
+  dragged: false
+};
 
 function currentView(): ViewWindow {
   return { start: viewStartMs.value, duration: viewDurationMs.value };
 }
 
-// The overview strip always maps the full session across the track width,
-// regardless of the current zoom — i.e. a [0, durationMs] "view".
 function fullView(): ViewWindow {
   return { start: 0, duration: props.durationMs || 1 };
 }
@@ -173,20 +175,6 @@ function onWheel(e: WheelEvent) {
     setView(panByMs(view, deltaMs, total, MIN_VIEW_MS));
   }
 }
-
-type DragMode = 'track' | 'overview-move' | 'overview-resize-left' | 'overview-resize-right' | null;
-type DragState = {
-  mode: DragMode;
-  startClientX: number;
-  startView: ViewWindow;
-  dragged: boolean;
-};
-const dragState: DragState = {
-  mode: null,
-  startClientX: 0,
-  startView: { start: 0, duration: 1 },
-  dragged: false
-};
 
 function isOverY(y: number): boolean {
   return overviewRect !== null && y >= overviewRect.y && y < overviewRect.y + overviewRect.h;
@@ -337,12 +325,7 @@ function toggleLane(deck: string, lane: LaneKey) {
   storageSet(STORAGE_KEYS.sessionLaneVisibility, laneVisibility.value);
 }
 
-type LaneMenu = { deck: string; x: number; y: number };
 const laneMenu = ref<LaneMenu | null>(null);
-
-function closeLaneMenu() {
-  laneMenu.value = null;
-}
 
 function onCanvasContextMenu(e: MouseEvent) {
   if (!canvasEl.value) return;
@@ -350,13 +333,10 @@ function onCanvasContextMenu(e: MouseEvent) {
   const y = e.clientY - rect.top;
   const row = rowLayout.find((r) => y >= r.top && y < r.top + r.height);
   if (!row) return;
-  laneMenu.value = { deck: row.deck, x: e.clientX, y: e.clientY };
+  laneMenu.value = { deck: row.deckId, x: e.clientX, y: e.clientY };
 }
 
-type RowLayout = { deck: string; top: number; height: number; lanes: LaneKey[] };
 let rowLayout: RowLayout[] = [];
-
-type OverviewRect = { y: number; h: number };
 let overviewRect: OverviewRect | null = null;
 
 const containerEl = ref<HTMLDivElement | null>(null);
@@ -388,10 +368,7 @@ function draw() {
   const viewStart = view.start;
   const viewDur = view.duration;
   const viewEnd = viewStart + viewDur;
-
-  function msToX(ms: number) {
-    return LABEL_W + msToFrac(ms, view) * trackW;
-  }
+  const msToX = makeMsToX(view, trackW);
 
   function overlapsView(startMs: number, endMs: number): boolean {
     return overlapsRange(startMs, endMs, viewStart, viewEnd);
@@ -432,13 +409,13 @@ function draw() {
     const deckId = DECK_ORDER[ri];
     const lanes = visibleLanesFor(deckId);
     const rowH = ROW_H + lanes.length * SUBLANE_H;
-    newRowLayout.push({ deck: deckId, top: rowY, height: rowH, lanes });
+    newRowLayout.push({ deckId: deckId, top: rowY, height: rowH, lanes });
 
     ctx.fillStyle = ri % 2 === 0 ? '#161616' : '#131313';
     ctx.fillRect(0, rowY, canvasW, rowH);
 
     ctx.font = `bold 9px monospace`;
-    ctx.fillStyle = DECK_ACCENT[deckId];
+    ctx.fillStyle = getDeckAccent(deckId);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(deckId, LABEL_W / 2, rowY + ROW_H / 2);
@@ -474,76 +451,25 @@ function draw() {
 
   rowY = TICK_H;
   for (let ri = 0; ri < DECK_ORDER.length; ri++) {
-    const { deck: deckId, height: rowH, lanes } = newRowLayout[ri];
-    const accent = DECK_ACCENT[deckId];
+    const { deckId: deckId, height: rowH, lanes } = newRowLayout[ri];
+    const accent = getDeckAccent(deckId);
 
-    // Loaded spans (track-on-deck background)
-    const deckSpans = props.loadedSpans.filter(
+    for (const span of props.loadedSpans.filter(
       (s) => s.deck === deckId && overlapsView(s.startMs, s.endMs)
-    );
-    for (const span of deckSpans) {
-      const spanX = msToX(span.startMs);
-      const spanW = Math.max(2, msToX(span.endMs) - spanX);
-      const spanY = rowY + 4;
-      const spanH = ROW_H - 8;
-
-      ctx.fillStyle = accent + '18';
-      ctx.fillRect(spanX, spanY, spanW, spanH);
-
-      ctx.strokeStyle = accent + '40';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(spanX + 0.5, spanY + 0.5, spanW - 1, spanH - 1);
-
-      if (spanW > 40) {
-        ctx.font = `9px monospace`;
-        ctx.fillStyle = accent + '55';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(spanX + 3, spanY, spanW - 6, spanH);
-        ctx.clip();
-        ctx.fillText(span.trackName, Math.max(LABEL_W + 3, spanX + 3), spanY + spanH / 2);
-        ctx.restore();
-      }
+    )) {
+      drawLoadedSpan(ctx, span, rowY, accent, msToX);
     }
 
-    // Clips (actual playback rectangles)
-    const deckClips = props.clips.filter(
+    for (const clip of props.clips.filter(
       (c) => c.deck === deckId && overlapsView(c.sessionStartMs, c.sessionEndMs)
-    );
-    for (const clip of deckClips) {
-      const clipX = msToX(clip.sessionStartMs);
-      const clipW = Math.max(2, msToX(clip.sessionEndMs) - clipX);
-      const clipY = rowY + 4;
-      const clipH = ROW_H - 8;
-
-      ctx.fillStyle = accent + '55';
-      ctx.fillRect(clipX, clipY, clipW, clipH);
-
-      ctx.strokeStyle = accent + 'cc';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(clipX + 0.5, clipY + 0.5, clipW - 1, clipH - 1);
+    )) {
+      drawClip(ctx, clip, props.waveforms.get(clip.trackPath), rowY, accent, msToX);
     }
 
-    // Nudge markers: a border drawn along the top edge of the clip row for a
-    // nudge up (positive percent, faster) and the bottom edge for a nudge down
-    // (negative percent, slower), spanning the discrete nudge interval.
     const deckNudgeSpans = (props.deckNudges[deckId] ?? []).filter((n) =>
       overlapsView(n.startMs, n.endMs)
     );
-    if (deckNudgeSpans.length > 0) {
-      const nudgeInnerY = rowY + 4;
-      const nudgeInnerH = ROW_H - 8;
-      ctx.fillStyle = NUDGE_COLOR;
-      for (const span of deckNudgeSpans) {
-        const nudgeX = msToX(span.startMs);
-        const nudgeW = Math.max(2, msToX(span.endMs) - nudgeX);
-        const nudgeLineY =
-          span.percent > 0 ? nudgeInnerY - NUDGE_LINE_W : nudgeInnerY + nudgeInnerH;
-        ctx.fillRect(nudgeX, nudgeLineY, nudgeW, NUDGE_LINE_W);
-      }
-    }
+    drawNudgeSpans(ctx, deckNudgeSpans, rowY, msToX);
 
     if (lanes.length > 0) {
       drawDeckLanes(
@@ -562,19 +488,19 @@ function draw() {
   }
   rowLayout = newRowLayout;
 
-  drawLaneSteps(
-    ctx,
-    props.masterLanes.gain,
-    masterTopY + 2,
-    MASTER_ROW_H - 4,
-    0,
-    1,
-    GAIN_COLOR,
-    msToX,
-    viewStart,
-    viewEnd
-  );
+  drawMasterGainLane(ctx, props.masterLanes.gain, masterTopY, msToX, viewStart, viewEnd);
   const bottomY = masterTopY + MASTER_ROW_H;
+
+  rowY = TICK_H;
+  for (let ri = 0; ri < DECK_ORDER.length; ri++) {
+    const { deckId: deckId, height: rowH } = newRowLayout[ri];
+    for (const span of props.loadedSpans.filter(
+      (s) => s.deck === deckId && overlapsView(s.startMs, s.endMs)
+    )) {
+      drawLoadedSpanLabel(ctx, span, rowY, msToX);
+    }
+    rowY += rowH;
+  }
 
   ctx.restore();
 
@@ -602,254 +528,22 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
-  drawOverview(ctx, canvasW, trackW, overviewY, totalMs, viewStart, viewEnd);
+  overviewRect = drawOverview(
+    ctx,
+    canvasW,
+    trackW,
+    overviewY,
+    totalMs,
+    viewStart,
+    viewEnd,
+    props.clips,
+    props.playheadMs,
+    Object.fromEntries(DECK_ORDER.map((id) => [id, getDeckAccent(id)]))
+  );
 
-  // Separators framing the track area (left label column, right padding column)
   ctx.fillStyle = '#2a2a2a';
   ctx.fillRect(LABEL_W - 1, 0, 1, canvasH);
   ctx.fillRect(canvasW - PADDING, 0, 1, canvasH);
-}
-
-function drawOverview(
-  ctx: CanvasRenderingContext2D,
-  canvasW: number,
-  trackW: number,
-  stripY: number,
-  totalMs: number,
-  viewStart: number,
-  viewEnd: number
-) {
-  overviewRect = { y: stripY, h: OVERVIEW_H };
-
-  function fullMsToX(ms: number) {
-    return LABEL_W + (ms / totalMs) * trackW;
-  }
-
-  ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, stripY, canvasW, OVERVIEW_H);
-
-  const laneH = (OVERVIEW_H - 4) / DECK_ORDER.length;
-  for (let ri = 0; ri < DECK_ORDER.length; ri++) {
-    const deckId = DECK_ORDER[ri];
-    const accent = DECK_ACCENT[deckId];
-    const overviewLaneY = stripY + 2 + ri * laneH;
-    ctx.fillStyle = accent + 'aa';
-    for (const clip of props.clips) {
-      if (clip.deck !== deckId) continue;
-      const clipX = fullMsToX(clip.sessionStartMs);
-      const clipW = Math.max(1, fullMsToX(clip.sessionEndMs) - clipX);
-      ctx.fillRect(clipX, overviewLaneY, clipW, Math.max(1, laneH - 1));
-    }
-  }
-
-  if (props.playheadMs > 0) {
-    const playheadX = fullMsToX(props.playheadMs);
-    ctx.fillStyle = '#ffffffcc';
-    ctx.fillRect(playheadX - 0.5, stripY, 1, OVERVIEW_H);
-  }
-
-  const viewportX = fullMsToX(viewStart);
-  const viewportW = Math.max(2, fullMsToX(viewEnd) - viewportX);
-  ctx.fillStyle = '#ffffff15';
-  ctx.fillRect(viewportX, stripY, viewportW, OVERVIEW_H);
-  ctx.strokeStyle = '#ffffff80';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(viewportX + 0.5, stripY + 0.5, Math.max(1, viewportW - 1), OVERVIEW_H - 1);
-
-  ctx.fillStyle = '#222';
-  ctx.fillRect(0, stripY - 1, canvasW, 1);
-}
-
-function formatTickLabel(ms: number, tickIntervalMs: number): string {
-  if (tickIntervalMs < 1000) {
-    const totalSec = Math.floor(ms / 1000);
-    const mins = Math.floor(totalSec / 60);
-    const secs = totalSec % 60;
-    const millis = ms % 1000;
-    return `${mins}:${String(secs).padStart(2, '0')}:${String(millis).padStart(3, '0')}`;
-  }
-  return formatMs(ms);
-}
-
-function valueToY(laneY: number, laneH: number, minVal: number, maxVal: number, value: number) {
-  const range = maxVal - minVal || 1;
-  return laneY + laneH - ((value - minVal) / range) * laneH;
-}
-
-// Draws a zero-order-hold (step) graph: each point's value is held flat until
-// the next point's time, then jumps. This matches how these parameters actually
-// change, recorded session events fire at the moment a value changes, not gradually
-// beforehand, so a held-then-jump shape is accurate while a straight diagonal is not.
-function drawLaneSteps(
-  ctx: CanvasRenderingContext2D,
-  points: LanePoint[],
-  laneY: number,
-  laneH: number,
-  minVal: number,
-  maxVal: number,
-  color: string | ((value: number) => string),
-  msToX: (ms: number) => number,
-  viewStart: number,
-  viewEnd: number
-) {
-  const visible = sliceVisiblePoints(points, viewStart, viewEnd);
-  if (visible.length < 2) return;
-  const colorFor = typeof color === 'function' ? color : () => color;
-  ctx.lineWidth = 1;
-  for (let pointIdx = 0; pointIdx < visible.length - 1; pointIdx++) {
-    const cur = visible[pointIdx];
-    const next = visible[pointIdx + 1];
-    const segX0 = msToX(cur.ms);
-    const segX1 = msToX(next.ms);
-    const stepY = valueToY(laneY, laneH, minVal, maxVal, cur.value);
-    const nextStepY = valueToY(laneY, laneH, minVal, maxVal, next.value);
-
-    ctx.strokeStyle = colorFor(cur.value);
-    ctx.beginPath();
-    ctx.moveTo(segX0, stepY);
-    ctx.lineTo(segX1, stepY);
-    ctx.stroke();
-
-    if (nextStepY !== stepY) {
-      ctx.strokeStyle = colorFor(next.value);
-      ctx.beginPath();
-      ctx.moveTo(segX1, stepY);
-      ctx.lineTo(segX1, nextStepY);
-      ctx.stroke();
-    }
-  }
-}
-
-function filterColorFor(value: number): string {
-  if (value < -FILTER_DEAD_ZONE) return FILTER_LPF_COLOR;
-  if (value > FILTER_DEAD_ZONE) return FILTER_HPF_COLOR;
-  return FILTER_NEUTRAL_COLOR;
-}
-
-function drawFilterLane(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  deckData: DeckLanes,
-  laneY: number,
-  msToX: (ms: number) => number,
-  viewStart: number,
-  viewEnd: number
-) {
-  for (const span of deckData.filterActive) {
-    if (!overlapsRange(span.startMs, span.endMs, viewStart, viewEnd)) continue;
-    const sx = msToX(span.startMs);
-    const sw = Math.max(1, msToX(span.endMs) - sx);
-    ctx.fillStyle = FILTER_ACTIVE_FILL;
-    ctx.fillRect(sx, laneY, sw, SUBLANE_H);
-  }
-
-  // Center line marks the bypass position (knob = 0); LPF sweeps below it, HPF above.
-  const centerY = valueToY(laneY, SUBLANE_H, -1, 1, 0);
-  ctx.strokeStyle = '#3a3a3a';
-  ctx.beginPath();
-  ctx.moveTo(LABEL_W, centerY);
-  ctx.lineTo(w - PADDING, centerY);
-  ctx.stroke();
-
-  drawLaneSteps(
-    ctx,
-    deckData.filter,
-    laneY,
-    SUBLANE_H,
-    -1,
-    1,
-    filterColorFor,
-    msToX,
-    viewStart,
-    viewEnd
-  );
-}
-
-function drawEqLane(
-  ctx: CanvasRenderingContext2D,
-  points: LanePoint[],
-  color: string,
-  laneY: number,
-  msToX: (ms: number) => number,
-  viewStart: number,
-  viewEnd: number
-) {
-  drawLaneSteps(
-    ctx,
-    points,
-    laneY,
-    SUBLANE_H,
-    EQ_MIN_DB,
-    EQ_MAX_DB,
-    color,
-    msToX,
-    viewStart,
-    viewEnd
-  );
-}
-
-type LaneDrawer = (
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  deckData: DeckLanes,
-  laneY: number,
-  msToX: (ms: number) => number,
-  viewStart: number,
-  viewEnd: number
-) => void;
-
-const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawLaneSteps(
-      ctx,
-      deckData.gain,
-      laneY,
-      SUBLANE_H,
-      0,
-      1,
-      GAIN_COLOR,
-      msToX,
-      viewStart,
-      viewEnd
-    ),
-  filter: drawFilterLane,
-  eqLow: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS.low, laneY, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS.mid, laneY, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS.high, laneY, msToX, viewStart, viewEnd)
-};
-
-function drawDeckLanes(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  laneTopY: number,
-  msToX: (ms: number) => number,
-  deckData: DeckLanes | undefined,
-  lanes: LaneKey[],
-  viewStart: number,
-  viewEnd: number
-) {
-  if (!deckData) return;
-
-  let laneY = laneTopY;
-  for (let laneIdx = 0; laneIdx < lanes.length; laneIdx++) {
-    const group = LANE_GROUP[lanes[laneIdx]];
-    const prevGroup = laneIdx > 0 ? LANE_GROUP[lanes[laneIdx - 1]] : -1;
-    const groupChanged = group !== prevGroup;
-
-    ctx.fillStyle = group % 2 === 0 ? '#1a1a1a' : '#141414';
-    ctx.fillRect(LABEL_W, laneY, w - LABEL_W - PADDING, SUBLANE_H);
-
-    if (laneIdx > 0 && groupChanged) {
-      ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(LABEL_W, laneY, w - LABEL_W - PADDING, 1);
-    }
-
-    LANE_DRAWERS[lanes[laneIdx]](ctx, w, deckData, laneY, msToX, viewStart, viewEnd);
-    laneY += SUBLANE_H;
-  }
 }
 
 onMounted(() => {
@@ -867,8 +561,6 @@ onUnmounted(() => {
 // Keeps the playhead on screen while playing: if it runs off either edge of the
 // zoomed-in view, the view jumps forward/back so the playhead lands near the
 // left edge with a small lead-in margin, rather than disappearing off-screen.
-const FOLLOW_LEAD_IN_FRACTION = 0.1;
-
 watch(
   () => props.playheadMs,
   (ms) => {
@@ -892,9 +584,11 @@ watch(
     props.deckLanes,
     props.masterLanes,
     props.deckNudges,
+    props.waveforms,
     laneVisibility.value,
     viewStartMs.value,
-    viewDurationMs.value
+    viewDurationMs.value,
+    DECK_ORDER.map((id) => getDeckAccent(id))
   ],
   () => {
     requestAnimationFrame(draw);

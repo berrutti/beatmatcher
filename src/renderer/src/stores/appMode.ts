@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
+import { invoke } from '@tauri-apps/api/core';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionStore } from '@renderer/stores/session';
@@ -37,5 +38,9 @@ export const useAppModeStore = defineStore('appMode', () => {
     mode.value = next;
   }
 
-  return { mode, switchTo };
+  async function confirmQuit(): Promise<void> {
+    await invoke('confirm_quit');
+  }
+
+  return { mode, switchTo, confirmQuit };
 });

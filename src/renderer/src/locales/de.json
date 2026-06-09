@@ -82,6 +82,10 @@
       "de": "Deutsch",
       "es": "Español"
     },
+    "deckColors": {
+      "title": "DECK-FARBEN",
+      "reset": "Standard wiederherstellen"
+    },
     "keyboard": {
       "title": "TASTATURBELEGUNG",
       "hint": "Klicken oder Enter drücken zum Neu-Belegen. Pfeiltasten zur Navigation. Entf setzt auf Standard zurück. Doppelklick setzt ebenfalls zurück.",
@@ -192,5 +196,11 @@
     "rendering": "WIRD GERENDERT...",
     "renderWav": "ALS WAV RENDERN",
     "renderFlac": "ALS FLAC RENDERN"
+  },
+  "quitModal": {
+    "title": "Beatmatcher beenden?",
+    "bodyPlaying": "Ein Track wird gerade abgespielt. Trotzdem beenden?",
+    "bodySession": "Die Session wird gerade abgespielt. Trotzdem beenden?",
+    "confirm": "Beenden"
   }
 }

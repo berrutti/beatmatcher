@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, computed } from 'vue';
+import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -7,6 +7,14 @@ import { useSettingsStore } from '@renderer/stores/settings';
 export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
+
+export const DECK_ACCENTS: Readonly<Record<string, string>> = {
+  A: '#3b82f6',
+  B: '#f97316',
+  C: '#208043',
+  D: '#d631b0',
+  E: '#a855f7'
+};
 
 export type LoopRegion = {
   startSec: number;
@@ -472,11 +480,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
 export type Deck = ReturnType<typeof createDeck>;
 
 export const useDecksStore = defineStore('decks', () => {
-  const deckA = createDeck('A', '#3b82f6', 'DECK A');
-  const deckB = createDeck('B', '#f97316', 'DECK B');
-  const deckC = createDeck('C', '#208043', 'DECK C');
-  const deckD = createDeck('D', '#d631b0', 'DECK D');
-  const deckE = createDeck('E', '#a855f7', 'EDIT');
+  const deckA = createDeck('A', DECK_ACCENTS.A, 'DECK A');
+  const deckB = createDeck('B', DECK_ACCENTS.B, 'DECK B');
+  const deckC = createDeck('C', DECK_ACCENTS.C, 'DECK C');
+  const deckD = createDeck('D', DECK_ACCENTS.D, 'DECK D');
+  const deckE = createDeck('E', DECK_ACCENTS.E, 'EDIT');
 
   const decks: Record<DeckId, ReturnType<typeof createDeck>> = {
     A: deckA,
@@ -524,6 +532,34 @@ export const useDecksStore = defineStore('decks', () => {
     );
   }
 
+  const settingsStore = useSettingsStore();
+
+  watch(
+    () => settingsStore.deckAccents,
+    (accents) => {
+      for (const [id, color] of Object.entries(accents)) {
+        const deck = decks[id as DeckId];
+        if (deck) deck.accent = color;
+      }
+    },
+    { immediate: true }
+  );
+
+  function setDeckAccent(id: string, color: string): void {
+    const deck = decks[id as DeckId];
+    if (!deck) return;
+    deck.accent = color;
+    settingsStore.setDeckAccents({ ...settingsStore.deckAccents, [id]: color });
+  }
+
+  function resetDeckAccents(): void {
+    for (const [id, color] of Object.entries(DECK_ACCENTS)) {
+      const deck = decks[id as DeckId];
+      if (deck) deck.accent = color;
+    }
+    settingsStore.setDeckAccents({});
+  }
+
   function destroy() {
     deckA.destroy();
     deckB.destroy();
@@ -543,6 +579,8 @@ export const useDecksStore = defineStore('decks', () => {
     anyDeckLoaded,
     ejectAll,
     bestAvailableDeck,
+    setDeckAccent,
+    resetDeckAccents,
     destroy
   };
 });
