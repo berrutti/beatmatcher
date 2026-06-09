@@ -196,5 +196,11 @@
     "rendering": "RENDERING...",
     "renderWav": "RENDER WAV",
     "renderFlac": "RENDER FLAC"
+  },
+  "quitModal": {
+    "title": "Quit Beatmatcher?",
+    "bodyPlaying": "A track is currently playing. Quit anyway?",
+    "bodySession": "The session is currently playing. Quit anyway?",
+    "confirm": "Quit"
   }
 }

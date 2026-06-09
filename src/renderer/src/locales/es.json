@@ -196,5 +196,11 @@
     "rendering": "RENDERIZANDO...",
     "renderWav": "RENDERIZAR WAV",
     "renderFlac": "RENDERIZAR FLAC"
+  },
+  "quitModal": {
+    "title": "Salir de Beatmatcher?",
+    "bodyPlaying": "Hay un track reproduciendose. Salir de todas formas?",
+    "bodySession": "La sesion se esta reproduciendo. Salir de todas formas?",
+    "confirm": "Salir"
   }
 }
