@@ -7,7 +7,9 @@ use audio::AppAudio;
 use std::sync::Arc;
 
 type TrackCache = std::sync::Mutex<session_playback::SampleCache>;
-use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::Emitter;
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
