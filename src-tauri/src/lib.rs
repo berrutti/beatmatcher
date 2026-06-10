@@ -110,6 +110,12 @@ pub struct AppState {
     pub session_snapshots: std::sync::Mutex<
         std::collections::HashMap<String, Vec<crate::session_playback::SessionSnapshot>>,
     >,
+    // In-memory source of truth for loaded sessions, keyed by .bms path. Holds
+    // unsaved edits pushed from the frontend; playback and offline render read
+    // from here so edits are audible before the file is written.
+    pub session_files: std::sync::Mutex<
+        std::collections::HashMap<String, Arc<crate::offline_render::SessionFile>>,
+    >,
     session: std::sync::Mutex<Option<SessionLogger>>,
 }
 
@@ -154,6 +160,7 @@ pub fn run() {
         session_playback_handle: std::sync::Mutex::new(None),
         session_track_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
+        session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
     };
 
     tauri::Builder::default()
@@ -236,6 +243,7 @@ pub fn run() {
             commands::read_track_tags,
             commands::release_cue,
             commands::save_recording,
+            commands::save_session,
             commands::scan_folder,
             commands::seek,
             commands::set_beat_grid,
@@ -269,6 +277,8 @@ pub fn run() {
             session_playback::preload_session,
             session_playback::start_session_playback,
             session_playback::stop_session_playback,
+            session_playback::unload_session,
+            session_playback::update_session_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

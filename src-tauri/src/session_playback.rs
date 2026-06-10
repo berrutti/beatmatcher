@@ -179,9 +179,21 @@ pub(crate) async fn preload_session(
     let session: crate::offline_render::SessionFile =
         serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
 
+    index_session(&state, path, session).await;
+
+    Ok(())
+}
+
+// Caches track samples, builds scrub snapshots, and stores the session as the
+// in-memory source of truth for playback and offline render under this path.
+async fn index_session(
+    state: &tauri::State<'_, AppState>,
+    path: String,
+    session: crate::offline_render::SessionFile,
+) {
     let sr = state.audio.device_sample_rate;
     let paths = session_track_paths(&session.events);
-    populate_track_cache(&state, paths, sr).await;
+    populate_track_cache(state, paths, sr).await;
 
     // Build state snapshots with the now-complete cache.
     let snapshots = {
@@ -196,7 +208,54 @@ pub(crate) async fn preload_session(
         .session_snapshots
         .lock()
         .expect("snapshots mutex poisoned")
-        .insert(path, snapshots);
+        .insert(path.clone(), snapshots);
+    state
+        .session_files
+        .lock()
+        .expect("session files mutex poisoned")
+        .insert(path, Arc::new(session));
+}
+
+// Frees everything cached for a session when it is ejected: decoded track
+// samples are the bulk of it (hundreds of MB for a multi-track session).
+// Playback of a path that is no longer cached falls back to a disk read.
+#[tauri::command]
+pub(crate) fn unload_session(state: tauri::State<'_, AppState>, path: String) {
+    let removed = state
+        .session_files
+        .lock()
+        .expect("session files mutex poisoned")
+        .remove(&path);
+    state
+        .session_snapshots
+        .lock()
+        .expect("snapshots mutex poisoned")
+        .remove(&path);
+    if let Some(session) = removed {
+        let track_paths = session_track_paths(&session.events);
+        let mut cache = state
+            .session_track_cache
+            .lock()
+            .expect("track cache mutex poisoned");
+        for track_path in track_paths {
+            cache.remove(&track_path);
+        }
+    }
+}
+
+// Replaces the in-memory event list for a loaded session with edited events
+// from the frontend. The .bms on disk is untouched; the next playback, scrub,
+// or render uses the edited events.
+#[tauri::command]
+pub(crate) async fn update_session_events(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    events_json: String,
+) -> Result<(), String> {
+    let events: Vec<SessionEvent> =
+        serde_json::from_str(&events_json).map_err(|e| format!("parse error: {e}"))?;
+
+    index_session(&state, path, crate::offline_render::SessionFile { events }).await;
 
     Ok(())
 }
@@ -208,17 +267,36 @@ pub(crate) async fn start_session_playback(
     path: String,
     from_ms: f64,
 ) -> Result<(), String> {
-    let json = {
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || {
-            std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
-        })
-        .await
-        .map_err(|e| e.to_string())??
+    // Prefer the in-memory session (which may hold unsaved edits); fall back to
+    // the disk file for callers that never preloaded.
+    let cached: Option<Arc<crate::offline_render::SessionFile>> = state
+        .session_files
+        .lock()
+        .expect("session files mutex poisoned")
+        .get(&path)
+        .cloned();
+    let session: Arc<crate::offline_render::SessionFile> = match cached {
+        Some(cached_session) => cached_session,
+        None => {
+            let json = {
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            };
+            let parsed: crate::offline_render::SessionFile =
+                serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+            let parsed = Arc::new(parsed);
+            state
+                .session_files
+                .lock()
+                .expect("session files mutex poisoned")
+                .insert(path.clone(), parsed.clone());
+            parsed
+        }
     };
-
-    let session: crate::offline_render::SessionFile =
-        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
 
     // Cancel any previous playback task AND wait for it to fully exit before we
     // touch the engine. The async runtime is multi-threaded, so without this the
@@ -277,7 +355,7 @@ pub(crate) async fn start_session_playback(
     let handle = tauri::async_runtime::spawn(async move {
         reset_all(&audio);
 
-        let mut sorted_events = session.events;
+        let mut sorted_events = session.events.clone();
         sorted_events.sort_by(|a, b| {
             a.elapsed_ms
                 .partial_cmp(&b.elapsed_ms)
@@ -2186,5 +2264,97 @@ mod tests {
             (pos - expected).abs() < 1.0,
             "pos={pos}, expected={expected}"
         );
+    }
+
+    // Session editing splices new events into the in-memory list and rebuilds
+    // snapshots via update_session_events. These tests assert that snapshots
+    // built from an edited list reflect the edit inside its range and the
+    // original state after it, and that scrubbing stays consistent with
+    // playthrough when rate edits are inserted mid-session.
+
+    fn strip_gain_at(events: &[SessionEvent], from_ms: f64, cache: &SampleCache) -> f32 {
+        let snaps = build_snapshots(events, SR, cache);
+        let idx = snaps.partition_point(|snap| snap.elapsed_ms <= from_ms);
+        let (mut sim, snapshot_ms) = match idx.checked_sub(1) {
+            Some(snap_idx) => (
+                sim_state_from_snapshot(&snaps[snap_idx]),
+                snaps[snap_idx].elapsed_ms,
+            ),
+            None => (SimState::new(), 0.0),
+        };
+        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
+        sorted.sort_by(|left, right| left.elapsed_ms.partial_cmp(&right.elapsed_ms).unwrap());
+        for ev in sorted
+            .iter()
+            .filter(|event| event.elapsed_ms > snapshot_ms && event.elapsed_ms <= from_ms)
+        {
+            sim_apply_event(ev, &mut sim, cache, SR);
+        }
+        sim.strips.get("A").map(|strip| strip.gain).unwrap_or(1.0)
+    }
+
+    #[test]
+    fn edited_volume_applies_inside_range_and_restores_after() {
+        let cache: SampleCache = HashMap::new();
+        let vol = |at_ms: f64, gain: f32| SessionEvent {
+            gain: Some(gain),
+            ..deck_ev("set_volume", at_ms, "A")
+        };
+
+        let original = vec![vol(1000.0, 0.8)];
+        // Splice result of drawing 0.4 over [5000, 8000]: inserted points plus
+        // the restore event at t1 with the original value.
+        let edited = vec![vol(1000.0, 0.8), vol(5000.0, 0.4), vol(8000.0, 0.8)];
+
+        assert_eq!(strip_gain_at(&original, 3000.0, &cache), 0.8);
+        assert_eq!(strip_gain_at(&edited, 3000.0, &cache), 0.8);
+        assert_eq!(strip_gain_at(&edited, 6000.0, &cache), 0.4);
+        assert_eq!(strip_gain_at(&edited, 9000.0, &cache), 0.8);
+    }
+
+    #[test]
+    fn rate_edit_scrub_matches_playthrough() {
+        let path = "/fake/a.wav".to_string();
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            path.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+
+        let rate = |at_ms: f64, rate_value: f64| SessionEvent {
+            rate: Some(rate_value),
+            ..deck_ev("set_playback_rate", at_ms, "A")
+        };
+
+        // A drawn rate ramp over [5000, 9000] with a restore back to 1.0 at t1.
+        let events = vec![
+            SessionEvent {
+                path: Some(path),
+                is_playing: Some(true),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                ..deck_ev("deck_snapshot", 0.0, "A")
+            },
+            rate(5000.0, 1.02),
+            rate(6000.0, 1.05),
+            rate(7000.0, 1.08),
+            rate(8000.0, 1.04),
+            rate(9000.0, 1.0),
+        ];
+
+        for step in 0..=150 {
+            let at_ms = step as f64 * 100.0;
+            let playthrough = playthrough_pos(&events, at_ms, &cache, "A");
+            let scrub = scrub_pos(&events, at_ms, &cache, "A");
+            match (playthrough, scrub) {
+                (Some(playthrough_frame), Some(scrub_frame)) => assert!(
+                    (playthrough_frame - scrub_frame).abs() < 1.0,
+                    "t={at_ms}ms playthrough={playthrough_frame} scrub={scrub_frame} diff={}",
+                    playthrough_frame - scrub_frame
+                ),
+                (None, None) => {}
+                _ => panic!("t={at_ms}ms one path produced a deck and the other didn't"),
+            }
+        }
     }
 }

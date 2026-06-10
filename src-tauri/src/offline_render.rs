@@ -229,7 +229,7 @@ impl flacenc::source::Source for SliceSource {
 
 // ── Session JSON ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SessionEvent {
     pub elapsed_ms: f64,
     #[serde(rename = "type")]
@@ -259,7 +259,7 @@ pub struct SessionEvent {
     pub buffer_size_frames: Option<u32>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionFile {
     pub events: Vec<SessionEvent>,
 }

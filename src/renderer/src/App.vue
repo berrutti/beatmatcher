@@ -26,6 +26,7 @@ import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionStore } from '@renderer/stores/session';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import AppBar from '@renderer/components/AppBar.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
@@ -40,6 +41,7 @@ const decksStore = useDecksStore();
 const settingsStore = useSettingsStore();
 const appMode = useAppModeStore();
 const sessionStore = useSessionStore();
+const sessionEditStore = useSessionEditStore();
 
 useKeyboard();
 
@@ -53,9 +55,14 @@ function isPlayingNow(): boolean {
   return false;
 }
 
-const quitModalBody = computed(() =>
-  appMode.mode === 'session' ? t('quitModal.bodySession') : t('quitModal.bodyPlaying')
-);
+function needsQuitConfirm(): boolean {
+  return isPlayingNow() || sessionEditStore.dirty;
+}
+
+const quitModalBody = computed(() => {
+  if (sessionEditStore.dirty && !isPlayingNow()) return t('quitModal.bodyDirty');
+  return appMode.mode === 'session' ? t('quitModal.bodySession') : t('quitModal.bodyPlaying');
+});
 
 async function onQuitConfirmed(): Promise<void> {
   quitModalOpen.value = false;
@@ -67,7 +74,7 @@ function onQuitCancelled(): void {
 }
 
 function handleQuitRequested(): void {
-  if (!isPlayingNow()) {
+  if (!needsQuitConfirm()) {
     appMode.confirmQuit().catch(() => {});
     return;
   }
@@ -79,10 +86,11 @@ let unlistenQuit: (() => void) | null = null;
 
 onMounted(async () => {
   settingsStore.init();
+  // Closing the window must quit the app, same as Cmd+Q. Letting the default
+  // close happen would leave the app running without a window on macOS.
   unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
-    if (!isPlayingNow()) return;
     event.preventDefault();
-    quitModalOpen.value = true;
+    handleQuitRequested();
   });
   unlistenQuit = await listen('quit-requested', handleQuitRequested);
 });

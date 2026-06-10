@@ -11,6 +11,8 @@
     "sessionModeBody": "Alle geladenen Tracks werden entladen. Sie können sie nach der Rückkehr neu laden.",
     "leaveSessionTitle": "Session-Ansicht verlassen?",
     "leaveSessionBody": "Die geladene Session wird geschlossen und die Wiedergabe gestoppt.",
+    "leaveSessionDirtyTitle": "Ungespeicherte Änderungen verwerfen?",
+    "leaveSessionDirtyBody": "Die Session hat ungespeicherte Änderungen. Beim Verlassen gehen sie verloren.",
     "continue": "Weiter"
   },
   "topStrip": {
@@ -189,18 +191,26 @@
     "lanes": {
       "gain": "Lautstärke",
       "filter": "Filter",
+      "rate": "Pitch",
       "eqLow": "EQ Bass",
       "eqMid": "EQ Mitten",
       "eqHigh": "EQ Höhen"
     },
     "rendering": "WIRD GERENDERT...",
     "renderWav": "ALS WAV RENDERN",
-    "renderFlac": "ALS FLAC RENDERN"
+    "renderFlac": "ALS FLAC RENDERN",
+    "edit": "Session bearbeiten",
+    "save": "SPEICHERN",
+    "saveAs": "SPEICHERN UNTER",
+    "discardTitle": "Ungespeicherte Änderungen verwerfen?",
+    "discardBody": "Die Session hat ungespeicherte Änderungen. Beim Auswerfen gehen sie verloren.",
+    "discardConfirm": "Verwerfen"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",
     "bodyPlaying": "Ein Track wird gerade abgespielt. Trotzdem beenden?",
     "bodySession": "Die Session wird gerade abgespielt. Trotzdem beenden?",
+    "bodyDirty": "Die Session hat ungespeicherte Änderungen. Trotzdem beenden?",
     "confirm": "Beenden"
   }
 }

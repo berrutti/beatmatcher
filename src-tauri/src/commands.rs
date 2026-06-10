@@ -1008,15 +1008,30 @@ pub(crate) fn save_bms_only(
 
 #[tauri::command]
 pub(crate) async fn render_session_to_file(
+    state: tauri::State<'_, AppState>,
     session_path: String,
     output_path: String,
     use_flac: bool,
 ) -> Result<(), String> {
+    // Prefer the in-memory session so unsaved edits are rendered too.
+    let cached = state
+        .session_files
+        .lock()
+        .expect("session files mutex poisoned")
+        .get(&session_path)
+        .cloned();
     tokio::task::spawn_blocking(move || {
-        let json =
-            std::fs::read_to_string(&session_path).map_err(|e| format!("{session_path}: {e}"))?;
-        let session: crate::offline_render::SessionFile =
-            serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+        let session = match cached {
+            Some(cached_session) => cached_session,
+            None => {
+                let json = std::fs::read_to_string(&session_path)
+                    .map_err(|e| format!("{session_path}: {e}"))?;
+                std::sync::Arc::new(
+                    serde_json::from_str::<crate::offline_render::SessionFile>(&json)
+                        .map_err(|e| format!("parse error: {e}"))?,
+                )
+            }
+        };
         let sample_rate = 44100u32;
         let rendered = crate::offline_render::render_session(&session, sample_rate, 0)?;
         if use_flac {
@@ -1027,6 +1042,11 @@ pub(crate) async fn render_session_to_file(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) fn save_session(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

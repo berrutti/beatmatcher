@@ -79,6 +79,7 @@ import {
   type LaneKey,
   type LaneVisibility,
   type RowLayout,
+  type SublaneLayout,
   type OverviewRect,
   formatTickLabel,
   drawLoadedSpan,
@@ -88,19 +89,65 @@ import {
   drawDeckLanes,
   drawMasterGainLane,
   drawOverview,
-  makeMsToX
+  makeMsToX,
+  valueToY,
+  yToValue
 } from '@renderer/utils/timelineDraw';
 import { DECK_ACCENTS, DeckId, useDecksStore } from '@renderer/stores/decks';
+import { useSessionStore } from '@renderer/stores/session';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useSettingsStore } from '@renderer/stores/settings';
+import {
+  laneSpecFor,
+  normalizeGestureSamples,
+  formatLaneValue,
+  filterActiveAt,
+  type EditableLaneKey
+} from '@renderer/utils/sessionEditOps';
+import type { LanePoint } from '@renderer/composables/useSessionTimeline';
 
-type DragMode = 'track' | 'overview-move' | 'overview-resize-left' | 'overview-resize-right' | null;
+type DragMode =
+  | 'track'
+  | 'overview-move'
+  | 'overview-resize-left'
+  | 'overview-resize-right'
+  | 'draw'
+  | 'paint-active'
+  | 'paint-nudge'
+  | null;
 type DragState = { mode: DragMode; startClientX: number; startView: ViewWindow; dragged: boolean };
 type LaneMenu = { deck: string; x: number; y: number };
+type LaneHit = { deck: string; lane: EditableLaneKey; top: number; height: number };
+type DrawGesture = {
+  deck: string;
+  lane: EditableLaneKey;
+  top: number;
+  height: number;
+  min: number;
+  max: number;
+  samples: LanePoint[];
+};
+type PaintGesture = {
+  deck: string;
+  top: number;
+  height: number;
+  startMs: number;
+  currentMs: number;
+};
+type NudgeGesture = {
+  deck: string;
+  rowTop: number;
+  direction: 1 | -1;
+  startMs: number;
+  currentMs: number;
+};
 
 const MIN_VIEW_MS = 200;
 const ZOOM_SENSITIVITY = 0.0015;
 const DRAG_THRESHOLD_PX = 3;
 const EDGE_GRAB_PX = 6;
 const FOLLOW_LEAD_IN_FRACTION = 0.1;
+const EDIT_LANE_H = 64;
 
 const props = defineProps<{
   durationMs: number;
@@ -116,6 +163,9 @@ const props = defineProps<{
 const emit = defineEmits<{ seek: [ms: number] }>();
 
 const decks = useDecksStore();
+const sessionStore = useSessionStore();
+const editStore = useSessionEditStore();
+const settingsStore = useSettingsStore();
 
 function getDeckAccent(id: DeckId): string {
   return decks.decks[id]?.accent ?? DECK_ACCENTS[id];
@@ -188,6 +238,56 @@ function onCanvasMouseDown(e: MouseEvent) {
   const y = e.clientY - rect.top;
   const frac = fracAtClientX(e.clientX, rect, trackW);
 
+  if (editStore.editMode && !isOverY(y) && e.clientX - rect.left > LABEL_W) {
+    if (e.shiftKey) {
+      const band = clipBandAt(y);
+      if (band) {
+        const ms = fracToMs(frac, currentView());
+        nudgeGesture = {
+          deck: band.deck,
+          rowTop: band.rowTop,
+          direction: band.direction,
+          startMs: ms,
+          currentMs: ms
+        };
+        dragState.mode = 'paint-nudge';
+        dragState.startClientX = e.clientX;
+        dragState.startView = currentView();
+        dragState.dragged = false;
+        canvasEl.value.style.cursor = 'crosshair';
+        window.addEventListener('mousemove', onWindowMouseMove);
+        window.addEventListener('mouseup', onWindowMouseUp);
+        requestAnimationFrame(draw);
+        return;
+      }
+    }
+    const hit = laneAt(y);
+    if (hit && isLaneSelected(hit.deck, hit.lane)) {
+      const ms = fracToMs(frac, currentView());
+      if (e.shiftKey && hit.lane === 'filter') {
+        paintGesture = {
+          deck: hit.deck,
+          top: hit.top,
+          height: hit.height,
+          startMs: ms,
+          currentMs: ms
+        };
+        dragState.mode = 'paint-active';
+      } else {
+        beginDrawGesture(hit, ms, y);
+        dragState.mode = 'draw';
+      }
+      dragState.startClientX = e.clientX;
+      dragState.startView = currentView();
+      dragState.dragged = false;
+      canvasEl.value.style.cursor = 'crosshair';
+      window.addEventListener('mousemove', onWindowMouseMove);
+      window.addEventListener('mouseup', onWindowMouseUp);
+      requestAnimationFrame(draw);
+      return;
+    }
+  }
+
   let mode: DragMode = 'track';
 
   if (isOverY(y)) {
@@ -236,6 +336,17 @@ function onCanvasHoverMove(e: MouseEvent) {
     const hit = hitTestOverview(frac, currentView(), props.durationMs, edgeTolerance);
     canvasEl.value.style.cursor =
       hit === 'resize-left' || hit === 'resize-right' ? 'ew-resize' : 'grab';
+  } else if (editStore.editMode) {
+    if (e.shiftKey && clipBandAt(y) && e.clientX - rect.left > LABEL_W) {
+      canvasEl.value.style.cursor = 'crosshair';
+      return;
+    }
+    const hit = laneAt(y);
+    if (hit && isLaneSelected(hit.deck, hit.lane) && e.clientX - rect.left > LABEL_W) {
+      canvasEl.value.style.cursor = 'crosshair';
+    } else {
+      canvasEl.value.style.cursor = hit ? 'pointer' : '';
+    }
   } else {
     canvasEl.value.style.cursor = '';
   }
@@ -258,6 +369,36 @@ function onWindowMouseMove(e: MouseEvent) {
   const start = dragState.startView;
 
   switch (dragState.mode) {
+    case 'paint-active': {
+      if (!paintGesture) break;
+      const frac = fracAtClientX(e.clientX, rect, trackW);
+      paintGesture.currentMs = Math.min(total, Math.max(0, fracToMs(frac, start)));
+      requestAnimationFrame(draw);
+      break;
+    }
+    case 'paint-nudge': {
+      if (!nudgeGesture) break;
+      const frac = fracAtClientX(e.clientX, rect, trackW);
+      nudgeGesture.currentMs = Math.min(total, Math.max(0, fracToMs(frac, start)));
+      requestAnimationFrame(draw);
+      break;
+    }
+    case 'draw': {
+      if (!drawGesture) break;
+      const frac = fracAtClientX(e.clientX, rect, trackW);
+      const ms = Math.min(total, Math.max(0, fracToMs(frac, start)));
+      const y = e.clientY - rect.top;
+      // Holding shift locks the value at the previous sample so the line
+      // extends perfectly flat; only time advances.
+      const lastSample = drawGesture.samples[drawGesture.samples.length - 1];
+      const value =
+        e.shiftKey && lastSample
+          ? lastSample.value
+          : yToValue(drawGesture.top, drawGesture.height, drawGesture.min, drawGesture.max, y);
+      drawGesture.samples.push({ ms, value });
+      requestAnimationFrame(draw);
+      break;
+    }
     case 'track': {
       const deltaMs = -dxPx * (start.duration / trackW);
       setView(panByMs(start, deltaMs, total, MIN_VIEW_MS));
@@ -282,6 +423,19 @@ function onWindowMouseMove(e: MouseEvent) {
 }
 
 function onWindowMouseUp() {
+  if (dragState.mode === 'draw') {
+    finishDrawGesture();
+    // Suppress the click event that follows this mouseup so it cannot seek.
+    dragState.dragged = true;
+  }
+  if (dragState.mode === 'paint-active') {
+    finishPaintGesture();
+    dragState.dragged = true;
+  }
+  if (dragState.mode === 'paint-nudge') {
+    finishNudgeGesture();
+    dragState.dragged = true;
+  }
   dragState.mode = null;
   if (canvasEl.value) canvasEl.value.style.cursor = '';
   window.removeEventListener('mousemove', onWindowMouseMove);
@@ -297,6 +451,18 @@ function onCanvasClick(e: MouseEvent) {
   const rect = canvasEl.value.getBoundingClientRect();
   const y = e.clientY - rect.top;
   if (isOverY(y)) return;
+
+  if (editStore.editMode) {
+    const hit = laneAt(y);
+    if (hit) {
+      if (!isLaneSelected(hit.deck, hit.lane)) {
+        editStore.selectedLane = { deck: hit.deck, lane: hit.lane };
+      } else if (e.clientX - rect.left <= LABEL_W) {
+        editStore.selectedLane = null;
+      }
+      return;
+    }
+  }
 
   const trackW = trackWidthOf(rect);
   if (trackW <= 0) return;
@@ -338,6 +504,113 @@ function onCanvasContextMenu(e: MouseEvent) {
 
 let rowLayout: RowLayout[] = [];
 let overviewRect: OverviewRect | null = null;
+let masterRect: { top: number; height: number } | null = null;
+let drawGesture: DrawGesture | null = null;
+let paintGesture: PaintGesture | null = null;
+let nudgeGesture: NudgeGesture | null = null;
+
+// The clip band is the waveform strip of a deck row, above its sublanes.
+function clipBandAt(y: number): { deck: string; rowTop: number; direction: 1 | -1 } | null {
+  for (const row of rowLayout) {
+    if (y >= row.top && y < row.top + ROW_H) {
+      return { deck: row.deckId, rowTop: row.top, direction: y < row.top + ROW_H / 2 ? 1 : -1 };
+    }
+  }
+  return null;
+}
+
+function finishNudgeGesture() {
+  if (!nudgeGesture) return;
+  const gesture = nudgeGesture;
+  nudgeGesture = null;
+  const t0 = Math.min(gesture.startMs, gesture.currentMs);
+  const t1 = Math.max(gesture.startMs, gesture.currentMs);
+  editStore.commitNudgePaint(gesture.deck, t0, t1, gesture.direction).catch(() => {});
+  requestAnimationFrame(draw);
+}
+
+function isLaneSelected(deck: string, lane: EditableLaneKey): boolean {
+  const sel = editStore.selectedLane;
+  return editStore.editMode && sel !== null && sel.deck === deck && sel.lane === lane;
+}
+
+function laneHeightFor(deck: string, lane: LaneKey): number {
+  return isLaneSelected(deck, lane) ? EDIT_LANE_H : SUBLANE_H;
+}
+
+function laneAt(y: number): LaneHit | null {
+  for (const row of rowLayout) {
+    for (const sub of row.lanes) {
+      if (y >= sub.top && y < sub.top + sub.height) {
+        return { deck: row.deckId, lane: sub.key, top: sub.top, height: sub.height };
+      }
+    }
+  }
+  if (masterRect && y >= masterRect.top && y < masterRect.top + masterRect.height) {
+    // The master lane draws inset by 2px (see drawMasterGainLane), so value
+    // mapping uses the same inset rect.
+    return {
+      deck: 'master',
+      lane: 'masterGain',
+      top: masterRect.top + 2,
+      height: masterRect.height - 4
+    };
+  }
+  return null;
+}
+
+function laneRange(hit: LaneHit): { min: number; max: number } {
+  const deckData = props.deckLanes[hit.deck];
+  const spec = laneSpecFor(hit.lane, { rateMin: deckData?.rateMin, rateMax: deckData?.rateMax });
+  return { min: spec.min, max: spec.max };
+}
+
+function beginDrawGesture(hit: LaneHit, ms: number, y: number) {
+  if (sessionStore.isPlaying) sessionStore.stop().catch(() => {});
+  const { min, max } = laneRange(hit);
+  const value = yToValue(hit.top, hit.height, min, max, y);
+  drawGesture = {
+    deck: hit.deck === 'master' ? '' : hit.deck,
+    lane: hit.lane,
+    top: hit.top,
+    height: hit.height,
+    min,
+    max,
+    samples: [{ ms, value }]
+  };
+}
+
+function finishPaintGesture() {
+  if (!paintGesture) return;
+  const gesture = paintGesture;
+  paintGesture = null;
+  const t0 = Math.min(gesture.startMs, gesture.currentMs);
+  const t1 = Math.max(gesture.startMs, gesture.currentMs);
+  editStore.commitFilterActiveToggle(gesture.deck, t0, t1).catch(() => {});
+  requestAnimationFrame(draw);
+}
+
+function finishDrawGesture() {
+  if (!drawGesture || drawGesture.samples.length === 0) {
+    drawGesture = null;
+    return;
+  }
+  const gesture = drawGesture;
+  drawGesture = null;
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (const sample of gesture.samples) {
+    t0 = Math.min(t0, sample.ms);
+    t1 = Math.max(t1, sample.ms);
+  }
+  editStore
+    .commitGesture(gesture.deck, gesture.lane, gesture.samples, t0, t1, {
+      rateMin: gesture.min,
+      rateMax: gesture.max
+    })
+    .catch(() => {});
+  requestAnimationFrame(draw);
+}
 
 const containerEl = ref<HTMLDivElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
@@ -407,8 +680,14 @@ function draw() {
   let rowY = TICK_H;
   for (let ri = 0; ri < DECK_ORDER.length; ri++) {
     const deckId = DECK_ORDER[ri];
-    const lanes = visibleLanesFor(deckId);
-    const rowH = ROW_H + lanes.length * SUBLANE_H;
+    const laneKeys = visibleLanesFor(deckId);
+    let sublaneTop = rowY + ROW_H;
+    const lanes: SublaneLayout[] = laneKeys.map((key) => {
+      const sublane = { key, top: sublaneTop, height: laneHeightFor(deckId, key) };
+      sublaneTop += sublane.height;
+      return sublane;
+    });
+    const rowH = sublaneTop - rowY;
     newRowLayout.push({ deckId: deckId, top: rowY, height: rowH, lanes });
 
     ctx.fillStyle = ri % 2 === 0 ? '#161616' : '#131313';
@@ -422,10 +701,9 @@ function draw() {
 
     if (lanes.length > 0) {
       ctx.font = `8px monospace`;
-      ctx.fillStyle = '#555';
-      for (let laneIdx = 0; laneIdx < lanes.length; laneIdx++) {
-        const sublaneTopY = rowY + ROW_H + laneIdx * SUBLANE_H;
-        ctx.fillText(LANE_SHORT_LABELS[lanes[laneIdx]], LABEL_W / 2, sublaneTopY + SUBLANE_H / 2);
+      for (const sublane of lanes) {
+        ctx.fillStyle = isLaneSelected(deckId, sublane.key) ? '#06b6d4' : '#555';
+        ctx.fillText(LANE_SHORT_LABELS[sublane.key], LABEL_W / 2, sublane.top + sublane.height / 2);
       }
     }
 
@@ -434,14 +712,16 @@ function draw() {
 
   // Master row background + label (outside clip so label at LABEL_W/2 is not hidden)
   const masterTopY = rowY;
+  const masterRowH = isLaneSelected('master', 'masterGain') ? EDIT_LANE_H : MASTER_ROW_H;
+  masterRect = { top: masterTopY, height: masterRowH };
   ctx.fillStyle = '#101010';
-  ctx.fillRect(0, masterTopY, canvasW, MASTER_ROW_H);
+  ctx.fillRect(0, masterTopY, canvasW, masterRowH);
 
   ctx.font = `bold 9px monospace`;
   ctx.fillStyle = '#888';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('M', LABEL_W / 2, masterTopY + MASTER_ROW_H / 2);
+  ctx.fillText('M', LABEL_W / 2, masterTopY + masterRowH / 2);
 
   // Second pass: track content clipped to [LABEL_W, trackW] so it never bleeds into the label column
   ctx.save();
@@ -472,24 +752,133 @@ function draw() {
     drawNudgeSpans(ctx, deckNudgeSpans, rowY, msToX);
 
     if (lanes.length > 0) {
-      drawDeckLanes(
-        ctx,
-        canvasW,
-        rowY + ROW_H,
-        msToX,
-        props.deckLanes[deckId],
-        lanes,
-        viewStart,
-        viewEnd
-      );
+      drawDeckLanes(ctx, canvasW, msToX, props.deckLanes[deckId], lanes, viewStart, viewEnd);
     }
 
     rowY += rowH;
   }
   rowLayout = newRowLayout;
 
-  drawMasterGainLane(ctx, props.masterLanes.gain, masterTopY, msToX, viewStart, viewEnd);
-  const bottomY = masterTopY + MASTER_ROW_H;
+  drawMasterGainLane(
+    ctx,
+    props.masterLanes.gain,
+    masterTopY,
+    masterRowH,
+    msToX,
+    viewStart,
+    viewEnd
+  );
+  const bottomY = masterTopY + masterRowH;
+
+  // Selected-lane highlight + in-progress draw gesture preview
+  if (editStore.editMode && editStore.selectedLane) {
+    const sel = editStore.selectedLane;
+    let selRect: { top: number; height: number } | null = null;
+    if (sel.deck === 'master') {
+      selRect = { top: masterTopY, height: masterRowH };
+    } else {
+      const row = newRowLayout.find((r) => r.deckId === sel.deck);
+      const sub = row?.lanes.find((l) => l.key === sel.lane);
+      if (sub) selRect = { top: sub.top, height: sub.height };
+    }
+    if (selRect) {
+      ctx.fillStyle = '#06b6d414';
+      ctx.fillRect(LABEL_W, selRect.top, trackW, selRect.height);
+      ctx.strokeStyle = '#06b6d4';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(LABEL_W + 0.5, selRect.top + 0.5, trackW - 1, selRect.height - 1);
+    }
+  }
+
+  if (drawGesture) {
+    const points = normalizeGestureSamples(drawGesture.samples);
+    if (points.length > 0) {
+      ctx.strokeStyle = '#ffffffcc';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let prevY = valueToY(
+        drawGesture.top,
+        drawGesture.height,
+        drawGesture.min,
+        drawGesture.max,
+        points[0].value
+      );
+      ctx.moveTo(msToX(points[0].ms), prevY);
+      for (let pointIdx = 1; pointIdx < points.length; pointIdx++) {
+        const stepX = msToX(points[pointIdx].ms);
+        const stepY = valueToY(
+          drawGesture.top,
+          drawGesture.height,
+          drawGesture.min,
+          drawGesture.max,
+          points[pointIdx].value
+        );
+        ctx.lineTo(stepX, prevY);
+        ctx.lineTo(stepX, stepY);
+        prevY = stepY;
+      }
+      ctx.stroke();
+
+      const cursor = drawGesture.samples[drawGesture.samples.length - 1];
+      const label = formatLaneValue(drawGesture.lane, cursor.value);
+      const labelX = Math.min(msToX(cursor.ms) + 8, canvasW - PADDING - 40);
+      const labelY = drawGesture.top - 6;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000cc';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(label, labelX, labelY);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, labelX, labelY);
+    }
+  }
+
+  if (nudgeGesture) {
+    const t0 = Math.min(nudgeGesture.startMs, nudgeGesture.currentMs);
+    const t1 = Math.max(nudgeGesture.startMs, nudgeGesture.currentMs);
+    const percent = nudgeGesture.direction * settingsStore.nudgeSensitivity;
+    drawNudgeSpans(ctx, [{ startMs: t0, endMs: t1, percent }], nudgeGesture.rowTop, msToX);
+
+    const label = `${percent > 0 ? '+' : ''}${percent}%`;
+    const labelX = Math.min(msToX(nudgeGesture.currentMs) + 8, canvasW - PADDING - 30);
+    const labelY =
+      nudgeGesture.direction > 0 ? nudgeGesture.rowTop + 12 : nudgeGesture.rowTop + ROW_H - 6;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000000cc';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, labelX, labelY);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, labelX, labelY);
+  }
+
+  if (paintGesture) {
+    const t0 = Math.min(paintGesture.startMs, paintGesture.currentMs);
+    const t1 = Math.max(paintGesture.startMs, paintGesture.currentMs);
+    const events = sessionStore.session?.events ?? [];
+    const want = !filterActiveAt(events, paintGesture.deck, t0, false);
+    const x0 = msToX(t0);
+    const paintW = Math.max(1, msToX(t1) - x0);
+    ctx.fillStyle = want ? '#ffffff30' : '#00000060';
+    ctx.fillRect(x0, paintGesture.top, paintW, paintGesture.height);
+
+    const label = want ? 'ON' : 'OFF';
+    const labelX = Math.min(msToX(paintGesture.currentMs) + 8, canvasW - PADDING - 30);
+    const labelY = paintGesture.top - 6;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000000cc';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, labelX, labelY);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, labelX, labelY);
+  }
 
   rowY = TICK_H;
   for (let ri = 0; ri < DECK_ORDER.length; ri++) {
@@ -511,7 +900,7 @@ function draw() {
   }
 
   ctx.fillStyle = '#222';
-  ctx.fillRect(0, masterTopY + MASTER_ROW_H - 1, canvasW, 1);
+  ctx.fillRect(0, masterTopY + masterRowH - 1, canvasW, 1);
 
   const overviewY = canvasH - OVERVIEW_H;
   const rowsBottom = Math.min(bottomY, overviewY - OVERVIEW_GAP);
@@ -588,6 +977,8 @@ watch(
     laneVisibility.value,
     viewStartMs.value,
     viewDurationMs.value,
+    editStore.editMode,
+    editStore.selectedLane,
     DECK_ORDER.map((id) => getDeckAccent(id))
   ],
   () => {

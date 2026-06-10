@@ -4,6 +4,7 @@ import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -23,6 +24,7 @@ export function useKeyboard() {
   const collection = useCollectionStore();
   const settings = useSettingsStore();
   const appMode = useAppModeStore();
+  const sessionEdit = useSessionEditStore();
 
   function getDeckCommandFromKey(key: string): DeckCommand {
     for (const [deckId, bindings] of Object.entries(settings.keybindings) as [
@@ -93,6 +95,19 @@ export function useKeyboard() {
     if (e.key === 'Shift') {
       shiftHeld.value = true;
       return;
+    }
+
+    if (appMode.mode === 'session' && !isTyping(e)) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) sessionEdit.redo();
+        else sessionEdit.undo();
+        return;
+      }
+      if (e.key === 'Escape' && sessionEdit.selectedLane) {
+        sessionEdit.selectedLane = null;
+        return;
+      }
     }
 
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
