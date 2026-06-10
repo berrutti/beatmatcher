@@ -45,8 +45,6 @@ export const useCollectionStore = defineStore('collection', () => {
     typeof stored === 'object' && stored !== null ? stored : {}
   );
 
-  const amplitudeWaveformCache = new Map<string, { durationSec: number; amps: Float32Array }>();
-
   function persistSaved() {
     storageSet(STORAGE_KEYS.savedTracks, savedTracks);
   }
@@ -344,23 +342,6 @@ export const useCollectionStore = defineStore('collection', () => {
       : null;
   }
 
-  // Not really happy with this function belonging to this store, but since we deal with paths I guess it's fine
-  // The point is that only stores own invoke commands, and this one was the most appropriate for it
-  async function getAmplitudeWaveform(
-    path: string,
-    numPoints = 500
-  ): Promise<{ durationSec: number; amps: Float32Array }> {
-    const cached = amplitudeWaveformCache.get(path);
-    if (cached) return cached;
-    const result = await invoke<{ durationSec: number; amps: number[] }>(
-      'get_track_amplitude_waveform',
-      { path, numPoints }
-    );
-    const entry = { durationSec: result.durationSec, amps: new Float32Array(result.amps) };
-    amplitudeWaveformCache.set(path, entry);
-    return entry;
-  }
-
   async function scanFolders(folders: string[]): Promise<string[]> {
     const pathLists = await Promise.all(
       folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
@@ -435,7 +416,6 @@ export const useCollectionStore = defineStore('collection', () => {
     createPlaylist,
     deletePlaylist,
     endDrag,
-    getAmplitudeWaveform,
     getBpm,
     getName,
     getSaved,

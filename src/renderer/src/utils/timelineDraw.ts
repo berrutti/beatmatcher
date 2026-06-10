@@ -6,7 +6,7 @@ import type {
   NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
 import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
-import { EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
+import { EQ_MIN_DB, EQ_MAX_DB, FILTER_DEAD_ZONE } from '@renderer/stores/mixer';
 import { formatMs } from '@renderer/utils/time';
 import {
   overlapsRange,
@@ -27,36 +27,39 @@ export const MASTER_ROW_H = SUBLANE_H * 2;
 export const OVERVIEW_H = 22;
 export const OVERVIEW_GAP = 4;
 
-export const LANE_KEYS = ['gain', 'filter', 'eqLow', 'eqMid', 'eqHigh'] as const;
+export const LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
 export type LaneKey = (typeof LANE_KEYS)[number];
 export type LaneVisibility = Partial<Record<LaneKey, boolean>>;
 
 export const LANE_GROUP: Record<LaneKey, number> = {
   gain: 0,
   filter: 1,
-  eqLow: 2,
-  eqMid: 2,
-  eqHigh: 2
+  rate: 2,
+  eqLow: 3,
+  eqMid: 3,
+  eqHigh: 3
 };
 export const LANE_SHORT_LABELS: Record<LaneKey, string> = {
   gain: 'G',
   filter: 'F',
+  rate: 'RT',
   eqLow: 'LO',
   eqMid: 'MD',
   eqHigh: 'HI'
 };
 
 const GAIN_COLOR = '#e5e5e5';
+const RATE_COLOR = '#a78bfa';
 const NUDGE_COLOR = '#fbbf24';
 const NUDGE_LINE_W = 2;
-const FILTER_DEAD_ZONE = 0.05;
 const FILTER_LPF_COLOR = '#38bdf8';
 const FILTER_HPF_COLOR = '#fb923c';
 const FILTER_NEUTRAL_COLOR = '#666666';
 const FILTER_ACTIVE_FILL = '#ffffff10';
 const EQ_BAND_COLORS: Record<string, string> = { low: '#ef4444', mid: '#eab308', high: '#3b82f6' };
 
-export type RowLayout = { deckId: DeckId; top: number; height: number; lanes: LaneKey[] };
+export type SublaneLayout = { key: LaneKey; top: number; height: number };
+export type RowLayout = { deckId: DeckId; top: number; height: number; lanes: SublaneLayout[] };
 export type OverviewRect = { y: number; h: number };
 
 export function formatTickLabel(ms: number, tickIntervalMs: number): string {
@@ -79,6 +82,18 @@ export function valueToY(
 ): number {
   const range = maxVal - minVal || 1;
   return laneY + laneHeight - ((value - minVal) / range) * laneHeight;
+}
+
+export function yToValue(
+  laneY: number,
+  laneHeight: number,
+  minVal: number,
+  maxVal: number,
+  y: number
+): number {
+  const range = maxVal - minVal || 1;
+  const value = minVal + ((laneY + laneHeight - y) / (laneHeight || 1)) * range;
+  return Math.min(maxVal, Math.max(minVal, value));
 }
 
 export function filterColorFor(value: number): string {
@@ -187,6 +202,7 @@ export function drawFilterLane(
   canvasWidth: number,
   deckData: DeckLanes,
   laneY: number,
+  laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
@@ -196,25 +212,64 @@ export function drawFilterLane(
     const spanX = msToX(span.startMs);
     const spanWidth = Math.max(1, msToX(span.endMs) - spanX);
     ctx.fillStyle = FILTER_ACTIVE_FILL;
-    ctx.fillRect(spanX, laneY, spanWidth, SUBLANE_H);
+    ctx.fillRect(spanX, laneY, spanWidth, laneH);
   }
 
   // Center line marks the bypass position (knob = 0); LPF sweeps below it, HPF above.
-  const centerY = valueToY(laneY, SUBLANE_H, -1, 1, 0);
-  ctx.strokeStyle = '#3a3a3a';
-  ctx.beginPath();
-  ctx.moveTo(LABEL_W, centerY);
-  ctx.lineTo(canvasWidth - PADDING, centerY);
-  ctx.stroke();
+  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, -1, 1, 0);
 
   drawLaneSteps(
     ctx,
     deckData.filter,
     laneY,
-    SUBLANE_H,
+    laneH,
     -1,
     1,
     filterColorFor,
+    msToX,
+    viewStart,
+    viewEnd
+  );
+}
+
+function drawLaneCenterLine(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  laneY: number,
+  laneH: number,
+  minVal: number,
+  maxVal: number,
+  centerValue: number
+): void {
+  const centerY = valueToY(laneY, laneH, minVal, maxVal, centerValue);
+  ctx.strokeStyle = '#3a3a3a';
+  ctx.beginPath();
+  ctx.moveTo(LABEL_W, centerY);
+  ctx.lineTo(canvasWidth - PADDING, centerY);
+  ctx.stroke();
+}
+
+export function drawRateLane(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  deckData: DeckLanes,
+  laneY: number,
+  laneH: number,
+  msToX: (ms: number) => number,
+  viewStart: number,
+  viewEnd: number
+): void {
+  // Center line marks the neutral rate (1.0 = 0% pitch).
+  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, deckData.rateMin, deckData.rateMax, 1);
+
+  drawLaneSteps(
+    ctx,
+    deckData.rate,
+    laneY,
+    laneH,
+    deckData.rateMin,
+    deckData.rateMax,
+    RATE_COLOR,
     msToX,
     viewStart,
     viewEnd
@@ -226,22 +281,12 @@ export function drawEqLane(
   points: LanePoint[],
   color: string,
   laneY: number,
+  laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
 ): void {
-  drawLaneSteps(
-    ctx,
-    points,
-    laneY,
-    SUBLANE_H,
-    EQ_MIN_DB,
-    EQ_MAX_DB,
-    color,
-    msToX,
-    viewStart,
-    viewEnd
-  );
+  drawLaneSteps(ctx, points, laneY, laneH, EQ_MIN_DB, EQ_MAX_DB, color, msToX, viewStart, viewEnd);
 }
 
 export type LaneDrawer = (
@@ -249,61 +294,50 @@ export type LaneDrawer = (
   canvasWidth: number,
   deckData: DeckLanes,
   laneY: number,
+  laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
 ) => void;
 
 export const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawLaneSteps(
-      ctx,
-      deckData.gain,
-      laneY,
-      SUBLANE_H,
-      0,
-      1,
-      GAIN_COLOR,
-      msToX,
-      viewStart,
-      viewEnd
-    ),
+  gain: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+    drawLaneSteps(ctx, deckData.gain, laneY, laneH, 0, 1, GAIN_COLOR, msToX, viewStart, viewEnd),
   filter: drawFilterLane,
-  eqLow: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS.low, laneY, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS.mid, laneY, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _w, deckData, laneY, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS.high, laneY, msToX, viewStart, viewEnd)
+  rate: drawRateLane,
+  eqLow: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS.low, laneY, laneH, msToX, viewStart, viewEnd),
+  eqMid: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS.mid, laneY, laneH, msToX, viewStart, viewEnd),
+  eqHigh: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS.high, laneY, laneH, msToX, viewStart, viewEnd)
 };
 
 export function drawDeckLanes(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
-  laneTopY: number,
   msToX: (ms: number) => number,
   deckData: DeckLanes | undefined,
-  lanes: LaneKey[],
+  sublanes: SublaneLayout[],
   viewStart: number,
   viewEnd: number
 ): void {
   if (!deckData) return;
 
-  let laneY = laneTopY;
-  for (let laneIdx = 0; laneIdx < lanes.length; laneIdx++) {
-    const group = LANE_GROUP[lanes[laneIdx]];
-    const prevGroup = laneIdx > 0 ? LANE_GROUP[lanes[laneIdx - 1]] : -1;
+  for (let laneIdx = 0; laneIdx < sublanes.length; laneIdx++) {
+    const { key, top, height } = sublanes[laneIdx];
+    const group = LANE_GROUP[key];
+    const prevGroup = laneIdx > 0 ? LANE_GROUP[sublanes[laneIdx - 1].key] : -1;
 
     ctx.fillStyle = group % 2 === 0 ? '#1a1a1a' : '#141414';
-    ctx.fillRect(LABEL_W, laneY, canvasWidth - LABEL_W - PADDING, SUBLANE_H);
+    ctx.fillRect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, height);
 
     if (laneIdx > 0 && group !== prevGroup) {
       ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(LABEL_W, laneY, canvasWidth - LABEL_W - PADDING, 1);
+      ctx.fillRect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, 1);
     }
 
-    LANE_DRAWERS[lanes[laneIdx]](ctx, canvasWidth, deckData, laneY, msToX, viewStart, viewEnd);
-    laneY += SUBLANE_H;
+    LANE_DRAWERS[key](ctx, canvasWidth, deckData, top, height, msToX, viewStart, viewEnd);
   }
 }
 
@@ -453,6 +487,7 @@ export function drawMasterGainLane(
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   masterTopY: number,
+  masterRowH: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
@@ -461,7 +496,7 @@ export function drawMasterGainLane(
     ctx,
     points,
     masterTopY + 2,
-    MASTER_ROW_H - 4,
+    masterRowH - 4,
     0,
     1,
     GAIN_COLOR,

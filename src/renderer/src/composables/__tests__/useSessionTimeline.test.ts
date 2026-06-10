@@ -444,6 +444,64 @@ describe('buildLanes', () => {
     });
   });
 
+  describe('rate lane', () => {
+    it('seeds the rate lane at 1 and appends set_playback_rate points', () => {
+      const events = [ev({ elapsed_ms: 2000, type: 'set_playback_rate', deck: 'A', rate: 1.05 })];
+      const { deckLanes } = buildLanes(events, 10_000);
+      expect(deckLanes.A.rate).toMatchObject([
+        { ms: 0, value: 1 },
+        { ms: 2000, value: 1.05 },
+        { ms: 10_000, value: 1.05 }
+      ]);
+    });
+
+    it('takes the initial rate from deck_snapshot playback_rate', () => {
+      const events = [
+        ev({
+          elapsed_ms: 0,
+          type: 'deck_snapshot',
+          deck: 'A',
+          path: '/t/a.mp3',
+          position_sec: 0,
+          is_playing: false,
+          playback_rate: 0.96
+        })
+      ];
+      const { deckLanes } = buildLanes(events, 5000);
+      expect(deckLanes.A.rate).toMatchObject([
+        { ms: 0, value: 1 },
+        { ms: 0, value: 0.96 },
+        { ms: 5000, value: 0.96 }
+      ]);
+    });
+
+    it('derives the lane range from the largest deviation across all decks', () => {
+      const events = [
+        ev({ elapsed_ms: 100, type: 'set_playback_rate', deck: 'A', rate: 1.09 }),
+        ev({ elapsed_ms: 200, type: 'set_volume', deck: 'B', gain: 0.5 })
+      ];
+      const { deckLanes } = buildLanes(events, 5000);
+      expect(deckLanes.A.rateMin).toBeCloseTo(0.9);
+      expect(deckLanes.A.rateMax).toBeCloseTo(1.1);
+      expect(deckLanes.B.rateMin).toBeCloseTo(0.9);
+      expect(deckLanes.B.rateMax).toBeCloseTo(1.1);
+    });
+
+    it('defaults to the smallest range when all rates are neutral', () => {
+      const events = [ev({ elapsed_ms: 0, type: 'set_volume', deck: 'A', gain: 1 })];
+      const { deckLanes } = buildLanes(events, 5000);
+      expect(deckLanes.A.rateMin).toBeCloseTo(0.92);
+      expect(deckLanes.A.rateMax).toBeCloseTo(1.08);
+    });
+
+    it('clamps to the widest range step for extreme rates', () => {
+      const events = [ev({ elapsed_ms: 0, type: 'set_playback_rate', deck: 'A', rate: 3 })];
+      const { deckLanes } = buildLanes(events, 5000);
+      expect(deckLanes.A.rateMin).toBeCloseTo(0);
+      expect(deckLanes.A.rateMax).toBeCloseTo(2);
+    });
+  });
+
   describe('multi-deck independence', () => {
     it('keeps lanes separate per deck', () => {
       const events = [

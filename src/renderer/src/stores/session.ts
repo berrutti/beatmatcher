@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 export type SessionEvent = {
   elapsed_ms: number;
@@ -37,11 +38,34 @@ export type ParsedSession = {
   durationMs: number;
   filename: string;
   path: string;
+  // Full JSON.parse result of the .bms file. Saving spreads this and overrides
+  // `events`, so top-level fields the app does not model survive a round-trip.
+  raw: Record<string, unknown>;
 };
 
 export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
+  const waveforms = ref(new Map<string, TrackWaveform>());
+  const pendingWaveformPaths = new Set<string>();
+
+  async function ensureWaveform(path: string, numPoints = 500): Promise<void> {
+    if (waveforms.value.has(path) || pendingWaveformPaths.has(path)) return;
+    pendingWaveformPaths.add(path);
+    try {
+      const result = await invoke<{ durationSec: number; amps: number[] }>(
+        'get_track_amplitude_waveform',
+        { path, numPoints }
+      );
+      const map = new Map(waveforms.value);
+      map.set(path, { durationSec: result.durationSec, amps: new Float32Array(result.amps) });
+      waveforms.value = map;
+    } catch {
+      // ignore fetch failures
+    } finally {
+      pendingWaveformPaths.delete(path);
+    }
+  }
 
   const durationMs = computed(() => session.value?.durationMs ?? 0);
   const hasTrackInfo = computed(
@@ -70,7 +94,8 @@ export const useSessionStore = defineStore('session', () => {
       events,
       durationMs,
       filename,
-      path
+      path,
+      raw: raw as unknown as Record<string, unknown>
     };
 
     invoke('preload_session', { path }).catch(() => {});
@@ -111,7 +136,10 @@ export const useSessionStore = defineStore('session', () => {
 
   async function unload(): Promise<void> {
     if (isPlaying.value) await stop();
+    const path = session.value?.path;
     session.value = null;
+    waveforms.value = new Map();
+    if (path) await invoke('unload_session', { path }).catch(() => {});
   }
 
   async function exit(): Promise<void> {
@@ -121,8 +149,10 @@ export const useSessionStore = defineStore('session', () => {
   return {
     session,
     isPlaying,
+    waveforms,
     durationMs,
     hasTrackInfo,
+    ensureWaveform,
     openSession,
     openSessionFromPath,
     play,

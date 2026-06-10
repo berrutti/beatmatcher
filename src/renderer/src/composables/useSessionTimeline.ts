@@ -1,5 +1,7 @@
 import { computed, type Ref } from 'vue';
 import type { SessionEvent, ParsedSession } from '@renderer/stores/session';
+import { DEFAULT_MASTER_GAIN } from '@renderer/stores/mixer';
+import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 
 export type Clip = {
   deck: string;
@@ -31,6 +33,9 @@ export type DeckLanes = {
   eqMid: LanePoint[];
   eqHigh: LanePoint[];
   filter: LanePoint[];
+  rate: LanePoint[];
+  rateMin: number;
+  rateMax: number;
   filterActive: FilterActiveSpan[];
 };
 
@@ -38,10 +43,24 @@ export type MasterLanes = {
   gain: LanePoint[];
 };
 
-const DEFAULT_GAIN = 1;
-const DEFAULT_EQ_DB = 0;
-const DEFAULT_FILTER_VALUE = 0;
-const DEFAULT_MASTER_GAIN = 0.7943;
+export const DEFAULT_GAIN = 1;
+export const DEFAULT_EQ_DB = 0;
+export const DEFAULT_FILTER_VALUE = 0;
+export const DEFAULT_RATE = 1;
+
+// The lane range is derived from the session's own rate values (not the live
+// pitch-range setting) because a session may have been recorded under a
+// different setting. Ranges below 8% are skipped so a flat session still gets
+// a usable drawing range.
+const MIN_RATE_LANE_RANGE_PCT = 8;
+const RATE_RANGE_STEPS_PCT = PITCH_RANGE_OPTIONS.filter((pct) => pct >= MIN_RATE_LANE_RANGE_PCT);
+
+export function rateRangePctFor(maxDeviationPct: number): number {
+  return (
+    RATE_RANGE_STEPS_PCT.find((pct) => pct >= maxDeviationPct) ??
+    RATE_RANGE_STEPS_PCT[RATE_RANGE_STEPS_PCT.length - 1]
+  );
+}
 
 type DeckState = {
   path: string | null;
@@ -352,6 +371,9 @@ function makeDeckLanes(): DeckLanes {
     eqMid: [{ ms: 0, value: DEFAULT_EQ_DB }],
     eqHigh: [{ ms: 0, value: DEFAULT_EQ_DB }],
     filter: [{ ms: 0, value: DEFAULT_FILTER_VALUE }],
+    rate: [{ ms: 0, value: DEFAULT_RATE }],
+    rateMin: 1 - RATE_RANGE_STEPS_PCT[0] / 100,
+    rateMax: 1 + RATE_RANGE_STEPS_PCT[0] / 100,
     filterActive: []
   };
 }
@@ -406,6 +428,18 @@ export function buildLanes(
       case 'set_filter':
         if (deckId && ev.value !== undefined) {
           getOrCreate(deckId).filter.push({ ms: ev.elapsed_ms, value: ev.value });
+        }
+        break;
+
+      case 'deck_snapshot':
+        if (deckId && ev.playback_rate !== undefined) {
+          getOrCreate(deckId).rate.push({ ms: ev.elapsed_ms, value: ev.playback_rate });
+        }
+        break;
+
+      case 'set_playback_rate':
+        if (deckId && ev.rate !== undefined) {
+          getOrCreate(deckId).rate.push({ ms: ev.elapsed_ms, value: ev.rate });
         }
         break;
 
@@ -473,8 +507,21 @@ export function buildLanes(
     extendToEnd(auto.eqMid, durationMs);
     extendToEnd(auto.eqHigh, durationMs);
     extendToEnd(auto.filter, durationMs);
+    extendToEnd(auto.rate, durationMs);
   }
   extendToEnd(masterLanes.gain, durationMs);
+
+  let maxRateDeviationPct = 0;
+  for (const auto of Object.values(deckLanes)) {
+    for (const p of auto.rate) {
+      maxRateDeviationPct = Math.max(maxRateDeviationPct, Math.abs(p.value - 1) * 100);
+    }
+  }
+  const rangePct = rateRangePctFor(maxRateDeviationPct);
+  for (const auto of Object.values(deckLanes)) {
+    auto.rateMin = 1 - rangePct / 100;
+    auto.rateMax = 1 + rangePct / 100;
+  }
 
   return { deckLanes, masterLanes, deckNudges };
 }

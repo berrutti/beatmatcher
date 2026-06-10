@@ -11,6 +11,8 @@
     "sessionModeBody": "All loaded tracks will be unloaded. You can reload them when you return.",
     "leaveSessionTitle": "Leave Session view?",
     "leaveSessionBody": "The loaded session will be closed and playback will stop.",
+    "leaveSessionDirtyTitle": "Discard unsaved session edits?",
+    "leaveSessionDirtyBody": "The session has unsaved edits. Leaving will discard them.",
     "continue": "Continue"
   },
   "topStrip": {
@@ -189,18 +191,26 @@
     "lanes": {
       "gain": "Gain",
       "filter": "Filter",
+      "rate": "Pitch",
       "eqLow": "EQ Low",
       "eqMid": "EQ Mid",
       "eqHigh": "EQ High"
     },
     "rendering": "RENDERING...",
     "renderWav": "RENDER WAV",
-    "renderFlac": "RENDER FLAC"
+    "renderFlac": "RENDER FLAC",
+    "edit": "Edit session",
+    "save": "SAVE",
+    "saveAs": "SAVE AS",
+    "discardTitle": "Discard unsaved edits?",
+    "discardBody": "The session has unsaved edits. Ejecting will discard them.",
+    "discardConfirm": "Discard"
   },
   "quitModal": {
     "title": "Quit Beatmatcher?",
     "bodyPlaying": "A track is currently playing. Quit anyway?",
     "bodySession": "The session is currently playing. Quit anyway?",
+    "bodyDirty": "The session has unsaved edits. Quit anyway?",
     "confirm": "Quit"
   }
 }

@@ -34,6 +34,7 @@ import { useI18n } from 'vue-i18n';
 import { useAppModeStore, type AppMode } from '@renderer/stores/appMode';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSessionStore } from '@renderer/stores/session';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useSettingsStore } from '@renderer/stores/settings';
 import Dropdown from '@renderer/components/Dropdown.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
@@ -42,6 +43,7 @@ const { t } = useI18n();
 const appMode = useAppModeStore();
 const decksStore = useDecksStore();
 const sessionStore = useSessionStore();
+const sessionEditStore = useSessionEditStore();
 const settingsStore = useSettingsStore();
 
 type ConfirmPayload = { title: string; body: string; next: AppMode };
@@ -70,6 +72,13 @@ function needsConfirm(next: AppMode): ConfirmPayload | null {
   }
 
   if (prev === 'session' && sessionStore.session !== null) {
+    if (sessionEditStore.dirty) {
+      return {
+        title: t('appBar.leaveSessionDirtyTitle'),
+        body: t('appBar.leaveSessionDirtyBody'),
+        next
+      };
+    }
     return { title: t('appBar.leaveSessionTitle'), body: t('appBar.leaveSessionBody'), next };
   }
 

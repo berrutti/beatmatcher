@@ -1,4 +1,14 @@
 <template>
+  <Modal
+    :open="discardModalOpen"
+    :title="$t('session.discardTitle')"
+    :confirm-label="$t('session.discardConfirm')"
+    @confirm="onDiscardConfirmed"
+    @cancel="discardModalOpen = false"
+  >
+    <p class="session__modal-body">{{ $t('session.discardBody') }}</p>
+  </Modal>
+
   <div class="session">
     <div class="session__body">
       <div
@@ -21,7 +31,7 @@
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
-          :waveforms="waveforms"
+          :waveforms="session.waveforms"
           @seek="onSeek"
         />
       </template>
@@ -35,11 +45,31 @@
       >
         {{ session.isPlaying ? '⏸' : '▶' }}
       </button>
+      <button
+        class="session__btn session__btn--transport"
+        :class="{ 'session__btn--active': editStore.editMode }"
+        :title="$t('session.edit')"
+        @click="editStore.toggleEditMode()"
+      >
+        ✎
+      </button>
       <span class="session__duration">
         {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
       </span>
-      <span class="session__filename">{{ session.session.filename }}</span>
+      <span class="session__filename">
+        {{ session.session.filename }}{{ editStore.dirty ? ' •' : '' }}
+      </span>
       <div class="session__controls-right">
+        <button
+          class="session__btn session__btn--render"
+          :disabled="!editStore.dirty"
+          @click="editStore.save()"
+        >
+          {{ $t('session.save') }}
+        </button>
+        <button class="session__btn session__btn--render" @click="editStore.saveAs()">
+          {{ $t('session.saveAs') }}
+        </button>
         <button
           class="session__btn session__btn--render"
           :disabled="isRendering"
@@ -54,7 +84,7 @@
         >
           {{ isRendering ? $t('session.rendering') : $t('session.renderFlac') }}
         </button>
-        <button class="session__btn session__btn--eject" @click="session.unload()">⏏</button>
+        <button class="session__btn session__btn--eject" @click="onEject">⏏</button>
       </div>
     </div>
   </div>
@@ -66,14 +96,16 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
 import { useSessionStore } from '@renderer/stores/session';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
-import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
+import Modal from '@renderer/components/modals/Modal.vue';
 import { formatMs } from '@renderer/utils/time';
 
 const session = useSessionStore();
+const editStore = useSessionEditStore();
 const collection = useCollectionStore();
 const mixer = useMixerStore();
 const { session: sessionRef } = storeToRefs(session);
@@ -83,30 +115,12 @@ const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTim
   (path) => collection.getName(path)
 );
 
-const waveforms = ref(new Map<string, TrackWaveform>());
-const pendingPaths = new Set<string>();
-
-async function fetchWaveform(path: string) {
-  pendingPaths.add(path);
-  try {
-    const result = await collection.getAmplitudeWaveform(path);
-    const map = new Map(waveforms.value);
-    map.set(path, result);
-    waveforms.value = map;
-  } catch {
-    // ignore fetch failures
-  } finally {
-    pendingPaths.delete(path);
-  }
-}
-
 watch(
   clips,
   (list) => {
-    const paths = new Set(list.map((c) => c.trackPath));
+    const paths = new Set(list.map((clip) => clip.trackPath));
     for (const path of paths) {
-      if (waveforms.value.has(path) || pendingPaths.has(path)) continue;
-      fetchWaveform(path);
+      session.ensureWaveform(path).catch(() => {});
     }
   },
   { immediate: true }
@@ -155,6 +169,7 @@ async function onTransport() {
     cancelAnimationFrame(rafId);
     await session.stop();
   } else {
+    await editStore.flushSync();
     playStartWall = performance.now() - playheadMs.value;
     await session.play(playheadMs.value);
     rafId = requestAnimationFrame(tickPlayhead);
@@ -177,10 +192,26 @@ async function onRender(useFlac: boolean) {
   if (!outputPath) return;
   isRendering.value = true;
   try {
+    await editStore.flushSync();
     await mixer.renderSession(session.session.path, outputPath, useFlac);
   } finally {
     isRendering.value = false;
   }
+}
+
+const discardModalOpen = ref(false);
+
+function onEject() {
+  if (editStore.dirty) {
+    discardModalOpen.value = true;
+    return;
+  }
+  session.unload().catch(() => {});
+}
+
+async function onDiscardConfirmed() {
+  discardModalOpen.value = false;
+  await session.unload();
 }
 
 onUnmounted(() => {
@@ -315,5 +346,12 @@ onUnmounted(() => {
 .session__btn--eject:hover {
   color: var(--color-text);
   border-color: var(--color-text);
+}
+
+.session__modal-body {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  line-height: 1.5;
+  margin: 0;
 }
 </style>

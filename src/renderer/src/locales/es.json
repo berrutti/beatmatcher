@@ -11,6 +11,8 @@
     "sessionModeBody": "Todas las pistas se descargarán. Podrás cargarlas al volver.",
     "leaveSessionTitle": "¿Salir de la vista de sesión?",
     "leaveSessionBody": "La sesión cargada se cerrará y la reproducción se detendrá.",
+    "leaveSessionDirtyTitle": "Descartar cambios sin guardar?",
+    "leaveSessionDirtyBody": "La sesión tiene cambios sin guardar. Al salir se descartarán.",
     "continue": "Continuar"
   },
   "topStrip": {
@@ -189,18 +191,26 @@
     "lanes": {
       "gain": "Ganancia",
       "filter": "Filtro",
+      "rate": "Pitch",
       "eqLow": "EQ Graves",
       "eqMid": "EQ Medios",
       "eqHigh": "EQ Agudos"
     },
     "rendering": "RENDERIZANDO...",
     "renderWav": "RENDERIZAR WAV",
-    "renderFlac": "RENDERIZAR FLAC"
+    "renderFlac": "RENDERIZAR FLAC",
+    "edit": "Editar sesión",
+    "save": "GUARDAR",
+    "saveAs": "GUARDAR COMO",
+    "discardTitle": "Descartar cambios sin guardar?",
+    "discardBody": "La sesión tiene cambios sin guardar. Al expulsar se descartarán.",
+    "discardConfirm": "Descartar"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",
     "bodyPlaying": "Hay un track reproduciendose. Salir de todas formas?",
     "bodySession": "La sesion se esta reproduciendo. Salir de todas formas?",
+    "bodyDirty": "La sesión tiene cambios sin guardar. Salir de todas formas?",
     "confirm": "Salir"
   }
 }
