@@ -288,11 +288,7 @@ export function trimTransportBlock(
       kept.push(event);
       continue;
     }
-    if (
-      near(event.elapsed_ms, t1) &&
-      event.type !== 'load_track' &&
-      event.type !== 'eject_track'
-    ) {
+    if (near(event.elapsed_ms, t1) && event.type !== 'load_track' && event.type !== 'eject_track') {
       continue;
     }
     kept.push(normalizeResumePlay(event, next));

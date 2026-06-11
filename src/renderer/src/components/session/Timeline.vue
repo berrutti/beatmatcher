@@ -596,7 +596,10 @@ function blockAtPoint(
   return null;
 }
 
-function beginClipGesture(hit: { block: TransportBlock; edge: 'start' | 'end' | null }, ms: number) {
+function beginClipGesture(
+  hit: { block: TransportBlock; edge: 'start' | 'end' | null },
+  ms: number
+) {
   const events = sessionStore.session?.events ?? [];
   const bounds = blockBounds(events, props.clips, hit.block);
   if (!bounds) return false;
