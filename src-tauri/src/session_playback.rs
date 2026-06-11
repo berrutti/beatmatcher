@@ -8,6 +8,7 @@
 
 use crate::audio;
 use crate::offline_render::SessionEvent;
+use crate::session_event::SessionCommand;
 use crate::AppState;
 use std::collections::HashMap;
 use std::sync::{
@@ -376,12 +377,17 @@ pub(crate) async fn start_session_playback(
             .iter()
             .filter(|e| e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms)
         {
-            match ev.event_type.as_str() {
-                "set_volume" | "set_eq" | "set_filter" | "set_filter_active"
-                | "set_master_gain" => {
-                    apply_event_live(ev, &audio, sr, &cache, 0);
-                }
-                _ => {}
+            if matches!(
+                ev.command(),
+                Some(
+                    SessionCommand::SetVolume { .. }
+                        | SessionCommand::SetEq { .. }
+                        | SessionCommand::SetFilter { .. }
+                        | SessionCommand::SetFilterActive { .. }
+                        | SessionCommand::SetMasterGain { .. }
+                )
+            ) {
+                apply_event_live(ev, &audio, sr, &cache, 0);
             }
             sim_apply_event(ev, &mut sim, &cache, sr);
         }
@@ -508,8 +514,12 @@ fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     events
         .iter()
-        .filter(|e| matches!(e.event_type.as_str(), "deck_snapshot" | "load_track"))
-        .filter_map(|e| e.path.as_ref())
+        .filter_map(|e| match e.command() {
+            Some(
+                SessionCommand::DeckSnapshot { path, .. } | SessionCommand::LoadTrack { path, .. },
+            ) => Some(path),
+            _ => None,
+        })
         .filter(|p| seen.insert(p.to_string()))
         .map(|p| p.to_string())
         .collect()
@@ -658,119 +668,141 @@ fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
 
 fn sim_apply_event(ev: &SessionEvent, state: &mut SimState, cache: &SampleCache, sr: u32) {
     let sr_f = sr as f64;
-    let id = ev.deck.as_deref().unwrap_or("").to_string();
+    let Some(cmd) = ev.command() else { return };
 
-    match ev.event_type.as_str() {
-        "deck_snapshot" | "load_track" => {
-            let total_frames = ev
-                .path
-                .as_ref()
-                .and_then(|p| cache.get(p))
+    match cmd {
+        SessionCommand::DeckSnapshot {
+            deck,
+            path,
+            position_sec,
+            cue_point_sec,
+            bpm,
+            playback_rate,
+            loop_active,
+            loop_end_sec,
+            is_playing,
+        } => {
+            let total_frames = cache
+                .get(path)
                 .map(|(s, c)| s.len() as f64 / *c as f64)
                 .unwrap_or(0.0);
-            let sim = state.decks.entry(id.clone()).or_default();
-            sim.path = ev.path.clone();
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.path = Some(path.to_string());
             sim.total_frames = total_frames;
-            sim.rate = ev.playback_rate.unwrap_or(1.0);
-            if ev.event_type == "deck_snapshot" {
-                let pos = ev.position_sec.unwrap_or(0.0) * sr_f;
-                sim.play_start_frame = pos;
-                sim.play_start_ms = 0.0;
-                sim.is_playing = ev.is_playing.unwrap_or(false);
-                sim.loop_active = ev.loop_active.unwrap_or(false);
-                sim.loop_start = ev.cue_point_sec.map_or(0.0, |c| c * sr_f);
-                sim.cue_point = sim.loop_start;
-                sim.loop_end = ev.loop_end_sec.map_or(0.0, |e| e * sr_f);
-                sim.bpm = ev.bpm;
-            } else {
-                let pos = ev.beat_offset_sec.unwrap_or(0.0) * sr_f;
-                sim.play_start_frame = pos;
-                sim.play_start_ms = ev.elapsed_ms;
-                sim.is_playing = false;
-                sim.loop_active = false;
-                sim.cue_point = pos;
-                sim.bpm = None;
-                sim.beat_offset_frames = pos;
-            }
+            sim.rate = playback_rate.unwrap_or(1.0);
+            let pos = position_sec.unwrap_or(0.0) * sr_f;
+            sim.play_start_frame = pos;
+            sim.play_start_ms = 0.0;
+            sim.is_playing = is_playing;
+            sim.loop_active = loop_active.unwrap_or(false);
+            sim.loop_start = cue_point_sec.map_or(0.0, |c| c * sr_f);
+            sim.cue_point = sim.loop_start;
+            sim.loop_end = loop_end_sec.map_or(0.0, |e| e * sr_f);
+            sim.bpm = bpm;
         }
-        "play" => {
-            let sim = state.decks.entry(id).or_default();
-            sim.play_start_frame = ev
-                .sec
+        SessionCommand::LoadTrack {
+            deck,
+            path,
+            beat_offset_sec,
+        } => {
+            let total_frames = cache
+                .get(path)
+                .map(|(s, c)| s.len() as f64 / *c as f64)
+                .unwrap_or(0.0);
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.path = Some(path.to_string());
+            sim.total_frames = total_frames;
+            sim.rate = 1.0;
+            let pos = beat_offset_sec.unwrap_or(0.0) * sr_f;
+            sim.play_start_frame = pos;
+            sim.play_start_ms = ev.elapsed_ms;
+            sim.is_playing = false;
+            sim.loop_active = false;
+            // The live engine fully resets the deck on load: no loop region
+            // or nudge survives into the new track.
+            sim.loop_start = pos;
+            sim.loop_end = 0.0;
+            sim.nudge_factor = 1.0;
+            sim.cue_point = pos;
+            sim.bpm = None;
+            sim.beat_offset_frames = pos;
+        }
+        SessionCommand::Play { deck, sec } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.play_start_frame = sec
                 .map(|s| s * sr_f)
                 .unwrap_or_else(|| sim_pos(sim, ev.elapsed_ms, sr_f));
             sim.play_start_ms = ev.elapsed_ms;
             sim.is_playing = true;
         }
-        "stop" => {
-            let sim = state.decks.entry(id).or_default();
+        SessionCommand::Stop { deck } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
             sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
             sim.play_start_ms = ev.elapsed_ms;
             sim.is_playing = false;
         }
-        "stopped_at_cue" | "stop_at_cue" => {
-            let sim = state.decks.entry(id).or_default();
-            let pos = ev
-                .cue_point_sec
+        SessionCommand::StopAtCue {
+            deck,
+            cue_point_sec,
+        } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            let pos = cue_point_sec
                 .map(|c| c * sr_f)
                 .unwrap_or_else(|| sim_pos(sim, ev.elapsed_ms, sr_f));
             sim.play_start_frame = pos;
             sim.play_start_ms = ev.elapsed_ms;
             sim.is_playing = false;
         }
-        "seek" => {
-            if let Some(sec) = ev.sec {
-                let sim = state.decks.entry(id).or_default();
-                sim.play_start_frame = sec * sr_f;
-                sim.play_start_ms = ev.elapsed_ms;
-                sim.loop_active = sim.loop_active
-                    && (sec * sr_f >= sim.loop_start)
-                    && (sec * sr_f < sim.loop_end);
-            }
+        SessionCommand::Seek { deck, sec } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.play_start_frame = sec * sr_f;
+            sim.play_start_ms = ev.elapsed_ms;
+            sim.loop_active =
+                sim.loop_active && (sec * sr_f >= sim.loop_start) && (sec * sr_f < sim.loop_end);
         }
-        "set_playback_rate" => {
-            if let Some(r) = ev.rate {
-                let sim = state.decks.entry(id).or_default();
-                sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
-                sim.play_start_ms = ev.elapsed_ms;
-                sim.rate = r.max(0.1);
-            }
+        SessionCommand::SetPlaybackRate { deck, rate } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
+            sim.play_start_ms = ev.elapsed_ms;
+            sim.rate = rate.max(0.1);
         }
-        "set_nudge" => {
-            if let Some(p) = ev.percent {
-                let sim = state.decks.entry(id).or_default();
-                sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
-                sim.play_start_ms = ev.elapsed_ms;
-                sim.nudge_factor = 1.0 + p / 100.0;
-            }
+        SessionCommand::SetNudge { deck, percent } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
+            sim.play_start_ms = ev.elapsed_ms;
+            sim.nudge_factor = 1.0 + percent / 100.0;
         }
-        "loop_in" => {
-            let sim = state.decks.entry(id).or_default();
+        SessionCommand::LoopIn { deck, cue_sec } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
             // Commit the current (possibly looped) position before clearing
             // loop_active, otherwise sim_pos would fall back to its raw linear
             // anchor and jump to where the deck would be had it never looped.
             sim.play_start_frame = sim_pos(sim, ev.elapsed_ms, sr_f);
             sim.play_start_ms = ev.elapsed_ms;
-            if let Some(cs) = ev.cue_sec {
+            if let Some(cs) = cue_sec {
                 sim.loop_start = cs * sr_f;
                 sim.cue_point = cs * sr_f;
             }
             sim.loop_end = 0.0;
             sim.loop_active = false;
         }
-        "loop_out" => {
-            let sim = state.decks.entry(id).or_default();
-            if let Some(ss) = ev.start_sec {
+        SessionCommand::LoopOut {
+            deck,
+            start_sec,
+            end_sec,
+        } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            if let Some(ss) = start_sec {
                 sim.loop_start = ss * sr_f;
                 sim.cue_point = ss * sr_f;
             }
-            if let Some(es) = ev.end_sec {
+            if let Some(es) = end_sec {
                 sim.loop_end = es * sr_f;
             }
             sim.loop_active = true;
         }
-        "exit_loop" => {
-            let sim = state.decks.entry(id).or_default();
+        SessionCommand::ExitLoop { deck } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
             // Commit the current looped position before leaving the loop, so the
             // subsequent linear sim_pos continues from inside the loop region
             // instead of jumping to the un-looped linear position.
@@ -778,64 +810,80 @@ fn sim_apply_event(ev: &SessionEvent, state: &mut SimState, cache: &SampleCache,
             sim.play_start_ms = ev.elapsed_ms;
             sim.loop_active = false;
         }
-        "reloop" => {
-            let sim = state.decks.entry(id).or_default();
+        SessionCommand::Reloop { deck } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
             if sim.loop_end > sim.loop_start && sim.is_playing {
                 sim.play_start_frame = sim.loop_start;
                 sim.play_start_ms = ev.elapsed_ms;
                 sim.loop_active = true;
             }
         }
-        "eject_track" => {
-            state.decks.remove(&id);
+        SessionCommand::EjectTrack { deck } => {
+            state.decks.remove(deck);
         }
-        "set_volume" => {
-            if let Some(g) = ev.gain {
-                state.strips.entry(id).or_default().gain = g;
+        SessionCommand::SetVolume { deck, gain } => {
+            state.strips.entry(deck.to_string()).or_default().gain = gain;
+        }
+        SessionCommand::SetEq { deck, band, db } => {
+            let strip = state.strips.entry(deck.to_string()).or_default();
+            match band {
+                "low" => strip.eq_low = db,
+                "mid" => strip.eq_mid = db,
+                "high" => strip.eq_high = db,
+                _ => {}
             }
         }
-        "set_eq" => {
-            if let (Some(ref band), Some(db)) = (&ev.band, ev.db) {
-                let strip = state.strips.entry(id).or_default();
-                match band.as_str() {
-                    "low" => strip.eq_low = db,
-                    "mid" => strip.eq_mid = db,
-                    "high" => strip.eq_high = db,
-                    _ => {}
-                }
+        SessionCommand::SetFilter { deck, value } => {
+            state
+                .strips
+                .entry(deck.to_string())
+                .or_default()
+                .filter_value = value;
+        }
+        SessionCommand::SetFilterActive { deck, active } => {
+            state
+                .strips
+                .entry(deck.to_string())
+                .or_default()
+                .filter_active = active;
+        }
+        SessionCommand::SetMasterGain { gain } => {
+            state.master_gain = gain;
+        }
+        SessionCommand::SetBeatGrid {
+            deck,
+            bpm,
+            beat_offset_sec,
+        } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            if let Some(bpm) = bpm {
+                sim.bpm = Some(bpm);
+            }
+            if let Some(off) = beat_offset_sec {
+                sim.beat_offset_frames = off * sr_f;
             }
         }
-        "set_filter" => {
-            if let Some(v) = ev.value {
-                state.strips.entry(id).or_default().filter_value = v;
-            }
-        }
-        "set_filter_active" => {
-            if let Some(a) = ev.active {
-                state.strips.entry(id).or_default().filter_active = a;
-            }
-        }
-        "set_master_gain" => {
-            if let Some(g) = ev.gain {
-                state.master_gain = g;
-            }
-        }
-        "cue_preview_start" => {
-            let sim = state.decks.entry(id).or_default();
-            let cp = ev.cue_point_sec.map(|c| c * sr_f).unwrap_or(sim.cue_point);
+        SessionCommand::CuePreviewStart {
+            deck,
+            cue_point_sec,
+        } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            let cp = cue_point_sec.map(|c| c * sr_f).unwrap_or(sim.cue_point);
             sim.cue_point = cp;
             sim.play_start_frame = cp;
             sim.play_start_ms = ev.elapsed_ms;
             sim.is_playing = true;
         }
-        "cue_preview_end" => {
-            let sim = state.decks.entry(id).or_default();
-            let cp = ev.cue_point_sec.map(|c| c * sr_f).unwrap_or(sim.cue_point);
+        SessionCommand::CuePreviewEnd {
+            deck,
+            cue_point_sec,
+        } => {
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            let cp = cue_point_sec.map(|c| c * sr_f).unwrap_or(sim.cue_point);
             sim.play_start_frame = cp;
             sim.play_start_ms = ev.elapsed_ms;
             sim.is_playing = false;
         }
-        _ => {}
     }
 }
 
@@ -996,49 +1044,85 @@ fn apply_event_live(
         };
     }
 
-    match ev.event_type.as_str() {
-        "deck_snapshot" | "load_track" => {
-            let Some(ref id) = ev.deck else { return };
-            let Some(ref path) = ev.path else { return };
+    let Some(cmd) = ev.command() else { return };
+
+    // Shared load body for DeckSnapshot and LoadTrack: full reset, then the
+    // cached samples installed.
+    fn load_into(
+        d: &mut audio::DeckState,
+        samples: &Arc<Vec<f32>>,
+        channels: usize,
+        path: &str,
+        sr: u32,
+    ) -> usize {
+        let total_frames = samples.len() / channels;
+        d.reset();
+        d.samples = samples.clone();
+        d.channels = channels;
+        d.device_sample_rate = sr;
+        d.total_frames = total_frames;
+        d.duration = total_frames as f64 / sr as f64;
+        d.loaded_path = Some(path.to_string());
+        total_frames
+    }
+
+    match cmd {
+        SessionCommand::DeckSnapshot {
+            deck: id,
+            path,
+            position_sec,
+            cue_point_sec,
+            bpm,
+            playback_rate,
+            loop_active,
+            loop_end_sec,
+            is_playing,
+        } => {
             let Some((samples, channels)) = cache.get(path) else {
                 eprintln!("session_playback: cache miss for {path}");
                 return;
             };
-            let total_frames = samples.len() / channels;
-            let deck_a = deck_arc!(id.as_str());
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            d.reset();
-            d.samples = samples.clone();
-            d.channels = *channels;
-            d.device_sample_rate = sr;
-            d.total_frames = total_frames;
-            d.duration = total_frames as f64 / sr as f64;
-            d.loaded_path = Some(path.clone());
-            if ev.event_type == "deck_snapshot" {
-                if let Some(pos) = ev.position_sec {
-                    let f = to_frames!(pos, total_frames);
-                    d.main_pos = f;
-                    d.cue_pos = f;
-                }
-                if let Some(cp) = ev.cue_point_sec {
-                    d.cue_point = to_frames!(cp, total_frames);
-                }
-                if let Some(bpm) = ev.bpm {
-                    d.bpm = Some(bpm);
-                }
-                if let Some(rate) = ev.playback_rate {
-                    d.playback_rate = rate.max(0.1);
-                }
-                if let Some(la) = ev.loop_active {
-                    d.loop_active = la;
-                }
-                if let Some(le) = ev.loop_end_sec {
-                    d.loop_end = to_frames!(le, total_frames);
-                }
-                if ev.is_playing == Some(true) {
-                    d.is_playing = true;
-                }
-            } else if let Some(offset) = ev.beat_offset_sec {
+            let total_frames = load_into(&mut d, samples, *channels, path, sr);
+            if let Some(pos) = position_sec {
+                let f = to_frames!(pos, total_frames);
+                d.main_pos = f;
+                d.cue_pos = f;
+            }
+            if let Some(cp) = cue_point_sec {
+                d.cue_point = to_frames!(cp, total_frames);
+            }
+            if let Some(bpm) = bpm {
+                d.bpm = Some(bpm);
+            }
+            if let Some(rate) = playback_rate {
+                d.playback_rate = rate.max(0.1);
+            }
+            if let Some(la) = loop_active {
+                d.loop_active = la;
+            }
+            if let Some(le) = loop_end_sec {
+                d.loop_end = to_frames!(le, total_frames);
+            }
+            if is_playing {
+                d.is_playing = true;
+            }
+        }
+
+        SessionCommand::LoadTrack {
+            deck: id,
+            path,
+            beat_offset_sec,
+        } => {
+            let Some((samples, channels)) = cache.get(path) else {
+                eprintln!("session_playback: cache miss for {path}");
+                return;
+            };
+            let deck_a = deck_arc!(id);
+            let mut d = deck_a.lock().expect("deck mutex poisoned");
+            let total_frames = load_into(&mut d, samples, *channels, path, sr);
+            if let Some(offset) = beat_offset_sec {
                 let f = to_frames!(offset, total_frames);
                 d.main_pos = f;
                 d.cue_pos = f;
@@ -1046,19 +1130,14 @@ fn apply_event_live(
             }
         }
 
-        "eject_track" => {
-            let Some(ref id) = ev.deck else { return };
-            deck_arc!(id.as_str())
-                .lock()
-                .expect("deck mutex poisoned")
-                .eject();
+        SessionCommand::EjectTrack { deck: id } => {
+            deck_arc!(id).lock().expect("deck mutex poisoned").eject();
         }
 
-        "play" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::Play { deck: id, sec } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            if let Some(sec) = ev.sec {
+            if let Some(sec) = sec {
                 let f = to_frames!(sec, d.total_frames);
                 d.main_pos = f;
                 d.cue_pos = f;
@@ -1069,154 +1148,135 @@ fn apply_event_live(
             d.compensate_late_start(overshoot_f);
         }
 
-        "stop" => {
-            let Some(ref id) = ev.deck else { return };
-            deck_arc!(id.as_str())
+        SessionCommand::Stop { deck: id } => {
+            deck_arc!(id)
                 .lock()
                 .expect("deck mutex poisoned")
                 .is_playing = false;
         }
 
-        "stopped_at_cue" | "stop_at_cue" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::StopAtCue {
+            deck: id,
+            cue_point_sec,
+        } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
             d.is_playing = false;
-            if let Some(cp) = ev.cue_point_sec {
+            if let Some(cp) = cue_point_sec {
                 let f = to_frames!(cp, d.total_frames);
                 d.main_pos = f;
                 d.cue_pos = f;
             }
         }
 
-        "seek" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(sec) = ev.sec {
-                let deck_a = deck_arc!(id.as_str());
-                let mut d = deck_a.lock().expect("deck mutex poisoned");
-                let f = to_frames!(sec, d.total_frames);
-                d.main_pos = f;
-                d.cue_pos = f;
-                if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
-                    d.loop_active = false;
-                }
-                d.compensate_late_start(overshoot_f);
-            }
-        }
-
-        "set_volume" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(g) = ev.gain {
-                strip_arc!(id.as_str())
-                    .lock()
-                    .expect("strip mutex poisoned")
-                    .set_gain(g);
-            }
-        }
-
-        "set_eq" => {
-            let Some(ref id) = ev.deck else { return };
-            if let (Some(ref band), Some(db)) = (&ev.band, ev.db) {
-                strip_arc!(id.as_str())
-                    .lock()
-                    .expect("strip mutex poisoned")
-                    .set_eq_band(band, db);
-            }
-        }
-
-        "set_filter" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(v) = ev.value {
-                strip_arc!(id.as_str())
-                    .lock()
-                    .expect("strip mutex poisoned")
-                    .set_filter(v);
-            }
-        }
-
-        "set_filter_active" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(a) = ev.active {
-                strip_arc!(id.as_str())
-                    .lock()
-                    .expect("strip mutex poisoned")
-                    .set_filter_active(a);
-            }
-        }
-
-        "set_playback_rate" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(r) = ev.rate {
-                deck_arc!(id.as_str())
-                    .lock()
-                    .expect("deck mutex poisoned")
-                    .playback_rate = r.max(0.1);
-            }
-        }
-
-        "set_nudge" => {
-            let Some(ref id) = ev.deck else { return };
-            if let Some(p) = ev.percent {
-                deck_arc!(id.as_str())
-                    .lock()
-                    .expect("deck mutex poisoned")
-                    .nudge_factor = 1.0 + p / 100.0;
-            }
-        }
-
-        "set_master_gain" => {
-            if let Some(g) = ev.gain {
-                audio.monitor.set_master_gain(g);
-            }
-        }
-
-        "set_beat_grid" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::Seek { deck: id, sec } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            if let Some(bpm) = ev.bpm {
+            let f = to_frames!(sec, d.total_frames);
+            d.main_pos = f;
+            d.cue_pos = f;
+            if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
+                d.loop_active = false;
+            }
+            d.compensate_late_start(overshoot_f);
+        }
+
+        SessionCommand::SetVolume { deck: id, gain } => {
+            strip_arc!(id)
+                .lock()
+                .expect("strip mutex poisoned")
+                .set_gain(gain);
+        }
+
+        SessionCommand::SetEq { deck: id, band, db } => {
+            strip_arc!(id)
+                .lock()
+                .expect("strip mutex poisoned")
+                .set_eq_band(band, db);
+        }
+
+        SessionCommand::SetFilter { deck: id, value } => {
+            strip_arc!(id)
+                .lock()
+                .expect("strip mutex poisoned")
+                .set_filter(value);
+        }
+
+        SessionCommand::SetFilterActive { deck: id, active } => {
+            strip_arc!(id)
+                .lock()
+                .expect("strip mutex poisoned")
+                .set_filter_active(active);
+        }
+
+        SessionCommand::SetPlaybackRate { deck: id, rate } => {
+            deck_arc!(id)
+                .lock()
+                .expect("deck mutex poisoned")
+                .playback_rate = rate.max(0.1);
+        }
+
+        SessionCommand::SetNudge { deck: id, percent } => {
+            deck_arc!(id)
+                .lock()
+                .expect("deck mutex poisoned")
+                .nudge_factor = 1.0 + percent / 100.0;
+        }
+
+        SessionCommand::SetMasterGain { gain } => {
+            audio.monitor.set_master_gain(gain);
+        }
+
+        SessionCommand::SetBeatGrid {
+            deck: id,
+            bpm,
+            beat_offset_sec,
+        } => {
+            let deck_a = deck_arc!(id);
+            let mut d = deck_a.lock().expect("deck mutex poisoned");
+            if let Some(bpm) = bpm {
                 d.bpm = Some(bpm);
             }
-            if let Some(off) = ev.beat_offset_sec {
+            if let Some(off) = beat_offset_sec {
                 d.beat_offset_frames = off * sr_f;
             }
         }
 
-        "loop_in" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::LoopIn { deck: id, cue_sec } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            if let Some(cs) = ev.cue_sec {
+            if let Some(cs) = cue_sec {
                 d.cue_point = to_frames!(cs, d.total_frames);
             }
             d.loop_active = false;
             d.loop_end = 0.0;
         }
 
-        "loop_out" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::LoopOut {
+            deck: id,
+            start_sec,
+            end_sec,
+        } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            if let Some(ss) = ev.start_sec {
+            if let Some(ss) = start_sec {
                 d.cue_point = to_frames!(ss, d.total_frames);
             }
-            if let Some(es) = ev.end_sec {
+            if let Some(es) = end_sec {
                 d.loop_end = to_frames!(es, d.total_frames);
             }
             d.loop_active = true;
         }
 
-        "exit_loop" => {
-            let Some(ref id) = ev.deck else { return };
-            deck_arc!(id.as_str())
+        SessionCommand::ExitLoop { deck: id } => {
+            deck_arc!(id)
                 .lock()
                 .expect("deck mutex poisoned")
                 .loop_active = false;
         }
 
-        "reloop" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::Reloop { deck: id } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
             if d.loop_end > d.cue_point {
                 d.main_pos = d.cue_point;
@@ -1228,11 +1288,13 @@ fn apply_event_live(
             }
         }
 
-        "cue_preview_start" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::CuePreviewStart {
+            deck: id,
+            cue_point_sec,
+        } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            let cp = ev.cue_point_sec.unwrap_or(d.cue_point / sr_f);
+            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
             let f = to_frames!(cp, d.total_frames);
             d.cue_point = f;
             d.main_pos = f;
@@ -1242,19 +1304,19 @@ fn apply_event_live(
             d.compensate_late_start(overshoot_f);
         }
 
-        "cue_preview_end" => {
-            let Some(ref id) = ev.deck else { return };
-            let deck_a = deck_arc!(id.as_str());
+        SessionCommand::CuePreviewEnd {
+            deck: id,
+            cue_point_sec,
+        } => {
+            let deck_a = deck_arc!(id);
             let mut d = deck_a.lock().expect("deck mutex poisoned");
-            let cp = ev.cue_point_sec.unwrap_or(d.cue_point / sr_f);
+            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
             let f = to_frames!(cp, d.total_frames);
             d.is_playing = false;
             d.is_cueing = false;
             d.main_pos = f;
             d.cue_pos = f;
         }
-
-        _ => {}
     }
 }
 
@@ -1471,6 +1533,21 @@ mod tests {
                 let f = clamp(cp * srf, d);
                 d.is_playing = false;
                 d.main_pos = f;
+            }
+            "loop_in" => {
+                if let Some(cs) = ev.cue_sec {
+                    d.cue_point = clamp(cs * srf, d);
+                }
+                d.loop_active = false;
+                d.loop_end = 0.0;
+            }
+            "reloop" => {
+                if d.loop_end > d.cue_point {
+                    d.main_pos = d.cue_point;
+                    if d.is_playing {
+                        d.loop_active = true;
+                    }
+                }
             }
             _ => {}
         }
@@ -2356,5 +2433,212 @@ mod tests {
                 _ => panic!("t={at_ms}ms one path produced a deck and the other didn't"),
             }
         }
+    }
+
+    // ── event types previously without parity coverage ────────────────────────
+
+    fn assert_scrub_matches_playthrough(
+        events: &[SessionEvent],
+        cache: &SampleCache,
+        steps: usize,
+        deck: &str,
+    ) {
+        for step in 0..=steps {
+            let at_ms = step as f64 * 100.0;
+            let playthrough = playthrough_pos(events, at_ms, cache, deck);
+            let scrub = scrub_pos(events, at_ms, cache, deck);
+            match (playthrough, scrub) {
+                (Some(playthrough_frame), Some(scrub_frame)) => assert!(
+                    (playthrough_frame - scrub_frame).abs() < 1.0,
+                    "t={at_ms}ms playthrough={playthrough_frame} scrub={scrub_frame} diff={}",
+                    playthrough_frame - scrub_frame
+                ),
+                (None, None) => {}
+                _ => panic!("t={at_ms}ms one path produced a deck and the other didn't"),
+            }
+        }
+    }
+
+    fn cached_track(path: &str, seconds: usize) -> SampleCache {
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            path.to_string(),
+            (Arc::new(vec![0.0f32; seconds * SR as usize * 2]), 2),
+        );
+        cache
+    }
+
+    fn playing_snapshot(path: &str) -> SessionEvent {
+        SessionEvent {
+            path: Some(path.to_string()),
+            is_playing: Some(true),
+            playback_rate: Some(1.0),
+            position_sec: Some(0.0),
+            cue_point_sec: Some(0.0),
+            ..deck_ev("deck_snapshot", 0.0, "A")
+        }
+    }
+
+    // loop_in must commit the current (possibly looped) position before
+    // clearing loop state, and reloop must jump back to the loop start and
+    // re-arm. A full cycle: loop_in → loop_out → wrap → exit_loop → reloop →
+    // loop_in again while the loop is active.
+    fn loop_cycle_events(path: &str) -> Vec<SessionEvent> {
+        vec![
+            playing_snapshot(path),
+            SessionEvent {
+                cue_sec: Some(4.0),
+                ..deck_ev("loop_in", 4000.0, "A")
+            },
+            SessionEvent {
+                start_sec: Some(4.0),
+                end_sec: Some(6.0),
+                ..deck_ev("loop_out", 6000.0, "A")
+            },
+            deck_ev("exit_loop", 11_000.0, "A"),
+            deck_ev("reloop", 13_000.0, "A"),
+            SessionEvent {
+                cue_sec: Some(8.0),
+                ..deck_ev("loop_in", 16_500.0, "A")
+            },
+        ]
+    }
+
+    #[test]
+    fn scrub_matches_playthrough_for_loop_in_reloop_cycle() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = loop_cycle_events(path);
+        assert_scrub_matches_playthrough(&events, &cache, 200, "A");
+    }
+
+    #[test]
+    fn sim_pos_matches_real_engine_for_loop_in_reloop_cycle() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = loop_cycle_events(path);
+        check_sim_vs_engine(&events, &cache, 20);
+    }
+
+    #[test]
+    fn load_track_starts_stopped_at_beat_offset() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![
+            SessionEvent {
+                path: Some(path.to_string()),
+                beat_offset_sec: Some(2.0),
+                ..deck_ev("load_track", 1000.0, "A")
+            },
+            deck_ev("play", 3000.0, "A"),
+        ];
+
+        // Stopped at the beat offset until play fires.
+        let before_play = playthrough_pos(&events, 2000.0, &cache, "A").unwrap();
+        assert!((before_play - 2.0 * SR_F).abs() < 1.0, "pos={before_play}");
+
+        // play without sec resumes from the load position: 2s in + 2s played.
+        let after_play = playthrough_pos(&events, 5000.0, &cache, "A").unwrap();
+        assert!((after_play - 4.0 * SR_F).abs() < 1.0, "pos={after_play}");
+
+        assert_scrub_matches_playthrough(&events, &cache, 100, "A");
+    }
+
+    // The live engine fully resets a deck on load_track (d.reset()), so a loop
+    // region or nudge from the previous track can never survive a load. The
+    // sim must match: a reloop after load_track is a no-op, not a jump back
+    // into the previous track's loop.
+    #[test]
+    fn load_track_clears_loop_region_and_nudge() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![
+            playing_snapshot(path),
+            SessionEvent {
+                start_sec: Some(4.0),
+                end_sec: Some(6.0),
+                ..deck_ev("loop_out", 6000.0, "A")
+            },
+            SessionEvent {
+                percent: Some(4.0),
+                ..deck_ev("set_nudge", 7000.0, "A")
+            },
+            SessionEvent {
+                path: Some(path.to_string()),
+                beat_offset_sec: Some(0.0),
+                ..deck_ev("load_track", 8000.0, "A")
+            },
+            deck_ev("play", 9000.0, "A"),
+            deck_ev("reloop", 10_000.0, "A"),
+        ];
+
+        // 3s of play at rate 1.0 with no nudge and no loop: position = 3s.
+        let pos = playthrough_pos(&events, 12_000.0, &cache, "A").unwrap();
+        assert!((pos - 3.0 * SR_F).abs() < 1.0, "pos={pos}");
+    }
+
+    #[test]
+    fn eject_track_removes_deck_in_both_scrub_and_playthrough() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![playing_snapshot(path), deck_ev("eject_track", 5000.0, "A")];
+
+        assert!(playthrough_pos(&events, 4000.0, &cache, "A").is_some());
+        assert!(scrub_pos(&events, 4000.0, &cache, "A").is_some());
+        assert!(playthrough_pos(&events, 6000.0, &cache, "A").is_none());
+        assert!(scrub_pos(&events, 6000.0, &cache, "A").is_none());
+    }
+
+    #[test]
+    fn stopped_at_cue_commits_cue_position() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![
+            playing_snapshot(path),
+            SessionEvent {
+                cue_point_sec: Some(1.5),
+                ..deck_ev("stopped_at_cue", 5000.0, "A")
+            },
+        ];
+
+        let pos = playthrough_pos(&events, 8000.0, &cache, "A").unwrap();
+        assert!((pos - 1.5 * SR_F).abs() < 1.0, "pos={pos}");
+        assert_scrub_matches_playthrough(&events, &cache, 100, "A");
+    }
+
+    #[test]
+    fn filter_change_captured_in_post_event_snapshot() {
+        let events = vec![
+            SessionEvent {
+                value: Some(-0.5),
+                ..deck_ev("set_filter", 1000.0, "A")
+            },
+            SessionEvent {
+                active: Some(true),
+                ..deck_ev("set_filter_active", 2000.0, "A")
+            },
+        ];
+        let snaps = build_snapshots(&events, SR, &HashMap::new());
+        let strip = snaps.last().unwrap().strips.get("A").unwrap();
+        assert_eq!(strip.filter_value, -0.5);
+        assert!(strip.filter_active);
+    }
+
+    #[test]
+    fn beat_grid_change_captured_in_post_event_snapshot() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![
+            playing_snapshot(path),
+            SessionEvent {
+                bpm: Some(128.0),
+                beat_offset_sec: Some(0.25),
+                ..deck_ev("set_beat_grid", 2000.0, "A")
+            },
+        ];
+        let snaps = build_snapshots(&events, SR, &cache);
+        let deck = snaps.last().unwrap().decks.get("A").unwrap();
+        assert_eq!(deck.bpm, Some(128.0));
+        assert!((deck.beat_offset_frames - 0.25 * SR_F).abs() < 1e-6);
     }
 }

@@ -138,7 +138,8 @@
     "removeTrackBody": "La pista se eliminará de tu colección junto con su BPM y datos de grid guardados.",
     "remove": "Quitar",
     "recalcBpm": "Recalcular BPM",
-    "addToPlaylist": "Añadir a lista"
+    "addToPlaylist": "Añadir a lista",
+    "locate": "Localizar"
   },
   "search": {
     "placeholder": "Buscar"
@@ -204,7 +205,9 @@
     "saveAs": "GUARDAR COMO",
     "discardTitle": "Descartar cambios sin guardar?",
     "discardBody": "La sesión tiene cambios sin guardar. Al expulsar se descartarán.",
-    "discardConfirm": "Descartar"
+    "discardConfirm": "Descartar",
+    "missingFiles": "Estos archivos de audio no se encontraron. Elige la carpeta que los contiene para restaurar la reproducción:",
+    "locate": "ELEGIR CARPETA"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",

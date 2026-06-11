@@ -54,6 +54,12 @@ type DeckSyncPayload = {
   loopRegionCleared: boolean;
 };
 
+// The deck header shows BPM with two decimals; the audible rate is computed
+// from the rounded value so display and playback always agree.
+function roundBpm(bpm: number): number {
+  return Math.round(bpm * 100) / 100;
+}
+
 function createDeck(id: DeckId, accent: string, name: string) {
   let positionCache = 0;
   let clockAtPlay = 0; // performance.now() when playback started or position was last anchored
@@ -183,7 +189,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const pitchRange = useSettingsStore().pitchRange;
       const minBpm = state.trackBpm * (1 - pitchRange / 100);
       const maxBpm = state.trackBpm * (1 + pitchRange / 100);
-      const clamped = Math.max(minBpm, Math.min(maxBpm, value));
+      const clamped = roundBpm(Math.max(minBpm, Math.min(maxBpm, value)));
       state.targetBpm = clamped;
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
       syncPosition();
@@ -205,7 +211,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       if (state.trackBpm === null) return;
       const pitchRange = useSettingsStore().pitchRange;
       state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
-      state.targetBpm = state.trackBpm * (1 + state.pitchOffset / 100);
+      state.targetBpm = roundBpm(state.trackBpm * (1 + state.pitchOffset / 100));
       syncPosition();
       localRate = state.targetBpm / state.trackBpm;
       invoke('set_playback_rate', { deck: id, rate: localRate });

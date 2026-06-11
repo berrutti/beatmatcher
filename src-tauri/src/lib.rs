@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 pub mod offline_render;
+mod session_event;
 mod session_playback;
 
 use audio::AppAudio;
@@ -235,7 +236,6 @@ pub fn run() {
             commands::get_track_amplitude_waveform,
             commands::list_audio_devices,
             commands::load_track,
-            commands::open_file_dialog,
             commands::pick_save_path,
             commands::play,
             commands::press_cue,

@@ -289,6 +289,23 @@ export function paintNudgeRange(
   return [...kept, ...inserted].sort((first, second) => first.elapsed_ms - second.elapsed_ms);
 }
 
+// Rewrites event track paths after the user relocates missing files. Returns
+// the input array unchanged when no event carries a mapped path, so callers
+// relying on reference equality (dirty check, undo) can skip a no-op edit.
+export function relocateEventPaths(
+  events: SessionEvent[],
+  mapping: Record<string, string>
+): SessionEvent[] {
+  if (!events.some((event) => event.path !== undefined && mapping[event.path] !== undefined)) {
+    return events;
+  }
+  return events.map((event) =>
+    event.path !== undefined && mapping[event.path] !== undefined
+      ? { ...event, path: mapping[event.path] }
+      : event
+  );
+}
+
 export function formatLaneValue(key: EditableLaneKey, value: number): string {
   switch (key) {
     case 'gain':

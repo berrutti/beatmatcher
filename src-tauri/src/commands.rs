@@ -828,18 +828,6 @@ pub(crate) fn set_main_device(
 }
 
 #[tauri::command]
-pub(crate) async fn open_file_dialog() -> Option<String> {
-    let result = rfd::AsyncFileDialog::new()
-        .add_filter(
-            "Audio",
-            &["mp3", "wav", "flac", "aac", "ogg", "m4a", "aiff", "opus"],
-        )
-        .pick_file()
-        .await;
-    result.map(|f| f.path().to_string_lossy().into_owned())
-}
-
-#[tauri::command]
 pub(crate) async fn pick_save_path(format: String) -> Option<String> {
     let (label, ext, name) = match format.as_str() {
         "flac" => ("FLAC Audio", "flac", "mix.flac"),

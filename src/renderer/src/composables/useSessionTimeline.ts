@@ -11,6 +11,10 @@ export type Clip = {
   trackName: string;
   trackStartSec: number;
   playbackRate: number;
+  // Clips emitted together form one editable unit: loop iterations share a
+  // blockId; a regular play segment is a block of its own.
+  blockId: number;
+  loop: { startSec: number; endSec: number } | null;
 };
 
 export type LoadedSpan = {
@@ -135,7 +139,8 @@ function finalizeClip(
   deckId: string,
   endMs: number,
   out: Clip[],
-  nameForPath: (path: string) => string
+  nameForPath: (path: string) => string,
+  allocateBlockId: () => number
 ) {
   if (
     deck.loopActive &&
@@ -149,7 +154,9 @@ function finalizeClip(
       const loopDurMs = (loopDurSec / deck.clipRate) * 1000;
       const loopPath = deck.clipPath;
       const loopStartSec = deck.loopStartSec;
+      const loopEndSec = deck.loopEndSec;
       const loopRate = deck.clipRate;
+      const blockId = allocateBlockId();
       let iterStart = deck.loopEngagedMs;
       while (iterStart < endMs) {
         const iterEnd = Math.min(iterStart + loopDurMs, endMs);
@@ -160,7 +167,9 @@ function finalizeClip(
           trackPath: loopPath,
           trackName: nameForPath(loopPath),
           trackStartSec: loopStartSec,
-          playbackRate: loopRate
+          playbackRate: loopRate,
+          blockId,
+          loop: { startSec: loopStartSec, endSec: loopEndSec }
         });
         iterStart += loopDurMs;
       }
@@ -168,16 +177,23 @@ function finalizeClip(
     deck.loopActive = false;
     deck.loopEngagedMs = null;
     deck.clipStartMs = null;
-  } else if (deck.clipStartMs !== null && deck.clipPath !== null && endMs > deck.clipStartMs) {
-    out.push({
-      deck: deckId,
-      sessionStartMs: deck.clipStartMs,
-      sessionEndMs: endMs,
-      trackPath: deck.clipPath,
-      trackName: nameForPath(deck.clipPath),
-      trackStartSec: deck.clipTrackStartSec,
-      playbackRate: deck.clipRate
-    });
+  } else if (deck.clipStartMs !== null) {
+    // A zero-length clip emits nothing, but the deck still stopped: leaving
+    // clipStartMs set would swallow the next play (the engine's stop always
+    // stops, regardless of how long the clip was).
+    if (deck.clipPath !== null && endMs > deck.clipStartMs) {
+      out.push({
+        deck: deckId,
+        sessionStartMs: deck.clipStartMs,
+        sessionEndMs: endMs,
+        trackPath: deck.clipPath,
+        trackName: nameForPath(deck.clipPath),
+        trackStartSec: deck.clipTrackStartSec,
+        playbackRate: deck.clipRate,
+        blockId: allocateBlockId(),
+        loop: null
+      });
+    }
     deck.clipStartMs = null;
   }
 }
@@ -208,10 +224,11 @@ function exitLoopAndContinue(
   deckId: string,
   ms: number,
   clips: Clip[],
-  nameForPath: (path: string) => string
+  nameForPath: (path: string) => string,
+  allocateBlockId: () => number
 ) {
   deck.trackPosSec = loopExitTrackPos(deck, ms);
-  finalizeClip(deck, deckId, ms, clips, nameForPath);
+  finalizeClip(deck, deckId, ms, clips, nameForPath, allocateBlockId);
   startClip(deck, ms);
 }
 
@@ -221,6 +238,8 @@ export function buildClips(
 ): { clips: Clip[]; loadedSpans: LoadedSpan[] } {
   const deckStates: Record<string, DeckState> = {};
   const clips: Clip[] = [];
+  let nextBlockId = 0;
+  const allocateBlockId = () => nextBlockId++;
   const loadedSpans: LoadedSpan[] = [];
   const getOrCreate = (id: string) => (deckStates[id] ??= makeDeckState());
 
@@ -251,7 +270,7 @@ export function buildClips(
         break;
 
       case 'load_track':
-        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         finalizeLoadedSpan(deck, deckId, ev.elapsed_ms, loadedSpans, nameForPath);
         deck.path = ev.path ?? null;
         deck.loadSpanStartMs = ev.elapsed_ms;
@@ -264,7 +283,7 @@ export function buildClips(
         break;
 
       case 'eject_track':
-        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         finalizeLoadedSpan(deck, deckId, ev.elapsed_ms, loadedSpans, nameForPath);
         deck.path = null;
         deck.trackPosSec = 0;
@@ -273,10 +292,17 @@ export function buildClips(
         break;
 
       case 'play':
+        // play may carry an explicit position (Rust play(deck, fromSec));
+        // recorded plays from toggle_play never do, but edited sessions
+        // (clip move/trim) synthesize them.
+        if (ev.sec !== undefined) deck.trackPosSec = ev.sec;
         if (deck.clipStartMs === null && !deck.loopActive) startClip(deck, ev.elapsed_ms);
         break;
 
       case 'cue_preview_start':
+        // Rust jumps the deck to the cue point; mirror it so the clip's
+        // trackStartSec doesn't depend on earlier position side effects.
+        if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
         if (deck.clipStartMs === null && !deck.loopActive) startClip(deck, ev.elapsed_ms);
         break;
 
@@ -285,12 +311,12 @@ export function buildClips(
       case 'stop_at_cue':
       case 'cue_set_and_stop':
         // cue_set_and_stop: user pressed CUE while playing, stops and moves cue to current position
-        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
         break;
 
       case 'cue_preview_end':
-        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+        finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         if (ev.cue_point_sec !== undefined) deck.trackPosSec = ev.cue_point_sec;
         break;
 
@@ -307,7 +333,7 @@ export function buildClips(
       case 'seek':
         if (ev.sec !== undefined) {
           if (deck.clipStartMs !== null && !deck.loopActive) {
-            finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+            finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
             deck.trackPosSec = ev.sec;
             startClip(deck, ev.elapsed_ms);
           } else {
@@ -325,7 +351,7 @@ export function buildClips(
         deck.loopStartSec = ev.start_sec ?? null;
         deck.loopEndSec = ev.end_sec ?? null;
         if (deck.loopStartSec !== null && deck.loopEndSec !== null) {
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
           engageLoop(deck, ev.elapsed_ms);
         }
         break;
@@ -333,7 +359,7 @@ export function buildClips(
       case 'loop_in':
         // loop_in always clears the loop region in Rust; if we were looping, exit first
         if (deck.loopActive) {
-          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         }
         deck.loopStartSec = null;
         deck.loopEndSec = null;
@@ -342,13 +368,13 @@ export function buildClips(
       case 'exit_loop':
         // set_loop_active(false) also logs exit_loop, so both paths reach here
         if (deck.loopActive) {
-          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+          exitLoopAndContinue(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
         }
         break;
 
       case 'reloop':
         if (!deck.loopActive && deck.loopStartSec !== null && deck.loopEndSec !== null) {
-          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath);
+          finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
           engageLoop(deck, ev.elapsed_ms);
         }
         break;
@@ -357,7 +383,7 @@ export function buildClips(
 
   const lastMs = events[events.length - 1]?.elapsed_ms ?? 0;
   for (const [deckId, deck] of Object.entries(deckStates)) {
-    finalizeClip(deck, deckId, lastMs, clips, nameForPath);
+    finalizeClip(deck, deckId, lastMs, clips, nameForPath, allocateBlockId);
     finalizeLoadedSpan(deck, deckId, lastMs, loadedSpans, nameForPath);
   }
 

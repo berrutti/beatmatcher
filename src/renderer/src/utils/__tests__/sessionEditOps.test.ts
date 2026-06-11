@@ -14,6 +14,7 @@ import {
   toggleFilterActiveRange,
   nudgeValueAt,
   paintNudgeRange,
+  relocateEventPaths,
   formatLaneValue,
   MIN_GESTURE_MS
 } from '../sessionEditOps';
@@ -436,6 +437,54 @@ describe('paintNudgeRange', () => {
     const snapshot = JSON.parse(JSON.stringify(events));
     paintNudgeRange(events, 'A', 1000, 2000, 4);
     expect(events).toEqual(snapshot);
+  });
+});
+
+describe('relocateEventPaths', () => {
+  const events = [
+    ev({ elapsed_ms: 0, type: 'deck_snapshot', deck: 'A', path: '/old/a.mp3' }),
+    ev({ elapsed_ms: 100, type: 'load_track', deck: 'B', path: '/old/b.mp3' }),
+    ev({ elapsed_ms: 200, type: 'set_gain', deck: 'A', gain: 0.5 }),
+    ev({ elapsed_ms: 300, type: 'load_track', deck: 'A', path: '/old/a.mp3' })
+  ];
+
+  it('rewrites every event carrying a mapped path', () => {
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out.map((event) => event.path)).toEqual([
+      '/new/a.mp3',
+      '/old/b.mp3',
+      undefined,
+      '/new/a.mp3'
+    ]);
+  });
+
+  it('rewrites multiple paths in one pass', () => {
+    const out = relocateEventPaths(events, {
+      '/old/a.mp3': '/new/a.mp3',
+      '/old/b.mp3': '/new/b.mp3'
+    });
+    expect(out.map((event) => event.path)).toEqual([
+      '/new/a.mp3',
+      '/new/b.mp3',
+      undefined,
+      '/new/a.mp3'
+    ]);
+  });
+
+  it('returns a new array and never mutates the input', () => {
+    const snapshot = JSON.parse(JSON.stringify(events));
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out).not.toBe(events);
+    expect(events).toEqual(snapshot);
+  });
+
+  it('returns the same array reference when nothing matches', () => {
+    expect(relocateEventPaths(events, { '/elsewhere/x.mp3': '/new/x.mp3' })).toBe(events);
+  });
+
+  it('preserves all other fields on rewritten events', () => {
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out[0]).toMatchObject({ elapsed_ms: 0, type: 'deck_snapshot', deck: 'A' });
   });
 });
 

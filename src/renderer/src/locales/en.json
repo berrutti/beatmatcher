@@ -138,7 +138,8 @@
     "removeTrackBody": "The track will be removed from your collection along with its saved BPM and grid data.",
     "remove": "Remove",
     "recalcBpm": "Recalculate BPM",
-    "addToPlaylist": "Add to playlist"
+    "addToPlaylist": "Add to playlist",
+    "locate": "Locate"
   },
   "search": {
     "placeholder": "Search"
@@ -204,7 +205,9 @@
     "saveAs": "SAVE AS",
     "discardTitle": "Discard unsaved edits?",
     "discardBody": "The session has unsaved edits. Ejecting will discard them.",
-    "discardConfirm": "Discard"
+    "discardConfirm": "Discard",
+    "missingFiles": "These audio files are missing. Choose the folder that contains them to restore playback:",
+    "locate": "CHOOSE FOLDER"
   },
   "quitModal": {
     "title": "Quit Beatmatcher?",

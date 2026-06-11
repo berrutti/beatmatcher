@@ -104,6 +104,12 @@ import {
   filterActiveAt,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
+import {
+  blocksForDeck,
+  blockBounds,
+  MIN_BLOCK_MS,
+  type TransportBlock
+} from '@renderer/utils/clipEditOps';
 import type { LanePoint } from '@renderer/composables/useSessionTimeline';
 
 type DragMode =
@@ -114,6 +120,7 @@ type DragMode =
   | 'draw'
   | 'paint-active'
   | 'paint-nudge'
+  | 'clip'
   | null;
 type DragState = { mode: DragMode; startClientX: number; startView: ViewWindow; dragged: boolean };
 type LaneMenu = { deck: string; x: number; y: number };
@@ -141,6 +148,17 @@ type NudgeGesture = {
   startMs: number;
   currentMs: number;
 };
+type ClipGesture = {
+  block: TransportBlock;
+  blockClips: Clip[];
+  kind: 'move' | 'trim-start' | 'trim-end';
+  grabMs: number;
+  deltaMs: number;
+  targetMs: number;
+  beatMs: number | null;
+  minStartMs: number;
+  maxEndMs: number;
+};
 
 const MIN_VIEW_MS = 200;
 const ZOOM_SENSITIVITY = 0.0015;
@@ -158,6 +176,7 @@ const props = defineProps<{
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
   waveforms: Map<string, TrackWaveform>;
+  bpmForPath: (path: string) => number | null;
 }>();
 
 const emit = defineEmits<{ seek: [ms: number] }>();
@@ -261,6 +280,19 @@ function onCanvasMouseDown(e: MouseEvent) {
         return;
       }
     }
+    if (!e.shiftKey) {
+      const clipHit = blockAtPoint(e.clientX - rect.left, y, trackW);
+      if (clipHit && beginClipGesture(clipHit, fracToMs(frac, currentView()))) {
+        dragState.mode = 'clip';
+        dragState.startClientX = e.clientX;
+        dragState.startView = currentView();
+        dragState.dragged = false;
+        canvasEl.value.style.cursor = clipHit.edge ? 'ew-resize' : 'grabbing';
+        window.addEventListener('mousemove', onWindowMouseMove);
+        window.addEventListener('mouseup', onWindowMouseUp);
+        return;
+      }
+    }
     const hit = laneAt(y);
     if (hit && isLaneSelected(hit.deck, hit.lane)) {
       const ms = fracToMs(frac, currentView());
@@ -341,6 +373,13 @@ function onCanvasHoverMove(e: MouseEvent) {
       canvasEl.value.style.cursor = 'crosshair';
       return;
     }
+    if (!e.shiftKey && e.clientX - rect.left > LABEL_W) {
+      const clipHit = blockAtPoint(e.clientX - rect.left, y, trackW);
+      if (clipHit) {
+        canvasEl.value.style.cursor = clipHit.edge ? 'ew-resize' : 'grab';
+        return;
+      }
+    }
     const hit = laneAt(y);
     if (hit && isLaneSelected(hit.deck, hit.lane) && e.clientX - rect.left > LABEL_W) {
       canvasEl.value.style.cursor = 'crosshair';
@@ -380,6 +419,17 @@ function onWindowMouseMove(e: MouseEvent) {
       if (!nudgeGesture) break;
       const frac = fracAtClientX(e.clientX, rect, trackW);
       nudgeGesture.currentMs = Math.min(total, Math.max(0, fracToMs(frac, start)));
+      requestAnimationFrame(draw);
+      break;
+    }
+    case 'clip': {
+      // Edits happen while stopped; the press itself may still be a scrub
+      // click, so playback stops only once an actual drag begins.
+      if (dragState.dragged && sessionStore.isPlaying) sessionStore.stop().catch(() => {});
+      const frac = fracAtClientX(e.clientX, rect, trackW);
+      const pointerMs = Math.min(total, Math.max(0, fracToMs(frac, start)));
+      // Cmd/Ctrl disables beat snapping for free placement.
+      updateClipGesture(pointerMs, e.metaKey || e.ctrlKey);
       requestAnimationFrame(draw);
       break;
     }
@@ -435,6 +485,9 @@ function onWindowMouseUp() {
   if (dragState.mode === 'paint-nudge') {
     finishNudgeGesture();
     dragState.dragged = true;
+  }
+  if (dragState.mode === 'clip') {
+    finishClipGesture();
   }
   dragState.mode = null;
   if (canvasEl.value) canvasEl.value.style.cursor = '';
@@ -508,6 +561,7 @@ let masterRect: { top: number; height: number } | null = null;
 let drawGesture: DrawGesture | null = null;
 let paintGesture: PaintGesture | null = null;
 let nudgeGesture: NudgeGesture | null = null;
+let clipGesture: ClipGesture | null = null;
 
 // The clip band is the waveform strip of a deck row, above its sublanes.
 function clipBandAt(y: number): { deck: string; rowTop: number; direction: 1 | -1 } | null {
@@ -517,6 +571,103 @@ function clipBandAt(y: number): { deck: string; rowTop: number; direction: 1 | -
     }
   }
   return null;
+}
+
+// Finds the transport block (and edge, for trims) under a point on a deck's
+// clip band. Loop blocks expose no edges: they move as one unit only.
+function blockAtPoint(
+  x: number,
+  y: number,
+  trackW: number
+): { block: TransportBlock; edge: 'start' | 'end' | null } | null {
+  const band = clipBandAt(y);
+  if (!band) return null;
+  const msToX = makeMsToX(currentView(), trackW);
+  for (const block of blocksForDeck(props.clips, band.deck)) {
+    const x0 = msToX(block.startMs);
+    const x1 = msToX(block.endMs);
+    if (x < x0 - EDGE_GRAB_PX || x > x1 + EDGE_GRAB_PX) continue;
+    if (!block.loop) {
+      if (Math.abs(x - x0) <= EDGE_GRAB_PX) return { block, edge: 'start' };
+      if (Math.abs(x - x1) <= EDGE_GRAB_PX) return { block, edge: 'end' };
+    }
+    if (x >= x0 && x <= x1) return { block, edge: null };
+  }
+  return null;
+}
+
+function beginClipGesture(hit: { block: TransportBlock; edge: 'start' | 'end' | null }, ms: number) {
+  const events = sessionStore.session?.events ?? [];
+  const bounds = blockBounds(events, props.clips, hit.block);
+  if (!bounds) return false;
+  const bpm = props.bpmForPath(hit.block.trackPath);
+  const blockClips = props.clips.filter(
+    (clip) =>
+      clip.deck === hit.block.deck &&
+      clip.sessionStartMs >= hit.block.startMs - 1 &&
+      clip.sessionEndMs <= hit.block.endMs + 1
+  );
+  clipGesture = {
+    block: hit.block,
+    blockClips,
+    kind: hit.edge ? (hit.edge === 'start' ? 'trim-start' : 'trim-end') : 'move',
+    grabMs: ms,
+    deltaMs: 0,
+    targetMs: hit.edge === 'start' ? hit.block.startMs : hit.block.endMs,
+    beatMs: bpm !== null && bpm > 0 ? 60_000 / (bpm * hit.block.playbackRate) : null,
+    minStartMs: bounds.minStartMs,
+    maxEndMs: bounds.maxEndMs
+  };
+  return true;
+}
+
+function updateClipGesture(pointerMs: number, free: boolean) {
+  if (!clipGesture) return;
+  const { block, beatMs } = clipGesture;
+  if (clipGesture.kind === 'move') {
+    let delta = pointerMs - clipGesture.grabMs;
+    if (!free && beatMs) delta = Math.round(delta / beatMs) * beatMs;
+    clipGesture.deltaMs = Math.max(
+      clipGesture.minStartMs - block.startMs,
+      Math.min(clipGesture.maxEndMs - block.endMs, delta)
+    );
+    return;
+  }
+  const anchor = clipGesture.kind === 'trim-start' ? block.startMs : block.endMs;
+  let target = pointerMs;
+  if (!free && beatMs) target = anchor + Math.round((target - anchor) / beatMs) * beatMs;
+  if (clipGesture.kind === 'trim-start') {
+    const earliestByAudio = block.startMs - (block.trackStartSec / block.playbackRate) * 1000;
+    clipGesture.targetMs = Math.max(
+      Math.max(clipGesture.minStartMs, earliestByAudio),
+      Math.min(block.endMs - MIN_BLOCK_MS, target)
+    );
+  } else {
+    clipGesture.targetMs = Math.max(
+      block.startMs + MIN_BLOCK_MS,
+      Math.min(clipGesture.maxEndMs, target)
+    );
+  }
+}
+
+function finishClipGesture() {
+  if (!clipGesture) return;
+  const gesture = clipGesture;
+  clipGesture = null;
+  // A press without movement is a click (scrub), not an edit.
+  if (!dragState.dragged) {
+    requestAnimationFrame(draw);
+    return;
+  }
+  if (gesture.kind === 'move') {
+    if (Math.abs(gesture.deltaMs) >= 1) {
+      editStore.commitClipMove(props.clips, gesture.block, gesture.deltaMs).catch(() => {});
+    }
+  } else {
+    const edge = gesture.kind === 'trim-start' ? 'start' : 'end';
+    editStore.commitClipTrim(props.clips, gesture.block, edge, gesture.targetMs).catch(() => {});
+  }
+  requestAnimationFrame(draw);
 }
 
 function finishNudgeGesture() {
@@ -880,6 +1031,64 @@ function draw() {
     ctx.fillText(label, labelX, labelY);
   }
 
+  if (clipGesture && dragState.dragged) {
+    const gesture = clipGesture;
+    const row = newRowLayout.find((r) => r.deckId === gesture.block.deck);
+    if (row) {
+      const accent = getDeckAccent(gesture.block.deck as DeckId);
+      ctx.fillStyle = accent + '50';
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1;
+      for (const clip of gesture.blockClips) {
+        let ghostStart = clip.sessionStartMs;
+        let ghostEnd = clip.sessionEndMs;
+        if (gesture.kind === 'move') {
+          ghostStart += gesture.deltaMs;
+          ghostEnd += gesture.deltaMs;
+        } else if (gesture.kind === 'trim-start') {
+          ghostStart = gesture.targetMs;
+        } else {
+          ghostEnd = gesture.targetMs;
+        }
+        const ghostX = msToX(ghostStart);
+        const ghostW = Math.max(1, msToX(ghostEnd) - ghostX);
+        ctx.fillRect(ghostX, row.top, ghostW, ROW_H);
+        ctx.strokeRect(ghostX + 0.5, row.top + 0.5, ghostW - 1, ROW_H - 1);
+      }
+
+      const deltaSec =
+        gesture.kind === 'move'
+          ? gesture.deltaMs / 1000
+          : (gesture.targetMs -
+              (gesture.kind === 'trim-start' ? gesture.block.startMs : gesture.block.endMs)) /
+            1000;
+      const deltaMs = deltaSec * 1000;
+      const onBeatGrid =
+        gesture.beatMs !== null &&
+        Math.abs(deltaMs - Math.round(deltaMs / gesture.beatMs) * gesture.beatMs) < 1;
+      const beats =
+        gesture.beatMs !== null && onBeatGrid ? Math.round(deltaMs / gesture.beatMs) : null;
+      const label =
+        beats !== null
+          ? `${beats > 0 ? '+' : ''}${beats} beat${Math.abs(beats) === 1 ? '' : 's'}`
+          : `${deltaSec > 0 ? '+' : ''}${deltaSec.toFixed(2)}s`;
+      const labelX = Math.min(
+        msToX(gesture.block.startMs + (gesture.kind === 'move' ? gesture.deltaMs : 0)) + 8,
+        canvasW - PADDING - 60
+      );
+      const labelY = row.top + 12;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000cc';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(label, labelX, labelY);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, labelX, labelY);
+    }
+  }
+
   rowY = TICK_H;
   for (let ri = 0; ri < DECK_ORDER.length; ri++) {
     const { deckId: deckId, height: rowH } = newRowLayout[ri];
@@ -893,10 +1102,15 @@ function draw() {
 
   ctx.restore();
 
-  // Deck row dividers — drawn full-width (including label column) after restoring the clip
-  ctx.fillStyle = '#383838';
+  // Deck row dividers — drawn full-width (including label column) after restoring
+  // the clip. Deliberately heavier than the 1px sublane-group separators so deck
+  // boundaries stand out: a dark gap with a bright hairline on top.
   for (const row of newRowLayout) {
-    ctx.fillRect(0, row.top + row.height - 2, canvasW, 2);
+    const dividerY = row.top + row.height - 3;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, dividerY, canvasW, 3);
+    ctx.fillStyle = '#5a5a5a';
+    ctx.fillRect(0, dividerY, canvasW, 1);
   }
 
   ctx.fillStyle = '#222';

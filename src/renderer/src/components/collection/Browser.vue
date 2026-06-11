@@ -159,6 +159,14 @@
             {{ $t('browser.setBpm') }}
           </button>
           <button
+            v-if="track.status === 'missing'"
+            class="collection__item-btn"
+            tabindex="-1"
+            @click.stop="store.locateMissingTracks()"
+          >
+            {{ $t('browser.locate') }}
+          </button>
+          <button
             class="collection__item-remove"
             tabindex="-1"
             @click.stop="pendingRemoveTrackId = track.id"

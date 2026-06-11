@@ -23,6 +23,17 @@
         <div v-if="!session.hasTrackInfo" class="session__no-track-info">
           {{ $t('session.noTrackInfo') }}
         </div>
+        <div v-if="session.missingTracks.length > 0" class="session__missing">
+          <div class="session__missing-header">
+            <span class="session__missing-title">{{ $t('session.missingFiles') }}</span>
+            <button class="session__missing-btn" @click="editStore.locateMissingTracks()">
+              {{ $t('session.locate') }}
+            </button>
+          </div>
+          <div v-for="path in session.missingTracks" :key="path" class="session__missing-row">
+            <span class="session__missing-name" :title="path">{{ basename(path) }}</span>
+          </div>
+        </div>
         <SessionTimeline
           :duration-ms="session.durationMs"
           :clips="clips"
@@ -32,6 +43,7 @@
           :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
           :waveforms="session.waveforms"
+          :bpm-for-path="bpmForPath"
           @seek="onSeek"
         />
       </template>
@@ -103,6 +115,7 @@ import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import { formatMs } from '@renderer/utils/time';
+import { basename } from '@renderer/utils/path';
 
 const session = useSessionStore();
 const editStore = useSessionEditStore();
@@ -114,6 +127,11 @@ const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTim
   sessionRef,
   (path) => collection.getName(path)
 );
+
+// Beat snapping for clip dragging uses the track's grid BPM from the library.
+function bpmForPath(path: string): number | null {
+  return collection.getSaved(path)?.bpm ?? null;
+}
 
 watch(
   clips,
@@ -244,6 +262,57 @@ onUnmounted(() => {
   background: color-mix(in srgb, #f97316 8%, transparent);
   border-bottom: 1px solid color-mix(in srgb, #f97316 30%, transparent);
   letter-spacing: 0.05em;
+}
+
+.session__missing {
+  padding: 8px 16px;
+  font-size: 0.8em;
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+}
+
+.session__missing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75em;
+  margin-bottom: 4px;
+}
+
+.session__missing-title {
+  color: #ef4444;
+  letter-spacing: 0.05em;
+}
+
+.session__missing-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  padding: 2px 0;
+}
+
+.session__missing-name {
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session__missing-btn {
+  font-family: var(--font);
+  font-size: 0.85em;
+  letter-spacing: 0.1em;
+  padding: 0.2em 0.8em;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, #ef4444 40%, transparent);
+  background: var(--color-surface);
+  color: #ef4444;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.session__missing-btn:hover {
+  background: color-mix(in srgb, #ef4444 15%, transparent);
 }
 
 .session__drop-zone {

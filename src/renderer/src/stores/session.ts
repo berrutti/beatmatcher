@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -66,6 +66,39 @@ export const useSessionStore = defineStore('session', () => {
       pendingWaveformPaths.delete(path);
     }
   }
+
+  const trackPaths = computed(() => {
+    const seen = new Set<string>();
+    for (const e of session.value?.events ?? []) {
+      if ((e.type === 'deck_snapshot' || e.type === 'load_track') && e.path) seen.add(e.path);
+    }
+    return [...seen];
+  });
+
+  const missingTracks = ref<string[]>([]);
+
+  async function checkMissingTracks(): Promise<void> {
+    const paths = trackPaths.value;
+    if (paths.length === 0) {
+      missingTracks.value = [];
+      return;
+    }
+    try {
+      const sizes = await invoke<(number | null)[]>('files_info', { paths });
+      missingTracks.value = paths.filter((_, i) => sizes[i] === null || sizes[i] === undefined);
+    } catch {
+      missingTracks.value = [];
+    }
+  }
+
+  // Recheck whenever the set of referenced files changes (session opened or a
+  // missing file relocated), not on every event edit.
+  watch(
+    () => trackPaths.value.join('\n'),
+    () => {
+      checkMissingTracks().catch(() => {});
+    }
+  );
 
   const durationMs = computed(() => session.value?.durationMs ?? 0);
   const hasTrackInfo = computed(
@@ -152,6 +185,8 @@ export const useSessionStore = defineStore('session', () => {
     waveforms,
     durationMs,
     hasTrackInfo,
+    missingTracks,
+    checkMissingTracks,
     ensureWaveform,
     openSession,
     openSessionFromPath,
