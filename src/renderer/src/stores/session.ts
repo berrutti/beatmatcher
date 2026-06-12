@@ -87,7 +87,9 @@ export const useSessionStore = defineStore('session', () => {
     }
     try {
       const sizes = await invoke<(number | null)[]>('files_info', { paths });
-      missingTracks.value = paths.filter((_, index) => sizes[index] === null || sizes[index] === undefined);
+      missingTracks.value = paths.filter(
+        (_, index) => sizes[index] === null || sizes[index] === undefined
+      );
     } catch {
       missingTracks.value = [];
     }
