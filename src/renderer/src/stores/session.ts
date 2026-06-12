@@ -69,8 +69,10 @@ export const useSessionStore = defineStore('session', () => {
 
   const trackPaths = computed(() => {
     const seen = new Set<string>();
-    for (const e of session.value?.events ?? []) {
-      if ((e.type === 'deck_snapshot' || e.type === 'load_track') && e.path) seen.add(e.path);
+    for (const event of session.value?.events ?? []) {
+      if ((event.type === 'deck_snapshot' || event.type === 'load_track') && event.path) {
+        seen.add(event.path);
+      }
     }
     return [...seen];
   });
@@ -85,7 +87,7 @@ export const useSessionStore = defineStore('session', () => {
     }
     try {
       const sizes = await invoke<(number | null)[]>('files_info', { paths });
-      missingTracks.value = paths.filter((_, i) => sizes[i] === null || sizes[i] === undefined);
+      missingTracks.value = paths.filter((_, index) => sizes[index] === null || sizes[index] === undefined);
     } catch {
       missingTracks.value = [];
     }

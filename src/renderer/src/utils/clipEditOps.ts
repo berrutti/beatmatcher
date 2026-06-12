@@ -40,8 +40,8 @@ const TRANSPORT_TYPES = new Set([
   'reloop'
 ]);
 
-function near(a: number, b: number): boolean {
-  return Math.abs(a - b) <= EPS_MS;
+function near(first: number, second: number): boolean {
+  return Math.abs(first - second) <= EPS_MS;
 }
 
 export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {
@@ -103,7 +103,6 @@ function stableSortByMs(events: SessionEvent[]): SessionEvent[] {
 }
 
 type Neighborhood = {
-  index: number;
   prev: TransportBlock | null;
   next: TransportBlock | null;
   minStartMs: number;
@@ -137,7 +136,7 @@ function neighborhoodOf(
       maxEndMs = Math.min(maxEndMs, event.elapsed_ms);
     }
   }
-  return { index, prev, next, minStartMs, maxEndMs };
+  return { prev, next, minStartMs, maxEndMs };
 }
 
 // A resume-play (no sec) takes its position from whatever the previous block's
@@ -175,8 +174,10 @@ export function blockBounds(
   clips: Clip[],
   block: TransportBlock
 ): { minStartMs: number; maxEndMs: number } | null {
-  const hood = neighborhoodOf(events, clips, block);
-  return hood ? { minStartMs: hood.minStartMs, maxEndMs: hood.maxEndMs } : null;
+  const neighborhood = neighborhoodOf(events, clips, block);
+  return neighborhood
+    ? { minStartMs: neighborhood.minStartMs, maxEndMs: neighborhood.maxEndMs }
+    : null;
 }
 
 export function moveTransportBlock(
@@ -185,9 +186,9 @@ export function moveTransportBlock(
   block: TransportBlock,
   deltaMs: number
 ): { events: SessionEvent[]; appliedDeltaMs: number } {
-  const hood = neighborhoodOf(events, clips, block);
-  if (!hood) return { events, appliedDeltaMs: 0 };
-  const { prev, next, minStartMs, maxEndMs } = hood;
+  const neighborhood = neighborhoodOf(events, clips, block);
+  if (!neighborhood) return { events, appliedDeltaMs: 0 };
+  const { prev, next, minStartMs, maxEndMs } = neighborhood;
   const t0 = block.startMs;
   const t1 = block.endMs;
 
@@ -242,9 +243,9 @@ export function trimTransportBlock(
   if (block.loop) {
     return { events, appliedMs: edge === 'start' ? block.startMs : block.endMs };
   }
-  const hood = neighborhoodOf(events, clips, block);
-  if (!hood) return { events, appliedMs: edge === 'start' ? block.startMs : block.endMs };
-  const { prev, next, minStartMs, maxEndMs } = hood;
+  const neighborhood = neighborhoodOf(events, clips, block);
+  if (!neighborhood) return { events, appliedMs: edge === 'start' ? block.startMs : block.endMs };
+  const { prev, next, minStartMs, maxEndMs } = neighborhood;
   const t0 = block.startMs;
   const t1 = block.endMs;
 

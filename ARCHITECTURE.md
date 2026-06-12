@@ -147,7 +147,6 @@ graph LR
     subgraph IO
         load_track:::io
         eject_track:::io
-        open_file_dialog:::io
         scan_folder:::io
         files_info:::io
         read_track_tags:::io
@@ -164,6 +163,9 @@ graph LR
     subgraph Session
         open_session_dialog:::io
         preload_session:::io
+        unload_session:::io
+        update_session_events:::io
+        save_session:::io
         start_session_playback:::transport
         stop_session_playback:::transport
         render_session_to_file:::recording
@@ -227,6 +229,17 @@ When `start_session_playback(fromMs)` is called the scheduler:
 
 Position simulation rule: any event that changes playback speed or position (`play`, `stop`, `seek`, `set_playback_rate`, `set_nudge`) commits the current analytically-computed position before updating the relevant parameter. This ensures each segment between events is computed with the correct rate and nudge factor.
 
+## Session editing
+
+Sessions are edited in memory. The frontend's parsed event array is the source of truth; every edit produces a new array (reference equality drives the dirty flag and undo/redo) and is pushed to Rust via `update_session_events`, which rebuilds the snapshot state machine. Saving serializes from the frontend's raw JSON so unknown fields survive a round-trip; the .bms on disk is untouched until SAVE.
+
+Two kinds of edits exist, both implemented as pure functions over the event array:
+
+- **Automation lane edits** (`sessionEditOps.ts`): drawing on a lane splices new `set_*` events into the drawn range and restores the original value at the range end.
+- **Clip edits** (`clipEditOps.ts`): moving or trimming a play segment rewrites deck-transport events. A moved block is deleted from its old position and re-synthesized as a self-contained `play {sec}` … `stop` pair (loops get `loop_out`/`exit_loop` around it). Every synthesized value comes from `buildClips` output — the rendered truth of what the listener heard — so rewriting one block's boundaries can never change a neighboring clip's audio. Automation events stay at wall time.
+
+On the Rust side, `session_event.rs` parses each raw event into the closed `SessionCommand` enum. The three interpreters (scrub simulation, live scheduler, offline renderer) match on it exhaustively with no catch-all, so adding an event type fails compilation until each interpreter decides its behavior.
+
 ## .bms file format
 
 A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or instead of a recording. The extension stands for Beatmatcher Session.
@@ -256,7 +269,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 | `deck_snapshot`                            | `deck`, `path`, `position_sec`, `cue_point_sec`, `is_playing`, `bpm`, `playback_rate`, `loop_active`, `loop_end_sec` | full deck state at record-start for tracks already loaded         |
 | `recording_stop`                           |                                                                                                                      | last event                                                        |
 | `load_track`                               | `deck`, `path`, `duration`                                                                                           | track loaded onto deck                                            |
-| `play`                                     | `deck`                                                                                                               | deck started playing                                              |
+| `play`                                     | `deck`, `sec` (optional; written by clip edits, never by the recorder)                                              | deck started playing, optionally from an explicit position       |
 | `stop`                                     | `deck`                                                                                                               | deck stopped                                                      |
 | `seek`                                     | `deck`, `sec`                                                                                                        | playhead jumped                                                   |
 | `set_cue` / `stop_at_cue`                  | `deck`, `cue_sec`                                                                                                    | cue point set or jump-to-cue                                      |

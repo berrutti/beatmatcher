@@ -1036,7 +1036,7 @@ function draw() {
 
   if (clipGesture && dragState.dragged) {
     const gesture = clipGesture;
-    const row = newRowLayout.find((r) => r.deckId === gesture.block.deck);
+    const row = newRowLayout.find((candidate) => candidate.deckId === gesture.block.deck);
     if (row) {
       const accent = getDeckAccent(gesture.block.deck as DeckId);
       ctx.fillStyle = accent + '50';
