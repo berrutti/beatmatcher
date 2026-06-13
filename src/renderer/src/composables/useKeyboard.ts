@@ -110,6 +110,15 @@ export function useKeyboard() {
       }
     }
 
+    // Spacebar toggles the edit deck's transport. Edit mode only: in
+    // performance mode space must never touch playback, and session mode has
+    // its own handler in Session.vue (the playhead state lives there).
+    if (appMode.mode === 'edit' && !isTyping(e) && e.code === 'Space' && !e.repeat) {
+      e.preventDefault();
+      store.decks.E?.togglePlay().catch(() => {});
+      return;
+    }
+
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
     mixer.setSwarmMode(e.getModifierState('CapsLock'));

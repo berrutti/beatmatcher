@@ -3,6 +3,7 @@ import { reactive, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { LoadableTrack } from '@renderer/stores/decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
+import { indexByBasename } from '@renderer/utils/path';
 
 export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
@@ -176,6 +177,63 @@ export const useCollectionStore = defineStore('collection', () => {
       tracks.push(entry);
       queueTagRead(entry.id);
     }
+  }
+
+  function relinkEntry(entry: CollectionEntry, newPath: string, size: number) {
+    if (tracks.some((t) => t.id !== entry.id && t.path === newPath)) {
+      const idx = tracks.findIndex((t) => t.id === entry.id);
+      if (idx !== -1) tracks.splice(idx, 1);
+      return;
+    }
+
+    const oldPath = entry.path;
+    if (oldPath && oldPath !== newPath) {
+      const saved = savedTracks[oldPath];
+      if (saved) {
+        savedTracks[newPath] = { ...saved, path: newPath };
+        delete savedTracks[oldPath];
+        persistSaved();
+      }
+      for (const p of playlists) {
+        const idx = p.paths.indexOf(oldPath);
+        if (idx !== -1) p.paths[idx] = newPath;
+      }
+    }
+
+    entry.path = newPath;
+    entry.size = size;
+    entry.status = getSaved(newPath) !== null ? 'ready' : 'idle';
+    queueTagRead(entry.id);
+  }
+
+  // Opens a folder picker and relinks every missing entry whose filename is
+  // found under it (recursively), so one pick fixes a whole moved library.
+  // Saved BPM/grid data and playlist references follow the path, so nothing
+  // has to be re-analyzed.
+  async function locateMissingTracks(): Promise<void> {
+    if (!tracks.some((t) => t.status === 'missing')) return;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const folder = await open({ directory: true, multiple: false });
+    if (typeof folder !== 'string') return;
+
+    const found = await invoke<string[]>('scan_folder', { path: folder }).catch(
+      () => [] as string[]
+    );
+    const byName = indexByBasename(found);
+
+    const targets = tracks
+      .filter((t) => t.status === 'missing')
+      .map((t) => ({ entry: t, newPath: byName.get(t.name) }))
+      .filter((t): t is { entry: CollectionEntry; newPath: string } => t.newPath !== undefined);
+    if (targets.length === 0) return;
+
+    const sizes = await invoke<(number | null)[]>('files_info', {
+      paths: targets.map((t) => t.newPath)
+    });
+    targets.forEach(({ entry: target, newPath }, i) => {
+      const size = sizes[i];
+      if (size !== null && size !== undefined) relinkEntry(target, newPath, size);
+    });
   }
 
   function removeTrack(id: string) {
@@ -420,6 +478,7 @@ export const useCollectionStore = defineStore('collection', () => {
     getName,
     getSaved,
     getLoadableTrack,
+    locateMissingTracks,
     moveInPlaylist,
     reanalyzeTrack,
     removeFromPlaylist,

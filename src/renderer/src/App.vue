@@ -108,8 +108,12 @@ onUnmounted(() => {
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  --appbar-h: 28px;
-  --topstrip-h: 28px;
+  /* 28px content + 1px bottom border: the border lives inside the box, and a
+     27px content area cannot center the 22px buttons evenly (3px above, 2px
+     below). 29px gives exactly 3px on both sides. */
+  --appbar-h: 29px;
+  --topstrip-h: 29px;
+  --collection-bar-h: 22px;
 }
 
 .app__view {

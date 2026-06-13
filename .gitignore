@@ -8,6 +8,11 @@ dist-tauri/
 # tauri
 src-tauri/target/
 
+# session-core (rust crate build + wasm-pack output)
+session-core/target/
+session-core/pkg/
+session-core/pkg-node/
+
 # vite
 *.local
 .vite/

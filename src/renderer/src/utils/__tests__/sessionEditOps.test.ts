@@ -14,6 +14,8 @@ import {
   toggleFilterActiveRange,
   nudgeValueAt,
   paintNudgeRange,
+  deleteNudgeRange,
+  relocateEventPaths,
   formatLaneValue,
   MIN_GESTURE_MS
 } from '../sessionEditOps';
@@ -373,6 +375,65 @@ describe('nudgeValueAt', () => {
   });
 });
 
+describe('deleteNudgeRange', () => {
+  it('removes the opener, mid-span changes, and the closing zero', () => {
+    const events = [
+      ev({ elapsed_ms: 1000, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 1500, type: 'set_nudge', deck: 'A', percent: 8 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1000, 2000);
+    expect(out.filter((event) => event.type === 'set_nudge')).toEqual([]);
+  });
+
+  it('leaves other decks, other event types, and nudges outside the range alone', () => {
+    const events = [
+      ev({ elapsed_ms: 500, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 800, type: 'set_nudge', deck: 'A', percent: 0 }),
+      ev({ elapsed_ms: 1200, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 1500, type: 'set_nudge', deck: 'B', percent: 8 }),
+      ev({ elapsed_ms: 1500, type: 'set_volume', deck: 'A', gain: 0.5 }),
+      ev({ elapsed_ms: 1800, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1200, 1800);
+    expect(out.map((event) => [event.elapsed_ms, event.type, event.deck])).toEqual([
+      [500, 'set_nudge', 'A'],
+      [800, 'set_nudge', 'A'],
+      [1500, 'set_nudge', 'B'],
+      [1500, 'set_volume', 'A']
+    ]);
+  });
+
+  it('keeps a following span opener sitting exactly at the range end', () => {
+    const events = [
+      ev({ elapsed_ms: 1000, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: 0 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: -4 }),
+      ev({ elapsed_ms: 2500, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1000, 2000);
+    expect(
+      out
+        .filter((event) => event.type === 'set_nudge')
+        .map((event) => [event.elapsed_ms, event.percent])
+    ).toEqual([
+      [2000, -4],
+      [2500, 0]
+    ]);
+  });
+
+  it('removes an unfinished span that runs to the session end', () => {
+    const events = [ev({ elapsed_ms: 9000, type: 'set_nudge', deck: 'A', percent: 6 })];
+    const out = deleteNudgeRange(events, 'A', 9000, 10_000);
+    expect(out).toEqual([]);
+  });
+
+  it('returns the input array unchanged when nothing matches', () => {
+    const events = [ev({ elapsed_ms: 500, type: 'set_volume', deck: 'A', gain: 0.5 })];
+    expect(deleteNudgeRange(events, 'A', 1000, 2000)).toBe(events);
+  });
+});
+
 describe('paintNudgeRange', () => {
   it('inserts a nudge at t0 and returns to 0 at t1', () => {
     const out = paintNudgeRange([], 'A', 1000, 2000, 4);
@@ -436,6 +497,54 @@ describe('paintNudgeRange', () => {
     const snapshot = JSON.parse(JSON.stringify(events));
     paintNudgeRange(events, 'A', 1000, 2000, 4);
     expect(events).toEqual(snapshot);
+  });
+});
+
+describe('relocateEventPaths', () => {
+  const events = [
+    ev({ elapsed_ms: 0, type: 'deck_snapshot', deck: 'A', path: '/old/a.mp3' }),
+    ev({ elapsed_ms: 100, type: 'load_track', deck: 'B', path: '/old/b.mp3' }),
+    ev({ elapsed_ms: 200, type: 'set_gain', deck: 'A', gain: 0.5 }),
+    ev({ elapsed_ms: 300, type: 'load_track', deck: 'A', path: '/old/a.mp3' })
+  ];
+
+  it('rewrites every event carrying a mapped path', () => {
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out.map((event) => event.path)).toEqual([
+      '/new/a.mp3',
+      '/old/b.mp3',
+      undefined,
+      '/new/a.mp3'
+    ]);
+  });
+
+  it('rewrites multiple paths in one pass', () => {
+    const out = relocateEventPaths(events, {
+      '/old/a.mp3': '/new/a.mp3',
+      '/old/b.mp3': '/new/b.mp3'
+    });
+    expect(out.map((event) => event.path)).toEqual([
+      '/new/a.mp3',
+      '/new/b.mp3',
+      undefined,
+      '/new/a.mp3'
+    ]);
+  });
+
+  it('returns a new array and never mutates the input', () => {
+    const snapshot = JSON.parse(JSON.stringify(events));
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out).not.toBe(events);
+    expect(events).toEqual(snapshot);
+  });
+
+  it('returns the same array reference when nothing matches', () => {
+    expect(relocateEventPaths(events, { '/elsewhere/x.mp3': '/new/x.mp3' })).toBe(events);
+  });
+
+  it('preserves all other fields on rewritten events', () => {
+    const out = relocateEventPaths(events, { '/old/a.mp3': '/new/a.mp3' });
+    expect(out[0]).toMatchObject({ elapsed_ms: 0, type: 'deck_snapshot', deck: 'A' });
   });
 });
 

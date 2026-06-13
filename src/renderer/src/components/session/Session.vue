@@ -23,6 +23,17 @@
         <div v-if="!session.hasTrackInfo" class="session__no-track-info">
           {{ $t('session.noTrackInfo') }}
         </div>
+        <div v-if="session.missingTracks.length > 0" class="session__missing">
+          <div class="session__missing-header">
+            <span class="session__missing-title">{{ $t('session.missingFiles') }}</span>
+            <button class="session__missing-btn" @click="editStore.locateMissingTracks()">
+              {{ $t('session.locate') }}
+            </button>
+          </div>
+          <div v-for="path in session.missingTracks" :key="path" class="session__missing-row">
+            <span class="session__missing-name" :title="path">{{ basename(path) }}</span>
+          </div>
+        </div>
         <SessionTimeline
           :duration-ms="session.durationMs"
           :clips="clips"
@@ -39,11 +50,11 @@
 
     <div v-if="session.session" class="session__controls">
       <button
-        class="session__btn session__btn--transport"
+        class="session__btn session__btn--transport session__btn--play"
         :class="{ 'session__btn--active': session.isPlaying }"
         @click="onTransport"
       >
-        {{ session.isPlaying ? '⏸' : '▶' }}
+        {{ session.isPlaying ? '⏸︎' : '▶︎' }}
       </button>
       <button
         class="session__btn session__btn--transport"
@@ -99,15 +110,18 @@ import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import { formatMs } from '@renderer/utils/time';
+import { basename } from '@renderer/utils/path';
 
 const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
 const mixer = useMixerStore();
+const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
 const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
@@ -137,6 +151,7 @@ let unlistenDrop: UnlistenFn | null = null;
 // (dragDropEnabled is on, and File.path no longer exists in Tauri v2), so the
 // absolute path comes from the webview drag-drop event.
 onMounted(async () => {
+  window.addEventListener('keydown', onKeyDown);
   unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
     const payload = event.payload;
     if (payload.type === 'enter' || payload.type === 'over') {
@@ -150,6 +165,25 @@ onMounted(async () => {
     }
   });
 });
+
+function isTypingTarget(e: KeyboardEvent): boolean {
+  const target = e.target as HTMLElement | null;
+  return (
+    target !== null &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  );
+}
+
+// Spacebar toggles transport, like the edit view. preventDefault also stops a
+// focused button from being activated by the same keypress.
+function onKeyDown(e: KeyboardEvent) {
+  if (e.code !== 'Space' || e.repeat) return;
+  if (!session.session || settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) {
+    return;
+  }
+  e.preventDefault();
+  onTransport().catch(() => {});
+}
 
 function tickPlayhead() {
   playheadMs.value = performance.now() - playStartWall;
@@ -215,6 +249,7 @@ async function onDiscardConfirmed() {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown);
   cancelAnimationFrame(rafId);
   unlistenDrop?.();
 });
@@ -244,6 +279,57 @@ onUnmounted(() => {
   background: color-mix(in srgb, #f97316 8%, transparent);
   border-bottom: 1px solid color-mix(in srgb, #f97316 30%, transparent);
   letter-spacing: 0.05em;
+}
+
+.session__missing {
+  padding: 8px 16px;
+  font-size: 0.8em;
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+}
+
+.session__missing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75em;
+  margin-bottom: 4px;
+}
+
+.session__missing-title {
+  color: #ef4444;
+  letter-spacing: 0.05em;
+}
+
+.session__missing-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  padding: 2px 0;
+}
+
+.session__missing-name {
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session__missing-btn {
+  font-family: var(--font);
+  font-size: 0.85em;
+  letter-spacing: 0.1em;
+  padding: 0.2em 0.8em;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, #ef4444 40%, transparent);
+  background: var(--color-surface);
+  color: #ef4444;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.session__missing-btn:hover {
+  background: color-mix(in srgb, #ef4444 15%, transparent);
 }
 
 .session__drop-zone {
@@ -288,6 +374,9 @@ onUnmounted(() => {
 .session__btn {
   font-family: var(--font);
   font-size: 0.8em;
+  /* Pinned so glyphs from fallback fonts (play/pause are not in JetBrains
+     Mono) cannot change the button height between states. */
+  line-height: 1.2;
   letter-spacing: 0.1em;
   padding: 0.45em 1.2em;
   border-radius: 4px;
@@ -295,6 +384,10 @@ onUnmounted(() => {
   background: var(--color-surface);
   color: var(--color-muted);
   cursor: pointer;
+}
+
+.session__btn--play {
+  min-width: 3.6em;
 }
 
 .session__btn--transport:hover,

@@ -11,8 +11,17 @@ import {
   spliceLaneEvents,
   toggleFilterActiveRange,
   paintNudgeRange,
+  deleteNudgeRange,
+  relocateEventPaths,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
+import { basename, indexByBasename } from '@renderer/utils/path';
+import {
+  moveTransportBlock,
+  trimTransportBlock,
+  type TransportBlock
+} from '@renderer/utils/clipEditOps';
+import type { Clip } from '@renderer/composables/useSessionTimeline';
 
 export type SelectedLane = { deck: string; lane: EditableLaneKey };
 
@@ -129,6 +138,70 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
   }
 
+  async function deleteNudge(deck: string, t0: number, t1: number): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(deleteNudgeRange(session.events, deck, t0, t1));
+  }
+
+  async function commitClipMove(
+    clips: Clip[],
+    block: TransportBlock,
+    deltaMs: number
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(moveTransportBlock(session.events, clips, block, deltaMs).events);
+  }
+
+  async function commitClipTrim(
+    clips: Clip[],
+    block: TransportBlock,
+    edge: 'start' | 'end',
+    newMs: number
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
+  }
+
+  // Opens a folder picker and resolves every missing track found under it
+  // (recursively, matched by filename), so one pick relinks a whole moved
+  // library. Goes through applyEdit, so the relocation is undoable, marks the
+  // session dirty, and syncs to Rust; saving afterwards persists the new
+  // paths in the .bms.
+  async function locateMissingTracks(): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const folder = await open({ directory: true, multiple: false });
+    if (typeof folder !== 'string') return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+
+    const found = await invoke<string[]>('scan_folder', { path: folder }).catch(
+      () => [] as string[]
+    );
+    const byName = indexByBasename(found);
+
+    // Identity mappings are skipped: a file found at the path the session
+    // already records (it simply came back) is not an edit.
+    const mapping: Record<string, string> = {};
+    for (const missing of sessionStore.missingTracks) {
+      const candidate = byName.get(basename(missing));
+      if (candidate !== undefined && candidate !== missing) mapping[missing] = candidate;
+    }
+
+    const before = session.events;
+    applyEdit(relocateEventPaths(session.events, mapping));
+    // When nothing was rewritten the path set is unchanged and the watcher in
+    // the session store never fires, but the files may exist again now. When
+    // an edit did happen, the watcher already triggers the recheck.
+    if (session.events === before) await sessionStore.checkMissingTracks();
+  }
+
   function undo() {
     const session = sessionStore.session;
     if (!session) return;
@@ -193,6 +266,10 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     commitGesture,
     commitFilterActiveToggle,
     commitNudgePaint,
+    deleteNudge,
+    commitClipMove,
+    commitClipTrim,
+    locateMissingTracks,
     flushSync,
     undo,
     redo,

@@ -138,7 +138,8 @@
     "removeTrackBody": "Der Track wird aus der Sammlung zusammen mit den gespeicherten BPM- und Grid-Daten entfernt.",
     "remove": "Entfernen",
     "recalcBpm": "BPM neu berechnen",
-    "addToPlaylist": "Zur Playlist hinzufügen"
+    "addToPlaylist": "Zur Playlist hinzufügen",
+    "locate": "Suchen"
   },
   "search": {
     "placeholder": "Suchen"
@@ -204,7 +205,13 @@
     "saveAs": "SPEICHERN UNTER",
     "discardTitle": "Ungespeicherte Änderungen verwerfen?",
     "discardBody": "Die Session hat ungespeicherte Änderungen. Beim Auswerfen gehen sie verloren.",
-    "discardConfirm": "Verwerfen"
+    "discardConfirm": "Verwerfen",
+    "missingFiles": "Diese Audiodateien fehlen. Wähle den Ordner, der sie enthält, um die Wiedergabe wiederherzustellen:",
+    "locate": "ORDNER WÄHLEN",
+    "deleteNudge": "Nudge löschen",
+    "mute": "Stumm",
+    "solo": "Solo",
+    "lanesMenu": "Spuren"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",

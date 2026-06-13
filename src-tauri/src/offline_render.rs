@@ -229,40 +229,8 @@ impl flacenc::source::Source for SliceSource {
 
 // ── Session JSON ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct SessionEvent {
-    pub elapsed_ms: f64,
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub deck: Option<String>,
-    pub path: Option<String>,
-    pub sec: Option<f64>,
-    pub gain: Option<f32>,
-    pub band: Option<String>,
-    pub db: Option<f32>,
-    pub value: Option<f32>,
-    pub active: Option<bool>,
-    pub rate: Option<f64>,
-    pub percent: Option<f64>,
-    pub beat_offset_sec: Option<f64>,
-    pub start_sec: Option<f64>,
-    pub end_sec: Option<f64>,
-    pub is_playing: Option<bool>,
-    pub position_sec: Option<f64>,
-    pub cue_point_sec: Option<f64>,
-    pub loop_active: Option<bool>,
-    pub loop_end_sec: Option<f64>,
-    pub bpm: Option<f64>,
-    pub playback_rate: Option<f64>,
-    pub cue_sec: Option<f64>,
-    pub duration: Option<f64>,
-    pub buffer_size_frames: Option<u32>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-pub struct SessionFile {
-    pub events: Vec<SessionEvent>,
-}
+use crate::session_event::SessionCommand;
+pub use crate::session_event::{SessionEvent, SessionFile};
 
 // ── Comparison result ────────────────────────────────────────────────────────
 
@@ -398,7 +366,14 @@ pub fn render_session(
             (pos + buffer_latency, ev)
         })
         .collect();
-    timeline.sort_by_key(|(pos, _)| *pos);
+    // A deck_snapshot is initial state; at a shared frame it must apply before
+    // any other event, or it resets a deck a same-frame play already started.
+    timeline.sort_by(|a, b| {
+        a.0.cmp(&b.0).then_with(|| {
+            u8::from(a.1.event_type != "deck_snapshot")
+                .cmp(&u8::from(b.1.event_type != "deck_snapshot"))
+        })
+    });
 
     // Render at least as many frames as the reference, plus a small margin.
     let total_frames = (reference_len / 2).max(
@@ -418,13 +393,8 @@ pub fn render_session(
 
         // Dispatch events whose position falls before this chunk's end.
         while ev_idx < timeline.len() && timeline[ev_idx].0 < chunk_end {
-            let ev = timeline[ev_idx].1;
-            if ev.event_type == "set_master_gain" {
-                if let Some(g) = ev.gain {
-                    master_gain = g.clamp(0.0, 1.0);
-                }
-            } else {
-                apply_event(ev, &mut decks, &mut strips, sample_rate)?;
+            if let Some(cmd) = timeline[ev_idx].1.command() {
+                apply_event(cmd, &mut decks, &mut strips, &mut master_gain, sample_rate)?;
             }
             ev_idx += 1;
         }
@@ -452,9 +422,10 @@ pub fn render_session(
 }
 
 fn apply_event(
-    ev: &SessionEvent,
+    cmd: SessionCommand<'_>,
     decks: &mut HashMap<String, DeckState>,
     strips: &mut HashMap<String, ChannelStrip>,
+    master_gain: &mut f32,
     sr: u32,
 ) -> Result<(), String> {
     let sr_f = sr as f64;
@@ -479,51 +450,53 @@ fn apply_event(
         };
     }
 
-    match ev.event_type.as_str() {
-        "deck_snapshot" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            let Some(ref path) = ev.path else {
-                return Ok(());
-            };
+    match cmd {
+        SessionCommand::DeckSnapshot {
+            deck: id,
+            path,
+            position_sec,
+            cue_point_sec,
+            bpm,
+            playback_rate,
+            loop_active,
+            loop_end_sec,
+            is_playing,
+        } => {
             let d = deck!(id);
             load_deck(d, path, sr)?;
-            if let Some(pos) = ev.position_sec {
+            if let Some(pos) = position_sec {
                 let f = to_frames!(pos).min(d.total_frames as f64);
                 d.main_pos = f;
                 d.cue_pos = f;
             }
-            if let Some(cp) = ev.cue_point_sec {
+            if let Some(cp) = cue_point_sec {
                 d.cue_point = to_frames!(cp).min(d.total_frames as f64);
             }
-            if let Some(bpm) = ev.bpm {
+            if let Some(bpm) = bpm {
                 d.bpm = Some(bpm);
             }
-            if let Some(rate) = ev.playback_rate {
+            if let Some(rate) = playback_rate {
                 d.playback_rate = rate.max(0.1);
             }
-            if let Some(la) = ev.loop_active {
+            if let Some(la) = loop_active {
                 d.loop_active = la;
             }
-            if let Some(le) = ev.loop_end_sec {
+            if let Some(le) = loop_end_sec {
                 d.loop_end = to_frames!(le).min(d.total_frames as f64);
             }
-            if ev.is_playing == Some(true) {
+            if is_playing {
                 d.is_playing = true;
             }
         }
 
-        "load_track" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            let Some(ref path) = ev.path else {
-                return Ok(());
-            };
+        SessionCommand::LoadTrack {
+            deck: id,
+            path,
+            beat_offset_sec,
+        } => {
             let d = deck!(id);
             load_deck(d, path, sr)?;
-            if let Some(offset) = ev.beat_offset_sec {
+            if let Some(offset) = beat_offset_sec {
                 let f = (offset * sr_f).clamp(0.0, d.total_frames as f64);
                 d.main_pos = f;
                 d.cue_pos = f;
@@ -531,19 +504,13 @@ fn apply_event(
             }
         }
 
-        "eject_track" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::EjectTrack { deck: id } => {
             *deck!(id) = DeckState::empty(sr);
         }
 
-        "play" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::Play { deck: id, sec } => {
             let d = deck!(id);
-            match ev.sec {
+            match sec {
                 Some(sec) => {
                     let f = to_frames!(sec).min(d.total_frames as f64);
                     d.main_pos = f;
@@ -556,145 +523,104 @@ fn apply_event(
             d.is_playing = true;
         }
 
-        "stop" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::Stop { deck: id } => {
             deck!(id).is_playing = false;
         }
 
-        "stopped_at_cue" | "stop_at_cue" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::StopAtCue {
+            deck: id,
+            cue_point_sec,
+        } => {
             let d = deck!(id);
             d.is_playing = false;
-            if let Some(cp) = ev.cue_point_sec {
+            if let Some(cp) = cue_point_sec {
                 let f = to_frames!(cp).min(d.total_frames as f64);
                 d.main_pos = f;
                 d.cue_pos = f;
             }
         }
 
-        "seek" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(sec) = ev.sec {
-                let d = deck!(id);
-                let f = to_frames!(sec).min(d.total_frames as f64);
-                d.main_pos = f;
-                d.cue_pos = f;
-                if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
-                    d.loop_active = false;
-                }
-            }
-        }
-
-        "set_volume" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(g) = ev.gain {
-                strip!(id).set_gain(g);
-            }
-        }
-
-        "set_eq" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let (Some(ref band), Some(db)) = (&ev.band, ev.db) {
-                strip!(id).set_eq_band(band, db);
-            }
-        }
-
-        "set_filter" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(v) = ev.value {
-                strip!(id).set_filter(v);
-            }
-        }
-
-        "set_filter_active" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(a) = ev.active {
-                strip!(id).set_filter_active(a);
-            }
-        }
-
-        "set_playback_rate" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(r) = ev.rate {
-                deck!(id).playback_rate = r.max(0.1);
-            }
-        }
-
-        "set_nudge" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
-            if let Some(p) = ev.percent {
-                deck!(id).nudge_factor = 1.0 + p / 100.0;
-            }
-        }
-
-        "set_beat_grid" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::Seek { deck: id, sec } => {
             let d = deck!(id);
-            if let Some(bpm) = ev.bpm {
+            let f = to_frames!(sec).min(d.total_frames as f64);
+            d.main_pos = f;
+            d.cue_pos = f;
+            if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
+                d.loop_active = false;
+            }
+        }
+
+        SessionCommand::SetVolume { deck: id, gain } => {
+            strip!(id).set_gain(gain);
+        }
+
+        SessionCommand::SetEq { deck: id, band, db } => {
+            strip!(id).set_eq_band(band, db);
+        }
+
+        SessionCommand::SetFilter { deck: id, value } => {
+            strip!(id).set_filter(value);
+        }
+
+        SessionCommand::SetFilterActive { deck: id, active } => {
+            strip!(id).set_filter_active(active);
+        }
+
+        SessionCommand::SetPlaybackRate { deck: id, rate } => {
+            deck!(id).playback_rate = rate.max(0.1);
+        }
+
+        SessionCommand::SetNudge { deck: id, percent } => {
+            deck!(id).nudge_factor = 1.0 + percent / 100.0;
+        }
+
+        SessionCommand::SetMasterGain { gain } => {
+            *master_gain = gain.clamp(0.0, 1.0);
+        }
+
+        SessionCommand::SetBeatGrid {
+            deck: id,
+            bpm,
+            beat_offset_sec,
+        } => {
+            let d = deck!(id);
+            if let Some(bpm) = bpm {
                 d.bpm = Some(bpm);
             }
-            if let Some(off) = ev.beat_offset_sec {
+            if let Some(off) = beat_offset_sec {
                 d.beat_offset_frames = off * sr_f;
             }
         }
 
-        "loop_in" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::LoopIn { deck: id, cue_sec } => {
             let d = deck!(id);
-            if let Some(cs) = ev.cue_sec {
+            if let Some(cs) = cue_sec {
                 d.cue_point = to_frames!(cs).min(d.total_frames as f64);
             }
             d.loop_active = false;
             d.loop_end = 0.0;
         }
 
-        "loop_out" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::LoopOut {
+            deck: id,
+            start_sec,
+            end_sec,
+        } => {
             let d = deck!(id);
-            if let Some(ss) = ev.start_sec {
+            if let Some(ss) = start_sec {
                 d.cue_point = to_frames!(ss).min(d.total_frames as f64);
             }
-            if let Some(es) = ev.end_sec {
+            if let Some(es) = end_sec {
                 d.loop_end = to_frames!(es).min(d.total_frames as f64);
             }
             d.loop_active = true;
         }
 
-        "exit_loop" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::ExitLoop { deck: id } => {
             deck!(id).loop_active = false;
         }
 
-        "reloop" => {
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        SessionCommand::Reloop { deck: id } => {
             let d = deck!(id);
             if d.loop_end > d.cue_point {
                 d.main_pos = d.cue_point;
@@ -705,13 +631,13 @@ fn apply_event(
             }
         }
 
-        "cue_preview_start" => {
-            // Holding CUE plays from the cue point through the main path. Audible in the recording.
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        // Holding CUE plays from the cue point through the main path. Audible in the recording.
+        SessionCommand::CuePreviewStart {
+            deck: id,
+            cue_point_sec,
+        } => {
             let d = deck!(id);
-            let cp = ev.cue_point_sec.unwrap_or(d.cue_point / sr_f);
+            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
             let f = to_frames!(cp).min(d.total_frames as f64);
             d.cue_point = f;
             d.main_pos = f;
@@ -720,23 +646,19 @@ fn apply_event(
             d.is_cueing = true;
         }
 
-        "cue_preview_end" => {
-            // Releasing CUE stops playback and returns to cue point.
-            let Some(ref id) = ev.deck else {
-                return Ok(());
-            };
+        // Releasing CUE stops playback and returns to cue point.
+        SessionCommand::CuePreviewEnd {
+            deck: id,
+            cue_point_sec,
+        } => {
             let d = deck!(id);
-            let cp = ev.cue_point_sec.unwrap_or(d.cue_point / sr_f);
+            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
             let f = to_frames!(cp).min(d.total_frames as f64);
             d.is_playing = false;
             d.is_cueing = false;
             d.main_pos = f;
             d.cue_pos = f;
         }
-
-        // Deliberately not replayed: recording_start/stop, deck_snapshot (handled above),
-        // cue_move, set_cue_active, set_master_gain, set_cue_mix.
-        _ => {}
     }
 
     Ok(())

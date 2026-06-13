@@ -46,14 +46,12 @@
 
     <div v-if="deck.trackLoaded" class="edit-view__controls">
       <button
-        class="edit-view__btn edit-view__btn--set-bpm"
+        class="edit-view__btn edit-view__btn--play"
+        :class="{ 'edit-view__btn--playing': deck.playing }"
         tabindex="-1"
-        @click="bpmModalOpen = true"
+        @click="deck.togglePlay()"
       >
-        {{ $t('editView.setBpm') }}
-      </button>
-      <button class="edit-view__btn edit-view__btn--set-grid" tabindex="-1" @click="onSetGrid()">
-        {{ $t('editView.setGrid') }}
+        {{ deck.playing ? '⏸︎' : '▶︎' }}
       </button>
       <button
         class="edit-view__btn edit-view__btn--cue"
@@ -65,15 +63,21 @@
       >
         {{ $t('editView.cue') }}
       </button>
-      <button
-        class="edit-view__btn edit-view__btn--play"
-        :class="{ 'edit-view__btn--playing': deck.playing }"
-        tabindex="-1"
-        @click="deck.togglePlay()"
-      >
-        {{ deck.playing ? '⏸' : '▶' }}
-      </button>
+      <span v-if="deck.trackData" class="edit-view__duration">
+        {{ formatMs(deck.trackData.duration * 1000) }}
+      </span>
+      <span class="edit-view__filename">{{ deck.trackName }}</span>
       <div class="edit-view__controls-right">
+        <button
+          class="edit-view__btn edit-view__btn--set-bpm"
+          tabindex="-1"
+          @click="bpmModalOpen = true"
+        >
+          {{ $t('editView.setBpm') }}
+        </button>
+        <button class="edit-view__btn edit-view__btn--set-grid" tabindex="-1" @click="onSetGrid()">
+          {{ $t('editView.setGrid') }}
+        </button>
         <button
           class="edit-view__btn edit-view__btn--eject"
           tabindex="-1"
@@ -106,6 +110,7 @@ import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
+import { formatMs } from '@renderer/utils/time';
 import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
@@ -256,24 +261,44 @@ onUnmounted(() => {
 .edit-view__btn {
   font-family: var(--font);
   font-size: 0.8em;
+  /* Pinned so glyphs from fallback fonts (play/pause are not in JetBrains
+     Mono) cannot change the button height between states. */
+  line-height: 1.2;
   letter-spacing: 0.1em;
   padding: 0.45em 1.2em;
   border-radius: 4px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
-  color: var(--color-text);
+  color: var(--color-muted);
   cursor: pointer;
 }
 
-.edit-view__btn--set-bpm,
-.edit-view__btn--set-grid {
-  color: var(--color-muted);
+.edit-view__btn--play {
+  min-width: 3.6em;
 }
 
 .edit-view__btn--set-bpm:hover,
 .edit-view__btn--set-grid:hover {
   color: var(--color-text);
   border-color: var(--color-text);
+}
+
+.edit-view__duration {
+  font-size: 0.8em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
+.edit-view__filename {
+  font-size: 0.75em;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  opacity: 0.6;
 }
 
 .edit-view__btn--cue:hover {
@@ -296,6 +321,8 @@ onUnmounted(() => {
 
 .edit-view__controls-right {
   margin-left: auto;
+  display: flex;
+  gap: 0.5em;
 }
 
 .edit-view__btn--eject:hover {
@@ -305,7 +332,7 @@ onUnmounted(() => {
 
 .edit-view__collection-bar {
   width: 100%;
-  height: 22px;
+  height: var(--collection-bar-h);
   display: flex;
   align-items: center;
   justify-content: center;

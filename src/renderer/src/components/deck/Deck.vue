@@ -45,7 +45,7 @@
             class="deck__bpm-input-header"
             type="number"
             min="20"
-            step="0.1"
+            step="0.01"
             @blur="onBpmInputBlur"
             @keydown.enter="onBpmInputBlur"
             @keydown.escape="editingBpm = false"
@@ -53,7 +53,7 @@
           <span
             class="deck__bpm-value-header"
             :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
-            >{{ props.deck.targetBpm?.toFixed(1) ?? '--.-' }}</span
+            >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
           >
         </div>
         <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
@@ -183,20 +183,20 @@
         </div>
 
         <div class="deck__pitch-wrapper">
-          <span class="deck__slider-label">+{{ settingsStore.pitchRange }}%</span>
+          <span class="deck__slider-label">-{{ settingsStore.pitchRange }}%</span>
           <input
             type="range"
             class="deck__slider"
             :min="-settingsStore.pitchRange"
             :max="settingsStore.pitchRange"
-            step="0.1"
-            :value="props.deck.pitchOffset"
+            step="0.01"
+            :value="-props.deck.pitchOffset"
             orient="vertical"
             :disabled="!props.deck.trackLoaded || props.deck.loading"
             @input="onSliderInput"
             @dblclick="onPitchDblClick"
           />
-          <span class="deck__slider-label">-{{ settingsStore.pitchRange }}%</span>
+          <span class="deck__slider-label">+{{ settingsStore.pitchRange }}%</span>
         </div>
       </div>
     </div>
@@ -233,7 +233,7 @@ const bpmInputEl = ref<HTMLInputElement | null>(null);
 const bpmInputValue = ref('');
 
 async function startEditingBpm() {
-  bpmInputValue.value = props.deck.targetBpm?.toFixed(1) ?? '';
+  bpmInputValue.value = props.deck.targetBpm?.toFixed(2) ?? '';
   editingBpm.value = true;
   await nextTick();
   bpmInputEl.value?.select();
@@ -250,10 +250,11 @@ function onBpmInputBlur() {
   editingBpm.value = false;
 }
 
+// The slider value is negated: like a CDJ pitch fader, up = slower, down = faster.
 function onSliderInput(e: Event) {
   if (!props.deck.trackLoaded) return;
   const val = parseFloat((e.target as HTMLInputElement).value);
-  props.deck.setPitchOffset(val);
+  props.deck.setPitchOffset(-val);
 }
 
 function onPitchDblClick() {

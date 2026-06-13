@@ -10,6 +10,8 @@ pub struct ChannelStrip {
     target_gain: f32,
     current_gain: f32,
     gain_smooth_coeff: f32,
+    muted: bool,
+    mute_gain: f32,
     pub(crate) cue_active: bool,
     eq: EqState,
     eq_cue: EqState,
@@ -26,6 +28,8 @@ impl ChannelStrip {
             target_gain: 1.0,
             current_gain: 1.0,
             gain_smooth_coeff,
+            muted: false,
+            mute_gain: 1.0,
             cue_active: false,
             eq: EqState::new(sample_rate),
             eq_cue: EqState::new(sample_rate),
@@ -80,6 +84,14 @@ impl ChannelStrip {
         self.target_gain = v.clamp(0.0, 1.0);
     }
 
+    // Session-view mute (per-deck mute/solo). Independent of the fader gain so
+    // replayed set_volume events cannot override it, and deliberately NOT
+    // cleared by reset(): scrubbing resets strips to reconstruct session
+    // state, and the mute must survive that.
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+    }
+
     pub(crate) fn reset(&mut self) {
         self.set_gain(1.0);
         self.set_eq_band("low", 0.0);
@@ -95,7 +107,11 @@ impl ChannelStrip {
         let (el, er) = self.eq.process(l, r);
         let (fl, fr) = self.filter.process(el, er);
         self.current_gain += (self.target_gain - self.current_gain) * self.gain_smooth_coeff;
-        (fl * self.current_gain, fr * self.current_gain)
+        // Mute fades over the same time constant as the fader to avoid clicks.
+        let mute_target = if self.muted { 0.0 } else { 1.0 };
+        self.mute_gain += (mute_target - self.mute_gain) * self.gain_smooth_coeff;
+        let gain = self.current_gain * self.mute_gain;
+        (fl * gain, fr * gain)
     }
 
     // Applied to the cue output path: EQ then filter (pre-fader), gated by
@@ -488,6 +504,47 @@ mod tests {
         let (l, r) = strip.process_main(1.0, 1.0);
         assert!(l > 0.99, "expected l near 1.0, got {}", l);
         assert!(r > 0.99, "expected r near 1.0, got {}", r);
+    }
+
+    #[test]
+    fn channel_strip_mute_fades_to_silence() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_muted(true);
+        let (first, _) = strip.process_main(1.0, 1.0);
+        assert!(first > 0.5, "mute must fade, not jump: got {}", first);
+        for _ in 0..24_000 {
+            strip.process_main(1.0, 1.0);
+        }
+        let (settled, _) = strip.process_main(1.0, 1.0);
+        assert!(
+            settled < 0.001,
+            "expected silence when muted, got {}",
+            settled
+        );
+    }
+
+    #[test]
+    fn channel_strip_mute_survives_reset_and_gain_changes() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_muted(true);
+        strip.reset();
+        strip.set_gain(1.0);
+        for _ in 0..24_000 {
+            strip.process_main(1.0, 1.0);
+        }
+        let (settled, _) = strip.process_main(1.0, 1.0);
+        assert!(settled < 0.001, "mute must survive reset, got {}", settled);
+
+        strip.set_muted(false);
+        for _ in 0..24_000 {
+            strip.process_main(1.0, 1.0);
+        }
+        let (restored, _) = strip.process_main(1.0, 1.0);
+        assert!(
+            restored > 0.99,
+            "unmute must restore audio, got {}",
+            restored
+        );
     }
 }
 

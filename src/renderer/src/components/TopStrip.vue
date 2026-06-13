@@ -221,7 +221,7 @@ onUnmounted(() => {
 <style scoped>
 .topstrip {
   width: 100%;
-  height: var(--topstrip-h, 28px);
+  height: var(--topstrip-h);
   display: flex;
   align-items: center;
   gap: 6px;

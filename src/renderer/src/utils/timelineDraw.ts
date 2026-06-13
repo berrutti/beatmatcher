@@ -12,6 +12,7 @@ import {
   overlapsRange,
   msToFrac,
   sliceVisiblePoints,
+  chooseTickInterval,
   type ViewWindow
 } from '@renderer/utils/timelineView';
 
@@ -130,8 +131,14 @@ export function drawClipWaveform(
   ctx.clip();
   ctx.fillStyle = accent + 'aa';
 
-  const columnCount = Math.ceil(rectWidth);
-  for (let column = 0; column < columnCount; column++) {
+  // Iterate only the columns inside the visible track area: when zoomed in,
+  // a clip can be tens of thousands of pixels wide and drawing the offscreen
+  // columns froze the UI.
+  const visibleLeft = Math.max(rectX, LABEL_W);
+  const visibleRight = Math.min(rectX + rectWidth, ctx.canvas.clientWidth - PADDING);
+  const columnStart = Math.max(0, Math.floor(visibleLeft - rectX));
+  const columnCount = Math.min(Math.ceil(rectWidth), Math.ceil(visibleRight - rectX));
+  for (let column = columnStart; column < columnCount; column++) {
     const columnFraction = column / rectWidth;
     const trackFraction = startFraction + columnFraction * (endFraction - startFraction);
     const sourceStart = trackFraction * numPoints;
@@ -413,6 +420,25 @@ export function drawClip(
   ctx.strokeRect(clipX + 0.5, clipY + 0.5, clipWidth - 1, clipHeight - 1);
 }
 
+// White so it stays visible over any user-chosen deck accent color.
+export function drawClipSelection(
+  ctx: CanvasRenderingContext2D,
+  startMs: number,
+  endMs: number,
+  rowY: number,
+  msToX: (ms: number) => number
+): void {
+  const x = msToX(startMs);
+  const width = Math.max(2, msToX(endMs) - x);
+  const y = rowY + 4;
+  const height = ROW_H - 8;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+}
+
 export function drawNudgeSpans(
   ctx: CanvasRenderingContext2D,
   nudgeSpans: NudgeSpan[],
@@ -508,4 +534,341 @@ export function drawMasterGainLane(
 
 export function makeMsToX(view: ViewWindow, trackWidth: number): (ms: number) => number {
   return (ms: number) => LABEL_W + msToFrac(ms, view) * trackWidth;
+}
+
+// ── draw() orchestration pieces ──────────────────────────────────────────────
+// Renderers extracted from Timeline.vue's draw(): each takes the context plus
+// explicit data, no component state, so draw() stays a short orchestrator.
+
+export function drawOutlinedLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number
+): void {
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#000000cc';
+  ctx.lineJoin = 'round';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, x, y);
+}
+
+export function drawTickRow(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  trackW: number,
+  view: ViewWindow,
+  msToX: (ms: number) => number
+): void {
+  // Fill tick-row gutters so they match the surrounding row background color
+  ctx.fillStyle = '#161616';
+  ctx.fillRect(0, 0, LABEL_W, TICK_H);
+  ctx.fillRect(canvasW - PADDING, 0, PADDING, TICK_H);
+
+  // Tick marks + time labels, clipped to the track area so labels don't bleed
+  // into either gutter
+  const tickIntervalMs = chooseTickInterval(view.duration, trackW);
+  const viewEnd = view.start + view.duration;
+  const firstTick = Math.max(0, Math.floor(view.start / tickIntervalMs) * tickIntervalMs);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(LABEL_W, 0, trackW, TICK_H);
+  ctx.clip();
+  ctx.font = `9px monospace`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  for (let ms = firstTick; ms <= viewEnd; ms += tickIntervalMs) {
+    const tickX = msToX(ms);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(tickX, 0, 1, TICK_H);
+    ctx.fillStyle = '#555';
+    ctx.fillText(formatTickLabel(ms, tickIntervalMs), tickX + 3, TICK_H - 3);
+  }
+  ctx.restore();
+}
+
+export type DeckRowChrome = {
+  zebraIndex: number;
+  accent: string;
+  audible: boolean;
+  solo: boolean;
+  muted: boolean;
+  selectedLaneKey: LaneKey | null;
+};
+
+export function drawDeckRowChrome(
+  ctx: CanvasRenderingContext2D,
+  row: RowLayout,
+  canvasW: number,
+  chrome: DeckRowChrome
+): void {
+  ctx.fillStyle = chrome.zebraIndex % 2 === 0 ? '#161616' : '#131313';
+  ctx.fillRect(0, row.top, canvasW, row.height);
+
+  ctx.font = `bold 9px monospace`;
+  ctx.fillStyle = chrome.audible ? chrome.accent : '#555';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(row.deckId, LABEL_W / 2, row.top + ROW_H / 2);
+  if (chrome.solo || chrome.muted) {
+    ctx.font = `bold 7px monospace`;
+    ctx.fillStyle = chrome.solo ? '#eab308' : '#ef4444';
+    ctx.fillText(chrome.solo ? 'S' : 'M', LABEL_W / 2, row.top + ROW_H / 2 + 11);
+  }
+
+  if (row.lanes.length > 0) {
+    ctx.font = `8px monospace`;
+    for (const sublane of row.lanes) {
+      ctx.fillStyle = sublane.key === chrome.selectedLaneKey ? '#06b6d4' : '#555';
+      ctx.fillText(LANE_SHORT_LABELS[sublane.key], LABEL_W / 2, sublane.top + sublane.height / 2);
+    }
+  }
+}
+
+export function drawMasterRowChrome(
+  ctx: CanvasRenderingContext2D,
+  top: number,
+  height: number,
+  canvasW: number
+): void {
+  ctx.fillStyle = '#101010';
+  ctx.fillRect(0, top, canvasW, height);
+  ctx.font = `bold 9px monospace`;
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('M', LABEL_W / 2, top + height / 2);
+}
+
+export type DeckRowContent = {
+  accent: string;
+  loadedSpans: LoadedSpan[];
+  clips: Clip[];
+  waveforms: Map<string, TrackWaveform>;
+  nudgeSpans: NudgeSpan[];
+  deckLanes: DeckLanes | undefined;
+  audible: boolean;
+  selectionSpan: { startMs: number; endMs: number } | null;
+};
+
+export function drawDeckRowContent(
+  ctx: CanvasRenderingContext2D,
+  row: RowLayout,
+  content: DeckRowContent,
+  canvasW: number,
+  trackW: number,
+  view: ViewWindow,
+  msToX: (ms: number) => number
+): void {
+  const viewEnd = view.start + view.duration;
+  const visible = (startMs: number, endMs: number) =>
+    overlapsRange(startMs, endMs, view.start, viewEnd);
+
+  for (const span of content.loadedSpans) {
+    if (span.deck === row.deckId && visible(span.startMs, span.endMs)) {
+      drawLoadedSpan(ctx, span, row.top, content.accent, msToX);
+    }
+  }
+
+  for (const clip of content.clips) {
+    if (clip.deck === row.deckId && visible(clip.sessionStartMs, clip.sessionEndMs)) {
+      drawClip(ctx, clip, content.waveforms.get(clip.trackPath), row.top, content.accent, msToX);
+    }
+  }
+
+  drawNudgeSpans(
+    ctx,
+    content.nudgeSpans.filter((span) => visible(span.startMs, span.endMs)),
+    row.top,
+    msToX
+  );
+
+  if (row.lanes.length > 0) {
+    drawDeckLanes(ctx, canvasW, msToX, content.deckLanes, row.lanes, view.start, viewEnd);
+  }
+
+  if (!content.audible) {
+    ctx.fillStyle = '#00000090';
+    ctx.fillRect(LABEL_W, row.top, trackW, ROW_H);
+  }
+
+  if (
+    content.selectionSpan &&
+    visible(content.selectionSpan.startMs, content.selectionSpan.endMs)
+  ) {
+    drawClipSelection(
+      ctx,
+      content.selectionSpan.startMs,
+      content.selectionSpan.endMs,
+      row.top,
+      msToX
+    );
+  }
+}
+
+export function drawSelectedLaneHighlight(
+  ctx: CanvasRenderingContext2D,
+  rect: { top: number; height: number },
+  trackW: number
+): void {
+  ctx.fillStyle = '#06b6d414';
+  ctx.fillRect(LABEL_W, rect.top, trackW, rect.height);
+  ctx.strokeStyle = '#06b6d4';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(LABEL_W + 0.5, rect.top + 0.5, trackW - 1, rect.height - 1);
+}
+
+export function drawValueGesturePreview(
+  ctx: CanvasRenderingContext2D,
+  preview: { top: number; height: number; min: number; max: number },
+  points: LanePoint[],
+  label: string,
+  labelMs: number,
+  msToX: (ms: number) => number,
+  canvasW: number
+): void {
+  if (points.length === 0) return;
+  ctx.strokeStyle = '#ffffffcc';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let prevY = valueToY(preview.top, preview.height, preview.min, preview.max, points[0].value);
+  ctx.moveTo(msToX(points[0].ms), prevY);
+  for (let pointIdx = 1; pointIdx < points.length; pointIdx++) {
+    const stepX = msToX(points[pointIdx].ms);
+    const stepY = valueToY(
+      preview.top,
+      preview.height,
+      preview.min,
+      preview.max,
+      points[pointIdx].value
+    );
+    ctx.lineTo(stepX, prevY);
+    ctx.lineTo(stepX, stepY);
+    prevY = stepY;
+  }
+  ctx.stroke();
+
+  const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 40);
+  drawOutlinedLabel(ctx, label, labelX, preview.top - 6);
+}
+
+export function drawNudgeGesturePreview(
+  ctx: CanvasRenderingContext2D,
+  t0: number,
+  t1: number,
+  percent: number,
+  rowTop: number,
+  cursorMs: number,
+  msToX: (ms: number) => number,
+  canvasW: number
+): void {
+  drawNudgeSpans(ctx, [{ startMs: t0, endMs: t1, percent }], rowTop, msToX);
+  const label = `${percent > 0 ? '+' : ''}${percent}%`;
+  const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
+  const labelY = percent > 0 ? rowTop + 12 : rowTop + ROW_H - 6;
+  drawOutlinedLabel(ctx, label, labelX, labelY);
+}
+
+export function drawPaintGesturePreview(
+  ctx: CanvasRenderingContext2D,
+  t0: number,
+  t1: number,
+  want: boolean,
+  top: number,
+  height: number,
+  cursorMs: number,
+  msToX: (ms: number) => number,
+  canvasW: number
+): void {
+  const x0 = msToX(t0);
+  const paintW = Math.max(1, msToX(t1) - x0);
+  ctx.fillStyle = want ? '#ffffff30' : '#00000060';
+  ctx.fillRect(x0, top, paintW, height);
+  const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
+  drawOutlinedLabel(ctx, want ? 'ON' : 'OFF', labelX, top - 6);
+}
+
+export function drawClipGhosts(
+  ctx: CanvasRenderingContext2D,
+  ghosts: { startMs: number; endMs: number }[],
+  rowTop: number,
+  accent: string,
+  label: string,
+  labelMs: number,
+  msToX: (ms: number) => number,
+  canvasW: number
+): void {
+  ctx.fillStyle = accent + '50';
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1;
+  for (const ghost of ghosts) {
+    const ghostX = msToX(ghost.startMs);
+    const ghostW = Math.max(1, msToX(ghost.endMs) - ghostX);
+    ctx.fillRect(ghostX, rowTop, ghostW, ROW_H);
+    ctx.strokeRect(ghostX + 0.5, rowTop + 0.5, ghostW - 1, ROW_H - 1);
+  }
+  const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 60);
+  drawOutlinedLabel(ctx, label, labelX, rowTop + 12);
+}
+
+export function drawLoadedSpanLabels(
+  ctx: CanvasRenderingContext2D,
+  rows: RowLayout[],
+  loadedSpans: LoadedSpan[],
+  view: ViewWindow,
+  msToX: (ms: number) => number
+): void {
+  const viewEnd = view.start + view.duration;
+  for (const row of rows) {
+    for (const span of loadedSpans) {
+      if (
+        span.deck === row.deckId &&
+        overlapsRange(span.startMs, span.endMs, view.start, viewEnd)
+      ) {
+        drawLoadedSpanLabel(ctx, span, row.top, msToX);
+      }
+    }
+  }
+}
+
+// Deck row dividers, drawn full-width (including the label column) after the
+// track clip is restored. Deliberately heavier than the 1px sublane-group
+// separators so deck boundaries stand out: a dark gap with a bright hairline.
+export function drawRowDividers(
+  ctx: CanvasRenderingContext2D,
+  rows: RowLayout[],
+  canvasW: number
+): void {
+  for (const row of rows) {
+    const dividerY = row.top + row.height - 3;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, dividerY, canvasW, 3);
+    ctx.fillStyle = '#5a5a5a';
+    ctx.fillRect(0, dividerY, canvasW, 1);
+  }
+}
+
+export function drawPlayhead(ctx: CanvasRenderingContext2D, x: number, bottomY: number): void {
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, bottomY);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+export function drawFrameGutters(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  canvasH: number
+): void {
+  ctx.fillStyle = '#2a2a2a';
+  ctx.fillRect(LABEL_W - 1, 0, 1, canvasH);
+  ctx.fillRect(canvasW - PADDING, 0, 1, canvasH);
 }
