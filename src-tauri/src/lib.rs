@@ -268,6 +268,7 @@ pub fn run() {
             commands::set_quantize,
             commands::set_reloop,
             commands::set_volume,
+            commands::set_deck_muted,
             commands::start_recording,
             commands::stop_at_cue,
             commands::stop_recording,

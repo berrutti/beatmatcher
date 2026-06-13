@@ -69,11 +69,14 @@ export function rateRangePctFor(maxDeviationPct: number): number {
 type DeckState = {
   path: string | null;
   trackPosSec: number;
+  posMarkMs: number;
   rate: number;
+  nudgeFactor: number;
   loopStartSec: number | null;
   loopEndSec: number | null;
   loopActive: boolean;
   loopEngagedMs: number | null;
+  loopEntrySec: number | null;
   clipStartMs: number | null;
   clipTrackStartSec: number;
   clipRate: number;
@@ -86,11 +89,14 @@ function makeDeckState(): DeckState {
   return {
     path: null,
     trackPosSec: 0,
+    posMarkMs: 0,
     rate: 1,
+    nudgeFactor: 1,
     loopStartSec: null,
     loopEndSec: null,
     loopActive: false,
     loopEngagedMs: null,
+    loopEntrySec: null,
     clipStartMs: null,
     clipTrackStartSec: 0,
     clipRate: 1,
@@ -98,6 +104,25 @@ function makeDeckState(): DeckState {
     loadSpanStartMs: null,
     loadSpanPath: null
   };
+}
+
+// Mirrors the engine's position stepping (playback_rate * nudge_factor,
+// wrapping inside an active loop). Without this, a bare resume `play` after a
+// stop would inherit a stale position from the last explicit position event,
+// and clip edits would bake that wrong position into synthesized events.
+function advancePosition(deck: DeckState, ms: number) {
+  const playing = deck.clipStartMs !== null || deck.loopActive;
+  if (playing && ms > deck.posMarkMs) {
+    let pos = deck.trackPosSec + ((ms - deck.posMarkMs) / 1000) * deck.rate * deck.nudgeFactor;
+    if (deck.loopActive && deck.loopStartSec !== null && deck.loopEndSec !== null) {
+      const duration = deck.loopEndSec - deck.loopStartSec;
+      if (duration > 0 && pos >= deck.loopEndSec) {
+        pos = deck.loopStartSec + ((pos - deck.loopEndSec) % duration);
+      }
+    }
+    deck.trackPosSec = pos;
+  }
+  deck.posMarkMs = ms;
 }
 
 function startClip(deck: DeckState, ms: number) {
@@ -113,25 +138,16 @@ function engageLoop(deck: DeckState, ms: number) {
   deck.clipPath = deck.path;
   deck.clipRate = deck.rate;
   deck.clipStartMs = ms;
-  if (deck.loopStartSec !== null) deck.trackPosSec = deck.loopStartSec;
-}
-
-function loopExitTrackPos(deck: DeckState, endMs: number): number {
-  if (
-    deck.loopEngagedMs === null ||
-    deck.loopStartSec === null ||
-    deck.loopEndSec === null ||
-    deck.clipRate <= 0
-  ) {
-    return deck.trackPosSec;
+  // The engine never jumps to the loop start when a loop engages: a playhead
+  // already past the end (late quantized loop_out press) wraps its overshoot
+  // into the region, anywhere else it keeps playing from where it is.
+  if (deck.loopStartSec !== null && deck.loopEndSec !== null) {
+    const dur = deck.loopEndSec - deck.loopStartSec;
+    if (dur > 0 && deck.trackPosSec >= deck.loopEndSec) {
+      deck.trackPosSec = deck.loopStartSec + ((deck.trackPosSec - deck.loopEndSec) % dur);
+    }
   }
-  const loopDurMs = ((deck.loopEndSec - deck.loopStartSec) / deck.clipRate) * 1000;
-  if (loopDurMs <= 0) return deck.trackPosSec;
-  const elapsedMs = endMs - deck.loopEngagedMs;
-  const partialMs = elapsedMs % loopDurMs;
-  // nudge_factor is not tracked here; loop duration may be slightly off during an active nudge,
-  // but nudge is transient so the error is negligible over full iterations
-  return deck.loopStartSec + (partialMs / 1000) * deck.clipRate;
+  deck.loopEntrySec = deck.trackPosSec;
 }
 
 function finalizeClip(
@@ -151,31 +167,37 @@ function finalizeClip(
   ) {
     const loopDurSec = deck.loopEndSec - deck.loopStartSec;
     if (loopDurSec > 0 && deck.clipRate > 0) {
-      const loopDurMs = (loopDurSec / deck.clipRate) * 1000;
       const loopPath = deck.clipPath;
       const loopStartSec = deck.loopStartSec;
       const loopEndSec = deck.loopEndSec;
       const loopRate = deck.clipRate;
       const blockId = allocateBlockId();
       let iterStart = deck.loopEngagedMs;
+      // The first iteration starts at the wrapped entry position, which may be
+      // inside the region; every later iteration runs the full loop.
+      let iterTrackStartSec = deck.loopEntrySec ?? loopStartSec;
       while (iterStart < endMs) {
-        const iterEnd = Math.min(iterStart + loopDurMs, endMs);
+        const iterDurMs = ((loopEndSec - iterTrackStartSec) / loopRate) * 1000;
+        if (iterDurMs <= 0) break;
+        const iterEnd = Math.min(iterStart + iterDurMs, endMs);
         out.push({
           deck: deckId,
           sessionStartMs: iterStart,
           sessionEndMs: iterEnd,
           trackPath: loopPath,
           trackName: nameForPath(loopPath),
-          trackStartSec: loopStartSec,
+          trackStartSec: iterTrackStartSec,
           playbackRate: loopRate,
           blockId,
           loop: { startSec: loopStartSec, endSec: loopEndSec }
         });
-        iterStart += loopDurMs;
+        iterStart += iterDurMs;
+        iterTrackStartSec = loopStartSec;
       }
     }
     deck.loopActive = false;
     deck.loopEngagedMs = null;
+    deck.loopEntrySec = null;
     deck.clipStartMs = null;
   } else if (deck.clipStartMs !== null) {
     // A zero-length clip emits nothing, but the deck still stopped: leaving
@@ -217,8 +239,9 @@ function finalizeLoadedSpan(
   deck.loadSpanPath = null;
 }
 
-// Shared sequence for all loop-exit events: compute where in the loop we landed,
-// finalize the loop iterations as clips, then start a new regular clip.
+// Shared sequence for all loop-exit events: trackPosSec already holds the
+// in-loop position (advancePosition wraps while the loop is active), so just
+// finalize the loop iterations as clips and start a new regular clip.
 function exitLoopAndContinue(
   deck: DeckState,
   deckId: string,
@@ -227,7 +250,6 @@ function exitLoopAndContinue(
   nameForPath: (path: string) => string,
   allocateBlockId: () => number
 ) {
-  deck.trackPosSec = loopExitTrackPos(deck, ms);
   finalizeClip(deck, deckId, ms, clips, nameForPath, allocateBlockId);
   startClip(deck, ms);
 }
@@ -247,6 +269,7 @@ export function buildClips(
     const deckId = ev.deck;
     if (!deckId) continue;
     const deck = getOrCreate(deckId);
+    advancePosition(deck, ev.elapsed_ms);
 
     switch (ev.type) {
       case 'deck_snapshot':
@@ -276,6 +299,7 @@ export function buildClips(
         deck.loadSpanStartMs = ev.elapsed_ms;
         deck.loadSpanPath = deck.path;
         deck.trackPosSec = 0;
+        deck.nudgeFactor = 1;
         deck.loopStartSec = null;
         deck.loopEndSec = null;
         deck.loopActive = false;
@@ -346,6 +370,10 @@ export function buildClips(
         if (ev.rate !== undefined) deck.rate = ev.rate;
         break;
 
+      case 'set_nudge':
+        if (ev.percent !== undefined) deck.nudgeFactor = 1 + ev.percent / 100;
+        break;
+
       case 'loop_out':
         // start_sec is the loop start (= cue_point in Rust at the moment loop_out fires)
         deck.loopStartSec = ev.start_sec ?? null;
@@ -373,8 +401,10 @@ export function buildClips(
         break;
 
       case 'reloop':
+        // The engine jumps the playhead back to the loop start on reloop.
         if (!deck.loopActive && deck.loopStartSec !== null && deck.loopEndSec !== null) {
           finalizeClip(deck, deckId, ev.elapsed_ms, clips, nameForPath, allocateBlockId);
+          deck.trackPosSec = deck.loopStartSec;
           engageLoop(deck, ev.elapsed_ms);
         }
         break;

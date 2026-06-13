@@ -6,6 +6,7 @@ import type { Clip } from '@renderer/composables/useSessionTimeline';
 // output, so every field reflects what the listener actually heard.
 export type TransportBlock = {
   deck: string;
+  blockId: number;
   startMs: number;
   endMs: number;
   trackPath: string;
@@ -57,6 +58,7 @@ export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {
     const first = group[0];
     blocks.push({
       deck,
+      blockId: first.blockId,
       startMs: Math.min(...group.map((clip) => clip.sessionStartMs)),
       endMs: Math.max(...group.map((clip) => clip.sessionEndMs)),
       trackPath: first.trackPath,
@@ -74,8 +76,11 @@ export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {
 // shared boundary event was removed.
 function startEventsFor(block: TransportBlock, atMs: number): SessionEvent[] {
   if (block.loop) {
+    // trackStartSec is the wrapped entry position, which may sit inside the
+    // region (the engine wraps a late loop_out press past the end); playing
+    // from the loop start instead would shift the whole block by that offset.
     return [
-      { elapsed_ms: atMs, type: 'play', deck: block.deck, sec: block.loop.startSec },
+      { elapsed_ms: atMs, type: 'play', deck: block.deck, sec: block.trackStartSec },
       {
         elapsed_ms: atMs,
         type: 'loop_out',
@@ -107,11 +112,19 @@ type Neighborhood = {
   next: TransportBlock | null;
   minStartMs: number;
   maxEndMs: number;
+  // The load_track that loaded this block's track when it was loaded mid-session
+  // (null when a deck_snapshot loaded it at session start). It rides ahead of
+  // the block on a move and its load-to-play gap collapses; it never clamps.
+  ownLoadMs: number | null;
 };
 
 // Finds the block in its deck's sequence and the range its boundaries may
-// occupy: neighbor blocks clamp, and load_track/eject_track events are hard
-// barriers because crossing one would put playback on a different track.
+// occupy. A block can move left until it meets the previous clip's end and
+// right until the next clip's start (two tracks are never audible at once).
+// Loads are cosmetic after recording, so they do not bar a leftward move (the
+// block's own load rides with it); a load to the right still bars a move that
+// would overrun it and leave the wrong track loaded under the play. A pinned
+// session-start deck_snapshot and an eject_track bar both directions.
 function neighborhoodOf(
   events: SessionEvent[],
   clips: Clip[],
@@ -125,18 +138,70 @@ function neighborhoodOf(
   const prev = index > 0 ? blocks[index - 1] : null;
   const next = index < blocks.length - 1 ? blocks[index + 1] : null;
 
+  let ownLoadMs: number | null = null;
+  for (const event of events) {
+    if (event.deck !== block.deck || event.type !== 'load_track') continue;
+    if (event.elapsed_ms <= block.startMs + EPS_MS) {
+      ownLoadMs = ownLoadMs === null ? event.elapsed_ms : Math.max(ownLoadMs, event.elapsed_ms);
+    }
+  }
+
   let minStartMs = Math.max(0, prev?.endMs ?? 0);
   let maxEndMs = next?.startMs ?? Infinity;
   for (const event of events) {
     if (event.deck !== block.deck) continue;
-    if (event.type !== 'load_track' && event.type !== 'eject_track') continue;
+    const isLoad = event.type === 'load_track';
+    const isLeftBarrier =
+      event.type === 'eject_track' ||
+      (event.type === 'deck_snapshot' && event.path !== undefined && event.path !== null);
+    if (!isLoad && !isLeftBarrier) continue;
     if (event.elapsed_ms <= block.startMs + EPS_MS) {
-      minStartMs = Math.max(minStartMs, event.elapsed_ms);
+      if (isLeftBarrier) minStartMs = Math.max(minStartMs, event.elapsed_ms);
     } else if (event.elapsed_ms >= block.endMs - EPS_MS) {
       maxEndMs = Math.min(maxEndMs, event.elapsed_ms);
     }
   }
-  return { prev, next, minStartMs, maxEndMs };
+  return { prev, next, minStartMs, maxEndMs, ownLoadMs };
+}
+
+// Signed audio seconds the deck advances between two session times, following
+// the piecewise-constant rate curve and nudges (events are sorted by ms). The
+// engine plays under this curve, so trims must use it: a single fixed rate
+// lands the audio early or late whenever the pitch moved inside the window,
+// heard as duplicated or skipped audio at the seam.
+function audioSecondsBetween(
+  events: SessionEvent[],
+  deck: string,
+  fromMs: number,
+  toMs: number,
+  fallbackRate: number
+): number {
+  if (fromMs === toMs) return 0;
+  const sign = toMs >= fromMs ? 1 : -1;
+  const lower = Math.min(fromMs, toMs);
+  const upper = Math.max(fromMs, toMs);
+
+  let rate = fallbackRate;
+  let nudge = 1;
+  let total = 0;
+  let cursor = lower;
+  for (const event of events) {
+    if (event.deck !== deck) continue;
+    if (event.elapsed_ms >= upper) break;
+    const isRate = event.type === 'set_playback_rate' && event.rate !== undefined;
+    const isSnapshot = event.type === 'deck_snapshot' && event.playback_rate !== undefined;
+    const isNudge = event.type === 'set_nudge' && event.percent !== undefined;
+    if (!isRate && !isSnapshot && !isNudge) continue;
+    if (event.elapsed_ms > lower) {
+      total += ((event.elapsed_ms - cursor) / 1000) * rate * nudge;
+      cursor = event.elapsed_ms;
+    }
+    if (isRate && event.rate !== undefined) rate = event.rate;
+    if (isSnapshot && event.playback_rate !== undefined) rate = event.playback_rate;
+    if (isNudge && event.percent !== undefined) nudge = 1 + event.percent / 100;
+  }
+  total += ((upper - cursor) / 1000) * rate * nudge;
+  return sign * total;
 }
 
 // A resume-play (no sec) takes its position from whatever the previous block's
@@ -180,6 +245,47 @@ export function blockBounds(
     : null;
 }
 
+// Loads carry no audio after recording, so an UNPLAYED track loaded inside the
+// span the moved block now occupies is destroyed: its load_track and the setup
+// config (rate, beat grid) it emitted, up to the next load, are dropped. A load
+// followed by a play (a real played block, e.g. the next block when gluing
+// right) is left untouched.
+function orphanedLoadEvents(
+  events: SessionEvent[],
+  deck: string,
+  ownLoadMs: number | null,
+  spanStartMs: number,
+  spanEndMs: number
+): Set<SessionEvent> {
+  const discarded = new Set<SessionEvent>();
+  const loadMs = events
+    .filter((event) => event.deck === deck && event.type === 'load_track')
+    .map((event) => event.elapsed_ms)
+    .sort((left, right) => left - right);
+  const playMs = events
+    .filter((event) => event.deck === deck && event.type === 'play')
+    .map((event) => event.elapsed_ms);
+  for (const load of events) {
+    if (load.deck !== deck || load.type !== 'load_track') continue;
+    if (ownLoadMs !== null && near(load.elapsed_ms, ownLoadMs)) continue;
+    if (load.elapsed_ms < spanStartMs - EPS_MS || load.elapsed_ms > spanEndMs + EPS_MS) continue;
+    const nextLoadMs = loadMs.find((ms) => ms > load.elapsed_ms + EPS_MS) ?? Infinity;
+    const wasPlayed = playMs.some(
+      (ms) => ms > load.elapsed_ms + EPS_MS && ms < nextLoadMs - EPS_MS
+    );
+    if (wasPlayed) continue;
+    discarded.add(load);
+    for (const event of events) {
+      if (event.deck !== deck) continue;
+      if (event.type !== 'set_playback_rate' && event.type !== 'set_beat_grid') continue;
+      if (event.elapsed_ms >= load.elapsed_ms - EPS_MS && event.elapsed_ms < nextLoadMs - EPS_MS) {
+        discarded.add(event);
+      }
+    }
+  }
+  return discarded;
+}
+
 export function moveTransportBlock(
   events: SessionEvent[],
   clips: Clip[],
@@ -188,18 +294,46 @@ export function moveTransportBlock(
 ): { events: SessionEvent[]; appliedDeltaMs: number } {
   const neighborhood = neighborhoodOf(events, clips, block);
   if (!neighborhood) return { events, appliedDeltaMs: 0 };
-  const { prev, next, minStartMs, maxEndMs } = neighborhood;
+  const { prev, next, minStartMs, maxEndMs, ownLoadMs } = neighborhood;
   const t0 = block.startMs;
   const t1 = block.endMs;
 
+  // Loads are cosmetic, so the only hard left limit is the previous clip's end
+  // (two tracks are never audible at once). The block's own load rides just
+  // ahead of the play, the load-to-play gap collapsing to zero on the way.
   const applied = Math.max(minStartMs - t0, Math.min(maxEndMs - t1, deltaMs));
   if (Math.abs(applied) < 1) return { events, appliedDeltaMs: 0 };
+
+  const newStart = t0 + applied;
+  const newEnd = t1 + applied;
+
+  const newLoadMs = ownLoadMs === null ? null : Math.min(ownLoadMs, newStart);
+  const loadShift = newLoadMs === null || ownLoadMs === null ? 0 : newLoadMs - ownLoadMs;
+  // The block's own load_track and the config it sets at load (rate, beat grid)
+  // ride with the block, folded just before the new play position so the track
+  // stays loaded-then-configured before it plays. Automation (volume, eq,
+  // filter) stays at wall time, as on any move.
+  const inLoadWindow = (event: SessionEvent): boolean => {
+    if (ownLoadMs === null || event.deck !== block.deck) return false;
+    if (event.type === 'load_track') return near(event.elapsed_ms, ownLoadMs);
+    if (event.type === 'set_playback_rate' || event.type === 'set_beat_grid') {
+      return event.elapsed_ms >= ownLoadMs - EPS_MS && event.elapsed_ms < t0 - EPS_MS;
+    }
+    return false;
+  };
+
+  const discarded = orphanedLoadEvents(events, block.deck, ownLoadMs, newStart, newEnd);
 
   const prevGlued = prev !== null && near(prev.endMs, t0);
   const nextGlued = next !== null && near(next.startMs, t1);
 
   const kept: SessionEvent[] = [];
   for (const event of events) {
+    if (discarded.has(event)) continue;
+    if (inLoadWindow(event)) {
+      kept.push({ ...event, elapsed_ms: Math.min(event.elapsed_ms + loadShift, newStart) });
+      continue;
+    }
     if (event.deck !== block.deck || !TRANSPORT_TYPES.has(event.type)) {
       kept.push(event);
       continue;
@@ -223,10 +357,13 @@ export function moveTransportBlock(
   }
 
   const inserted: SessionEvent[] = [];
-  if (prevGlued) inserted.push({ elapsed_ms: t0, type: 'stop', deck: block.deck });
+  // endEventsFor, not a bare stop: a glued loop block must be disarmed with
+  // exit_loop, because stop pauses the deck but leaves the loop armed and the
+  // relocated clip would wrap at the stale loop boundary.
+  if (prevGlued && prev) inserted.push(...endEventsFor(prev, t0));
   if (nextGlued && next) inserted.push(...startEventsFor(next, t1));
-  inserted.push(...startEventsFor(block, t0 + applied));
-  inserted.push(...endEventsFor(block, t1 + applied));
+  inserted.push(...startEventsFor(block, newStart));
+  inserted.push(...endEventsFor(block, newEnd));
 
   return { events: stableSortByMs([...kept, ...inserted]), appliedDeltaMs: applied };
 }
@@ -251,12 +388,18 @@ export function trimTransportBlock(
 
   if (edge === 'start') {
     // Audio stays aligned in session time: the clip starts later (or earlier)
-    // but plays the audio it would have been playing at that moment.
+    // but plays the audio it would have been playing at that moment. The
+    // earliest-by-audio bound is approximate (start rate only); the final
+    // position floors at 0 below.
     const earliestByAudio = t0 - (block.trackStartSec / block.playbackRate) * 1000;
     const lower = Math.max(minStartMs, earliestByAudio);
     const applied = Math.max(lower, Math.min(t1 - MIN_BLOCK_MS, newMs));
     if (near(applied, t0)) return { events, appliedMs: t0 };
-    const newSec = block.trackStartSec + ((applied - t0) / 1000) * block.playbackRate;
+    const newSec = Math.max(
+      0,
+      block.trackStartSec +
+        audioSecondsBetween(events, block.deck, t0, applied, block.playbackRate)
+    );
 
     const prevGlued = prev !== null && near(prev.endMs, t0);
     const kept: SessionEvent[] = [];
@@ -275,7 +418,7 @@ export function trimTransportBlock(
     const inserted: SessionEvent[] = [
       { elapsed_ms: applied, type: 'play', deck: block.deck, sec: newSec }
     ];
-    if (prevGlued) inserted.push({ elapsed_ms: t0, type: 'stop', deck: block.deck });
+    if (prevGlued && prev) inserted.push(...endEventsFor(prev, t0));
     return { events: stableSortByMs([...kept, ...inserted]), appliedMs: applied };
   }
 

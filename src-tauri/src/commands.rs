@@ -621,6 +621,21 @@ pub(crate) fn set_volume(
     Ok(())
 }
 
+// Session-view mute/solo. Not logged: it is a monitoring control, not a
+// recorded mixer move, and the offline render must not be affected by it.
+#[tauri::command]
+pub(crate) fn set_deck_muted(
+    state: tauri::State<'_, AppState>,
+    deck: String,
+    muted: bool,
+) -> Result<(), String> {
+    get_strip(&state, &deck)?
+        .lock()
+        .expect("strip mutex poisoned")
+        .set_muted(muted);
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn set_playback_rate(
     state: tauri::State<'_, AppState>,

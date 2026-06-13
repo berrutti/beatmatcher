@@ -14,6 +14,7 @@ import {
   toggleFilterActiveRange,
   nudgeValueAt,
   paintNudgeRange,
+  deleteNudgeRange,
   relocateEventPaths,
   formatLaneValue,
   MIN_GESTURE_MS
@@ -371,6 +372,65 @@ describe('nudgeValueAt', () => {
   it('ignores other decks', () => {
     const events = [ev({ elapsed_ms: 1000, type: 'set_nudge', deck: 'B', percent: 8 })];
     expect(nudgeValueAt(events, 'A', 2000)).toBe(0);
+  });
+});
+
+describe('deleteNudgeRange', () => {
+  it('removes the opener, mid-span changes, and the closing zero', () => {
+    const events = [
+      ev({ elapsed_ms: 1000, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 1500, type: 'set_nudge', deck: 'A', percent: 8 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1000, 2000);
+    expect(out.filter((event) => event.type === 'set_nudge')).toEqual([]);
+  });
+
+  it('leaves other decks, other event types, and nudges outside the range alone', () => {
+    const events = [
+      ev({ elapsed_ms: 500, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 800, type: 'set_nudge', deck: 'A', percent: 0 }),
+      ev({ elapsed_ms: 1200, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 1500, type: 'set_nudge', deck: 'B', percent: 8 }),
+      ev({ elapsed_ms: 1500, type: 'set_volume', deck: 'A', gain: 0.5 }),
+      ev({ elapsed_ms: 1800, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1200, 1800);
+    expect(out.map((event) => [event.elapsed_ms, event.type, event.deck])).toEqual([
+      [500, 'set_nudge', 'A'],
+      [800, 'set_nudge', 'A'],
+      [1500, 'set_nudge', 'B'],
+      [1500, 'set_volume', 'A']
+    ]);
+  });
+
+  it('keeps a following span opener sitting exactly at the range end', () => {
+    const events = [
+      ev({ elapsed_ms: 1000, type: 'set_nudge', deck: 'A', percent: 4 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: 0 }),
+      ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: -4 }),
+      ev({ elapsed_ms: 2500, type: 'set_nudge', deck: 'A', percent: 0 })
+    ];
+    const out = deleteNudgeRange(events, 'A', 1000, 2000);
+    expect(
+      out
+        .filter((event) => event.type === 'set_nudge')
+        .map((event) => [event.elapsed_ms, event.percent])
+    ).toEqual([
+      [2000, -4],
+      [2500, 0]
+    ]);
+  });
+
+  it('removes an unfinished span that runs to the session end', () => {
+    const events = [ev({ elapsed_ms: 9000, type: 'set_nudge', deck: 'A', percent: 6 })];
+    const out = deleteNudgeRange(events, 'A', 9000, 10_000);
+    expect(out).toEqual([]);
+  });
+
+  it('returns the input array unchanged when nothing matches', () => {
+    const events = [ev({ elapsed_ms: 500, type: 'set_volume', deck: 'A', gain: 0.5 })];
+    expect(deleteNudgeRange(events, 'A', 1000, 2000)).toBe(events);
   });
 });
 

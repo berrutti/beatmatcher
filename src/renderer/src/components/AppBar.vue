@@ -106,7 +106,7 @@ async function onConfirm() {
 <style scoped>
 .appbar {
   width: 100%;
-  height: 28px;
+  height: var(--appbar-h);
   display: flex;
   align-items: center;
   padding: 0 12px;

@@ -43,7 +43,6 @@
           :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
           :waveforms="session.waveforms"
-          :bpm-for-path="bpmForPath"
           @seek="onSeek"
         />
       </template>
@@ -51,11 +50,11 @@
 
     <div v-if="session.session" class="session__controls">
       <button
-        class="session__btn session__btn--transport"
+        class="session__btn session__btn--transport session__btn--play"
         :class="{ 'session__btn--active': session.isPlaying }"
         @click="onTransport"
       >
-        {{ session.isPlaying ? '⏸' : '▶' }}
+        {{ session.isPlaying ? '⏸︎' : '▶︎' }}
       </button>
       <button
         class="session__btn session__btn--transport"
@@ -111,6 +110,7 @@ import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
@@ -121,6 +121,7 @@ const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
 const mixer = useMixerStore();
+const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
 const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
@@ -128,10 +129,6 @@ const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTim
   (path) => collection.getName(path)
 );
 
-// Beat snapping for clip dragging uses the track's grid BPM from the library.
-function bpmForPath(path: string): number | null {
-  return collection.getSaved(path)?.bpm ?? null;
-}
 
 watch(
   clips,
@@ -155,6 +152,7 @@ let unlistenDrop: UnlistenFn | null = null;
 // (dragDropEnabled is on, and File.path no longer exists in Tauri v2), so the
 // absolute path comes from the webview drag-drop event.
 onMounted(async () => {
+  window.addEventListener('keydown', onKeyDown);
   unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
     const payload = event.payload;
     if (payload.type === 'enter' || payload.type === 'over') {
@@ -168,6 +166,25 @@ onMounted(async () => {
     }
   });
 });
+
+function isTypingTarget(e: KeyboardEvent): boolean {
+  const target = e.target as HTMLElement | null;
+  return (
+    target !== null &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  );
+}
+
+// Spacebar toggles transport, like the edit view. preventDefault also stops a
+// focused button from being activated by the same keypress.
+function onKeyDown(e: KeyboardEvent) {
+  if (e.code !== 'Space' || e.repeat) return;
+  if (!session.session || settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) {
+    return;
+  }
+  e.preventDefault();
+  onTransport().catch(() => {});
+}
 
 function tickPlayhead() {
   playheadMs.value = performance.now() - playStartWall;
@@ -233,6 +250,7 @@ async function onDiscardConfirmed() {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown);
   cancelAnimationFrame(rafId);
   unlistenDrop?.();
 });
@@ -357,6 +375,9 @@ onUnmounted(() => {
 .session__btn {
   font-family: var(--font);
   font-size: 0.8em;
+  /* Pinned so glyphs from fallback fonts (play/pause are not in JetBrains
+     Mono) cannot change the button height between states. */
+  line-height: 1.2;
   letter-spacing: 0.1em;
   padding: 0.45em 1.2em;
   border-radius: 4px;
@@ -364,6 +385,10 @@ onUnmounted(() => {
   background: var(--color-surface);
   color: var(--color-muted);
   cursor: pointer;
+}
+
+.session__btn--play {
+  min-width: 3.6em;
 }
 
 .session__btn--transport:hover,

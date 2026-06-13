@@ -73,7 +73,6 @@ function onResizeStart(e: PointerEvent) {
   display: flex;
   flex-direction: column;
   --collection-panel-h: 0px;
-  --collection-bar-h: 22px;
 }
 
 .perf__body {
@@ -86,7 +85,7 @@ function onResizeStart(e: PointerEvent) {
     11px,
     calc(
       (
-          100dvh - var(--appbar-h, 0px) - var(--topstrip-h) - var(--collection-bar-h) -
+          100dvh - var(--appbar-h) - var(--topstrip-h) - var(--collection-bar-h) -
             var(--collection-panel-h)
         ) /
         54

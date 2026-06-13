@@ -86,9 +86,10 @@ describe('buildClips', () => {
       const events = [
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 2000, type: 'loop_out', deck: 'A', start_sec: 4, end_sec: 6 }),
-        ev({ elapsed_ms: 8000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 10000, type: 'stop', deck: 'A' })
+        ev({ elapsed_ms: 1000, type: 'seek', deck: 'A', sec: 4 }),
+        ev({ elapsed_ms: 3000, type: 'loop_out', deck: 'A', start_sec: 4, end_sec: 6 }),
+        ev({ elapsed_ms: 9000, type: 'exit_loop', deck: 'A' }),
+        ev({ elapsed_ms: 11000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 4);
@@ -102,9 +103,10 @@ describe('buildClips', () => {
       const events = [
         ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
         ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
-        ev({ elapsed_ms: 1000, type: 'loop_out', deck: 'A', start_sec: 2, end_sec: 4 }),
-        ev({ elapsed_ms: 5000, type: 'exit_loop', deck: 'A' }),
-        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' })
+        ev({ elapsed_ms: 1000, type: 'seek', deck: 'A', sec: 1 }),
+        ev({ elapsed_ms: 4000, type: 'loop_out', deck: 'A', start_sec: 2, end_sec: 4 }),
+        ev({ elapsed_ms: 8000, type: 'exit_loop', deck: 'A' }),
+        ev({ elapsed_ms: 9000, type: 'stop', deck: 'A' })
       ];
       const { clips } = buildClips(events, name);
       const loopClips = clips.filter((c) => c.trackStartSec === 2);
@@ -269,6 +271,164 @@ describe('buildClips', () => {
       const { loadedSpans } = buildClips(events, name);
       expect(loadedSpans).toHaveLength(1);
       expect(loadedSpans[0].startMs).toBe(0);
+    });
+  });
+
+  describe('position advances through played audio (engine parity)', () => {
+    it('bare resume play continues from where stop left the deck', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 1000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips).toHaveLength(2);
+      expect(clips[1].trackStartSec).toBeCloseTo(4, 6);
+    });
+
+    it('integrates rate changes within the playing span', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 1000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'set_playback_rate', deck: 'A', rate: 1.5 }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 7000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips[1].trackStartSec).toBeCloseTo(2 + 2 * 1.5, 6);
+    });
+
+    it('integrates nudges within the playing span', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 1000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 2000, type: 'set_nudge', deck: 'A', percent: 4 }),
+        ev({ elapsed_ms: 3000, type: 'set_nudge', deck: 'A', percent: 0 }),
+        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 6000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips[1].trackStartSec).toBeCloseTo(3.04, 6);
+    });
+
+    it('rate changes while stopped do not move the deck position', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 2000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'set_playback_rate', deck: 'A', rate: 1.5 }),
+        ev({ elapsed_ms: 4000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips[1].trackStartSec).toBeCloseTo(2, 6);
+      expect(clips[1].playbackRate).toBeCloseTo(1.5, 6);
+    });
+
+    it('a play latched from a held cue preview continues from the preview position', () => {
+      // Holding CUE previews from the cue point; pressing PLAY mid-preview keeps
+      // playing from wherever the preview reached (no cue_preview_end is logged).
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 1000, type: 'cue_preview_start', deck: 'A', cue_point_sec: 0 }),
+        ev({ elapsed_ms: 1500, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 4000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips).toHaveLength(2);
+      expect(clips[0].trackStartSec).toBe(0);
+      expect(clips[1].trackStartSec).toBeCloseTo(2, 6);
+    });
+
+    it('a released cue preview returns the deck to the cue point', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 1000, type: 'cue_preview_start', deck: 'A', cue_point_sec: 5 }),
+        ev({ elapsed_ms: 2000, type: 'cue_preview_end', deck: 'A', cue_point_sec: 5 }),
+        ev({ elapsed_ms: 3000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      const last = clips[clips.length - 1];
+      expect(last.trackStartSec).toBeCloseTo(5, 6);
+    });
+  });
+
+  describe('loop entry and exit positions (engine parity)', () => {
+    it('loop_out past the loop end wraps the playhead into the loop', () => {
+      // Engine: quantized loop_out pressed late wraps overshoot into the region
+      // (cue_point + (pos - loop_end) % dur), it does not jump to the loop start.
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 7000, type: 'loop_out', deck: 'A', start_sec: 0, end_sec: 6 }),
+        ev({ elapsed_ms: 8000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      const firstIteration = clips.find((c) => c.sessionStartMs === 7000);
+      expect(firstIteration).toBeDefined();
+      expect(firstIteration!.trackStartSec).toBeCloseTo(1, 6);
+      expect(firstIteration!.loop).toEqual({ startSec: 0, endSec: 6 });
+    });
+
+    it('resume after a wrapped loop exit reflects the entry offset', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 7000, type: 'loop_out', deck: 'A', start_sec: 0, end_sec: 6 }),
+        ev({ elapsed_ms: 9000, type: 'exit_loop', deck: 'A' }),
+        ev({ elapsed_ms: 10000, type: 'stop', deck: 'A' }),
+        ev({ elapsed_ms: 11000, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 12000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      const last = clips[clips.length - 1];
+      expect(last.sessionStartMs).toBe(11000);
+      // entry wrapped to 1.0, +2s in loop = 3.0 at exit, +1s to stop = 4.0
+      expect(last.trackStartSec).toBeCloseTo(4, 6);
+    });
+
+    it('reloop jumps the playhead to the loop start', () => {
+      const events = [
+        ev({ elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/t/a.mp3' }),
+        ev({ elapsed_ms: 0, type: 'play', deck: 'A' }),
+        ev({ elapsed_ms: 3000, type: 'loop_out', deck: 'A', start_sec: 0, end_sec: 2 }),
+        ev({ elapsed_ms: 3500, type: 'exit_loop', deck: 'A' }),
+        ev({ elapsed_ms: 4000, type: 'reloop', deck: 'A' }),
+        ev({ elapsed_ms: 5000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      const relooped = clips.find((c) => c.sessionStartMs === 4000);
+      expect(relooped).toBeDefined();
+      expect(relooped!.trackStartSec).toBeCloseTo(0, 6);
+    });
+
+    it('snapshot mid-loop keeps the snapshot position for the first iteration', () => {
+      const events = [
+        ev({
+          elapsed_ms: 0,
+          type: 'deck_snapshot',
+          deck: 'A',
+          path: '/t/a.mp3',
+          position_sec: 5,
+          cue_point_sec: 4,
+          is_playing: true,
+          loop_active: true,
+          loop_end_sec: 6,
+          playback_rate: 1
+        }),
+        ev({ elapsed_ms: 4000, type: 'stop', deck: 'A' })
+      ];
+      const { clips } = buildClips(events, name);
+      expect(clips[0].trackStartSec).toBeCloseTo(5, 6);
+      expect(clips[0].sessionEndMs - clips[0].sessionStartMs).toBeCloseTo(1000, 3);
+      expect(clips[1].trackStartSec).toBeCloseTo(4, 6);
     });
   });
 

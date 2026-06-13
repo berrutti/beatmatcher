@@ -11,6 +11,7 @@ import {
   spliceLaneEvents,
   toggleFilterActiveRange,
   paintNudgeRange,
+  deleteNudgeRange,
   relocateEventPaths,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
@@ -137,6 +138,13 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
   }
 
+  async function deleteNudge(deck: string, t0: number, t1: number): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(deleteNudgeRange(session.events, deck, t0, t1));
+  }
+
   async function commitClipMove(
     clips: Clip[],
     block: TransportBlock,
@@ -258,6 +266,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     commitGesture,
     commitFilterActiveToggle,
     commitNudgePaint,
+    deleteNudge,
     commitClipMove,
     commitClipTrim,
     locateMissingTracks,

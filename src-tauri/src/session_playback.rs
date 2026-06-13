@@ -938,6 +938,19 @@ fn snap_at(state: &SimState, at_ms: f64, sr_f: f64) -> SessionSnapshot {
     }
 }
 
+// Orders events for simulation. A deck_snapshot is the session's initial state:
+// it resets the deck and forces is_playing=false, so it must apply BEFORE any
+// other event sharing its millisecond. If it sorts after a same-ms play, the
+// reconstructed state is "loaded but stopped" and playback is silent even though
+// the clip renders. Every other tie keeps source order (the sort is stable).
+fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
+    let snapshot_rank = |e: &SessionEvent| u8::from(e.event_type != "deck_snapshot");
+    a.elapsed_ms
+        .partial_cmp(&b.elapsed_ms)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| snapshot_rank(a).cmp(&snapshot_rank(b)))
+}
+
 // Build one snapshot per event, capturing state AFTER the event fires.
 // Scrubbing to time T finds the last snapshot with elapsed_ms <= T and loads it.
 // The exact post-event state, so no event is ever missing or double-applied.
@@ -949,11 +962,7 @@ fn build_snapshots(events: &[SessionEvent], sr: u32, cache: &SampleCache) -> Vec
     let mut snapshots = Vec::new();
 
     let mut sorted: Vec<&SessionEvent> = events.iter().collect();
-    sorted.sort_by(|a, b| {
-        a.elapsed_ms
-            .partial_cmp(&b.elapsed_ms)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    sorted.sort_by(|a, b| event_sim_order(a, b));
 
     // Snapshot at t=0 before any events (clean initial state).
     snapshots.push(snap_at(&state, 0.0, sr_f));
@@ -1438,6 +1447,81 @@ mod tests {
                 _ => panic!("t={t}ms one path produced a deck and the other didn't"),
             }
         }
+    }
+
+    // Reconstructs deck state at from_ms exactly as start_session_playback does
+    // (nearest snapshot, then replay the events up to from_ms), returning what
+    // the live engine would set the deck to: whether it plays and which track.
+    fn reconstruct_deck(
+        events: &[SessionEvent],
+        from_ms: f64,
+        cache: &SampleCache,
+        deck: &str,
+    ) -> (bool, Option<String>) {
+        let snaps = build_snapshots(events, SR, cache);
+        let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
+        let (mut sim, snapshot_ms) = match idx.checked_sub(1) {
+            Some(i) => (sim_state_from_snapshot(&snaps[i]), snaps[i].elapsed_ms),
+            None => (SimState::new(), 0.0),
+        };
+        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
+        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
+        for ev in sorted
+            .iter()
+            .filter(|e| e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms)
+        {
+            sim_apply_event(ev, &mut sim, cache, SR);
+        }
+        sim.decks
+            .get(deck)
+            .map(|d| (d.is_playing, d.path.clone()))
+            .unwrap_or((false, None))
+    }
+
+    // A clip dragged to the session start collapses its load onto t=0, sharing
+    // that millisecond with the deck_snapshot of a different (unplayed) track.
+    // The live engine reconstructs from the LAST snapshot at/before t=0, so the
+    // event order at t=0 decides the outcome: load_track forces is_playing=false,
+    // play sets it true. If play does not end up last, the deck reconstructs as
+    // "loaded but stopped" and live playback is silent even though the clip
+    // renders. This guards the ordering contract the editor must honour.
+    #[test]
+    fn collapsed_load_play_at_start_reconstructs_playing() {
+        let track1 = "/fake/track1.wav".to_string();
+        let track2 = "/fake/track2.wav".to_string();
+        let mut cache: SampleCache = HashMap::new();
+        cache.insert(
+            track1.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+        cache.insert(
+            track2.clone(),
+            (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
+        );
+
+        let events = vec![
+            SessionEvent {
+                path: Some(track1.clone()),
+                is_playing: Some(false),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                ..deck_ev("deck_snapshot", 0.0, "A")
+            },
+            SessionEvent {
+                path: Some(track2.clone()),
+                beat_offset_sec: Some(0.0),
+                ..deck_ev("load_track", 0.0, "A")
+            },
+            SessionEvent {
+                sec: Some(0.0),
+                ..deck_ev("play", 0.0, "A")
+            },
+            deck_ev("stop", 8000.0, "A"),
+        ];
+
+        let (playing, path) = reconstruct_deck(&events, 0.0, &cache, "A");
+        assert!(playing, "deck A must reconstruct as playing at the start");
+        assert_eq!(path.as_deref(), Some(track2.as_str()));
     }
 
     // ── sim_pos vs the real DeckState audio engine ────────────────────────────

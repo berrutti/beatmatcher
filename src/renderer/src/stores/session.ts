@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
+import { DECKS_DISPOSITION } from '@renderer/stores/decks';
 
 export type SessionEvent = {
   elapsed_ms: number;
@@ -104,6 +105,61 @@ export const useSessionStore = defineStore('session', () => {
     }
   );
 
+  // Audition-only mute/solo for session playback. Lives in the strip's mute
+  // gain in Rust (independent of replayed set_volume events) and never affects
+  // the offline render. Solo wins: when any deck is soloed, only soloed decks
+  // are audible regardless of their mute state.
+  const mutedDecks = ref<Set<string>>(new Set());
+  const soloDecks = ref<Set<string>>(new Set());
+
+  function deckAudible(deck: string): boolean {
+    if (soloDecks.value.size > 0) return soloDecks.value.has(deck);
+    return !mutedDecks.value.has(deck);
+  }
+
+  function applyAudibility() {
+    for (const deck of DECKS_DISPOSITION) {
+      invoke('set_deck_muted', { deck, muted: !deckAudible(deck) }).catch(() => {});
+    }
+  }
+
+  // Mute and solo are mutually exclusive per deck: engaging one releases the
+  // other, so a deck can never be in both lists.
+  function toggleMute(deck: string) {
+    const muted = new Set(mutedDecks.value);
+    const solo = new Set(soloDecks.value);
+    if (muted.has(deck)) {
+      muted.delete(deck);
+    } else {
+      muted.add(deck);
+      solo.delete(deck);
+    }
+    mutedDecks.value = muted;
+    soloDecks.value = solo;
+    applyAudibility();
+  }
+
+  function toggleSolo(deck: string) {
+    const muted = new Set(mutedDecks.value);
+    const solo = new Set(soloDecks.value);
+    if (solo.has(deck)) {
+      solo.delete(deck);
+    } else {
+      solo.add(deck);
+      muted.delete(deck);
+    }
+    mutedDecks.value = muted;
+    soloDecks.value = solo;
+    applyAudibility();
+  }
+
+  function clearAudibility() {
+    if (mutedDecks.value.size === 0 && soloDecks.value.size === 0) return;
+    mutedDecks.value = new Set();
+    soloDecks.value = new Set();
+    applyAudibility();
+  }
+
   const durationMs = computed(() => session.value?.durationMs ?? 0);
   const hasTrackInfo = computed(
     () =>
@@ -173,6 +229,7 @@ export const useSessionStore = defineStore('session', () => {
 
   async function unload(): Promise<void> {
     if (isPlaying.value) await stop();
+    clearAudibility();
     const path = session.value?.path;
     session.value = null;
     waveforms.value = new Map();
@@ -191,6 +248,11 @@ export const useSessionStore = defineStore('session', () => {
     hasTrackInfo,
     missingTracks,
     checkMissingTracks,
+    mutedDecks,
+    soloDecks,
+    deckAudible,
+    toggleMute,
+    toggleSolo,
     ensureWaveform,
     openSession,
     openSessionFromPath,

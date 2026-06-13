@@ -207,7 +207,11 @@
     "discardBody": "The session has unsaved edits. Ejecting will discard them.",
     "discardConfirm": "Discard",
     "missingFiles": "These audio files are missing. Choose the folder that contains them to restore playback:",
-    "locate": "CHOOSE FOLDER"
+    "locate": "CHOOSE FOLDER",
+    "deleteNudge": "Delete nudge",
+    "mute": "Mute",
+    "solo": "Solo",
+    "lanesMenu": "Lanes"
   },
   "quitModal": {
     "title": "Quit Beatmatcher?",

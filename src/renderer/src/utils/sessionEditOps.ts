@@ -289,6 +289,27 @@ export function paintNudgeRange(
   return [...kept, ...inserted].sort((first, second) => first.elapsed_ms - second.elapsed_ms);
 }
 
+// Removes a nudge span: every set_nudge for the deck in [t0, t1], including
+// the closing zero. A non-zero event exactly at t1 is the opener of an
+// adjacent span and is kept. Spans always start from and return to 0, so no
+// restore event is needed. Returns the input array unchanged when nothing
+// matches, so callers relying on reference equality can skip a no-op edit.
+export function deleteNudgeRange(
+  events: SessionEvent[],
+  deck: string,
+  t0: number,
+  t1: number
+): SessionEvent[] {
+  const inRange = (event: SessionEvent) =>
+    event.type === 'set_nudge' &&
+    event.deck === deck &&
+    event.elapsed_ms >= t0 &&
+    event.elapsed_ms <= t1 &&
+    !(event.elapsed_ms === t1 && event.percent !== 0);
+  if (!events.some(inRange)) return events;
+  return events.filter((event) => !inRange(event));
+}
+
 // Rewrites event track paths after the user relocates missing files. Returns
 // the input array unchanged when no event carries a mapped path, so callers
 // relying on reference equality (dirty check, undo) can skip a no-op edit.

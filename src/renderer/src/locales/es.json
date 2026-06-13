@@ -207,7 +207,11 @@
     "discardBody": "La sesión tiene cambios sin guardar. Al expulsar se descartarán.",
     "discardConfirm": "Descartar",
     "missingFiles": "Estos archivos de audio no se encontraron. Elige la carpeta que los contiene para restaurar la reproducción:",
-    "locate": "ELEGIR CARPETA"
+    "locate": "ELEGIR CARPETA",
+    "deleteNudge": "Eliminar nudge",
+    "mute": "Silenciar",
+    "solo": "Solo",
+    "lanesMenu": "Carriles"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",
