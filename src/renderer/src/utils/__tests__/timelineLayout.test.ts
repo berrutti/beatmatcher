@@ -55,10 +55,7 @@ describe('computeRowLayout', () => {
 });
 
 describe('selectedLaneRect', () => {
-  const rows = computeRowLayout(
-    [{ deckId: 'A', laneHeights: [{ key: 'gain', height: 16 }] }],
-    16
-  );
+  const rows = computeRowLayout([{ deckId: 'A', laneHeights: [{ key: 'gain', height: 16 }] }], 16);
   const master = { top: 200, height: 32 };
 
   it('resolves the master lane to the master rect', () => {
@@ -121,15 +118,15 @@ describe('selectionSpanFor', () => {
   ];
 
   it('spans the whole block when no iteration is pinned', () => {
-    expect(
-      selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: null }, clips, 'A')
-    ).toEqual({ startMs: 1000, endMs: 3000 });
+    expect(selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: null }, clips, 'A')).toEqual(
+      { startMs: 1000, endMs: 3000 }
+    );
   });
 
   it('spans a single iteration when pinned', () => {
-    expect(
-      selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: 2000 }, clips, 'A')
-    ).toEqual({ startMs: 2000, endMs: 3000 });
+    expect(selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: 2000 }, clips, 'A')).toEqual(
+      { startMs: 2000, endMs: 3000 }
+    );
   });
 
   it('returns null when the selection targets another deck or nothing matches', () => {
@@ -137,8 +134,8 @@ describe('selectionSpanFor', () => {
       null
     );
     expect(selectionSpanFor(null, clips, 'A')).toBe(null);
-    expect(
-      selectionSpanFor({ deck: 'A', blockId: 9, iterationStartMs: null }, clips, 'A')
-    ).toBe(null);
+    expect(selectionSpanFor({ deck: 'A', blockId: 9, iterationStartMs: null }, clips, 'A')).toBe(
+      null
+    );
   });
 });

@@ -129,7 +129,6 @@ const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTim
   (path) => collection.getName(path)
 );
 
-
 watch(
   clips,
   (list) => {

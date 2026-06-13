@@ -432,9 +432,7 @@ describe('moveTransportBlock', () => {
 
     const result = moveTransportBlock(events, clipsOf(events), loopBlock!, 1000);
     expect(result.appliedDeltaMs).toBe(1000);
-    const play = result.events.find(
-      (event) => event.type === 'play' && event.elapsed_ms === 9000
-    );
+    const play = result.events.find((event) => event.type === 'play' && event.elapsed_ms === 9000);
     expect(play?.sec).toBeCloseTo(1, 6);
     const movedFirstIteration = clipsOf(result.events).find((clip) => clip.loop);
     expect(movedFirstIteration?.trackStartSec).toBeCloseTo(1, 6);
@@ -527,7 +525,13 @@ describe('trimTransportBlock', () => {
     ];
     const originalSpans = spans(rateEvents);
 
-    const out = trimTransportBlock(rateEvents, clipsOf(rateEvents), deckBlocks(rateEvents)[0], 'start', 2000);
+    const out = trimTransportBlock(
+      rateEvents,
+      clipsOf(rateEvents),
+      deckBlocks(rateEvents)[0],
+      'start',
+      2000
+    );
     const outBlocks = blocksForDeck(clipsOf(out.events), 'A');
     const back = trimTransportBlock(out.events, clipsOf(out.events), outBlocks[0], 'start', 1000);
 

@@ -696,8 +696,17 @@ export function drawDeckRowContent(
     ctx.fillRect(LABEL_W, row.top, trackW, ROW_H);
   }
 
-  if (content.selectionSpan && visible(content.selectionSpan.startMs, content.selectionSpan.endMs)) {
-    drawClipSelection(ctx, content.selectionSpan.startMs, content.selectionSpan.endMs, row.top, msToX);
+  if (
+    content.selectionSpan &&
+    visible(content.selectionSpan.startMs, content.selectionSpan.endMs)
+  ) {
+    drawClipSelection(
+      ctx,
+      content.selectionSpan.startMs,
+      content.selectionSpan.endMs,
+      row.top,
+      msToX
+    );
   }
 }
 
@@ -816,7 +825,10 @@ export function drawLoadedSpanLabels(
   const viewEnd = view.start + view.duration;
   for (const row of rows) {
     for (const span of loadedSpans) {
-      if (span.deck === row.deckId && overlapsRange(span.startMs, span.endMs, view.start, viewEnd)) {
+      if (
+        span.deck === row.deckId &&
+        overlapsRange(span.startMs, span.endMs, view.start, viewEnd)
+      ) {
         drawLoadedSpanLabel(ctx, span, row.top, msToX);
       }
     }
@@ -826,7 +838,11 @@ export function drawLoadedSpanLabels(
 // Deck row dividers, drawn full-width (including the label column) after the
 // track clip is restored. Deliberately heavier than the 1px sublane-group
 // separators so deck boundaries stand out: a dark gap with a bright hairline.
-export function drawRowDividers(ctx: CanvasRenderingContext2D, rows: RowLayout[], canvasW: number): void {
+export function drawRowDividers(
+  ctx: CanvasRenderingContext2D,
+  rows: RowLayout[],
+  canvasW: number
+): void {
   for (const row of rows) {
     const dividerY = row.top + row.height - 3;
     ctx.fillStyle = '#000';

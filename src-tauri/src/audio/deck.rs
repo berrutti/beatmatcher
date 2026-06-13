@@ -516,7 +516,11 @@ mod tests {
             strip.process_main(1.0, 1.0);
         }
         let (settled, _) = strip.process_main(1.0, 1.0);
-        assert!(settled < 0.001, "expected silence when muted, got {}", settled);
+        assert!(
+            settled < 0.001,
+            "expected silence when muted, got {}",
+            settled
+        );
     }
 
     #[test]
@@ -536,7 +540,11 @@ mod tests {
             strip.process_main(1.0, 1.0);
         }
         let (restored, _) = strip.process_main(1.0, 1.0);
-        assert!(restored > 0.99, "unmute must restore audio, got {}", restored);
+        assert!(
+            restored > 0.99,
+            "unmute must restore audio, got {}",
+            restored
+        );
     }
 }
 

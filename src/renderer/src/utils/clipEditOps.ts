@@ -397,8 +397,7 @@ export function trimTransportBlock(
     if (near(applied, t0)) return { events, appliedMs: t0 };
     const newSec = Math.max(
       0,
-      block.trackStartSec +
-        audioSecondsBetween(events, block.deck, t0, applied, block.playbackRate)
+      block.trackStartSec + audioSecondsBetween(events, block.deck, t0, applied, block.playbackRate)
     );
 
     const prevGlued = prev !== null && near(prev.endMs, t0);

@@ -1049,7 +1049,15 @@ function draw() {
   }
   rowLayout = newRowLayout;
 
-  drawMasterGainLane(ctx, props.masterLanes.gain, masterTopY, masterRowH, msToX, viewStart, viewEnd);
+  drawMasterGainLane(
+    ctx,
+    props.masterLanes.gain,
+    masterTopY,
+    masterRowH,
+    msToX,
+    viewStart,
+    viewEnd
+  );
   const bottomY = masterTopY + masterRowH;
 
   // Selected-lane highlight + in-progress gesture previews
@@ -1135,7 +1143,10 @@ function draw() {
   const overviewY = canvasH - OVERVIEW_H;
   const rowsBottom = Math.min(bottomY, overviewY - OVERVIEW_GAP);
 
-  if (props.playheadMs > 0 && overlapsRange(props.playheadMs, props.playheadMs, viewStart, viewEnd)) {
+  if (
+    props.playheadMs > 0 &&
+    overlapsRange(props.playheadMs, props.playheadMs, viewStart, viewEnd)
+  ) {
     drawPlayhead(ctx, msToX(props.playheadMs), rowsBottom);
   }
 

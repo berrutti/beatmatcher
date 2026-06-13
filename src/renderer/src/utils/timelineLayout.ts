@@ -47,7 +47,10 @@ export function ghostSpan(
   gesture: { kind: ClipGestureKind; deltaMs: number; targetMs: number }
 ): { startMs: number; endMs: number } {
   if (gesture.kind === 'move') {
-    return { startMs: span.sessionStartMs + gesture.deltaMs, endMs: span.sessionEndMs + gesture.deltaMs };
+    return {
+      startMs: span.sessionStartMs + gesture.deltaMs,
+      endMs: span.sessionEndMs + gesture.deltaMs
+    };
   }
   if (gesture.kind === 'trim-start') {
     return { startMs: gesture.targetMs, endMs: span.sessionEndMs };
