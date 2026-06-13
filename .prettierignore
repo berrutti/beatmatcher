@@ -3,3 +3,4 @@ dist-web
 dist-tauri
 node_modules
 src-tauri
+session-core

@@ -12,7 +12,8 @@ export default [
       '**/dist-web/**',
       '**/dist-tauri/**',
       '**/node_modules/**',
-      'src-tauri/**'
+      'src-tauri/**',
+      'session-core/**'
     ]
   },
   js.configs.recommended,

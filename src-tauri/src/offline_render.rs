@@ -366,7 +366,14 @@ pub fn render_session(
             (pos + buffer_latency, ev)
         })
         .collect();
-    timeline.sort_by_key(|(pos, _)| *pos);
+    // A deck_snapshot is initial state; at a shared frame it must apply before
+    // any other event, or it resets a deck a same-frame play already started.
+    timeline.sort_by(|a, b| {
+        a.0.cmp(&b.0).then_with(|| {
+            u8::from(a.1.event_type != "deck_snapshot")
+                .cmp(&u8::from(b.1.event_type != "deck_snapshot"))
+        })
+    });
 
     // Render at least as many frames as the reference, plus a small margin.
     let total_frames = (reference_len / 2).max(

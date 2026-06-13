@@ -357,11 +357,7 @@ pub(crate) async fn start_session_playback(
         reset_all(&audio);
 
         let mut sorted_events = session.events.clone();
-        sorted_events.sort_by(|a, b| {
-            a.elapsed_ms
-                .partial_cmp(&b.elapsed_ms)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sorted_events.sort_by(event_sim_order);
 
         // Reconstruct state at from_ms: find the nearest post-event snapshot,
         // apply it, then replay any events that fall between the snapshot and from_ms.
@@ -373,10 +369,10 @@ pub(crate) async fn start_session_playback(
         apply_sim_strips_and_master(&sim, &audio);
 
         let mut sim = sim;
-        for ev in sorted_events
-            .iter()
-            .filter(|e| e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms)
-        {
+        // deck_snapshot is already folded into the base snapshot; never replay it.
+        for ev in sorted_events.iter().filter(|e| {
+            e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
+        }) {
             if matches!(
                 ev.command(),
                 Some(
@@ -938,17 +934,19 @@ fn snap_at(state: &SimState, at_ms: f64, sr_f: f64) -> SessionSnapshot {
     }
 }
 
-// Orders events for simulation. A deck_snapshot is the session's initial state:
-// it resets the deck and forces is_playing=false, so it must apply BEFORE any
-// other event sharing its millisecond. If it sorts after a same-ms play, the
-// reconstructed state is "loaded but stopped" and playback is silent even though
-// the clip renders. Every other tie keeps source order (the sort is stable).
+// deck_snapshot (initial state) sorts first within its rounded-ms cluster; see
+// the collapsed_load_play_at_start_reconstructs_playing test for why.
 fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
+    let bucket = |e: &SessionEvent| e.elapsed_ms.round() as i64;
     let snapshot_rank = |e: &SessionEvent| u8::from(e.event_type != "deck_snapshot");
-    a.elapsed_ms
-        .partial_cmp(&b.elapsed_ms)
-        .unwrap_or(std::cmp::Ordering::Equal)
+    bucket(a)
+        .cmp(&bucket(b))
         .then_with(|| snapshot_rank(a).cmp(&snapshot_rank(b)))
+        .then_with(|| {
+            a.elapsed_ms
+                .partial_cmp(&b.elapsed_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
 }
 
 // Build one snapshot per event, capturing state AFTER the event fires.
@@ -1466,10 +1464,9 @@ mod tests {
         };
         let mut sorted: Vec<&SessionEvent> = events.iter().collect();
         sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
-        for ev in sorted
-            .iter()
-            .filter(|e| e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms)
-        {
+        for ev in sorted.iter().filter(|e| {
+            e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
+        }) {
             sim_apply_event(ev, &mut sim, cache, SR);
         }
         sim.decks
@@ -1499,28 +1496,36 @@ mod tests {
             (Arc::new(vec![0.0f32; 60 * SR as usize * 2]), 2),
         );
 
+        // The real failing order from a saved session: the deck_snapshot of the
+        // unplayed track lands a sub-millisecond hair AFTER the dragged track's
+        // play (float drift), so a plain timestamp sort orders the snapshot last.
+        let play_ms = 0.025207999999992126;
+        let snap_ms = 0.025208;
         let events = vec![
+            SessionEvent {
+                path: Some(track2.clone()),
+                beat_offset_sec: Some(0.0),
+                ..deck_ev("load_track", play_ms, "A")
+            },
+            SessionEvent {
+                sec: Some(0.0),
+                ..deck_ev("play", play_ms, "A")
+            },
             SessionEvent {
                 path: Some(track1.clone()),
                 is_playing: Some(false),
                 playback_rate: Some(1.0),
                 position_sec: Some(0.0),
-                ..deck_ev("deck_snapshot", 0.0, "A")
-            },
-            SessionEvent {
-                path: Some(track2.clone()),
-                beat_offset_sec: Some(0.0),
-                ..deck_ev("load_track", 0.0, "A")
-            },
-            SessionEvent {
-                sec: Some(0.0),
-                ..deck_ev("play", 0.0, "A")
+                ..deck_ev("deck_snapshot", snap_ms, "A")
             },
             deck_ev("stop", 8000.0, "A"),
         ];
 
-        let (playing, path) = reconstruct_deck(&events, 0.0, &cache, "A");
-        assert!(playing, "deck A must reconstruct as playing at the start");
+        let (playing, path) = reconstruct_deck(&events, 1000.0, &cache, "A");
+        assert!(
+            playing,
+            "deck A must reconstruct as playing inside the clip"
+        );
         assert_eq!(path.as_deref(), Some(track2.as_str()));
     }
 

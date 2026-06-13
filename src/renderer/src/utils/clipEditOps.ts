@@ -104,7 +104,13 @@ function endEventsFor(block: TransportBlock, atMs: number): SessionEvent[] {
 }
 
 function stableSortByMs(events: SessionEvent[]): SessionEvent[] {
-  return events.sort((left, right) => left.elapsed_ms - right.elapsed_ms);
+  const rank = (event: SessionEvent) => (event.type === 'deck_snapshot' ? 0 : 1);
+  return events.sort(
+    (left, right) =>
+      Math.round(left.elapsed_ms) - Math.round(right.elapsed_ms) ||
+      rank(left) - rank(right) ||
+      left.elapsed_ms - right.elapsed_ms
+  );
 }
 
 type Neighborhood = {
