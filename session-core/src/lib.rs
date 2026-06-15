@@ -24,8 +24,8 @@ pub use sim::{
     DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim, StripSnap, DEFAULT_MASTER_GAIN,
 };
 pub use timeline::{
-    build_clips, build_lanes, Clip, ClipsBuild, DeckLanes, FilterActiveSpan, LanePoint, LanesBuild,
-    LoadedSpan, LoopRegion, MasterLanes, NudgeSpan,
+    build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
+    LanePoint, LanesBuild, LoadedSpan, LoopRegion, MasterLanes, NudgeSpan, TimelineBuild,
 };
 
 // WASM boundary for the frontend. Pure compute only: events in as JSON, the
@@ -40,22 +40,15 @@ mod wasm {
         serde_json::from_str(events_json).map_err(|e| JsError::new(&e.to_string()))
     }
 
-    /// Derive the editor clips + loaded spans from the event stream.
-    /// Returns `{ "clips": [...], "loadedSpans": [...] }` as JSON.
-    /// `trackName` is not included; the caller fills it from the collection.
-    #[wasm_bindgen(js_name = buildClips)]
-    pub fn build_clips(events_json: &str) -> Result<String, JsError> {
+    /// Derive clips, loaded spans, and automation lanes (gain/eq/filter/rate,
+    /// filter-active spans, nudge spans) in one pass so the editor crosses the
+    /// boundary (and serializes the event list) once per change. `trackName` is
+    /// not included on clips/spans; the caller fills it from the collection.
+    /// Returns `{ clips, loadedSpans, deckLanes, masterLanes, deckNudges }`.
+    #[wasm_bindgen(js_name = buildTimeline)]
+    pub fn build_timeline(events_json: &str, duration_ms: f64) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        let result = crate::build_clips(&events);
-        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
-    }
-
-    /// Derive the automation lanes (gain/eq/filter/rate), filter-active spans,
-    /// and nudge spans. Returns `{ deckLanes, masterLanes, deckNudges }` JSON.
-    #[wasm_bindgen(js_name = buildLanes)]
-    pub fn build_lanes(events_json: &str, duration_ms: f64) -> Result<String, JsError> {
-        let events = parse_events(events_json)?;
-        let result = crate::build_lanes(&events, duration_ms);
+        let result = crate::build_timeline(&events, duration_ms);
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
     }
 

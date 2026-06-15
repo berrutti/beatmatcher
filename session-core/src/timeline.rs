@@ -507,6 +507,31 @@ pub struct LanesBuild {
     pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineBuild {
+    pub clips: Vec<Clip>,
+    pub loaded_spans: Vec<LoadedSpan>,
+    pub deck_lanes: BTreeMap<String, DeckLanes>,
+    pub master_lanes: MasterLanes,
+    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
+}
+
+// Clips and lanes from one event list. The editor needs both on every event
+// change; deriving them together lets callers cross the WASM boundary once
+// instead of serializing the event list twice.
+pub fn build_timeline(events: &[SessionEvent], duration_ms: f64) -> TimelineBuild {
+    let clips = build_clips(events);
+    let lanes = build_lanes(events, duration_ms);
+    TimelineBuild {
+        clips: clips.clips,
+        loaded_spans: clips.loaded_spans,
+        deck_lanes: lanes.deck_lanes,
+        master_lanes: lanes.master_lanes,
+        deck_nudges: lanes.deck_nudges,
+    }
+}
+
 fn make_deck_lanes() -> DeckLanes {
     DeckLanes {
         gain: vec![LanePoint {

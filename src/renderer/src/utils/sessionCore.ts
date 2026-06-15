@@ -7,8 +7,7 @@
 // after the module has initialized.
 
 import init, {
-  buildClips as wasmBuildClips,
-  buildLanes as wasmBuildLanes,
+  buildTimeline as wasmBuildTimeline,
   blocksForDeck as wasmBlocksForDeck,
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
@@ -55,31 +54,38 @@ const parse = <T>(json: string): T => JSON.parse(json) as T;
 type RawClip = Omit<Clip, 'trackName'>;
 type RawLoadedSpan = Omit<LoadedSpan, 'trackName'>;
 
-export function buildClips(
+// Clips, loaded spans, and automation lanes in a single boundary crossing: the
+// editor needs all of them on every event change, so deriving them together
+// serializes the event list once instead of once per builder. Track display
+// names are still resolved here (the Rust core returns paths only).
+export function buildTimeline(
   events: SessionEvent[],
+  durationMs: number,
   nameForPath: (path: string) => string
-): { clips: Clip[]; loadedSpans: LoadedSpan[] } {
-  const raw = parse<{ clips: RawClip[]; loadedSpans: RawLoadedSpan[] }>(
-    wasmBuildClips(JSON.stringify(events))
-  );
+): {
+  clips: Clip[];
+  loadedSpans: LoadedSpan[];
+  deckLanes: Record<string, DeckLanes>;
+  masterLanes: MasterLanes;
+  deckNudges: Record<string, NudgeSpan[]>;
+} {
+  const raw = parse<{
+    clips: RawClip[];
+    loadedSpans: RawLoadedSpan[];
+    deckLanes: Record<string, DeckLanes>;
+    masterLanes: MasterLanes;
+    deckNudges: Record<string, NudgeSpan[]>;
+  }>(wasmBuildTimeline(JSON.stringify(events), durationMs));
   return {
     clips: raw.clips.map((clip) => ({ ...clip, trackName: nameForPath(clip.trackPath) })),
     loadedSpans: raw.loadedSpans.map((span) => ({
       ...span,
       trackName: nameForPath(span.trackPath)
-    }))
+    })),
+    deckLanes: raw.deckLanes,
+    masterLanes: raw.masterLanes,
+    deckNudges: raw.deckNudges
   };
-}
-
-export function buildLanes(
-  events: SessionEvent[],
-  durationMs: number
-): {
-  deckLanes: Record<string, DeckLanes>;
-  masterLanes: MasterLanes;
-  deckNudges: Record<string, NudgeSpan[]>;
-} {
-  return parse(wasmBuildLanes(JSON.stringify(events), durationMs));
 }
 
 export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {

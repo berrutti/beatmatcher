@@ -1,6 +1,6 @@
 import { computed, type Ref } from 'vue';
 import type { ParsedSession } from '@renderer/stores/session';
-import { buildClips, buildLanes } from '@renderer/utils/sessionCore';
+import { buildTimeline } from '@renderer/utils/sessionCore';
 
 export type Clip = {
   deck: string;
@@ -66,27 +66,30 @@ export function useSessionTimeline(
   session: Ref<ParsedSession | null>,
   nameForPath: (path: string) => string = defaultNameForPath
 ) {
-  const built = computed(() => {
-    if (!session.value) return { clips: [] as Clip[], loadedSpans: [] as LoadedSpan[] };
-    return buildClips(session.value.events, nameForPath);
-  });
-
-  const lanesBuilt = computed<{
+  const built = computed<{
+    clips: Clip[];
+    loadedSpans: LoadedSpan[];
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
   }>(() => {
     if (!session.value) {
-      return { deckLanes: {}, masterLanes: { gain: [] }, deckNudges: {} };
+      return {
+        clips: [],
+        loadedSpans: [],
+        deckLanes: {},
+        masterLanes: { gain: [] },
+        deckNudges: {}
+      };
     }
-    return buildLanes(session.value.events, session.value.durationMs);
+    return buildTimeline(session.value.events, session.value.durationMs, nameForPath);
   });
 
   const clips = computed(() => built.value.clips);
   const loadedSpans = computed(() => built.value.loadedSpans);
-  const deckLanes = computed(() => lanesBuilt.value.deckLanes);
-  const masterLanes = computed(() => lanesBuilt.value.masterLanes);
-  const deckNudges = computed(() => lanesBuilt.value.deckNudges);
+  const deckLanes = computed(() => built.value.deckLanes);
+  const masterLanes = computed(() => built.value.masterLanes);
+  const deckNudges = computed(() => built.value.deckNudges);
 
   return { clips, loadedSpans, deckLanes, masterLanes, deckNudges };
 }
