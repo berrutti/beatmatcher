@@ -413,16 +413,12 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 }
             }
 
-            "reloop" => {
-                // The engine jumps the playhead back to the loop start on reloop.
-                if !deck.loop_active {
-                    if let (Some(loop_start_sec), Some(_)) =
-                        (deck.loop_start_sec, deck.loop_end_sec)
-                    {
-                        finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                        deck.track_pos_sec = loop_start_sec;
-                        engage_loop(deck, ev.elapsed_ms);
-                    }
+            // The engine jumps the playhead back to the loop start on reloop.
+            "reloop" if !deck.loop_active => {
+                if let (Some(loop_start_sec), Some(_)) = (deck.loop_start_sec, deck.loop_end_sec) {
+                    finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                    deck.track_pos_sec = loop_start_sec;
+                    engage_loop(deck, ev.elapsed_ms);
                 }
             }
 
