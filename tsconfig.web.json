@@ -12,7 +12,8 @@
     "baseUrl": ".",
     "ignoreDeprecations": "6.0",
     "paths": {
-      "@renderer/*": ["src/renderer/src/*"]
+      "@renderer/*": ["src/renderer/src/*"],
+      "@core/*": ["session-core/pkg/*"]
     },
     "types": ["vite/client"]
   },

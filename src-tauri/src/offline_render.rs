@@ -229,8 +229,8 @@ impl flacenc::source::Source for SliceSource {
 
 // ── Session JSON ─────────────────────────────────────────────────────────────
 
-use crate::session_event::SessionCommand;
-pub use crate::session_event::{SessionEvent, SessionFile};
+use session_core::event::SessionCommand;
+pub use session_core::event::{SessionEvent, SessionFile};
 
 // ── Comparison result ────────────────────────────────────────────────────────
 
@@ -428,266 +428,33 @@ fn apply_event(
     master_gain: &mut f32,
     sr: u32,
 ) -> Result<(), String> {
-    let sr_f = sr as f64;
+    if let SessionCommand::SetMasterGain { gain } = cmd {
+        *master_gain = gain.clamp(0.0, 1.0);
+        return Ok(());
+    }
 
-    macro_rules! deck {
-        ($id:expr) => {
-            decks
-                .get_mut($id)
-                .ok_or_else(|| format!("unknown deck: {}", $id))?
+    let id = cmd
+        .deck_id()
+        .expect("non-SetMasterGain commands target a deck");
+    let d = decks
+        .get_mut(id)
+        .ok_or_else(|| format!("unknown deck: {id}"))?;
+    let s = strips
+        .get_mut(id)
+        .ok_or_else(|| format!("unknown deck: {id}"))?;
+
+    let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
+        let (raw, channels, native_sr) =
+            audio::decode_audio(path).map_err(|e| format!("{path}: {e}"))?;
+        let resampled = if native_sr == sr {
+            raw
+        } else {
+            audio::resample_linear(&raw, channels, native_sr, sr)
         };
-    }
-    macro_rules! strip {
-        ($id:expr) => {
-            strips
-                .get_mut($id)
-                .ok_or_else(|| format!("unknown deck: {}", $id))?
-        };
-    }
-    macro_rules! to_frames {
-        ($sec:expr) => {
-            ($sec * sr_f).max(0.0)
-        };
-    }
-
-    match cmd {
-        SessionCommand::DeckSnapshot {
-            deck: id,
-            path,
-            position_sec,
-            cue_point_sec,
-            bpm,
-            playback_rate,
-            loop_active,
-            loop_end_sec,
-            is_playing,
-        } => {
-            let d = deck!(id);
-            load_deck(d, path, sr)?;
-            if let Some(pos) = position_sec {
-                let f = to_frames!(pos).min(d.total_frames as f64);
-                d.main_pos = f;
-                d.cue_pos = f;
-            }
-            if let Some(cp) = cue_point_sec {
-                d.cue_point = to_frames!(cp).min(d.total_frames as f64);
-            }
-            if let Some(bpm) = bpm {
-                d.bpm = Some(bpm);
-            }
-            if let Some(rate) = playback_rate {
-                d.playback_rate = rate.max(0.1);
-            }
-            if let Some(la) = loop_active {
-                d.loop_active = la;
-            }
-            if let Some(le) = loop_end_sec {
-                d.loop_end = to_frames!(le).min(d.total_frames as f64);
-            }
-            if is_playing {
-                d.is_playing = true;
-            }
-        }
-
-        SessionCommand::LoadTrack {
-            deck: id,
-            path,
-            beat_offset_sec,
-        } => {
-            let d = deck!(id);
-            load_deck(d, path, sr)?;
-            if let Some(offset) = beat_offset_sec {
-                let f = (offset * sr_f).clamp(0.0, d.total_frames as f64);
-                d.main_pos = f;
-                d.cue_pos = f;
-                d.cue_point = f;
-            }
-        }
-
-        SessionCommand::EjectTrack { deck: id } => {
-            *deck!(id) = DeckState::empty(sr);
-        }
-
-        SessionCommand::Play { deck: id, sec } => {
-            let d = deck!(id);
-            match sec {
-                Some(sec) => {
-                    let f = to_frames!(sec).min(d.total_frames as f64);
-                    d.main_pos = f;
-                    d.cue_pos = f;
-                }
-                None => {
-                    d.cue_pos = d.main_pos;
-                }
-            }
-            d.is_playing = true;
-        }
-
-        SessionCommand::Stop { deck: id } => {
-            deck!(id).is_playing = false;
-        }
-
-        SessionCommand::StopAtCue {
-            deck: id,
-            cue_point_sec,
-        } => {
-            let d = deck!(id);
-            d.is_playing = false;
-            if let Some(cp) = cue_point_sec {
-                let f = to_frames!(cp).min(d.total_frames as f64);
-                d.main_pos = f;
-                d.cue_pos = f;
-            }
-        }
-
-        SessionCommand::Seek { deck: id, sec } => {
-            let d = deck!(id);
-            let f = to_frames!(sec).min(d.total_frames as f64);
-            d.main_pos = f;
-            d.cue_pos = f;
-            if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
-                d.loop_active = false;
-            }
-        }
-
-        SessionCommand::SetVolume { deck: id, gain } => {
-            strip!(id).set_gain(gain);
-        }
-
-        SessionCommand::SetEq { deck: id, band, db } => {
-            strip!(id).set_eq_band(band, db);
-        }
-
-        SessionCommand::SetFilter { deck: id, value } => {
-            strip!(id).set_filter(value);
-        }
-
-        SessionCommand::SetFilterActive { deck: id, active } => {
-            strip!(id).set_filter_active(active);
-        }
-
-        SessionCommand::SetPlaybackRate { deck: id, rate } => {
-            deck!(id).playback_rate = rate.max(0.1);
-        }
-
-        SessionCommand::SetNudge { deck: id, percent } => {
-            deck!(id).nudge_factor = 1.0 + percent / 100.0;
-        }
-
-        SessionCommand::SetMasterGain { gain } => {
-            *master_gain = gain.clamp(0.0, 1.0);
-        }
-
-        SessionCommand::SetBeatGrid {
-            deck: id,
-            bpm,
-            beat_offset_sec,
-        } => {
-            let d = deck!(id);
-            if let Some(bpm) = bpm {
-                d.bpm = Some(bpm);
-            }
-            if let Some(off) = beat_offset_sec {
-                d.beat_offset_frames = off * sr_f;
-            }
-        }
-
-        SessionCommand::LoopIn { deck: id, cue_sec } => {
-            let d = deck!(id);
-            if let Some(cs) = cue_sec {
-                d.cue_point = to_frames!(cs).min(d.total_frames as f64);
-            }
-            d.loop_active = false;
-            d.loop_end = 0.0;
-        }
-
-        SessionCommand::LoopOut {
-            deck: id,
-            start_sec,
-            end_sec,
-        } => {
-            let d = deck!(id);
-            if let Some(ss) = start_sec {
-                d.cue_point = to_frames!(ss).min(d.total_frames as f64);
-            }
-            if let Some(es) = end_sec {
-                d.loop_end = to_frames!(es).min(d.total_frames as f64);
-            }
-            d.loop_active = true;
-        }
-
-        SessionCommand::ExitLoop { deck: id } => {
-            deck!(id).loop_active = false;
-        }
-
-        SessionCommand::Reloop { deck: id } => {
-            let d = deck!(id);
-            if d.loop_end > d.cue_point {
-                d.main_pos = d.cue_point;
-                d.cue_pos = d.cue_point;
-                if d.is_playing {
-                    d.loop_active = true;
-                }
-            }
-        }
-
-        // Holding CUE plays from the cue point through the main path. Audible in the recording.
-        SessionCommand::CuePreviewStart {
-            deck: id,
-            cue_point_sec,
-        } => {
-            let d = deck!(id);
-            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
-            let f = to_frames!(cp).min(d.total_frames as f64);
-            d.cue_point = f;
-            d.main_pos = f;
-            d.cue_pos = f;
-            d.is_playing = true;
-            d.is_cueing = true;
-        }
-
-        // Releasing CUE stops playback and returns to cue point.
-        SessionCommand::CuePreviewEnd {
-            deck: id,
-            cue_point_sec,
-        } => {
-            let d = deck!(id);
-            let cp = cue_point_sec.unwrap_or(d.cue_point / sr_f);
-            let f = to_frames!(cp).min(d.total_frames as f64);
-            d.is_playing = false;
-            d.is_cueing = false;
-            d.main_pos = f;
-            d.cue_pos = f;
-        }
-    }
-
-    Ok(())
-}
-
-fn load_deck(deck: &mut DeckState, path: &str, sr: u32) -> Result<(), String> {
-    let (raw, channels, native_sr) =
-        audio::decode_audio(path).map_err(|e| format!("{path}: {e}"))?;
-    let resampled = if native_sr == sr {
-        raw
-    } else {
-        audio::resample_linear(&raw, channels, native_sr, sr)
+        Ok((Arc::new(resampled), channels))
     };
-    let total_frames = resampled.len() / channels;
-    deck.samples = Arc::new(resampled);
-    deck.channels = channels;
-    deck.device_sample_rate = sr;
-    deck.total_frames = total_frames;
-    deck.duration = total_frames as f64 / sr as f64;
-    deck.is_playing = false;
-    deck.is_cueing = false;
-    deck.main_pos = 0.0;
-    deck.cue_pos = 0.0;
-    deck.cue_point = 0.0;
-    deck.loop_active = false;
-    deck.loop_end = 0.0;
-    deck.bpm = None;
-    deck.beat_offset_frames = 0.0;
-    deck.playback_rate = 1.0;
-    deck.nudge_factor = 1.0;
-    Ok(())
+
+    // The offline renderer never compensates for buffer-aligned overshoot
+    // (no live audio thread to catch up with), so overshoot is always 0.
+    audio::apply_deck_command(&cmd, d, s, sr, 0.0, &mut load_samples)
 }

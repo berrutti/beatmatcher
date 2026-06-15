@@ -12,6 +12,17 @@ import {
   FILTER_DEAD_ZONE,
   DEFAULT_MASTER_GAIN
 } from '@renderer/stores/mixer';
+import {
+  normalizeGestureSamples as coreNormalizeGestureSamples,
+  decimateSteps as coreDecimateSteps,
+  spliceLaneEvents as coreSpliceLaneEvents,
+  filterActiveAt as coreFilterActiveAt,
+  toggleFilterActiveRange as coreToggleFilterActiveRange,
+  nudgeValueAt as coreNudgeValueAt,
+  paintNudgeRange as corePaintNudgeRange,
+  deleteNudgeRange as coreDeleteNudgeRange,
+  relocateEventPaths as coreRelocateEventPaths
+} from '@renderer/utils/sessionCore';
 
 export type EditableLaneKey =
   | 'gain'
@@ -23,6 +34,7 @@ export type EditableLaneKey =
   | 'masterGain';
 
 export type LaneSpec = {
+  key: EditableLaneKey;
   min: number;
   max: number;
   defaultValue: number;
@@ -33,13 +45,9 @@ export type LaneSpec = {
   makeEvent: (ms: number, value: number, deck: string) => SessionEvent;
 };
 
-// Gestures spanning less time than this are rejected: the value would change
-// and restore almost instantly, which is inaudible and renders as a bare
-// vertical line on the lane.
-export const MIN_GESTURE_MS = 50;
-
 function eqSpec(band: 'low' | 'mid' | 'high'): LaneSpec {
   return {
+    key: band === 'low' ? 'eqLow' : band === 'mid' ? 'eqMid' : 'eqHigh',
     min: EQ_MIN_DB,
     max: EQ_MAX_DB,
     defaultValue: DEFAULT_EQ_DB,
@@ -58,6 +66,7 @@ export function laneSpecFor(
   switch (key) {
     case 'gain':
       return {
+        key,
         min: 0,
         max: 1,
         defaultValue: DEFAULT_GAIN,
@@ -75,6 +84,7 @@ export function laneSpecFor(
       return eqSpec('high');
     case 'filter':
       return {
+        key,
         min: -1,
         max: 1,
         defaultValue: DEFAULT_FILTER_VALUE,
@@ -87,6 +97,7 @@ export function laneSpecFor(
       };
     case 'rate':
       return {
+        key,
         min: opts.rateMin ?? 0.92,
         max: opts.rateMax ?? 1.08,
         defaultValue: DEFAULT_RATE,
@@ -106,6 +117,7 @@ export function laneSpecFor(
       };
     case 'masterGain':
       return {
+        key,
         min: 0,
         max: 1,
         defaultValue: DEFAULT_MASTER_GAIN,
@@ -120,39 +132,11 @@ export function laneSpecFor(
 // A drag can scrub back and forth over the same time range; the last value
 // written at each timestamp is the one the user ended on.
 export function normalizeGestureSamples(samples: LanePoint[]): LanePoint[] {
-  const byMs = new Map<number, number>();
-  for (const sample of samples) byMs.set(sample.ms, sample.value);
-  return [...byMs.entries()]
-    .map(([ms, value]) => ({ ms, value }))
-    .sort((first, second) => first.ms - second.ms);
+  return coreNormalizeGestureSamples(samples);
 }
 
 export function decimateSteps(points: LanePoint[], epsilon: number): LanePoint[] {
-  if (points.length <= 1) return [...points];
-  const out: LanePoint[] = [points[0]];
-  for (let pointIdx = 1; pointIdx < points.length - 1; pointIdx++) {
-    if (Math.abs(points[pointIdx].value - out[out.length - 1].value) >= epsilon) {
-      out.push(points[pointIdx]);
-    }
-  }
-  const last = points[points.length - 1];
-  if (last.value !== out[out.length - 1].value) out.push(last);
-  return out;
-}
-
-export function originalValueAt(
-  events: SessionEvent[],
-  spec: LaneSpec,
-  deck: string,
-  ms: number
-): number {
-  for (let eventIdx = events.length - 1; eventIdx >= 0; eventIdx--) {
-    const event = events[eventIdx];
-    if (event.elapsed_ms > ms) continue;
-    const value = spec.valueAt(event, deck);
-    if (value !== undefined) return value;
-  }
-  return spec.defaultValue;
+  return coreDecimateSteps(points, epsilon);
 }
 
 // Replaces this lane's events inside [t0, t1] with the drawn points and restores
@@ -166,26 +150,7 @@ export function spliceLaneEvents(
   t1: number,
   points: LanePoint[]
 ): SessionEvent[] {
-  if (points.length === 0 || t1 - t0 < MIN_GESTURE_MS) return events;
-
-  const snap = spec.snap ?? ((value: number) => value);
-  const clampValue = (value: number) => snap(Math.min(spec.max, Math.max(spec.min, value)));
-
-  const kept = events.filter(
-    (event) => !(event.elapsed_ms >= t0 && event.elapsed_ms <= t1 && spec.matches(event, deck))
-  );
-
-  const inserted = points.map((point) => spec.makeEvent(point.ms, clampValue(point.value), deck));
-
-  const restoreValue = originalValueAt(events, spec, deck, t1);
-  const lastDrawnValue = spec.valueAt(inserted[inserted.length - 1], deck);
-  if (lastDrawnValue !== restoreValue) {
-    inserted.push(spec.makeEvent(t1, restoreValue, deck));
-  }
-
-  // Stable sort keeps pre-existing events ahead of inserted ones at identical
-  // timestamps, so an inserted value applied at the same ms wins.
-  return [...kept, ...inserted].sort((first, second) => first.elapsed_ms - second.elapsed_ms);
+  return coreSpliceLaneEvents(events, spec.key, deck, t0, t1, points, spec.min, spec.max);
 }
 
 export function filterActiveAt(
@@ -194,14 +159,7 @@ export function filterActiveAt(
   ms: number,
   inclusive = true
 ): boolean {
-  for (let eventIdx = events.length - 1; eventIdx >= 0; eventIdx--) {
-    const event = events[eventIdx];
-    if (inclusive ? event.elapsed_ms > ms : event.elapsed_ms >= ms) continue;
-    if (event.type === 'set_filter_active' && event.deck === deck && event.active !== undefined) {
-      return event.active;
-    }
-  }
-  return false;
+  return coreFilterActiveAt(events, deck, ms, inclusive);
 }
 
 // Shift+drag on the filter lane: toggles the filter's on/off state over [t0, t1]
@@ -214,29 +172,7 @@ export function toggleFilterActiveRange(
   t0: number,
   t1: number
 ): SessionEvent[] {
-  if (t1 - t0 < MIN_GESTURE_MS) return events;
-
-  const want = !filterActiveAt(events, deck, t0, false);
-
-  const kept = events.filter(
-    (event) =>
-      !(
-        event.type === 'set_filter_active' &&
-        event.deck === deck &&
-        event.elapsed_ms >= t0 &&
-        event.elapsed_ms <= t1
-      )
-  );
-
-  const inserted: SessionEvent[] = [
-    { elapsed_ms: t0, type: 'set_filter_active', deck, active: want }
-  ];
-  const restoreActive = filterActiveAt(events, deck, t1, true);
-  if (restoreActive !== want) {
-    inserted.push({ elapsed_ms: t1, type: 'set_filter_active', deck, active: restoreActive });
-  }
-
-  return [...kept, ...inserted].sort((first, second) => first.elapsed_ms - second.elapsed_ms);
+  return coreToggleFilterActiveRange(events, deck, t0, t1);
 }
 
 export function nudgeValueAt(
@@ -245,14 +181,7 @@ export function nudgeValueAt(
   ms: number,
   inclusive = true
 ): number {
-  for (let eventIdx = events.length - 1; eventIdx >= 0; eventIdx--) {
-    const event = events[eventIdx];
-    if (inclusive ? event.elapsed_ms > ms : event.elapsed_ms >= ms) continue;
-    if (event.type === 'set_nudge' && event.deck === deck && event.percent !== undefined) {
-      return event.percent;
-    }
-  }
-  return 0;
+  return coreNudgeValueAt(events, deck, ms, inclusive);
 }
 
 // Shift+drag on a deck's waveform row paints a nudge over [t0, t1]: top half of
@@ -268,25 +197,7 @@ export function paintNudgeRange(
   t1: number,
   percent: number
 ): SessionEvent[] {
-  if (t1 - t0 < MIN_GESTURE_MS) return events;
-
-  const kept = events.filter(
-    (event) =>
-      !(
-        event.type === 'set_nudge' &&
-        event.deck === deck &&
-        event.elapsed_ms >= t0 &&
-        event.elapsed_ms <= t1
-      )
-  );
-
-  const inserted: SessionEvent[] = [{ elapsed_ms: t0, type: 'set_nudge', deck, percent }];
-  const restorePercent = nudgeValueAt(events, deck, t1, true);
-  if (restorePercent !== percent) {
-    inserted.push({ elapsed_ms: t1, type: 'set_nudge', deck, percent: restorePercent });
-  }
-
-  return [...kept, ...inserted].sort((first, second) => first.elapsed_ms - second.elapsed_ms);
+  return corePaintNudgeRange(events, deck, t0, t1, percent);
 }
 
 // Removes a nudge span: every set_nudge for the deck in [t0, t1], including
@@ -307,7 +218,7 @@ export function deleteNudgeRange(
     event.elapsed_ms <= t1 &&
     !(event.elapsed_ms === t1 && event.percent !== 0);
   if (!events.some(inRange)) return events;
-  return events.filter((event) => !inRange(event));
+  return coreDeleteNudgeRange(events, deck, t0, t1);
 }
 
 // Rewrites event track paths after the user relocates missing files. Returns
@@ -320,11 +231,7 @@ export function relocateEventPaths(
   if (!events.some((event) => event.path !== undefined && mapping[event.path] !== undefined)) {
     return events;
   }
-  return events.map((event) =>
-    event.path !== undefined && mapping[event.path] !== undefined
-      ? { ...event, path: mapping[event.path] }
-      : event
-  );
+  return coreRelocateEventPaths(events, mapping);
 }
 
 export function formatLaneValue(key: EditableLaneKey, value: number): string {

@@ -26,9 +26,7 @@ type SharedStrip = Arc<Mutex<ChannelStrip>>;
 type ChannelPair = (SharedDeck, SharedStrip);
 type ChannelPairs = Vec<ChannelPair>;
 
-// -2 dBFS: gives the master bus headroom before the hardware clipping point.
-// 10^(-2/20) = 0.7943...
-pub(crate) const DEFAULT_MASTER_GAIN: f32 = 0.7943;
+pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
 // ── Master monitor (metering + recording tap) ─────────────────────────────────
 //
