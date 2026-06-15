@@ -215,6 +215,25 @@ flowchart TD
     Snapshots -- "snapshot state applied\nto live AppAudio" --> Scheduler
 ```
 
+## Shared session-core crate (Rust + WASM)
+
+The session event model, replay simulation, timeline (clips/lanes), and edit operations (clip move/trim, lane automation) live in `session-core`, a dependency-free Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This removes the previous split where the frontend's TypeScript reimplemented the same simulation/edit logic as the Rust engine and could silently drift out of sync.
+
+```mermaid
+graph TD
+    classDef core fill:#a855f7,stroke:#7c3aed,color:#fff
+    classDef native fill:#f97316,stroke:#ea580c,color:#fff
+    classDef wasm fill:#3b82f6,stroke:#1d4ed8,color:#fff
+
+    Core["session-core crate\n(event.rs, sim.rs, timeline.rs,\nclip_edit.rs, lane_edit.rs)"]:::core
+
+    Core -- "native path dependency" --> Native["src-tauri\nsession_playback.rs (live scheduler)\noffline_render.rs\naudio/session_apply.rs"]:::native
+    Core -- "wasm-pack build --target web" --> Wasm["session_core.wasm\n(@core alias, session-core/pkg)"]:::wasm
+    Wasm -- "initSessionCore()" --> Wrapper["sessionCore.ts\n(useSessionTimeline, clipEditOps,\nsessionEditOps - thin shims)"]:::wasm
+```
+
+`session_apply.rs::apply_deck_command` is the single implementation of `SessionCommand` application against the real `DeckState`/`ChannelStrip`, used by both the live scheduler and the offline renderer (parameterized over sample loading and live-only start-latency compensation). `session-core`'s own `DeckSim`/`StripSim` (used for scrub simulation and by the WASM build) remain a separate, audio-free implementation of the same command semantics, since the crate has no audio buffer types.
+
 ## Session playback: scrubbing and snapshot state machine
 
 On session open, `preload_session` decodes all referenced audio files into a persistent cache and builds a `SessionSnapshot` after every event in the session log. Each snapshot captures the complete state of all decks (position, rate, nudge, loop) and all channel strips (gain, EQ, filter).
@@ -233,12 +252,12 @@ Position simulation rule: any event that changes playback speed or position (`pl
 
 Sessions are edited in memory. The frontend's parsed event array is the source of truth; every edit produces a new array (reference equality drives the dirty flag and undo/redo) and is pushed to Rust via `update_session_events`, which rebuilds the snapshot state machine. Saving serializes from the frontend's raw JSON so unknown fields survive a round-trip; the .bms on disk is untouched until SAVE.
 
-Two kinds of edits exist, both implemented as pure functions over the event array:
+Two kinds of edits exist, both implemented as pure functions over the event array in `session-core` (Rust, compiled to WASM) and called from the frontend via `sessionEditOps.ts`/`clipEditOps.ts`, which are now thin shims over `sessionCore.ts`:
 
-- **Automation lane edits** (`sessionEditOps.ts`): drawing on a lane splices new `set_*` events into the drawn range and restores the original value at the range end.
-- **Clip edits** (`clipEditOps.ts`): moving or trimming a play segment rewrites deck-transport events. A moved block is deleted from its old position and re-synthesized as a self-contained `play {sec}` … `stop` pair (loops get `loop_out`/`exit_loop` around it). Every synthesized value comes from `buildClips` output — the rendered truth of what the listener heard — so rewriting one block's boundaries can never change a neighboring clip's audio. Automation events stay at wall time.
+- **Automation lane edits** (`lane_edit.rs`): drawing on a lane splices new `set_*` events into the drawn range and restores the original value at the range end.
+- **Clip edits** (`clip_edit.rs`): moving or trimming a play segment rewrites deck-transport events. A moved block is deleted from its old position and re-synthesized as a self-contained `play {sec}` … `stop` pair (loops get `loop_out`/`exit_loop` around it). Every synthesized value comes from `buildClips` output — the rendered truth of what the listener heard — so rewriting one block's boundaries can never change a neighboring clip's audio. Automation events stay at wall time.
 
-On the Rust side, `session_event.rs` parses each raw event into the closed `SessionCommand` enum. The three interpreters (scrub simulation, live scheduler, offline renderer) match on it exhaustively with no catch-all, so adding an event type fails compilation until each interpreter decides its behavior.
+On the Rust side, `session-core/src/event.rs` parses each raw event into the closed `SessionCommand` enum. The three interpreters (scrub simulation, live scheduler, offline renderer) match on it exhaustively with no catch-all, so adding an event type fails compilation until each interpreter decides its behavior.
 
 ## .bms file format
 

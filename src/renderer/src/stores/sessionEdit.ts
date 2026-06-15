@@ -16,12 +16,9 @@ import {
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
 import { basename, indexByBasename } from '@renderer/utils/path';
-import {
-  moveTransportBlock,
-  trimTransportBlock,
-  type TransportBlock
-} from '@renderer/utils/clipEditOps';
+import { moveTransportBlock, trimTransportBlock } from '@renderer/utils/clipEditOps';
 import type { Clip } from '@renderer/composables/useSessionTimeline';
+import { TransportBlock } from '@renderer/utils/types';
 
 export type SelectedLane = { deck: string; lane: EditableLaneKey };
 

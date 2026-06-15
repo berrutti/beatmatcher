@@ -121,7 +121,11 @@ export function useKeyboard() {
 
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
+    if (e.code === 'Space') {
+      e.preventDefault();
+      mixer.setSwarmMode(true);
+      return;
+    }
 
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
@@ -152,9 +156,15 @@ export function useKeyboard() {
       return;
     }
 
-    if (appMode.mode !== 'performance' || isTyping(e)) return;
+    // Releasing Space always clears swarm mode, even if the app mode changed
+    // or focus moved to a text input while Space was held, so swarmMode never
+    // gets stuck on.
+    if (e.code === 'Space') {
+      mixer.setSwarmMode(false);
+      return;
+    }
 
-    mixer.setSwarmMode(e.getModifierState('CapsLock'));
+    if (appMode.mode !== 'performance' || isTyping(e)) return;
 
     if (mixer.swarmMode) {
       const digitDeck = DIGIT_DECK[e.code];

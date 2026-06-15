@@ -138,14 +138,10 @@ import {
   filterActiveAt,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
-import {
-  blocksForDeck,
-  blockBounds,
-  MIN_BLOCK_MS,
-  type TransportBlock
-} from '@renderer/utils/clipEditOps';
+import { blocksForDeck, blockBounds, MIN_BLOCK_MS } from '@renderer/utils/clipEditOps';
 import { planTimelineClick } from '@renderer/utils/timelineClick';
 import type { LanePoint } from '@renderer/composables/useSessionTimeline';
+import { TransportBlock } from '@renderer/utils/types';
 
 type DragMode =
   | 'track'
@@ -345,7 +341,10 @@ function onCanvasMouseDown(e: MouseEvent) {
         };
         dragState.mode = 'paint-active';
       } else {
-        beginDrawGesture(hit, ms, y);
+        // Defer starting the draw gesture until an actual drag happens, so a
+        // plain click on the lane seeks the playhead instead of stopping
+        // playback and committing a single-point edit.
+        pendingDrawStart = { hit, ms, y };
         dragState.mode = 'draw';
       }
       dragState.startClientX = e.clientX;
@@ -472,6 +471,10 @@ function onWindowMouseMove(e: MouseEvent) {
       break;
     }
     case 'draw': {
+      if (!drawGesture && dragState.dragged && pendingDrawStart) {
+        beginDrawGesture(pendingDrawStart.hit, pendingDrawStart.ms, pendingDrawStart.y);
+        pendingDrawStart = null;
+      }
       if (!drawGesture) break;
       const frac = fracAtClientX(e.clientX, rect, trackW);
       const ms = Math.min(total, Math.max(0, fracToMs(frac, start)));
@@ -512,9 +515,15 @@ function onWindowMouseMove(e: MouseEvent) {
 
 function onWindowMouseUp() {
   if (dragState.mode === 'draw') {
-    finishDrawGesture();
-    // Suppress the click event that follows this mouseup so it cannot seek.
-    dragState.dragged = true;
+    if (drawGesture) {
+      finishDrawGesture();
+      // Suppress the click event that follows this mouseup so it cannot seek.
+      dragState.dragged = true;
+    } else {
+      // No drag happened: leave dragState.dragged false so the trailing
+      // click seeks the playhead instead.
+      pendingDrawStart = null;
+    }
   }
   if (dragState.mode === 'paint-active') {
     finishPaintGesture();
@@ -644,6 +653,7 @@ let rowLayout: RowLayout[] = [];
 let overviewRect: OverviewRect | null = null;
 let masterRect: { top: number; height: number } | null = null;
 let drawGesture: DrawGesture | null = null;
+let pendingDrawStart: { hit: LaneHit; ms: number; y: number } | null = null;
 let paintGesture: PaintGesture | null = null;
 let nudgeGesture: NudgeGesture | null = null;
 let clipGesture: ClipGesture | null = null;

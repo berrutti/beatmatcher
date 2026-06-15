@@ -3,6 +3,7 @@ mod deck;
 mod dsp;
 mod io;
 mod recording;
+mod session_apply;
 mod stream;
 
 pub use analysis::{
@@ -13,6 +14,7 @@ pub use deck::{ChannelStrip, CuePressOutcome, DeckState};
 pub(crate) use dsp::LimiterState;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
+pub(crate) use session_apply::apply_deck_command;
 pub use stream::MasterMonitor;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;
 

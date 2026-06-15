@@ -19,8 +19,14 @@ jobs:
           cache: yarn
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - run: yarn install --frozen-lockfile
+
+      - run: yarn build:wasm
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -58,8 +64,15 @@ jobs:
           cache: yarn
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        shell: bash
 
       - run: yarn install --frozen-lockfile
+
+      - run: yarn build:wasm
 
       - uses: tauri-apps/tauri-action@v0
         env:

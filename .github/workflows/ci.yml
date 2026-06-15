@@ -15,9 +15,19 @@ jobs:
           node-version: 22
           cache: yarn
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
       - run: yarn install --frozen-lockfile
 
+      - run: yarn build:wasm
+
       - run: yarn lint:ci
+      - run: yarn lint:rust
       - run: yarn format:check
       - run: yarn typecheck
       - run: yarn test
+      - run: yarn test:rust

@@ -1,7 +1,6 @@
 mod audio;
 mod commands;
 pub mod offline_render;
-mod session_event;
 mod session_playback;
 
 use audio::AppAudio;

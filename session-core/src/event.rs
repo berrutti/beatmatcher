@@ -3,34 +3,73 @@
 // offline render) all match exhaustively on `SessionCommand`, so adding a
 // variant forces a compile error in each until its behavior is decided.
 
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+// Serializes back to the same shape the frontend writes to .bms: only the
+// fields actually set appear (skip_serializing_if), so edit ops that synthesize
+// events round-trip to clean JSON without a wall of nulls.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct SessionEvent {
     pub elapsed_ms: f64,
     #[serde(rename = "type")]
     pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deck: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_offset_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_playing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cue_point_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_end_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cue_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffer_size_frames: Option<u32>,
+}
+
+impl SessionEvent {
+    // Builds a per-deck event with only `elapsed_ms`, `event_type`, and `deck`
+    // set; callers fill in the remaining fields via struct-update syntax.
+    pub fn at(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+        SessionEvent {
+            elapsed_ms,
+            event_type: event_type.to_string(),
+            deck: Some(deck.to_string()),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -41,7 +80,7 @@ pub struct SessionFile {
 // Every replayable command, with the fields each one actually consumes.
 // Borrowed from the raw event, so conversion never allocates.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum SessionCommand<'a> {
+pub enum SessionCommand<'a> {
     DeckSnapshot {
         deck: &'a str,
         path: &'a str,
@@ -134,11 +173,41 @@ pub(crate) enum SessionCommand<'a> {
     },
 }
 
+impl<'a> SessionCommand<'a> {
+    // The deck a command targets, or None for commands that act on the master strip.
+    pub fn deck_id(&self) -> Option<&'a str> {
+        use SessionCommand::*;
+        match *self {
+            SetMasterGain { .. } => None,
+            DeckSnapshot { deck, .. }
+            | LoadTrack { deck, .. }
+            | EjectTrack { deck }
+            | Play { deck, .. }
+            | Stop { deck }
+            | StopAtCue { deck, .. }
+            | Seek { deck, .. }
+            | SetVolume { deck, .. }
+            | SetEq { deck, .. }
+            | SetFilter { deck, .. }
+            | SetFilterActive { deck, .. }
+            | SetPlaybackRate { deck, .. }
+            | SetNudge { deck, .. }
+            | SetBeatGrid { deck, .. }
+            | LoopIn { deck, .. }
+            | LoopOut { deck, .. }
+            | ExitLoop { deck }
+            | Reloop { deck }
+            | CuePreviewStart { deck, .. }
+            | CuePreviewEnd { deck, .. } => Some(deck),
+        }
+    }
+}
+
 impl SessionEvent {
     // Returns None for events that are not replayed (recording_start/stop,
     // cue_move, set_cue_active, set_cue_mix, unknown types) and for events
     // missing a field they cannot be applied without.
-    pub(crate) fn command(&self) -> Option<SessionCommand<'_>> {
+    pub fn command(&self) -> Option<SessionCommand<'_>> {
         use SessionCommand::*;
         let deck = self.deck.as_deref();
         Some(match self.event_type.as_str() {
