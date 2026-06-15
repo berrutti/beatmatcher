@@ -140,44 +140,40 @@ fn finalize_clip(
         id
     };
 
-    if deck.loop_active
-        && deck.loop_engaged_ms.is_some()
-        && deck.loop_start_sec.is_some()
-        && deck.loop_end_sec.is_some()
-        && deck.clip_path.is_some()
-    {
-        let loop_start_sec = deck.loop_start_sec.unwrap();
-        let loop_end_sec = deck.loop_end_sec.unwrap();
-        let loop_dur_sec = loop_end_sec - loop_start_sec;
-        if loop_dur_sec > 0.0 && deck.clip_rate > 0.0 {
-            let loop_path = deck.clip_path.clone().unwrap();
-            let loop_rate = deck.clip_rate;
-            let block_id = allocate();
-            let mut iter_start = deck.loop_engaged_ms.unwrap();
-            // The first iteration starts at the wrapped entry position, which may
-            // be inside the region; every later iteration runs the full loop.
-            let mut iter_track_start_sec = deck.loop_entry_sec.unwrap_or(loop_start_sec);
-            while iter_start < end_ms {
-                let iter_dur_ms = ((loop_end_sec - iter_track_start_sec) / loop_rate) * 1000.0;
-                if iter_dur_ms <= 0.0 {
-                    break;
+    if deck.loop_active && deck.loop_engaged_ms.is_some() && deck.clip_path.is_some() {
+        if let (Some(loop_start_sec), Some(loop_end_sec)) = (deck.loop_start_sec, deck.loop_end_sec)
+        {
+            let loop_dur_sec = loop_end_sec - loop_start_sec;
+            if loop_dur_sec > 0.0 && deck.clip_rate > 0.0 {
+                let loop_path = deck.clip_path.clone().unwrap();
+                let loop_rate = deck.clip_rate;
+                let block_id = allocate();
+                let mut iter_start = deck.loop_engaged_ms.unwrap();
+                // The first iteration starts at the wrapped entry position, which may
+                // be inside the region; every later iteration runs the full loop.
+                let mut iter_track_start_sec = deck.loop_entry_sec.unwrap_or(loop_start_sec);
+                while iter_start < end_ms {
+                    let iter_dur_ms = ((loop_end_sec - iter_track_start_sec) / loop_rate) * 1000.0;
+                    if iter_dur_ms <= 0.0 {
+                        break;
+                    }
+                    let iter_end = (iter_start + iter_dur_ms).min(end_ms);
+                    out.push(Clip {
+                        deck: deck_id.to_string(),
+                        session_start_ms: iter_start,
+                        session_end_ms: iter_end,
+                        track_path: loop_path.clone(),
+                        track_start_sec: iter_track_start_sec,
+                        playback_rate: loop_rate,
+                        block_id,
+                        loop_region: Some(LoopRegion {
+                            start_sec: loop_start_sec,
+                            end_sec: loop_end_sec,
+                        }),
+                    });
+                    iter_start += iter_dur_ms;
+                    iter_track_start_sec = loop_start_sec;
                 }
-                let iter_end = (iter_start + iter_dur_ms).min(end_ms);
-                out.push(Clip {
-                    deck: deck_id.to_string(),
-                    session_start_ms: iter_start,
-                    session_end_ms: iter_end,
-                    track_path: loop_path.clone(),
-                    track_start_sec: iter_track_start_sec,
-                    playback_rate: loop_rate,
-                    block_id,
-                    loop_region: Some(LoopRegion {
-                        start_sec: loop_start_sec,
-                        end_sec: loop_end_sec,
-                    }),
-                });
-                iter_start += iter_dur_ms;
-                iter_track_start_sec = loop_start_sec;
             }
         }
         deck.loop_active = false;
@@ -419,11 +415,14 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
             "reloop" => {
                 // The engine jumps the playhead back to the loop start on reloop.
-                if !deck.loop_active && deck.loop_start_sec.is_some() && deck.loop_end_sec.is_some()
-                {
-                    finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                    deck.track_pos_sec = deck.loop_start_sec.unwrap();
-                    engage_loop(deck, ev.elapsed_ms);
+                if !deck.loop_active {
+                    if let (Some(loop_start_sec), Some(_)) =
+                        (deck.loop_start_sec, deck.loop_end_sec)
+                    {
+                        finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                        deck.track_pos_sec = loop_start_sec;
+                        engage_loop(deck, ev.elapsed_ms);
+                    }
                 }
             }
 
