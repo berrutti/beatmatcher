@@ -1,5 +1,6 @@
 import type {
   Clip,
+  WaveSegment,
   LoadedSpan,
   DeckLanes,
   LanePoint,
@@ -16,10 +17,19 @@ import {
   type ViewWindow
 } from '@renderer/utils/timelineView';
 
-export type TrackWaveform = { durationSec: number; amps: Float32Array };
+// A waveform slice for one track: `amps` are RMS points spanning the track-time
+// range [startSec, endSec]. Zoom-driven LOD refetches a tighter range at higher
+// point density, so this is a region (not necessarily the whole track).
+export type WaveformRegion = { startSec: number; endSec: number; amps: Float32Array };
+// The top-level region is the high-detail (visible) slice; `base` is a coarse
+// slice covering the track's whole used extent, kept loaded so panning/zooming
+// to an as-yet-unfetched spot still shows something until the detail arrives.
+export type TrackWaveform = WaveformRegion & { base?: WaveformRegion };
 
 export const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
-export const ROW_H = 44;
+// Waveform/clip band height. Taller than the old 44 so the (now higher-res)
+// waveform and beat grid are legible.
+export const ROW_H = 80;
 export const LABEL_W = 32;
 export const TICK_H = 16;
 export const PADDING = 12;
@@ -49,15 +59,25 @@ export const LANE_SHORT_LABELS: Record<LaneKey, string> = {
   eqHigh: 'HI'
 };
 
+const BEAT_LINE_COLOR = '#ffffff1f';
+const DECK_LABEL_INACTIVE_COLOR = '#555';
+const DOWNBEAT_LINE_COLOR = '#ffffff4d';
+const EQ_BAND_COLORS_HIGH = '#3b82f6';
+const EQ_BAND_COLORS_LOW = '#ef4444';
+const EQ_BAND_COLORS_MID = '#eab308';
+const FILTER_ACTIVE_FILL = '#ffffff10';
+const FILTER_HPF_COLOR = '#fb923c';
+const FILTER_LPF_COLOR = '#38bdf8';
+const FILTER_NEUTRAL_COLOR = '#666666';
 const GAIN_COLOR = '#e5e5e5';
-const RATE_COLOR = '#a78bfa';
+const LANE_DROPDOWN_COLOR = '#06b6d4';
+const MASTER_LABEL_COLOR = '#888';
+const MIN_BEAT_SPACING_PX = 8;
+const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
 const NUDGE_LINE_W = 2;
-const FILTER_LPF_COLOR = '#38bdf8';
-const FILTER_HPF_COLOR = '#fb923c';
-const FILTER_NEUTRAL_COLOR = '#666666';
-const FILTER_ACTIVE_FILL = '#ffffff10';
-const EQ_BAND_COLORS: Record<string, string> = { low: '#ef4444', mid: '#eab308', high: '#3b82f6' };
+const RATE_COLOR = '#a78bfa';
+const SOLO_COLOR = '#eab308';
 
 export type SublaneLayout = { key: LaneKey; top: number; height: number };
 export type RowLayout = { deckId: DeckId; top: number; height: number; lanes: SublaneLayout[] };
@@ -103,59 +123,137 @@ export function filterColorFor(value: number): string {
   return FILTER_NEUTRAL_COLOR;
 }
 
+// Each clip is drawn as the concatenation of its wave segments, every segment
+// mapping a track-time window to a wall-time window at its own effective rate
+// (pitch*nudge). That is what makes a region the user nudged/pitched render
+// longer or shorter, instead of the whole clip at one wrong rate.
+function clipWaveSegments(clip: Clip): WaveSegment[] {
+  if (clip.waveSegments.length > 0) return clip.waveSegments;
+  // Legacy fallback for clips with no segments: one piece at the nominal rate.
+  const trackEndSec =
+    clip.trackStartSec + ((clip.sessionEndMs - clip.sessionStartMs) / 1000) * clip.playbackRate;
+  return [
+    {
+      wallStartMs: clip.sessionStartMs,
+      wallEndMs: clip.sessionEndMs,
+      trackStartSec: clip.trackStartSec,
+      trackEndSec
+    }
+  ];
+}
+
+// Mean amplitude over the track-time range [t0, t1] within a region, or null if
+// that range lies outside the region (so the caller can fall back to a coarser one).
+function sampleRegion(region: WaveformRegion, t0: number, t1: number): number | null {
+  const span = region.endSec - region.startSec;
+  if (span <= 0) return null;
+  const f0 = (t0 - region.startSec) / span;
+  const f1 = (t1 - region.startSec) / span;
+  if (f1 <= 0 || f0 >= 1) return null;
+  const n = region.amps.length;
+  const i0 = Math.min(n - 1, Math.max(0, (f0 * n) | 0));
+  const i1 = Math.min(n - 1, Math.max(i0, (f1 * n - 1e-9) | 0));
+  let sum = 0;
+  for (let i = i0; i <= i1; i++) sum += region.amps[i];
+  return sum / (i1 - i0 + 1);
+}
+
 export function drawClipWaveform(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
   waveform: TrackWaveform | undefined,
-  rectX: number,
   rectY: number,
-  rectWidth: number,
   rectHeight: number,
-  accent: string
+  accent: string,
+  msToX: (ms: number) => number
 ): void {
-  if (rectWidth < 2 || !waveform || waveform.amps.length === 0 || waveform.durationSec <= 0) return;
+  if (!waveform || waveform.amps.length === 0) return;
 
-  const wallDurationSec = (clip.sessionEndMs - clip.sessionStartMs) / 1000;
-  const trackEndSec = clip.trackStartSec + wallDurationSec * clip.playbackRate;
-  const startFraction = clip.trackStartSec / waveform.durationSec;
-  const endFraction = Math.min(1, trackEndSec / waveform.durationSec);
-  if (endFraction <= startFraction) return;
+  const clipX0 = msToX(clip.sessionStartMs);
+  const clipX1 = msToX(clip.sessionEndMs);
+  if (clipX1 - clipX0 < 2) return;
 
-  const numPoints = waveform.amps.length;
   const centerY = rectY + rectHeight / 2;
   const maxBarHalf = rectHeight * 0.45;
+  const base = waveform.base;
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(rectX, rectY, rectWidth, rectHeight);
+  ctx.rect(clipX0, rectY, clipX1 - clipX0, rectHeight);
   ctx.clip();
   ctx.fillStyle = accent + 'aa';
 
-  // Iterate only the columns inside the visible track area: when zoomed in,
-  // a clip can be tens of thousands of pixels wide and drawing the offscreen
-  // columns froze the UI.
-  const visibleLeft = Math.max(rectX, LABEL_W);
-  const visibleRight = Math.min(rectX + rectWidth, ctx.canvas.clientWidth - PADDING);
-  const columnStart = Math.max(0, Math.floor(visibleLeft - rectX));
-  const columnCount = Math.min(Math.ceil(rectWidth), Math.ceil(visibleRight - rectX));
-  for (let column = columnStart; column < columnCount; column++) {
-    const columnFraction = column / rectWidth;
-    const trackFraction = startFraction + columnFraction * (endFraction - startFraction);
-    const sourceStart = trackFraction * numPoints;
-    const sourceEnd =
-      (startFraction + ((column + 1) / rectWidth) * (endFraction - startFraction)) * numPoints;
-    const indexStart = sourceStart | 0;
-    const indexEnd = Math.min(numPoints - 1, Math.max(indexStart, (sourceEnd - 1e-9) | 0));
+  // Only draw columns inside the visible track area: when zoomed in a clip can
+  // be tens of thousands of pixels wide and drawing offscreen columns froze the UI.
+  const visibleLeft = Math.max(LABEL_W, clipX0);
+  const visibleRight = Math.min(ctx.canvas.clientWidth - PADDING, clipX1);
 
-    let amplitudeSum = 0;
-    let sampleCount = 0;
-    for (let idx = indexStart; idx <= indexEnd; idx++) {
-      amplitudeSum += waveform.amps[idx];
-      sampleCount++;
+  for (const seg of clipWaveSegments(clip)) {
+    const segX0 = msToX(seg.wallStartMs);
+    const segWidth = msToX(seg.wallEndMs) - segX0;
+    if (segWidth < 1) continue;
+    const segTrackSpan = seg.trackEndSec - seg.trackStartSec;
+
+    const columnStart = Math.max(0, Math.floor(Math.max(visibleLeft, segX0) - segX0));
+    const columnEnd = Math.ceil(Math.min(visibleRight, segX0 + segWidth) - segX0);
+    for (let column = columnStart; column < columnEnd; column++) {
+      // The track-time window this column covers, then sample the high-detail
+      // region first and fall back to the coarse base while detail is loading.
+      const t0 = seg.trackStartSec + (column / segWidth) * segTrackSpan;
+      const t1 = seg.trackStartSec + ((column + 1) / segWidth) * segTrackSpan;
+      const amp = sampleRegion(waveform, t0, t1) ?? (base ? sampleRegion(base, t0, t1) : null);
+      if (amp === null) continue;
+      const barHeight = Math.max(1, Math.sqrt(amp) * maxBarHalf);
+      ctx.fillRect(segX0 + column, centerY - barHeight, 1, barHeight * 2);
     }
-    const avgAmplitude = sampleCount > 0 ? amplitudeSum / sampleCount : 0;
-    const barHeight = Math.max(1, Math.sqrt(avgAmplitude) * maxBarHalf);
-    ctx.fillRect(rectX + column, centerY - barHeight, 1, barHeight * 2);
+  }
+
+  ctx.restore();
+}
+
+// Beat grid over a clip, drawn per wave segment so the lines compress/stretch
+// with the waveform when the rate changes. Ported from EditWaveform's LOD steps
+// (1 -> 4 -> 16 -> ... beats), but mapped through each segment's track->wall rate.
+export function drawClipBeatGrid(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  rectY: number,
+  rectHeight: number,
+  msToX: (ms: number) => number
+): void {
+  if (!clip.bpm || clip.bpm <= 0) return;
+  const beatDurSec = 60 / clip.bpm;
+  const beatOffset = clip.beatOffsetSec ?? 0;
+
+  const clipX0 = msToX(clip.sessionStartMs);
+  const clipX1 = msToX(clip.sessionEndMs);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(clipX0, rectY, clipX1 - clipX0, rectHeight);
+  ctx.clip();
+
+  for (const seg of clipWaveSegments(clip)) {
+    const segWallSec = (seg.wallEndMs - seg.wallStartMs) / 1000;
+    const trackSpan = seg.trackEndSec - seg.trackStartSec;
+    if (segWallSec <= 0 || trackSpan <= 0) continue;
+    const effRate = trackSpan / segWallSec; // track sec per wall sec
+    const segX0 = msToX(seg.wallStartMs);
+    const pxPerWallSec = (msToX(seg.wallEndMs) - segX0) / segWallSec;
+    const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
+    if (pxPerBeat < 0.5) continue;
+
+    let step = 1;
+    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= 4;
+
+    const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
+    const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);
+    for (let b = firstBeat; b <= lastBeat; b++) {
+      if (b % step !== 0) continue;
+      const t = beatOffset + b * beatDurSec;
+      const x = segX0 + ((t - seg.trackStartSec) / effRate) * pxPerWallSec;
+      ctx.fillStyle = b % (step * 4) === 0 ? DOWNBEAT_LINE_COLOR : BEAT_LINE_COLOR;
+      ctx.fillRect(x, rectY, 1, rectHeight);
+    }
   }
 
   ctx.restore();
@@ -313,12 +411,31 @@ export const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
   filter: drawFilterLane,
   rate: drawRateLane,
   eqLow: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS.low, laneY, laneH, msToX, viewStart, viewEnd),
+    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS_LOW, laneY, laneH, msToX, viewStart, viewEnd),
   eqMid: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS.mid, laneY, laneH, msToX, viewStart, viewEnd),
+    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS_MID, laneY, laneH, msToX, viewStart, viewEnd),
   eqHigh: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS.high, laneY, laneH, msToX, viewStart, viewEnd)
+    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS_HIGH, laneY, laneH, msToX, viewStart, viewEnd)
 };
+
+// Clip drawing to one lane's rect. The single place lane-bounded drawing is
+// contained, so strokes/outlines (committed lines, the in-progress gesture, the
+// filter-span selection box, anything future) can't spill past the lane's
+// dividers, instead of every drawer guarding its own edges.
+export function withLaneClip(
+  ctx: CanvasRenderingContext2D,
+  top: number,
+  height: number,
+  canvasWidth: number,
+  draw: () => void
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, height);
+  ctx.clip();
+  draw();
+  ctx.restore();
+}
 
 export function drawDeckLanes(
   ctx: CanvasRenderingContext2D,
@@ -344,7 +461,9 @@ export function drawDeckLanes(
       ctx.fillRect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, 1);
     }
 
-    LANE_DRAWERS[key](ctx, canvasWidth, deckData, top, height, msToX, viewStart, viewEnd);
+    withLaneClip(ctx, top, height, canvasWidth, () =>
+      LANE_DRAWERS[key](ctx, canvasWidth, deckData, top, height, msToX, viewStart, viewEnd)
+    );
   }
 }
 
@@ -413,7 +532,8 @@ export function drawClip(
   ctx.fillStyle = accent + '55';
   ctx.fillRect(clipX, clipY, clipWidth, clipHeight);
 
-  drawClipWaveform(ctx, clip, waveform, clipX, clipY, clipWidth, clipHeight, accent);
+  drawClipWaveform(ctx, clip, waveform, clipY, clipHeight, accent, msToX);
+  drawClipBeatGrid(ctx, clip, clipY, clipHeight, msToX);
 
   ctx.strokeStyle = accent + 'cc';
   ctx.lineWidth = 1;
@@ -597,7 +717,6 @@ export type DeckRowChrome = {
   audible: boolean;
   solo: boolean;
   muted: boolean;
-  selectedLaneKey: LaneKey | null;
 };
 
 export function drawDeckRowChrome(
@@ -610,22 +729,27 @@ export function drawDeckRowChrome(
   ctx.fillRect(0, row.top, canvasW, row.height);
 
   ctx.font = `bold 9px monospace`;
-  ctx.fillStyle = chrome.audible ? chrome.accent : '#555';
+  ctx.fillStyle = chrome.audible ? chrome.accent : DECK_LABEL_INACTIVE_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(row.deckId, LABEL_W / 2, row.top + ROW_H / 2);
   if (chrome.solo || chrome.muted) {
     ctx.font = `bold 7px monospace`;
-    ctx.fillStyle = chrome.solo ? '#eab308' : '#ef4444';
+    ctx.fillStyle = chrome.solo ? SOLO_COLOR : MUTE_COLOR;
     ctx.fillText(chrome.solo ? 'S' : 'M', LABEL_W / 2, row.top + ROW_H / 2 + 11);
   }
 
+  // The single automation lane's label doubles as a dropdown: its code (e.g.
+  // "RT") plus a caret, drawn in the label column at the lane's vertical center.
+  // Timeline.vue hit-tests this region to open the lane picker.
   if (row.lanes.length > 0) {
-    ctx.font = `8px monospace`;
-    for (const sublane of row.lanes) {
-      ctx.fillStyle = sublane.key === chrome.selectedLaneKey ? '#06b6d4' : '#555';
-      ctx.fillText(LANE_SHORT_LABELS[sublane.key], LABEL_W / 2, sublane.top + sublane.height / 2);
-    }
+    const lane = row.lanes[0];
+    const cy = lane.top + lane.height / 2;
+    ctx.fillStyle = LANE_DROPDOWN_COLOR;
+    ctx.font = `bold 9px monospace`;
+    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, cy - 5);
+    ctx.font = `7px monospace`;
+    ctx.fillText('▾', LABEL_W / 2, cy + 6);
   }
 }
 
@@ -638,7 +762,7 @@ export function drawMasterRowChrome(
   ctx.fillStyle = '#101010';
   ctx.fillRect(0, top, canvasW, height);
   ctx.font = `bold 9px monospace`;
-  ctx.fillStyle = '#888';
+  ctx.fillStyle = MASTER_LABEL_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('M', LABEL_W / 2, top + height / 2);
@@ -732,25 +856,29 @@ export function drawValueGesturePreview(
   canvasW: number
 ): void {
   if (points.length === 0) return;
-  ctx.strokeStyle = '#ffffffcc';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  let prevY = valueToY(preview.top, preview.height, preview.min, preview.max, points[0].value);
-  ctx.moveTo(msToX(points[0].ms), prevY);
-  for (let pointIdx = 1; pointIdx < points.length; pointIdx++) {
-    const stepX = msToX(points[pointIdx].ms);
-    const stepY = valueToY(
-      preview.top,
-      preview.height,
-      preview.min,
-      preview.max,
-      points[pointIdx].value
-    );
-    ctx.lineTo(stepX, prevY);
-    ctx.lineTo(stepX, stepY);
-    prevY = stepY;
-  }
-  ctx.stroke();
+  // The line is bounded to its lane (centered strokes would otherwise spill past
+  // the dividers at extreme values); the label is drawn after, outside the clip.
+  withLaneClip(ctx, preview.top, preview.height, canvasW, () => {
+    ctx.strokeStyle = '#ffffffcc';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let prevY = valueToY(preview.top, preview.height, preview.min, preview.max, points[0].value);
+    ctx.moveTo(msToX(points[0].ms), prevY);
+    for (let pointIdx = 1; pointIdx < points.length; pointIdx++) {
+      const stepX = msToX(points[pointIdx].ms);
+      const stepY = valueToY(
+        preview.top,
+        preview.height,
+        preview.min,
+        preview.max,
+        points[pointIdx].value
+      );
+      ctx.lineTo(stepX, prevY);
+      ctx.lineTo(stepX, stepY);
+      prevY = stepY;
+    }
+    ctx.stroke();
+  });
 
   const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 40);
   drawOutlinedLabel(ctx, label, labelX, preview.top - 6);

@@ -10,6 +10,8 @@ import {
   decimateSteps,
   spliceLaneEvents,
   toggleFilterActiveRange,
+  deleteFilterActiveSpan,
+  resizeFilterActiveSpan,
   paintNudgeRange,
   deleteNudgeRange,
   relocateEventPaths,
@@ -120,6 +122,37 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!session) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
     applyEdit(toggleFilterActiveRange(session.events, deck, t0, t1));
+  }
+
+  // Deleting is an instant action, not a drag, so rather than stop-and-edit we
+  // simply don't allow it during playback.
+  function deleteFilterSpan(deck: string, startMs: number, endMs: number): void {
+    const session = sessionStore.session;
+    if (!session || sessionStore.isPlaying) return;
+    applyEdit(deleteFilterActiveSpan(session.events, deck, startMs, endMs));
+  }
+
+  async function resizeFilterSpan(
+    deck: string,
+    startMs: number,
+    endMs: number,
+    edge: 'start' | 'end',
+    newMs: number
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(
+      resizeFilterActiveSpan(
+        session.events,
+        deck,
+        startMs,
+        endMs,
+        edge,
+        newMs,
+        sessionStore.durationMs
+      )
+    );
   }
 
   async function commitNudgePaint(
@@ -262,6 +295,8 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     toggleEditMode,
     commitGesture,
     commitFilterActiveToggle,
+    deleteFilterSpan,
+    resizeFilterSpan,
     commitNudgePaint,
     deleteNudge,
     commitClipMove,

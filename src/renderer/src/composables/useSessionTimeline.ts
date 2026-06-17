@@ -1,6 +1,14 @@
 import { computed, type Ref } from 'vue';
 import type { ParsedSession } from '@renderer/stores/session';
 import { buildTimeline } from '@renderer/utils/sessionCore';
+import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
+
+export type WaveSegment = {
+  wallStartMs: number;
+  wallEndMs: number;
+  trackStartSec: number;
+  trackEndSec: number;
+};
 
 export type Clip = {
   deck: string;
@@ -14,6 +22,13 @@ export type Clip = {
   // blockId; a regular play segment is a block of its own.
   blockId: number;
   loop: { startSec: number; endSec: number } | null;
+  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time
+  // window to a wall-time window. Drawing the waveform and beats per segment is
+  // what keeps them stretched/compressed correctly across rate changes.
+  waveSegments: WaveSegment[];
+  // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
+  bpm: number | null;
+  beatOffsetSec: number | null;
 };
 
 export type LoadedSpan = {
@@ -82,7 +97,12 @@ export function useSessionTimeline(
         deckNudges: {}
       };
     }
-    return buildTimeline(session.value.events, session.value.durationMs, nameForPath);
+    return buildTimeline(
+      session.value.events,
+      session.value.durationMs,
+      PITCH_RANGE_OPTIONS,
+      nameForPath
+    );
   });
 
   const clips = computed(() => built.value.clips);

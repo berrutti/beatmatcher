@@ -2,7 +2,7 @@ import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { TrackWaveform } from '@renderer/utils/timelineDraw';
+import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
 
 export type SessionEvent = {
@@ -47,24 +47,99 @@ export type ParsedSession = {
 export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
+  // Per-track waveform region [startSec, endSec] at some point density. Zoom-
+  // driven LOD (Timeline.vue) refetches a tighter range at higher density as the
+  // user zooms in, so the visible span always renders near one point per pixel.
   const waveforms = ref(new Map<string, TrackWaveform>());
   const pendingWaveformPaths = new Set<string>();
+  const pendingBasePaths = new Set<string>();
+  // The latest region asked for while a fetch is in flight, so we converge to it
+  // instead of dropping requests made mid-fetch.
+  type RegionRequest = { startSec: number; endSec: number; numPoints: number };
+  const waveformTarget = new Map<string, RegionRequest>();
 
-  async function ensureWaveform(path: string, numPoints = 500): Promise<void> {
-    if (waveforms.value.has(path) || pendingWaveformPaths.has(path)) return;
+  // True when the cached region already covers [startSec, endSec] at >= ~85% of
+  // the requested point density (a little slack so tiny pans don't refetch).
+  function regionSatisfies(region: WaveformRegion, req: RegionRequest): boolean {
+    if (region.startSec > req.startSec + 1e-3 || region.endSec < req.endSec - 1e-3) return false;
+    const cachedPps = region.amps.length / Math.max(1e-3, region.endSec - region.startSec);
+    const neededPps = req.numPoints / Math.max(1e-3, req.endSec - req.startSec);
+    return cachedPps >= neededPps * 0.85;
+  }
+
+  async function fetchRegion(req: RegionRequest, path: string): Promise<WaveformRegion> {
+    const amps = await invoke<number[]>('get_track_amplitude_region', {
+      path,
+      startSec: req.startSec,
+      endSec: req.endSec,
+      numPoints: req.numPoints
+    });
+    return { startSec: req.startSec, endSec: req.endSec, amps: new Float32Array(amps) };
+  }
+
+  // The coarse, always-resident slice covering a track's whole used extent, so a
+  // pan/zoom to an un-fetched spot still shows a low-detail texture immediately.
+  // Loaded once per extent; the detailed region is layered on top.
+  async function ensureWaveformBase(
+    path: string,
+    startSec: number,
+    endSec: number,
+    numPoints: number
+  ): Promise<void> {
+    const req: RegionRequest = { startSec, endSec, numPoints };
+    const existing = waveforms.value.get(path);
+    if (existing?.base && regionSatisfies(existing.base, req)) return;
+    if (pendingBasePaths.has(path)) return;
+    pendingBasePaths.add(path);
+    try {
+      const base = await fetchRegion(req, path);
+      const prev = waveforms.value.get(path);
+      const map = new Map(waveforms.value);
+      // Keep the detail region if we already have one; otherwise show the base
+      // as the detail too so the track renders before any zoom-in fetch.
+      map.set(path, prev ? { ...prev, base } : { ...base, base });
+      waveforms.value = map;
+    } catch {
+      // ignore fetch failures
+    } finally {
+      pendingBasePaths.delete(path);
+    }
+  }
+
+  async function ensureWaveformRegion(
+    path: string,
+    startSec: number,
+    endSec: number,
+    numPoints: number
+  ): Promise<void> {
+    const req: RegionRequest = { startSec, endSec, numPoints };
+    const cached = waveforms.value.get(path);
+    if (cached && regionSatisfies(cached, req)) return;
+    if (pendingWaveformPaths.has(path)) {
+      waveformTarget.set(path, req);
+      return;
+    }
     pendingWaveformPaths.add(path);
     try {
-      const result = await invoke<{ durationSec: number; amps: number[] }>(
-        'get_track_amplitude_waveform',
-        { path, numPoints }
-      );
+      const region = await fetchRegion(req, path);
+      const prev = waveforms.value.get(path);
       const map = new Map(waveforms.value);
-      map.set(path, { durationSec: result.durationSec, amps: new Float32Array(result.amps) });
+      // Replace the detail region but keep the coarse base for fallback.
+      map.set(path, { ...region, base: prev?.base });
       waveforms.value = map;
     } catch {
       // ignore fetch failures
     } finally {
       pendingWaveformPaths.delete(path);
+    }
+    // Chase the most recent region requested while this fetch was in flight.
+    const next = waveformTarget.get(path);
+    if (next) {
+      waveformTarget.delete(path);
+      const now = waveforms.value.get(path);
+      if (!now || !regionSatisfies(now, next)) {
+        ensureWaveformRegion(path, next.startSec, next.endSec, next.numPoints).catch(() => {});
+      }
     }
   }
 
@@ -233,6 +308,7 @@ export const useSessionStore = defineStore('session', () => {
     const path = session.value?.path;
     session.value = null;
     waveforms.value = new Map();
+    waveformTarget.clear();
     if (path) await invoke('unload_session', { path }).catch(() => {});
   }
 
@@ -253,7 +329,8 @@ export const useSessionStore = defineStore('session', () => {
     deckAudible,
     toggleMute,
     toggleSolo,
-    ensureWaveform,
+    ensureWaveformRegion,
+    ensureWaveformBase,
     openSession,
     openSessionFromPath,
     play,

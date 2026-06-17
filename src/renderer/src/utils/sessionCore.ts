@@ -18,6 +18,8 @@ import init, {
   spliceLaneEvents as wasmSplice,
   filterActiveAt as wasmFilterActiveAt,
   toggleFilterActiveRange as wasmToggleFilter,
+  deleteFilterActiveSpan as wasmDeleteFilterSpan,
+  resizeFilterActiveSpan as wasmResizeFilterSpan,
   nudgeValueAt as wasmNudgeValueAt,
   paintNudgeRange as wasmPaintNudge,
   deleteNudgeRange as wasmDeleteNudge,
@@ -61,6 +63,7 @@ type RawLoadedSpan = Omit<LoadedSpan, 'trackName'>;
 export function buildTimeline(
   events: SessionEvent[],
   durationMs: number,
+  pitchOptions: readonly number[],
   nameForPath: (path: string) => string
 ): {
   clips: Clip[];
@@ -75,7 +78,7 @@ export function buildTimeline(
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
-  }>(wasmBuildTimeline(JSON.stringify(events), durationMs));
+  }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
     clips: raw.clips.map((clip) => ({ ...clip, trackName: nameForPath(clip.trackPath) })),
     loadedSpans: raw.loadedSpans.map((span) => ({
@@ -190,6 +193,29 @@ export function toggleFilterActiveRange(
   t1: number
 ): SessionEvent[] {
   return parse(wasmToggleFilter(JSON.stringify(events), deck, t0, t1));
+}
+
+export function deleteFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number
+): SessionEvent[] {
+  return parse(wasmDeleteFilterSpan(JSON.stringify(events), deck, startMs, endMs));
+}
+
+export function resizeFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  edge: 'start' | 'end',
+  newMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return parse(
+    wasmResizeFilterSpan(JSON.stringify(events), deck, startMs, endMs, edge, newMs, durationMs)
+  );
 }
 
 export function nudgeValueAt(

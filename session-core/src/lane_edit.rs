@@ -409,6 +409,129 @@ pub fn delete_nudge_range(
     events.iter().filter(|e| !in_range(e)).cloned().collect()
 }
 
+const FILTER_SPAN_EPS_MS: f64 = 1.0;
+
+fn is_set_filter_active_event(e: &SessionEvent, deck: &str) -> bool {
+    e.event_type == "set_filter_active" && e.deck.as_deref() == Some(deck)
+}
+
+// Delete a filter-active span: drop its opening (active=true at start_ms) and,
+// if present, its closing (active=false at end_ms). A span that ran to the end
+// of the session has no closing event. Filter is off across the gap afterwards.
+pub fn delete_filter_active_span(
+    events: &[SessionEvent],
+    deck: &str,
+    start_ms: f64,
+    end_ms: f64,
+) -> Vec<SessionEvent> {
+    events
+        .iter()
+        .filter(|e| {
+            if !is_set_filter_active_event(e, deck) {
+                return true;
+            }
+            let opener = e.active == Some(true) && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
+            let closer = e.active == Some(false) && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+            !(opener || closer)
+        })
+        .cloned()
+        .collect()
+}
+
+// Stretch one edge of a filter-active span [start_ms, end_ms] to new_ms, clamped
+// so it keeps at least MIN_GESTURE_MS and never crosses the neighbouring filter
+// event. Moving the "start" edge relocates the opener; moving "end" relocates the
+// closer (or, for a span that ran to the session end, inserts one to close it).
+pub fn resize_filter_active_span(
+    events: &[SessionEvent],
+    deck: &str,
+    start_ms: f64,
+    end_ms: f64,
+    edge: &str,
+    new_ms: f64,
+    duration_ms: f64,
+) -> Vec<SessionEvent> {
+    let mut fa_ms: Vec<f64> = events
+        .iter()
+        .filter(|e| is_set_filter_active_event(e, deck))
+        .map(|e| e.elapsed_ms)
+        .collect();
+    fa_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+
+    if edge == "start" {
+        let prev = fa_ms
+            .iter()
+            .copied()
+            .rfind(|&m| m < start_ms - FILTER_SPAN_EPS_MS)
+            .unwrap_or(0.0);
+        let hi = end_ms - MIN_GESTURE_MS;
+        if prev > hi {
+            return events.to_vec();
+        }
+        let clamped = new_ms.clamp(prev, hi);
+        let out: Vec<SessionEvent> = events
+            .iter()
+            .map(|e| {
+                if is_set_filter_active_event(e, deck)
+                    && e.active == Some(true)
+                    && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS
+                {
+                    SessionEvent {
+                        elapsed_ms: clamped,
+                        ..e.clone()
+                    }
+                } else {
+                    e.clone()
+                }
+            })
+            .collect();
+        return sort_by_ms(out);
+    }
+
+    // edge == "end"
+    let next = fa_ms
+        .iter()
+        .copied()
+        .find(|&m| m > end_ms + FILTER_SPAN_EPS_MS)
+        .unwrap_or(duration_ms);
+    let lo = start_ms + MIN_GESTURE_MS;
+    if lo > next {
+        return events.to_vec();
+    }
+    let clamped = new_ms.clamp(lo, next);
+    let has_closer = events.iter().any(|e| {
+        is_set_filter_active_event(e, deck)
+            && e.active == Some(false)
+            && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
+    });
+    if has_closer {
+        let out: Vec<SessionEvent> = events
+            .iter()
+            .map(|e| {
+                if is_set_filter_active_event(e, deck)
+                    && e.active == Some(false)
+                    && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
+                {
+                    SessionEvent {
+                        elapsed_ms: clamped,
+                        ..e.clone()
+                    }
+                } else {
+                    e.clone()
+                }
+            })
+            .collect();
+        sort_by_ms(out)
+    } else {
+        let mut out = events.to_vec();
+        out.push(SessionEvent {
+            active: Some(false),
+            ..SessionEvent::at(clamped, "set_filter_active", deck)
+        });
+        sort_by_ms(out)
+    }
+}
+
 // Rewrites event track paths after the user relocates missing files.
 pub fn relocate_event_paths(
     events: &[SessionEvent],
@@ -485,6 +608,48 @@ mod tests {
         // was off -> turns on at t0, restores to off at t1
         assert!(filter_active_at(&out, "A", 2000.0, true));
         assert!(!filter_active_at(&out, "A", 5000.0, true));
+    }
+
+    #[test]
+    fn delete_filter_active_span_removes_on_off_pair() {
+        let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
+        assert_eq!(events.len(), 2);
+        let out = delete_filter_active_span(&events, "A", 1000.0, 4000.0);
+        assert!(out.is_empty());
+        assert!(!filter_active_at(&out, "A", 2000.0, true));
+    }
+
+    #[test]
+    fn resize_filter_active_span_moves_end_edge() {
+        let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
+        let out = resize_filter_active_span(&events, "A", 1000.0, 4000.0, "end", 6000.0, 10_000.0);
+        assert!(filter_active_at(&out, "A", 5000.0, true)); // span now extends past old end
+        assert!(!filter_active_at(&out, "A", 7000.0, true));
+    }
+
+    #[test]
+    fn resize_filter_active_span_start_clamps_to_min_gesture() {
+        let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
+        // Dragging the start past the end is clamped to keep at least MIN_GESTURE_MS.
+        let out = resize_filter_active_span(&events, "A", 1000.0, 4000.0, "start", 9000.0, 10_000.0);
+        let on = out
+            .iter()
+            .find(|e| e.event_type == "set_filter_active" && e.active == Some(true))
+            .unwrap();
+        assert!(on.elapsed_ms <= 4000.0 - MIN_GESTURE_MS + 1e-6);
+    }
+
+    #[test]
+    fn resize_open_filter_span_inserts_closer() {
+        // A span with no closing event (ran to session end) gets one when its
+        // end edge is dragged in.
+        let events = vec![SessionEvent {
+            active: Some(true),
+            ..ev(1000.0, "set_filter_active", "A")
+        }];
+        let out = resize_filter_active_span(&events, "A", 1000.0, 10_000.0, "end", 5000.0, 10_000.0);
+        assert!(filter_active_at(&out, "A", 3000.0, true));
+        assert!(!filter_active_at(&out, "A", 6000.0, true));
     }
 
     #[test]

@@ -13,7 +13,8 @@ export const STORAGE_KEYS = {
   deckCount: 'beatmatcher.ui.deck-count',
   collectionHeight: 'beatmatcher.ui.collection-height',
   locale: 'beatmatcher.ui.locale',
-  sessionLaneVisibility: 'beatmatcher.ui.session-lane-visibility'
+  sessionDeckLane: 'beatmatcher.ui.session-deck-lane',
+  sessionLaneHeight: 'beatmatcher.ui.session-lane-height'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

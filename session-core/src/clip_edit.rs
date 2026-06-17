@@ -634,6 +634,9 @@ mod tests {
             playback_rate: 1.0,
             block_id,
             loop_region: None,
+            wave_segments: Vec::new(),
+            bpm: None,
+            beat_offset_sec: None,
         }
     }
 

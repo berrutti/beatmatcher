@@ -1177,9 +1177,36 @@ pub(crate) struct TrackAmplitudeWaveform {
 
 #[tauri::command]
 pub(crate) async fn get_track_amplitude_waveform(
+    state: tauri::State<'_, AppState>,
     path: String,
     num_points: usize,
 ) -> Result<TrackAmplitudeWaveform, String> {
+    let sr = state.audio.device_sample_rate;
+    // Prefer the in-memory session cache: re-aggregating already-decoded samples
+    // at a higher num_points is cheap, which is what makes zoom-driven LOD viable
+    // (no re-decode each time the user zooms in).
+    let cached = {
+        let cache = state
+            .session_track_cache
+            .lock()
+            .expect("track cache mutex poisoned");
+        cache
+            .get(&path)
+            .map(|(samples, channels)| (samples.clone(), *channels))
+    };
+
+    if let Some((samples, channels)) = cached {
+        return tokio::task::spawn_blocking(move || {
+            let total_frames = samples.len() / channels;
+            let duration_sec = total_frames as f64 / sr as f64;
+            let amps = audio::compute_amplitude_waveform(&samples, channels, num_points);
+            Ok(TrackAmplitudeWaveform { duration_sec, amps })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Fallback (track not in the session cache, e.g. collection preview): decode.
     tokio::task::spawn_blocking(move || {
         let (samples, channels, sample_rate) =
             audio::decode_audio(&path).map_err(|e| e.to_string())?;
@@ -1187,6 +1214,60 @@ pub(crate) async fn get_track_amplitude_waveform(
         let duration_sec = total_frames as f64 / sample_rate as f64;
         let amps = audio::compute_amplitude_waveform(&samples, channels, num_points);
         Ok(TrackAmplitudeWaveform { duration_sec, amps })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Amplitude for the track sub-range [start_sec, end_sec) at num_points, for
+// zoom-driven LOD. Reads the in-memory session cache (no re-decode) so refetching
+// at higher resolution while zooming is cheap; falls back to decode otherwise.
+#[tauri::command]
+pub(crate) async fn get_track_amplitude_region(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    start_sec: f64,
+    end_sec: f64,
+    num_points: usize,
+) -> Result<Vec<f32>, String> {
+    let sr = state.audio.device_sample_rate;
+    let cached = {
+        let cache = state
+            .session_track_cache
+            .lock()
+            .expect("track cache mutex poisoned");
+        cache
+            .get(&path)
+            .map(|(samples, channels)| (samples.clone(), *channels))
+    };
+
+    if let Some((samples, channels)) = cached {
+        return tokio::task::spawn_blocking(move || {
+            let start_frame = (start_sec * sr as f64).max(0.0) as usize;
+            let end_frame = (end_sec * sr as f64).max(0.0) as usize;
+            Ok(audio::compute_amplitude_region(
+                &samples,
+                channels,
+                start_frame,
+                end_frame,
+                num_points,
+            ))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let (samples, channels, file_sr) = audio::decode_audio(&path).map_err(|e| e.to_string())?;
+        let start_frame = (start_sec * file_sr as f64).max(0.0) as usize;
+        let end_frame = (end_sec * file_sr as f64).max(0.0) as usize;
+        Ok(audio::compute_amplitude_region(
+            &samples,
+            channels,
+            start_frame,
+            end_frame,
+            num_points,
+        ))
     })
     .await
     .map_err(|e| e.to_string())?

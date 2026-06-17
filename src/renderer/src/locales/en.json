@@ -209,6 +209,7 @@
     "missingFiles": "These audio files are missing. Choose the folder that contains them to restore playback:",
     "locate": "CHOOSE FOLDER",
     "deleteNudge": "Delete nudge",
+    "deleteFilterRegion": "Delete filter region",
     "mute": "Mute",
     "solo": "Solo",
     "lanesMenu": "Lanes"

@@ -5,7 +5,8 @@ import {
   selectedLaneRect,
   ghostSpan,
   clipGestureDeltaSec,
-  selectionSpanFor
+  selectionSpanFor,
+  findLaneSeparator
 } from '../timelineLayout';
 import { ROW_H } from '../timelineDraw';
 import type { Clip } from '@renderer/composables/useSessionTimeline';
@@ -21,6 +22,9 @@ function clip(overrides: Partial<Clip>): Clip {
     playbackRate: 1,
     blockId: 0,
     loop: null,
+    waveSegments: [],
+    bpm: null,
+    beatOffsetSec: null,
     ...overrides
   };
 }
@@ -51,6 +55,35 @@ describe('computeRowLayout', () => {
       height: ROW_H,
       lanes: []
     });
+  });
+});
+
+describe('laneSeparatorAt', () => {
+  const rows = computeRowLayout(
+    [
+      {
+        deckId: 'A',
+        laneHeights: [
+          { key: 'gain', height: 16 },
+          { key: 'filter', height: 64 }
+        ]
+      }
+    ],
+    16
+  );
+  // gain bottom edge = 16 + ROW_H + 16; filter bottom edge = 16 + ROW_H + 16 + 64.
+  const gainEdge = 16 + ROW_H + 16;
+  const filterEdge = gainEdge + 64;
+
+  it('matches the lane whose bottom edge is within grab range', () => {
+    expect(findLaneSeparator(rows, gainEdge, 3)).toBe('gain');
+    expect(findLaneSeparator(rows, gainEdge + 2, 3)).toBe('gain');
+    expect(findLaneSeparator(rows, filterEdge, 3)).toBe('filter');
+  });
+
+  it('returns null away from any separator and when no lanes exist', () => {
+    expect(findLaneSeparator(rows, gainEdge + 8, 3)).toBeNull();
+    expect(findLaneSeparator([], gainEdge, 3)).toBeNull();
   });
 });
 

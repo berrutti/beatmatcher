@@ -18,6 +18,8 @@ import {
   spliceLaneEvents as coreSpliceLaneEvents,
   filterActiveAt as coreFilterActiveAt,
   toggleFilterActiveRange as coreToggleFilterActiveRange,
+  deleteFilterActiveSpan as coreDeleteFilterActiveSpan,
+  resizeFilterActiveSpan as coreResizeFilterActiveSpan,
   nudgeValueAt as coreNudgeValueAt,
   paintNudgeRange as corePaintNudgeRange,
   deleteNudgeRange as coreDeleteNudgeRange,
@@ -173,6 +175,27 @@ export function toggleFilterActiveRange(
   t1: number
 ): SessionEvent[] {
   return coreToggleFilterActiveRange(events, deck, t0, t1);
+}
+
+export function deleteFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number
+): SessionEvent[] {
+  return coreDeleteFilterActiveSpan(events, deck, startMs, endMs);
+}
+
+export function resizeFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  edge: 'start' | 'end',
+  newMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return coreResizeFilterActiveSpan(events, deck, startMs, endMs, edge, newMs, durationMs);
 }
 
 export function nudgeValueAt(

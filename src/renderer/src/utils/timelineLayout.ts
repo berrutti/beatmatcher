@@ -26,6 +26,17 @@ export function computeRowLayout(
   return rows;
 }
 
+// The lane whose bottom edge (the separator below it) is within grab range of y,
+// or null. Each separator resizes the lane above it.
+export function findLaneSeparator(rows: RowLayout[], y: number, grabPx: number): LaneKey | null {
+  for (const row of rows) {
+    for (const sub of row.lanes) {
+      if (Math.abs(y - (sub.top + sub.height)) <= grabPx) return sub.key;
+    }
+  }
+  return null;
+}
+
 export type LaneRect = { top: number; height: number };
 
 export function selectedLaneRect(

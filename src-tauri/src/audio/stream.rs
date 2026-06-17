@@ -12,9 +12,15 @@ use std::sync::{atomic::Ordering, Arc, Mutex};
 
 // cpal::Stream is !Send because some platform backends (CoreAudio, WASAPI) require
 // the stream to be dropped on the thread that created it. We uphold this invariant
-// manually: streams are only ever created and dropped inside rebuild_streams(), which
-// is called from a single non-async context. The Mutex<Option<SendStream>> in AppAudio
-// ensures no two threads can drop or replace a stream simultaneously.
+// manually: a stream is only ever created, replaced, or dropped inside
+// rebuild_streams() (the old stream is dropped when the Mutex<Option<SendStream>> is
+// overwritten), plus the initial creation in AppAudio::new().
+//
+// SAFETY rests on all of those running on the SAME (main) thread. They do because the
+// only callers -- AppAudio::new() (setup) and the set_main_device/set_cue_device/
+// set_buffer_size commands -- are synchronous Tauri commands, which Tauri dispatches on
+// the main thread. Making any of those commands `async` would move stream drops onto
+// async worker threads and reintroduce the !Send hazard as silent UB. Keep them sync.
 #[allow(dead_code)]
 pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
