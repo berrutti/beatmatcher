@@ -56,6 +56,17 @@ describe('computeRowLayout', () => {
       lanes: []
     });
   });
+
+  it('uses a custom waveform height for the strip and the lane offset', () => {
+    const rows = computeRowLayout(
+      [{ deckId: 'A', laneHeights: [{ key: 'filter', height: 64 }] }],
+      0,
+      120
+    );
+    expect(rows[0].waveformHeight).toBe(120);
+    expect(rows[0].lanes[0].top).toBe(120); // lane sits directly below the waveform
+    expect(rows[0].height).toBe(120 + 64);
+  });
 });
 
 describe('laneSeparatorAt', () => {

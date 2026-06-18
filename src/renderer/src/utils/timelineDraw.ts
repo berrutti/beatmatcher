@@ -80,7 +80,14 @@ const RATE_COLOR = '#a78bfa';
 const SOLO_COLOR = '#eab308';
 
 export type SublaneLayout = { key: LaneKey; top: number; height: number };
-export type RowLayout = { deckId: DeckId; top: number; height: number; lanes: SublaneLayout[] };
+export type RowLayout = {
+  deckId: DeckId;
+  top: number;
+  height: number;
+  // Height of the waveform strip at the top of the row (resizable, see ROW_H).
+  waveformHeight: number;
+  lanes: SublaneLayout[];
+};
 export type OverviewRect = { y: number; h: number };
 
 export function formatTickLabel(ms: number, tickIntervalMs: number): string {
@@ -103,6 +110,12 @@ export function valueToY(
 ): number {
   const range = maxVal - minVal || 1;
   return laneY + laneHeight - ((value - minVal) / range) * laneHeight;
+}
+
+// Vertical breathing room between the lane frame and its value area. Shared by
+// the renderer and the draw gesture so what you draw lands where it's rendered.
+export function laneValuePad(height: number): number {
+  return Math.min(8, height / 4);
 }
 
 export function yToValue(
@@ -347,11 +360,14 @@ function drawLaneCenterLine(
   centerValue: number
 ): void {
   const centerY = valueToY(laneY, laneH, minVal, maxVal, centerValue);
-  ctx.strokeStyle = '#3a3a3a';
+  ctx.save();
+  ctx.strokeStyle = '#4a4a4a';
+  ctx.setLineDash([4, 4]);
   ctx.beginPath();
-  ctx.moveTo(LABEL_W, centerY);
-  ctx.lineTo(canvasWidth - PADDING, centerY);
+  ctx.moveTo(LABEL_W, centerY + 0.5);
+  ctx.lineTo(canvasWidth - PADDING, centerY + 0.5);
   ctx.stroke();
+  ctx.restore();
 }
 
 export function drawRateLane(
@@ -446,23 +462,29 @@ export function drawDeckLanes(
   viewStart: number,
   viewEnd: number
 ): void {
-  if (!deckData) return;
-
   for (let laneIdx = 0; laneIdx < sublanes.length; laneIdx++) {
     const { key, top, height } = sublanes[laneIdx];
     const group = LANE_GROUP[key];
     const prevGroup = laneIdx > 0 ? LANE_GROUP[sublanes[laneIdx - 1].key] : -1;
+    const trackW = canvasWidth - LABEL_W - PADDING;
 
     ctx.fillStyle = group % 2 === 0 ? '#1a1a1a' : '#141414';
-    ctx.fillRect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, height);
+    ctx.fillRect(LABEL_W, top, trackW, height);
 
-    if (laneIdx > 0 && group !== prevGroup) {
-      ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(LABEL_W, top, canvasWidth - LABEL_W - PADDING, 1);
-    }
+    // Frame the lane with a top border so it reads as a bounded panel rather
+    // than bleeding into the waveform above. Drawn regardless of data so the
+    // separation is consistent whether or not the deck/lane has content.
+    ctx.fillStyle = laneIdx > 0 && group !== prevGroup ? '#2a2a2a' : '#2e2e2e';
+    ctx.fillRect(LABEL_W, top, trackW, 1);
 
+    // The value curve needs deck data; the frame above does not.
+    if (!deckData) continue;
+
+    // Inset the value area so the curve breathes and never touches the frame;
+    // the center stays at the lane's exact middle, keeping the halves symmetric.
+    const pad = laneValuePad(height);
     withLaneClip(ctx, top, height, canvasWidth, () =>
-      LANE_DRAWERS[key](ctx, canvasWidth, deckData, top, height, msToX, viewStart, viewEnd)
+      LANE_DRAWERS[key](ctx, canvasWidth, deckData, top + pad, height - 2 * pad, msToX, viewStart, viewEnd)
     );
   }
 }
@@ -471,13 +493,14 @@ export function drawLoadedSpan(
   ctx: CanvasRenderingContext2D,
   span: LoadedSpan,
   rowY: number,
+  rowH: number,
   accent: string,
   msToX: (ms: number) => number
 ): void {
   const spanX = msToX(span.startMs);
   const spanWidth = Math.max(2, msToX(span.endMs) - spanX);
   const spanY = rowY + 4;
-  const spanHeight = ROW_H - 8;
+  const spanHeight = rowH - 8;
 
   ctx.fillStyle = accent + '18';
   ctx.fillRect(spanX, spanY, spanWidth, spanHeight);
@@ -491,13 +514,14 @@ export function drawLoadedSpanLabel(
   ctx: CanvasRenderingContext2D,
   span: LoadedSpan,
   rowY: number,
+  rowH: number,
   msToX: (ms: number) => number
 ): void {
   const spanX = msToX(span.startMs);
   const spanWidth = Math.max(2, msToX(span.endMs) - spanX);
   if (spanWidth <= 40) return;
   const spanY = rowY + 4;
-  const spanHeight = ROW_H - 8;
+  const spanHeight = rowH - 8;
   ctx.save();
   ctx.beginPath();
   ctx.rect(spanX + 3, spanY, spanWidth - 6, spanHeight);
@@ -521,13 +545,14 @@ export function drawClip(
   clip: Clip,
   waveform: TrackWaveform | undefined,
   rowY: number,
+  rowH: number,
   accent: string,
   msToX: (ms: number) => number
 ): void {
   const clipX = msToX(clip.sessionStartMs);
   const clipWidth = Math.max(2, msToX(clip.sessionEndMs) - clipX);
   const clipY = rowY + 4;
-  const clipHeight = ROW_H - 8;
+  const clipHeight = rowH - 8;
 
   ctx.fillStyle = accent + '55';
   ctx.fillRect(clipX, clipY, clipWidth, clipHeight);
@@ -546,12 +571,13 @@ export function drawClipSelection(
   startMs: number,
   endMs: number,
   rowY: number,
+  rowH: number,
   msToX: (ms: number) => number
 ): void {
   const x = msToX(startMs);
   const width = Math.max(2, msToX(endMs) - x);
   const y = rowY + 4;
-  const height = ROW_H - 8;
+  const height = rowH - 8;
   ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
   ctx.fillRect(x, y, width, height);
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
@@ -563,11 +589,12 @@ export function drawNudgeSpans(
   ctx: CanvasRenderingContext2D,
   nudgeSpans: NudgeSpan[],
   rowY: number,
+  rowH: number,
   msToX: (ms: number) => number
 ): void {
   if (nudgeSpans.length === 0) return;
   const innerY = rowY + 4;
-  const innerHeight = ROW_H - 8;
+  const innerHeight = rowH - 8;
   ctx.fillStyle = NUDGE_COLOR;
   for (const span of nudgeSpans) {
     const nudgeX = msToX(span.startMs);
@@ -732,11 +759,11 @@ export function drawDeckRowChrome(
   ctx.fillStyle = chrome.audible ? chrome.accent : DECK_LABEL_INACTIVE_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(row.deckId, LABEL_W / 2, row.top + ROW_H / 2);
+  ctx.fillText(row.deckId, LABEL_W / 2, row.top + row.waveformHeight / 2);
   if (chrome.solo || chrome.muted) {
     ctx.font = `bold 7px monospace`;
     ctx.fillStyle = chrome.solo ? SOLO_COLOR : MUTE_COLOR;
-    ctx.fillText(chrome.solo ? 'S' : 'M', LABEL_W / 2, row.top + ROW_H / 2 + 11);
+    ctx.fillText(chrome.solo ? 'S' : 'M', LABEL_W / 2, row.top + row.waveformHeight / 2 + 11);
   }
 
   // The single automation lane's label doubles as a dropdown: its code (e.g.
@@ -766,72 +793,6 @@ export function drawMasterRowChrome(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('M', LABEL_W / 2, top + height / 2);
-}
-
-export type DeckRowContent = {
-  accent: string;
-  loadedSpans: LoadedSpan[];
-  clips: Clip[];
-  waveforms: Map<string, TrackWaveform>;
-  nudgeSpans: NudgeSpan[];
-  deckLanes: DeckLanes | undefined;
-  audible: boolean;
-  selectionSpan: { startMs: number; endMs: number } | null;
-};
-
-export function drawDeckRowContent(
-  ctx: CanvasRenderingContext2D,
-  row: RowLayout,
-  content: DeckRowContent,
-  canvasW: number,
-  trackW: number,
-  view: ViewWindow,
-  msToX: (ms: number) => number
-): void {
-  const viewEnd = view.start + view.duration;
-  const visible = (startMs: number, endMs: number) =>
-    overlapsRange(startMs, endMs, view.start, viewEnd);
-
-  for (const span of content.loadedSpans) {
-    if (span.deck === row.deckId && visible(span.startMs, span.endMs)) {
-      drawLoadedSpan(ctx, span, row.top, content.accent, msToX);
-    }
-  }
-
-  for (const clip of content.clips) {
-    if (clip.deck === row.deckId && visible(clip.sessionStartMs, clip.sessionEndMs)) {
-      drawClip(ctx, clip, content.waveforms.get(clip.trackPath), row.top, content.accent, msToX);
-    }
-  }
-
-  drawNudgeSpans(
-    ctx,
-    content.nudgeSpans.filter((span) => visible(span.startMs, span.endMs)),
-    row.top,
-    msToX
-  );
-
-  if (row.lanes.length > 0) {
-    drawDeckLanes(ctx, canvasW, msToX, content.deckLanes, row.lanes, view.start, viewEnd);
-  }
-
-  if (!content.audible) {
-    ctx.fillStyle = '#00000090';
-    ctx.fillRect(LABEL_W, row.top, trackW, ROW_H);
-  }
-
-  if (
-    content.selectionSpan &&
-    visible(content.selectionSpan.startMs, content.selectionSpan.endMs)
-  ) {
-    drawClipSelection(
-      ctx,
-      content.selectionSpan.startMs,
-      content.selectionSpan.endMs,
-      row.top,
-      msToX
-    );
-  }
 }
 
 export function drawSelectedLaneHighlight(
@@ -890,14 +851,15 @@ export function drawNudgeGesturePreview(
   t1: number,
   percent: number,
   rowTop: number,
+  rowH: number,
   cursorMs: number,
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  drawNudgeSpans(ctx, [{ startMs: t0, endMs: t1, percent }], rowTop, msToX);
+  drawNudgeSpans(ctx, [{ startMs: t0, endMs: t1, percent }], rowTop, rowH, msToX);
   const label = `${percent > 0 ? '+' : ''}${percent}%`;
   const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
-  const labelY = percent > 0 ? rowTop + 12 : rowTop + ROW_H - 6;
+  const labelY = percent > 0 ? rowTop + 12 : rowTop + rowH - 6;
   drawOutlinedLabel(ctx, label, labelX, labelY);
 }
 
@@ -924,6 +886,7 @@ export function drawClipGhosts(
   ctx: CanvasRenderingContext2D,
   ghosts: { startMs: number; endMs: number }[],
   rowTop: number,
+  rowH: number,
   accent: string,
   label: string,
   labelMs: number,
@@ -936,31 +899,11 @@ export function drawClipGhosts(
   for (const ghost of ghosts) {
     const ghostX = msToX(ghost.startMs);
     const ghostW = Math.max(1, msToX(ghost.endMs) - ghostX);
-    ctx.fillRect(ghostX, rowTop, ghostW, ROW_H);
-    ctx.strokeRect(ghostX + 0.5, rowTop + 0.5, ghostW - 1, ROW_H - 1);
+    ctx.fillRect(ghostX, rowTop, ghostW, rowH);
+    ctx.strokeRect(ghostX + 0.5, rowTop + 0.5, ghostW - 1, rowH - 1);
   }
   const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 60);
   drawOutlinedLabel(ctx, label, labelX, rowTop + 12);
-}
-
-export function drawLoadedSpanLabels(
-  ctx: CanvasRenderingContext2D,
-  rows: RowLayout[],
-  loadedSpans: LoadedSpan[],
-  view: ViewWindow,
-  msToX: (ms: number) => number
-): void {
-  const viewEnd = view.start + view.duration;
-  for (const row of rows) {
-    for (const span of loadedSpans) {
-      if (
-        span.deck === row.deckId &&
-        overlapsRange(span.startMs, span.endMs, view.start, viewEnd)
-      ) {
-        drawLoadedSpanLabel(ctx, span, row.top, msToX);
-      }
-    }
-  }
 }
 
 // Deck row dividers, drawn full-width (including the label column) after the

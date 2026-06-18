@@ -12,13 +12,18 @@ import {
   toggleFilterActiveRange,
   deleteFilterActiveSpan,
   resizeFilterActiveSpan,
+  moveFilterActiveSpan,
   paintNudgeRange,
   deleteNudgeRange,
   relocateEventPaths,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
 import { basename, indexByBasename } from '@renderer/utils/path';
-import { moveTransportBlock, trimTransportBlock } from '@renderer/utils/clipEditOps';
+import {
+  moveTransportBlock,
+  trimTransportBlock,
+  deleteTransportBlock
+} from '@renderer/utils/clipEditOps';
 import type { Clip } from '@renderer/composables/useSessionTimeline';
 import { TransportBlock } from '@renderer/utils/types';
 
@@ -124,11 +129,12 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(toggleFilterActiveRange(session.events, deck, t0, t1));
   }
 
-  // Deleting is an instant action, not a drag, so rather than stop-and-edit we
-  // simply don't allow it during playback.
-  function deleteFilterSpan(deck: string, startMs: number, endMs: number): void {
+  // Like resize/move, deleting while playing stops playback first so the edit
+  // applies cleanly against a settled timeline.
+  async function deleteFilterSpan(deck: string, startMs: number, endMs: number): Promise<void> {
     const session = sessionStore.session;
-    if (!session || sessionStore.isPlaying) return;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
     applyEdit(deleteFilterActiveSpan(session.events, deck, startMs, endMs));
   }
 
@@ -152,6 +158,20 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
         newMs,
         sessionStore.durationMs
       )
+    );
+  }
+
+  async function moveFilterSpan(
+    deck: string,
+    startMs: number,
+    endMs: number,
+    deltaMs: number
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(
+      moveFilterActiveSpan(session.events, deck, startMs, endMs, deltaMs, sessionStore.durationMs)
     );
   }
 
@@ -196,6 +216,13 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!session) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
     applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
+  }
+
+  async function commitClipDelete(clips: Clip[], block: TransportBlock): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(deleteTransportBlock(session.events, clips, block));
   }
 
   // Opens a folder picker and resolves every missing track found under it
@@ -287,26 +314,28 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   }
 
   return {
-    editMode,
-    selectedLane,
-    dirty,
-    canUndo,
     canRedo,
-    toggleEditMode,
-    commitGesture,
-    commitFilterActiveToggle,
-    deleteFilterSpan,
-    resizeFilterSpan,
-    commitNudgePaint,
-    deleteNudge,
+    canUndo,
+    commitClipDelete,
     commitClipMove,
     commitClipTrim,
-    locateMissingTracks,
+    commitFilterActiveToggle,
+    commitGesture,
+    commitNudgePaint,
+    deleteFilterSpan,
+    deleteNudge,
+    dirty,
+    editMode,
     flushSync,
-    undo,
+    locateMissingTracks,
+    moveFilterSpan,
     redo,
+    reset,
+    resizeFilterSpan,
     save,
     saveAs,
-    reset
+    selectedLane,
+    toggleEditMode,
+    undo
   };
 });

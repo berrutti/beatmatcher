@@ -20,6 +20,7 @@ import {
   toggleFilterActiveRange as coreToggleFilterActiveRange,
   deleteFilterActiveSpan as coreDeleteFilterActiveSpan,
   resizeFilterActiveSpan as coreResizeFilterActiveSpan,
+  moveFilterActiveSpan as coreMoveFilterActiveSpan,
   nudgeValueAt as coreNudgeValueAt,
   paintNudgeRange as corePaintNudgeRange,
   deleteNudgeRange as coreDeleteNudgeRange,
@@ -196,6 +197,17 @@ export function resizeFilterActiveSpan(
   durationMs: number
 ): SessionEvent[] {
   return coreResizeFilterActiveSpan(events, deck, startMs, endMs, edge, newMs, durationMs);
+}
+
+export function moveFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  deltaMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return coreMoveFilterActiveSpan(events, deck, startMs, endMs, deltaMs, durationMs);
 }
 
 export function nudgeValueAt(

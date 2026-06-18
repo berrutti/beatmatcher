@@ -7,7 +7,6 @@
 import type { SceneItem, Rect, ViewContext } from '@renderer/utils/timelineEngine';
 import type { RowLayout, SublaneLayout } from '@renderer/utils/timelineDraw';
 import {
-  ROW_H,
   LABEL_W,
   TICK_H,
   OVERVIEW_H,
@@ -19,11 +18,13 @@ import {
   drawClip,
   drawClipSelection,
   drawLoadedSpan,
+  drawLoadedSpanLabel,
   drawNudgeSpans,
   drawOverview,
   drawPlayhead,
   drawRowDividers,
   drawFrameGutters,
+  laneValuePad,
   type DeckRowChrome
 } from '@renderer/utils/timelineDraw';
 import { overlapsRange, hitTestOverview } from '@renderer/utils/timelineView';
@@ -89,30 +90,45 @@ export function clipBandItem(
   selectionSpan: { startMs: number; endMs: number } | null
 ): SceneItem {
   return {
-    bounds: (vc) => ({ x: LABEL_W, y: row.top, w: vc.trackW, h: ROW_H }),
+    bounds: (vc) => ({ x: LABEL_W, y: row.top, w: vc.trackW, h: row.waveformHeight }),
     draw: (ctx, vc) => {
+      const waveformH = row.waveformHeight;
       const viewEnd = vc.view.start + vc.view.duration;
       const visible = (s: number, e: number) => overlapsRange(s, e, vc.view.start, viewEnd);
       for (const span of loadedSpans) {
         if (span.deck === row.deckId && visible(span.startMs, span.endMs)) {
-          drawLoadedSpan(ctx, span, row.top, accent, vc.msToX);
+          drawLoadedSpan(ctx, span, row.top, waveformH, accent, vc.msToX);
         }
       }
       for (const clip of clips) {
         if (clip.deck === row.deckId && visible(clip.sessionStartMs, clip.sessionEndMs)) {
-          drawClip(ctx, clip, waveforms.get(clip.trackPath), row.top, accent, vc.msToX);
+          drawClip(ctx, clip, waveforms.get(clip.trackPath), row.top, waveformH, accent, vc.msToX);
         }
       }
       if (!audible) {
         ctx.fillStyle = '#00000090';
-        ctx.fillRect(LABEL_W, row.top, vc.trackW, ROW_H);
+        ctx.fillRect(LABEL_W, row.top, vc.trackW, waveformH);
+      }
+      // Track-name labels last so they stay legible over the waveform (and over
+      // the inaudible dim).
+      for (const span of loadedSpans) {
+        if (span.deck === row.deckId && visible(span.startMs, span.endMs)) {
+          drawLoadedSpanLabel(ctx, span, row.top, waveformH, vc.msToX);
+        }
       }
       if (selectionSpan && visible(selectionSpan.startMs, selectionSpan.endMs)) {
-        drawClipSelection(ctx, selectionSpan.startMs, selectionSpan.endMs, row.top, vc.msToX);
+        drawClipSelection(
+          ctx,
+          selectionSpan.startMs,
+          selectionSpan.endMs,
+          row.top,
+          waveformH,
+          vc.msToX
+        );
       }
     },
     hitTest: (pt, vc) => {
-      if (pt.y < row.top || pt.y > row.top + ROW_H || pt.x < LABEL_W) return null;
+      if (pt.y < row.top || pt.y > row.top + row.waveformHeight || pt.x < LABEL_W) return null;
       const block = blockAtPoint(clips, row.deckId, pt.x, vc);
       if (block) {
         return {
@@ -155,13 +171,14 @@ export function nudgeItem(row: RowLayout, span: NudgeSpan, deck: string): SceneI
       x: vc.msToX(span.startMs),
       y: row.top,
       w: vc.msToX(span.endMs) - vc.msToX(span.startMs),
-      h: ROW_H
+      h: row.waveformHeight
     }),
-    draw: (ctx, vc) => drawNudgeSpans(ctx, [span], row.top, vc.msToX),
+    draw: (ctx, vc) => drawNudgeSpans(ctx, [span], row.top, row.waveformHeight, vc.msToX),
     hitTest: (pt, vc) => {
       const x0 = vc.msToX(span.startMs);
       const x1 = vc.msToX(span.endMs);
-      if (pt.x < x0 || pt.x > x1 || pt.y < row.top || pt.y > row.top + ROW_H) return null;
+      if (pt.x < x0 || pt.x > x1 || pt.y < row.top || pt.y > row.top + row.waveformHeight)
+        return null;
       return { target: 'nudgeSpan', deck, data: span };
     }
   };
@@ -241,7 +258,10 @@ export function filterSelectionItem(
       const x1 = vc.msToX(endMs);
       ctx.strokeStyle = '#ffffffcc';
       ctx.lineWidth = 1.5;
-      ctx.strokeRect(x0, lane.top, Math.max(1, x1 - x0), lane.height);
+      // Match the lane's inset value area so the outline frames the curve and its
+      // bottom border clears the row divider (drawn on top of the lane).
+      const pad = laneValuePad(lane.height);
+      ctx.strokeRect(x0, lane.top + pad, Math.max(1, x1 - x0), lane.height - 2 * pad);
     },
     hitTest: () => null
   };
@@ -262,6 +282,22 @@ export function laneSeparatorItem(lane: SublaneLayout, deck: string): SceneItem 
       Math.abs(pt.y - edgeY) <= SEPARATOR_GRAB_PX
         ? { target: 'laneSeparator', deck, data: lane.key }
         : null
+  };
+}
+
+// ── waveform separator: hit-only grab band at the waveform/lane boundary ──────
+export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
+  const edgeY = row.top + row.waveformHeight;
+  return {
+    bounds: (vc) => ({
+      x: LABEL_W,
+      y: edgeY - SEPARATOR_GRAB_PX,
+      w: vc.trackW,
+      h: SEPARATOR_GRAB_PX * 2
+    }),
+    draw: () => {},
+    hitTest: (pt) =>
+      Math.abs(pt.y - edgeY) <= SEPARATOR_GRAB_PX ? { target: 'waveformSeparator', deck } : null
   };
 }
 

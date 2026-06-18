@@ -532,6 +532,70 @@ pub fn resize_filter_active_span(
     }
 }
 
+// Slide a whole filter-active span [start_ms, end_ms] by delta_ms, shifting its
+// opener (active=true) and closer (active=false) together. Clamped so the span
+// stays within the gap between its neighbouring filter events and inside
+// [0, duration_ms]. A span with no closer (ran to session end) only shifts its
+// opener.
+pub fn move_filter_active_span(
+    events: &[SessionEvent],
+    deck: &str,
+    start_ms: f64,
+    end_ms: f64,
+    delta_ms: f64,
+    duration_ms: f64,
+) -> Vec<SessionEvent> {
+    let mut fa_ms: Vec<f64> = events
+        .iter()
+        .filter(|e| is_set_filter_active_event(e, deck))
+        .map(|e| e.elapsed_ms)
+        .collect();
+    fa_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+
+    let prev = fa_ms
+        .iter()
+        .copied()
+        .rfind(|&m| m < start_ms - FILTER_SPAN_EPS_MS)
+        .unwrap_or(0.0)
+        .max(0.0);
+    let next = fa_ms
+        .iter()
+        .copied()
+        .find(|&m| m > end_ms + FILTER_SPAN_EPS_MS)
+        .unwrap_or(duration_ms)
+        .min(duration_ms);
+
+    let min_delta = prev - start_ms;
+    let max_delta = next - end_ms;
+    if min_delta > max_delta {
+        return events.to_vec();
+    }
+    let delta = delta_ms.clamp(min_delta, max_delta);
+    if delta == 0.0 {
+        return events.to_vec();
+    }
+
+    let out: Vec<SessionEvent> = events
+        .iter()
+        .map(|e| {
+            if is_set_filter_active_event(e, deck) {
+                let opener =
+                    e.active == Some(true) && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
+                let closer =
+                    e.active == Some(false) && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+                if opener || closer {
+                    return SessionEvent {
+                        elapsed_ms: e.elapsed_ms + delta,
+                        ..e.clone()
+                    };
+                }
+            }
+            e.clone()
+        })
+        .collect();
+    sort_by_ms(out)
+}
+
 // Rewrites event track paths after the user relocates missing files.
 pub fn relocate_event_paths(
     events: &[SessionEvent],
@@ -650,6 +714,34 @@ mod tests {
         let out = resize_filter_active_span(&events, "A", 1000.0, 10_000.0, "end", 5000.0, 10_000.0);
         assert!(filter_active_at(&out, "A", 3000.0, true));
         assert!(!filter_active_at(&out, "A", 6000.0, true));
+    }
+
+    #[test]
+    fn move_filter_active_span_slides_both_edges() {
+        let mut events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
+        // The drawn cutoff curve (set_filter) must NOT move with the span.
+        events.push(ev(2000.0, "set_filter", "A"));
+        let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 2000.0, 10_000.0);
+        assert!(!filter_active_at(&out, "A", 2000.0, true)); // old start now off
+        assert!(filter_active_at(&out, "A", 5000.0, true)); // shifted +2000
+        assert!(!filter_active_at(&out, "A", 6500.0, true)); // new end at 6000
+        let cutoff = out
+            .iter()
+            .find(|e| e.event_type == "set_filter")
+            .unwrap();
+        assert!((cutoff.elapsed_ms - 2000.0).abs() < 1e-6); // value point stayed put
+    }
+
+    #[test]
+    fn move_filter_active_span_clamps_to_session_end() {
+        let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
+        // Dragging far right is clamped so the end never passes duration_ms.
+        let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 100_000.0, 10_000.0);
+        let close = out
+            .iter()
+            .find(|e| e.event_type == "set_filter_active" && e.active == Some(false))
+            .unwrap();
+        assert!(close.elapsed_ms <= 10_000.0 + 1e-6);
     }
 
     #[test]

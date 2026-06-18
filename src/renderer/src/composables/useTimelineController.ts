@@ -8,8 +8,9 @@ import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { DECK_ACCENTS, type DeckId, useDecksStore } from '@renderer/stores/decks';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { type LaneKey } from '@renderer/utils/timelineDraw';
+import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
 import { type ClipSelectionRef } from '@renderer/utils/timelineLayout';
+import { blocksForDeck } from '@renderer/utils/clipEditOps';
 import type { Clip, FilterActiveSpan, NudgeSpan } from '@renderer/composables/useSessionTimeline';
 import type { TransportBlock } from '@renderer/utils/types';
 import type { Intent } from '@renderer/utils/timelineIntents';
@@ -36,6 +37,8 @@ export function useTimelineController(opts: {
   );
   const storedH = storageGet<number>(STORAGE_KEYS.sessionLaneHeight, DEFAULT_LANE_H);
   const laneHeight = ref(typeof storedH === 'number' ? storedH : DEFAULT_LANE_H);
+  const storedW = storageGet<number>(STORAGE_KEYS.sessionWaveformHeight, ROW_H);
+  const waveformHeight = ref(typeof storedW === 'number' ? storedW : ROW_H);
 
   const clipSelection = ref<ClipSelectionRef | null>(null);
   const unlockedBlockIds = ref<Set<number>>(new Set());
@@ -89,7 +92,15 @@ export function useTimelineController(opts: {
     }
   }
 
-  function handleIntent(intent: Intent): void {
+  async function handleIntent(intent: Intent): Promise<void> {
+    try {
+      await applyIntent(intent);
+    } catch (error) {
+      console.error('timeline intent failed', intent.type, error);
+    }
+  }
+
+  async function applyIntent(intent: Intent): Promise<void> {
     switch (intent.type) {
       case 'seek':
         opts.emitSeek(intent.ms);
@@ -114,32 +125,46 @@ export function useTimelineController(opts: {
         storageSet(STORAGE_KEYS.sessionLaneHeight, laneHeight.value);
         opts.requestRender();
         break;
+      case 'waveform.resize':
+        waveformHeight.value = intent.height;
+        storageSet(STORAGE_KEYS.sessionWaveformHeight, waveformHeight.value);
+        opts.requestRender();
+        break;
+      case 'waveform.resizeReset':
+        waveformHeight.value = ROW_H;
+        storageSet(STORAGE_KEYS.sessionWaveformHeight, waveformHeight.value);
+        opts.requestRender();
+        break;
       case 'lane.draw':
-        editStore
-          .commitGesture(intent.deck, intent.lane, intent.samples, intent.t0, intent.t1, {
-            rateMin: intent.rateMin,
-            rateMax: intent.rateMax
-          })
-          .catch(() => {});
+        await editStore.commitGesture(
+          intent.deck,
+          intent.lane,
+          intent.samples,
+          intent.t0,
+          intent.t1,
+          { rateMin: intent.rateMin, rateMax: intent.rateMax }
+        );
         break;
       case 'nudge.paint':
-        editStore
-          .commitNudgePaint(intent.deck, intent.t0, intent.t1, intent.direction)
-          .catch(() => {});
+        await editStore.commitNudgePaint(intent.deck, intent.t0, intent.t1, intent.direction);
         break;
       case 'filter.toggle':
-        editStore.commitFilterActiveToggle(intent.deck, intent.t0, intent.t1).catch(() => {});
+        await editStore.commitFilterActiveToggle(intent.deck, intent.t0, intent.t1);
         break;
       case 'clip.move':
-        editStore.commitClipMove(opts.getClips(), intent.block, intent.deltaMs).catch(() => {});
+        await editStore.commitClipMove(opts.getClips(), intent.block, intent.deltaMs);
         break;
       case 'clip.trim':
-        editStore
-          .commitClipTrim(opts.getClips(), intent.block, intent.edge, intent.newMs)
-          .catch(() => {});
+        await editStore.commitClipTrim(opts.getClips(), intent.block, intent.edge, intent.newMs);
+        break;
+      case 'clip.delete':
+        clipSelection.value = null;
+        opts.requestRender();
+        await editStore.commitClipDelete(opts.getClips(), intent.block);
         break;
       case 'clip.select':
         selectBlock(intent.block, intent.ms);
+        filterSelection.value = null;
         opts.requestRender();
         break;
       case 'clip.clearSelection':
@@ -161,6 +186,7 @@ export function useTimelineController(opts: {
           startMs: intent.span.startMs,
           endMs: intent.span.endMs
         };
+        clipSelection.value = null;
         opts.requestRender();
         break;
       case 'filterRegion.clearSelection':
@@ -173,20 +199,32 @@ export function useTimelineController(opts: {
           startMs: intent.edge === 'start' ? intent.newMs : intent.span.startMs,
           endMs: intent.edge === 'end' ? intent.newMs : intent.span.endMs
         };
-        editStore
-          .resizeFilterSpan(
-            intent.deck,
-            intent.span.startMs,
-            intent.span.endMs,
-            intent.edge,
-            intent.newMs
-          )
-          .catch(() => {});
+        await editStore.resizeFilterSpan(
+          intent.deck,
+          intent.span.startMs,
+          intent.span.endMs,
+          intent.edge,
+          intent.newMs
+        );
         break;
       case 'filterRegion.delete':
-        editStore.deleteFilterSpan(intent.deck, intent.span.startMs, intent.span.endMs);
         filterSelection.value = null;
         opts.requestRender();
+        await editStore.deleteFilterSpan(intent.deck, intent.span.startMs, intent.span.endMs);
+        break;
+      case 'filterRegion.move':
+        filterSelection.value = {
+          deck: intent.deck,
+          startMs: intent.span.startMs + intent.deltaMs,
+          endMs: intent.span.endMs + intent.deltaMs
+        };
+        clipSelection.value = null;
+        await editStore.moveFilterSpan(
+          intent.deck,
+          intent.span.startMs,
+          intent.span.endMs,
+          intent.deltaMs
+        );
         break;
       case 'menu.deck':
         deckMenu.value = {
@@ -217,10 +255,20 @@ export function useTimelineController(opts: {
     opts.requestRender();
   }
 
+  // Resolves the current clip selection back to a live block and deletes it
+  // through the intent path (which clears the selection and commits the edit).
+  function deleteSelectedClip(): void {
+    const sel = clipSelection.value;
+    if (!sel) return;
+    const block = blocksForDeck(opts.getClips(), sel.deck).find((b) => b.blockId === sel.blockId);
+    if (block) handleIntent({ type: 'clip.delete', block });
+  }
+
   return {
     // state for the scene + menus
     selectedDeckLane,
     laneHeight,
+    waveformHeight,
     clipSelection,
     filterSelection,
     unlockedBlockIds,
@@ -233,6 +281,7 @@ export function useTimelineController(opts: {
     accentFor,
     selectedFilterSpan,
     deleteSelectedFilterSpan,
+    deleteSelectedClip,
     handleIntent
   };
 }

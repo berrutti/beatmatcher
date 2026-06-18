@@ -21,6 +21,8 @@ export type Intent =
   | { type: 'lane.openDropdown'; deck: string; clientX: number; clientY: number }
   | { type: 'lane.resize'; height: number }
   | { type: 'lane.resizeReset' }
+  | { type: 'waveform.resize'; height: number }
+  | { type: 'waveform.resizeReset' }
   // automation edits (committed on gesture end)
   | {
       type: 'lane.draw';
@@ -39,6 +41,7 @@ export type Intent =
   | { type: 'clip.trim'; block: TransportBlock; edge: 'start' | 'end'; newMs: number }
   | { type: 'clip.select'; block: TransportBlock; ms: number }
   | { type: 'clip.clearSelection' }
+  | { type: 'clip.delete'; block: TransportBlock }
   | { type: 'loopBlock.toggleUnlock'; block: TransportBlock; ms: number }
   // filter-region edits
   | { type: 'filterRegion.select'; deck: string; span: FilterActiveSpan }
@@ -51,6 +54,7 @@ export type Intent =
       newMs: number;
     }
   | { type: 'filterRegion.delete'; deck: string; span: FilterActiveSpan }
+  | { type: 'filterRegion.move'; deck: string; span: FilterActiveSpan; deltaMs: number }
   // context menu
   | { type: 'menu.deck'; deck: string; clientX: number; clientY: number; nudge: NudgeSpan | null }
   | {

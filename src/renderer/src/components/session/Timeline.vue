@@ -119,7 +119,6 @@ import {
   LANE_KEYS,
   LABEL_W,
   PADDING,
-  ROW_H,
   makeMsToX,
   type LaneKey,
   type TrackWaveform
@@ -190,10 +189,11 @@ const gestures = useTimelineGestures({
   getEvents: () => sessionStore.session?.events ?? [],
   getDeckLanes: () => props.deckLanes,
   laneHeight: () => controller.laneHeight.value,
+  waveformHeight: () => controller.waveformHeight.value,
   isEditMode: () => editStore.editMode,
-  isPlaying: () => sessionStore.isPlaying,
   durationMs: () => props.durationMs,
-  nudgeDirectionAt: (_deck, y, rowTop) => (y < rowTop + ROW_H / 2 ? 1 : -1),
+  nudgeDirectionAt: (_deck, y, rowTop) =>
+    y < rowTop + controller.waveformHeight.value / 2 ? 1 : -1,
   nudgeSensitivity: () => settingsStore.nudgeSensitivity,
   accentFor: controller.accentFor,
   requestRender: scheduleRender,
@@ -246,6 +246,7 @@ function render(): void {
     editMode: editStore.editMode,
     laneFor: controller.laneFor,
     laneHeight: controller.laneHeight.value,
+    waveformHeight: controller.waveformHeight.value,
     accentFor: controller.accentFor,
     audibleFor: (deck) => sessionStore.deckAudible(deck),
     soloFor: (deck) => sessionStore.soloDecks.has(deck),
@@ -454,13 +455,18 @@ watch(
   (ms) => camera.followPlayhead(ms)
 );
 
-// Delete/Backspace removes the selected filter-active span (only while editing;
-// the store no-ops during playback).
+// Delete/Backspace removes whichever editable thing is selected (clip takes
+// precedence over a filter span). Edit-mode only; the commit stops playback.
 function onKeyDown(e: KeyboardEvent): void {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-  if (!editStore.editMode || !controller.filterSelection.value) return;
-  e.preventDefault();
-  controller.deleteSelectedFilterSpan(props.deckLanes);
+  if (!editStore.editMode) return;
+  if (controller.clipSelection.value) {
+    e.preventDefault();
+    controller.deleteSelectedClip();
+  } else if (controller.filterSelection.value) {
+    e.preventDefault();
+    controller.deleteSelectedFilterSpan(props.deckLanes);
+  }
 }
 
 // blockIds are reallocated whenever clips rebuild (any edit), so clip selection
@@ -518,6 +524,7 @@ watch(
     camera.scrollY.value,
     controller.selectedDeckLane.value,
     controller.laneHeight.value,
+    controller.waveformHeight.value,
     controller.clipSelection.value,
     controller.filterSelection.value,
     editStore.editMode,

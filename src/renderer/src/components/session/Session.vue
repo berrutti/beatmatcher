@@ -9,7 +9,7 @@
     <p class="session__modal-body">{{ $t('session.discardBody') }}</p>
   </Modal>
 
-  <div class="session">
+  <div class="session" v-bind="$attrs">
     <div class="session__body">
       <div
         v-if="!session.session"
@@ -102,6 +102,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ inheritAttrs: false });
 import { ref, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';

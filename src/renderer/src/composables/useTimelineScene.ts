@@ -20,6 +20,7 @@ import {
   filterRegionItem,
   filterSelectionItem,
   laneSeparatorItem,
+  waveformSeparatorItem,
   masterItem,
   rowDividersItem,
   playheadItem,
@@ -51,6 +52,7 @@ export type SceneInput = {
   editMode: boolean;
   laneFor: (deck: string) => LaneKey;
   laneHeight: number;
+  waveformHeight: number;
   accentFor: (deck: string) => string;
   audibleFor: (deck: string) => boolean;
   soloFor: (deck: string) => boolean;
@@ -77,7 +79,7 @@ export function buildScene(input: SceneInput): SceneResult {
     deckId,
     laneHeights: input.editMode ? [{ key: input.laneFor(deckId), height: input.laneHeight }] : []
   }));
-  const rows = computeRowLayout(deckSpecs, vc.laneOriginY);
+  const rows = computeRowLayout(deckSpecs, vc.laneOriginY, input.waveformHeight);
 
   const items: SceneItem[] = [tickRowItem()];
 
@@ -118,6 +120,7 @@ export function buildScene(input: SceneInput): SceneResult {
         }
       }
       items.push(laneSeparatorItem(lane, deck));
+      items.push(waveformSeparatorItem(row, deck));
     }
   });
 
@@ -126,12 +129,12 @@ export function buildScene(input: SceneInput): SceneResult {
   const masterHeight = MASTER_ROW_H;
   items.push(masterItem(masterTop, masterHeight, input.masterLanes));
 
-  items.push(rowDividersItem(rows));
-
   const bottomY = Math.min(masterTop + masterHeight, vc.scrollViewport.bottom);
   items.push(playheadItem(input.playheadMs, bottomY));
 
   if (input.overlays) items.push(...input.overlays);
+
+  items.push(rowDividersItem(rows));
 
   const scrollbar = scrollbarItem(input.scrollY, input.maxScrollY);
   if (scrollbar) items.push(scrollbar);

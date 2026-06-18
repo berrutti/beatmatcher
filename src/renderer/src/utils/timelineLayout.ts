@@ -9,18 +9,19 @@ export type LaneHeight = { key: LaneKey; height: number };
 
 export function computeRowLayout(
   decks: { deckId: DeckId; laneHeights: LaneHeight[] }[],
-  topY: number
+  topY: number,
+  waveformHeight: number = ROW_H
 ): RowLayout[] {
   const rows: RowLayout[] = [];
   let rowY = topY;
   for (const { deckId, laneHeights } of decks) {
-    let sublaneTop = rowY + ROW_H;
+    let sublaneTop = rowY + waveformHeight;
     const lanes: SublaneLayout[] = laneHeights.map(({ key, height }) => {
       const sublane = { key, top: sublaneTop, height };
       sublaneTop += height;
       return sublane;
     });
-    rows.push({ deckId, top: rowY, height: sublaneTop - rowY, lanes });
+    rows.push({ deckId, top: rowY, height: sublaneTop - rowY, waveformHeight, lanes });
     rowY = sublaneTop;
   }
   return rows;

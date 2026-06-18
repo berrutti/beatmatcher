@@ -10,14 +10,15 @@ pub mod sim;
 pub mod timeline;
 
 pub use clip_edit::{
-    block_bounds, blocks_for_deck, move_transport_block, trim_transport_block, Edge, MoveResult,
-    TransportBlock, TrimResult, MIN_BLOCK_MS,
+    block_bounds, blocks_for_deck, delete_transport_block, move_transport_block,
+    trim_transport_block, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
-    normalize_gesture_samples, nudge_value_at, original_value_at, paint_nudge_range,
-    relocate_event_paths, resize_filter_active_span, splice_lane_events, toggle_filter_active_range,
+    move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
+    paint_nudge_range, relocate_event_paths, resize_filter_active_span, splice_lane_events,
+    toggle_filter_active_range,
     EditableLane, LaneSpec, MIN_GESTURE_MS,
 };
 pub use sim::{
@@ -130,6 +131,19 @@ mod wasm {
         };
         let result = crate::trim_transport_block(&events, &clips, &block, edge, new_ms);
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Delete a transport block (drop its play/stop). Returns the events JSON.
+    #[wasm_bindgen(js_name = deleteTransportBlock)]
+    pub fn delete_transport_block(
+        events_json: &str,
+        clips_json: &str,
+        block_json: &str,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let clips = parse_clips(clips_json)?;
+        let block = parse_block(block_json)?;
+        events_to_json(crate::delete_transport_block(&events, &clips, &block))
     }
 
     fn parse_points(points_json: &str) -> Result<Vec<crate::LanePoint>, JsError> {
@@ -263,6 +277,28 @@ mod wasm {
             end_ms,
             edge,
             new_ms,
+            duration_ms,
+        ))
+    }
+
+    /// Slide the whole filter-active span [`start_ms`, `end_ms`] by `delta_ms`.
+    #[wasm_bindgen(js_name = moveFilterActiveSpan)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_filter_active_span(
+        events_json: &str,
+        deck: &str,
+        start_ms: f64,
+        end_ms: f64,
+        delta_ms: f64,
+        duration_ms: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::move_filter_active_span(
+            &events,
+            deck,
+            start_ms,
+            end_ms,
+            delta_ms,
             duration_ms,
         ))
     }

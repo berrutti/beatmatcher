@@ -12,6 +12,7 @@ import init, {
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
   trimTransportBlock as wasmTrim,
+  deleteTransportBlock as wasmDeleteBlock,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   originalValueAt as wasmOriginalValueAt,
@@ -20,6 +21,7 @@ import init, {
   toggleFilterActiveRange as wasmToggleFilter,
   deleteFilterActiveSpan as wasmDeleteFilterSpan,
   resizeFilterActiveSpan as wasmResizeFilterSpan,
+  moveFilterActiveSpan as wasmMoveFilterSpan,
   nudgeValueAt as wasmNudgeValueAt,
   paintNudgeRange as wasmPaintNudge,
   deleteNudgeRange as wasmDeleteNudge,
@@ -140,6 +142,14 @@ export function trimTransportBlock(
   return result;
 }
 
+export function deleteTransportBlock(
+  events: SessionEvent[],
+  clips: Clip[],
+  block: TransportBlock
+): SessionEvent[] {
+  return parse(wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block)));
+}
+
 // Lane ops take a lane key plus the rate range (only used by the rate lane;
 // other lanes ignore it). Defaults match the smallest pitch-range step.
 export function spliceLaneEvents(
@@ -215,6 +225,19 @@ export function resizeFilterActiveSpan(
 ): SessionEvent[] {
   return parse(
     wasmResizeFilterSpan(JSON.stringify(events), deck, startMs, endMs, edge, newMs, durationMs)
+  );
+}
+
+export function moveFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  deltaMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return parse(
+    wasmMoveFilterSpan(JSON.stringify(events), deck, startMs, endMs, deltaMs, durationMs)
   );
 }
 

@@ -17,7 +17,7 @@ import {
   drawPaintGesturePreview,
   drawClipGhosts
 } from '@renderer/utils/timelineDraw';
-import { yToValue, makeMsToX } from '@renderer/utils/timelineDraw';
+import { yToValue, makeMsToX, laneValuePad } from '@renderer/utils/timelineDraw';
 import {
   clampFrac,
   recenterOn,
@@ -38,11 +38,11 @@ import type {
   LanePoint,
   DeckLanes,
   FilterActiveSpan,
-  NudgeSpan,
-  SessionEvent
+  NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
 import type { IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
+import type { SessionEvent } from '@renderer/stores/session';
 
 const MIN_VIEW_MS = 200;
 
@@ -60,8 +60,8 @@ export type GestureDeps = {
   getEvents: () => SessionEvent[];
   getDeckLanes: () => Record<string, DeckLanes>;
   laneHeight: () => number;
+  waveformHeight: () => number;
   isEditMode: () => boolean;
-  isPlaying: () => boolean;
   durationMs: () => number;
   nudgeDirectionAt: (deck: string, y: number, rowTop: number) => 1 | -1;
   nudgeSensitivity: () => number;
@@ -75,6 +75,7 @@ type ActiveGesture =
   | { kind: 'track-pan'; startView: { start: number; duration: number } }
   | { kind: 'scroll-y'; startY: number; startScroll: number; trackTravel: number }
   | { kind: 'lane-resize'; startY: number; startHeight: number; height: number }
+  | { kind: 'waveform-resize'; startY: number; startHeight: number; height: number }
   | {
       kind: 'overview';
       mode: 'move' | 'resize-left' | 'resize-right';
@@ -126,6 +127,13 @@ type ActiveGesture =
       span: FilterActiveSpan;
       edge: 'start' | 'end';
       currentMs: number;
+    }
+  | {
+      kind: 'filter-move';
+      deck: string;
+      span: FilterActiveSpan;
+      grabMs: number;
+      deltaMs: number;
     };
 
 export function useTimelineGestures(deps: GestureDeps) {
@@ -199,6 +207,11 @@ export function useTimelineGestures(deps: GestureDeps) {
         active = { kind: 'lane-resize', startY: pt.y, startHeight: h, height: h };
         return;
       }
+      case 'waveformSeparator': {
+        const h = deps.waveformHeight();
+        active = { kind: 'waveform-resize', startY: pt.y, startHeight: h, height: h };
+        return;
+      }
       case 'laneDropdown':
         deps.emit({
           type: 'lane.openDropdown',
@@ -208,7 +221,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         });
         return;
       case 'filterRegion': {
-        if (deps.isPlaying()) return; // span editing only while stopped
+        // Editable while playing, like clips; the commit stops playback on drop.
         const span = hit.data as FilterActiveSpan;
         if (hit.part === 'start' || hit.part === 'end') {
           active = {
@@ -218,14 +231,29 @@ export function useTimelineGestures(deps: GestureDeps) {
             edge: hit.part,
             currentMs: vc.xToMs(pt.x)
           };
-          deps.emit({ type: 'filterRegion.select', deck: hit.deck!, span });
+        } else {
+          active = {
+            kind: 'filter-move',
+            deck: hit.deck!,
+            span,
+            grabMs: vc.xToMs(pt.x),
+            deltaMs: 0
+          };
         }
-        return; // body click handled on click (select)
+        deps.emit({ type: 'filterRegion.select', deck: hit.deck!, span });
+        return; // a plain body click (no drag) just leaves it selected
       }
       case 'clip': {
-        if (!deps.isEditMode() || e.shiftKey) break;
+        if (!deps.isEditMode()) break;
         const { block, rowTop } = hit.data as { block: TransportBlock; rowTop: number };
-        armClip(block, rowTop, hit.part as 'start' | 'end' | null, vc, pt);
+        // Shift+drag paints a nudge over the deck row, even on top of a clip
+        // (otherwise a loaded waveform would block the gesture entirely).
+        if (e.shiftKey) {
+          armNudge(hit.deck!, rowTop, vc, pt);
+          return;
+        }
+        const edge = hit.part === 'start' || hit.part === 'end' ? hit.part : null;
+        armClip(block, rowTop, edge, vc, pt);
         return;
       }
       case 'lane': {
@@ -233,12 +261,17 @@ export function useTimelineGestures(deps: GestureDeps) {
         const ms = vc.xToMs(pt.x);
         const laneKey = hit.part as EditableLaneKey;
         const laneRect = hit.data as { top: number; height: number };
+        // Match the renderer's inset value area so drawn points and the painted
+        // region land where they're rendered.
+        const pad = laneValuePad(laneRect.height);
+        const valueTop = laneRect.top + pad;
+        const valueH = laneRect.height - 2 * pad;
         if (e.shiftKey && laneKey === 'filter') {
           active = {
             kind: 'filter-paint',
             deck: hit.deck!,
-            top: laneRect.top,
-            height: laneRect.height,
+            top: valueTop,
+            height: valueH,
             startMs: ms,
             currentMs: ms
           };
@@ -250,8 +283,8 @@ export function useTimelineGestures(deps: GestureDeps) {
           kind: 'lane-draw',
           deck: hit.deck!,
           lane: laneKey,
-          top: laneRect.top,
-          height: laneRect.height,
+          top: valueTop,
+          height: valueH,
           min,
           max,
           samples: [],
@@ -261,16 +294,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       }
       case 'clipBand': {
         if (deps.isEditMode() && e.shiftKey) {
-          const rowTop = (hit.data as { rowTop: number }).rowTop;
-          const ms = vc.xToMs(pt.x);
-          active = {
-            kind: 'nudge-paint',
-            deck: hit.deck!,
-            rowTop,
-            direction: deps.nudgeDirectionAt(hit.deck!, pt.y, rowTop),
-            startMs: ms,
-            currentMs: ms
-          };
+          armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, vc, pt);
           return;
         }
         break;
@@ -303,6 +327,11 @@ export function useTimelineGestures(deps: GestureDeps) {
       case 'lane-resize': {
         active.height = clampLaneHeight(active.startHeight + (pt.y - active.startY));
         deps.emit({ type: 'lane.resize', height: active.height });
+        return;
+      }
+      case 'waveform-resize': {
+        active.height = clampWaveformHeight(active.startHeight + (pt.y - active.startY));
+        deps.emit({ type: 'waveform.resize', height: active.height });
         return;
       }
       case 'overview': {
@@ -350,6 +379,19 @@ export function useTimelineGestures(deps: GestureDeps) {
         deps.requestRender();
         return;
       }
+      case 'filter-move': {
+        active.deltaMs = vc.xToMs(pt.x) - active.grabMs;
+        deps.emit({
+          type: 'filterRegion.select',
+          deck: active.deck,
+          span: {
+            startMs: active.span.startMs + active.deltaMs,
+            endMs: active.span.endMs + active.deltaMs
+          }
+        });
+        deps.requestRender();
+        return;
+      }
       case 'clip':
         updateClip(active, clampMs(vc.xToMs(pt.x), deps.durationMs()));
         deps.requestRender();
@@ -364,6 +406,9 @@ export function useTimelineGestures(deps: GestureDeps) {
     switch (g.kind) {
       case 'lane-resize':
         deps.emit({ type: 'lane.resize', height: g.height });
+        break;
+      case 'waveform-resize':
+        deps.emit({ type: 'waveform.resize', height: g.height });
         break;
       case 'lane-draw':
         if (g.samples.length > 0) {
@@ -414,6 +459,11 @@ export function useTimelineGestures(deps: GestureDeps) {
           newMs: g.currentMs
         });
         dragged = true;
+        break;
+      case 'filter-move':
+        if (!dragged) break; // a plain body click just selects (handled on click)
+        if (Math.abs(g.deltaMs) >= 1)
+          deps.emit({ type: 'filterRegion.move', deck: g.deck, span: g.span, deltaMs: g.deltaMs });
         break;
       case 'clip':
         if (!dragged) break; // a press without movement is a scrub click, not an edit
@@ -471,6 +521,10 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (!hit) return;
     if (hit.target === 'laneSeparator') {
       deps.emit({ type: 'lane.resizeReset' });
+      return;
+    }
+    if (hit.target === 'waveformSeparator') {
+      deps.emit({ type: 'waveform.resizeReset' });
       return;
     }
     if (hit.target === 'clip' && deps.isEditMode()) {
@@ -551,6 +605,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             Math.max(g.startMs, g.currentMs),
             g.direction * deps.nudgeSensitivity(),
             g.rowTop,
+            deps.waveformHeight(),
             g.currentMs,
             msToX,
             vc.canvasW
@@ -594,6 +649,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             ctx,
             g.clips.map((c) => ghostSpan(c, { kind, deltaMs: g.deltaMs, targetMs: g.targetMs })),
             g.rowTop,
+            deps.waveformHeight(),
             deps.accentFor(g.block.deck),
             `${deltaSec > 0 ? '+' : ''}${deltaSec.toFixed(2)}s`,
             g.block.startMs + (kind === 'move' ? g.deltaMs : 0),
@@ -610,17 +666,32 @@ export function useTimelineGestures(deps: GestureDeps) {
     const hit = hitAt(pt);
     if (!hit) return '';
     if (hit.target === 'scrollbar') return 'pointer';
-    if (hit.target === 'laneSeparator') return 'row-resize';
+    if (hit.target === 'laneSeparator' || hit.target === 'waveformSeparator') return 'row-resize';
     if (hit.target === 'overview')
       return hit.part === 'resize-left' || hit.part === 'resize-right' ? 'ew-resize' : 'grab';
-    if (hit.target === 'filterRegion') return hit.part === 'body' ? 'pointer' : 'ew-resize';
-    if (hit.target === 'clip') return hit.part ? 'ew-resize' : 'grab';
+    if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
+    if (hit.target === 'clip') {
+      if (!deps.isEditMode()) return '';
+      return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
+    }
     if (hit.target === 'laneDropdown') return 'pointer';
-    if (hit.target === 'lane') return deps.isEditMode() ? 'crosshair' : '';
+    if (hit.target === 'lane') return 'crosshair';
     return '';
   }
 
   // ── small helpers ──────────────────────────────────────────────────────────
+  function armNudge(deck: string, rowTop: number, vc: ViewContext, pt: Point): void {
+    const ms = vc.xToMs(pt.x);
+    active = {
+      kind: 'nudge-paint',
+      deck,
+      rowTop,
+      direction: deps.nudgeDirectionAt(deck, pt.y, rowTop),
+      startMs: ms,
+      currentMs: ms
+    };
+  }
+
   function armClip(
     block: TransportBlock,
     rowTop: number,
@@ -729,6 +800,10 @@ function snapToEdges(value: number, candidates: number[], toleranceMs: number): 
 
 function clampLaneHeight(h: number): number {
   return Math.min(240, Math.max(10, h));
+}
+
+function clampWaveformHeight(h: number): number {
+  return Math.min(240, Math.max(40, h));
 }
 
 function overviewDrag(

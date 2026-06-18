@@ -28,9 +28,12 @@ export const HIT_PRECEDENCE: readonly string[] = [
   // sits above the waveform (clip body) and the lane limit per the same logic.
   'filterRegion:body',
   'nudgeSpan',
+  // The waveform separator sits ON the clip band (clips cover the waveform), so
+  // unlike the lane separator it must beat the clip body to stay grabbable.
+  'waveformSeparator',
   'clip:body',
-  // Separators come AFTER the elements, but still above the bare lane surface
-  // (otherwise the lane draw surface would swallow every separator grab).
+  // The lane separator sits over the (often empty) lane bottom, so it can sink
+  // below the elements: move off an element to grab it.
   'laneSeparator',
   // The automation lane drawing surface (draw value / shift-paint).
   'lane',
