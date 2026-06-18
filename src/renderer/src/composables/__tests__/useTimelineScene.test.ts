@@ -68,9 +68,7 @@ describe('buildScene z-order', () => {
     const { items } = buildScene(input([overlay]));
 
     const overlayIdx = items.indexOf(overlay);
-    const dividerIdx = items.findIndex(
-      (it) => (it as { __tag?: string }).__tag === 'dividers'
-    );
+    const dividerIdx = items.findIndex((it) => (it as { __tag?: string }).__tag === 'dividers');
 
     expect(overlayIdx).toBeGreaterThanOrEqual(0);
     expect(dividerIdx).toBeGreaterThan(overlayIdx);

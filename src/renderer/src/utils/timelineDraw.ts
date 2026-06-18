@@ -484,7 +484,16 @@ export function drawDeckLanes(
     // the center stays at the lane's exact middle, keeping the halves symmetric.
     const pad = laneValuePad(height);
     withLaneClip(ctx, top, height, canvasWidth, () =>
-      LANE_DRAWERS[key](ctx, canvasWidth, deckData, top + pad, height - 2 * pad, msToX, viewStart, viewEnd)
+      LANE_DRAWERS[key](
+        ctx,
+        canvasWidth,
+        deckData,
+        top + pad,
+        height - 2 * pad,
+        msToX,
+        viewStart,
+        viewEnd
+      )
     );
   }
 }

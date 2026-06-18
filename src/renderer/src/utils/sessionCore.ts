@@ -147,7 +147,9 @@ export function deleteTransportBlock(
   clips: Clip[],
   block: TransportBlock
 ): SessionEvent[] {
-  return parse(wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block)));
+  return parse(
+    wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block))
+  );
 }
 
 // Lane ops take a lane key plus the rate range (only used by the rate lane;
