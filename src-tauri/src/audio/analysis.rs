@@ -170,6 +170,45 @@ pub fn compute_amplitude_waveform(samples: &[f32], channels: usize, num_points: 
     result
 }
 
+// RMS amplitude over the frame sub-range [start_frame, end_frame), binned into
+// num_points. Used for zoom-driven LOD: fetch only the visible track region at
+// roughly one point per on-screen pixel, so detail scales with zoom regardless
+// of track length.
+pub fn compute_amplitude_region(
+    samples: &[f32],
+    channels: usize,
+    start_frame: usize,
+    end_frame: usize,
+    num_points: usize,
+) -> Vec<f32> {
+    if samples.is_empty() || channels == 0 || num_points == 0 {
+        return vec![0.0; num_points];
+    }
+    let total_frames = samples.len() / channels;
+    let start = start_frame.min(total_frames.saturating_sub(1));
+    let end = end_frame.clamp(start + 1, total_frames);
+    let frames_per_point = (end - start) as f64 / num_points as f64;
+    let mut result = Vec::with_capacity(num_points);
+    for i in 0..num_points {
+        let bin_start = start + (i as f64 * frames_per_point) as usize;
+        let bin_end = (start + ((i + 1) as f64 * frames_per_point) as usize)
+            .min(end)
+            .max(bin_start + 1)
+            .min(total_frames);
+        if bin_start >= bin_end {
+            result.push(0.0);
+            continue;
+        }
+        let sample_count = ((bin_end - bin_start) * channels) as f32;
+        let sum_of_squares: f32 = samples[bin_start * channels..bin_end * channels]
+            .iter()
+            .map(|s| s * s)
+            .sum();
+        result.push((sum_of_squares / sample_count).sqrt().min(1.0));
+    }
+    result
+}
+
 // Isolate kick drum energy for onset detection. Bass drum fundamentals sit
 // between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
 // would create false beat intervals.

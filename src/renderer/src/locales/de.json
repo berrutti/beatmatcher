@@ -209,6 +209,7 @@
     "missingFiles": "Diese Audiodateien fehlen. Wähle den Ordner, der sie enthält, um die Wiedergabe wiederherzustellen:",
     "locate": "ORDNER WÄHLEN",
     "deleteNudge": "Nudge löschen",
+    "deleteFilterRegion": "Filterbereich löschen",
     "mute": "Stumm",
     "solo": "Solo",
     "lanesMenu": "Spuren"

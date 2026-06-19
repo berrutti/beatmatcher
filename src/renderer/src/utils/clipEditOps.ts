@@ -4,7 +4,8 @@ import {
   blocksForDeck as coreBlocksForDeck,
   blockBounds as coreBlockBounds,
   moveTransportBlock as coreMoveTransportBlock,
-  trimTransportBlock as coreTrimTransportBlock
+  trimTransportBlock as coreTrimTransportBlock,
+  deleteTransportBlock as coreDeleteTransportBlock
 } from '@renderer/utils/sessionCore';
 import { TransportBlock } from './types';
 
@@ -41,4 +42,12 @@ export function trimTransportBlock(
   newMs: number
 ): { events: SessionEvent[]; appliedMs: number } {
   return coreTrimTransportBlock(events, clips, block, edge, newMs);
+}
+
+export function deleteTransportBlock(
+  events: SessionEvent[],
+  clips: Clip[],
+  block: TransportBlock
+): SessionEvent[] {
+  return coreDeleteTransportBlock(events, clips, block);
 }

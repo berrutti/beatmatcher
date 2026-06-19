@@ -620,6 +620,126 @@ pub fn trim_transport_block(
     }
 }
 
+// The load_track (and the rate/grid it seeded before play) for the block being
+// deleted, but only when no OTHER play uses that load, so a shared track stays.
+fn orphaned_own_load(
+    events: &[SessionEvent],
+    deck: &str,
+    own_load_ms: Option<f64>,
+    block_t0: f64,
+    block_t1: f64,
+) -> HashSet<usize> {
+    let mut discarded: HashSet<usize> = HashSet::new();
+    let Some(own) = own_load_ms else {
+        return discarded;
+    };
+    let next_load = events
+        .iter()
+        .filter(|e| {
+            e.deck.as_deref() == Some(deck)
+                && e.event_type == "load_track"
+                && e.elapsed_ms > own + EPS_MS
+        })
+        .map(|e| e.elapsed_ms)
+        .fold(f64::INFINITY, f64::min);
+    let shared = events.iter().any(|e| {
+        e.deck.as_deref() == Some(deck)
+            && e.event_type == "play"
+            && e.elapsed_ms > own + EPS_MS
+            && e.elapsed_ms < next_load - EPS_MS
+            && (e.elapsed_ms < block_t0 - EPS_MS || e.elapsed_ms > block_t1 + EPS_MS)
+    });
+    if shared {
+        return discarded;
+    }
+    for (idx, event) in events.iter().enumerate() {
+        if event.deck.as_deref() != Some(deck) {
+            continue;
+        }
+        if (event.event_type == "load_track" && near(event.elapsed_ms, own))
+            || ((event.event_type == "set_playback_rate" || event.event_type == "set_beat_grid")
+                && event.elapsed_ms >= own - EPS_MS
+                && event.elapsed_ms < block_t0 - EPS_MS)
+        {
+            discarded.insert(idx);
+        }
+    }
+    discarded
+}
+
+// Delete a transport block: drop its play/stop (and any loop) events so the deck
+// is silent across [start_ms, end_ms]. A glued predecessor gets a stop so it
+// doesn't bleed into the gap; a glued successor keeps its own start. A
+// deck_snapshot on the start boundary survives with its transport effects
+// cleared (it also loads the track). The track's load is left in place
+// (this removes the played segment, not the deck's loaded track) and automation
+// is untouched (it lives at wall time).
+pub fn delete_transport_block(
+    events: &[SessionEvent],
+    clips: &[Clip],
+    block: &TransportBlock,
+) -> Vec<SessionEvent> {
+    let Some(neighborhood) = neighborhood_of(events, clips, block) else {
+        return events.to_vec();
+    };
+    let Neighborhood {
+        prev,
+        next,
+        own_load_ms,
+        ..
+    } = neighborhood;
+    let t0 = block.start_ms;
+    let t1 = block.end_ms;
+    let deck = block.deck.as_str();
+    let prev_glued = prev.as_ref().is_some_and(|p| near(p.end_ms, t0));
+    let next_glued = next.as_ref().is_some_and(|n| near(n.start_ms, t1));
+
+    // If this block was the only thing playing from its load_track, the load (and
+    // the rate/grid it seeded) is now orphaned: drop it so the deck reads as empty
+    // here instead of leaving a stale loaded-span box and label.
+    let discarded = orphaned_own_load(events, deck, own_load_ms, t0, t1);
+
+    let mut kept: Vec<SessionEvent> = Vec::new();
+    for (idx, event) in events.iter().enumerate() {
+        if discarded.contains(&idx) {
+            continue;
+        }
+        // A deck_snapshot on the start boundary loads/seeds the deck; keep it but
+        // stop it playing so it no longer opens the block.
+        if event.event_type == "deck_snapshot" && near(event.elapsed_ms, t0) {
+            if let Some(replacement) = rewrite_start_boundary(event) {
+                kept.push(replacement);
+            }
+            continue;
+        }
+        if event.deck.as_deref() != Some(deck) || !is_transport(&event.event_type) {
+            kept.push(event.clone());
+            continue;
+        }
+        let ms = event.elapsed_ms;
+        if ms < t0 - EPS_MS || ms > t1 + EPS_MS {
+            kept.push(normalize_resume_play(event, next.as_ref()));
+            continue;
+        }
+        if event.event_type == "load_track" || event.event_type == "eject_track" {
+            kept.push(event.clone());
+            continue;
+        }
+        // Inside [t0, t1]: the block's own play/stop/loop events — drop them.
+    }
+    if prev_glued {
+        if let Some(prev) = &prev {
+            kept.extend(end_events_for(prev, t0));
+        }
+    }
+    if next_glued {
+        if let Some(next) = &next {
+            kept.extend(start_events_for(next, t1));
+        }
+    }
+    stable_sort_by_ms(kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +754,9 @@ mod tests {
             playback_rate: 1.0,
             block_id,
             loop_region: None,
+            wave_segments: Vec::new(),
+            bpm: None,
+            beat_offset_sec: None,
         }
     }
 
@@ -791,5 +914,73 @@ mod tests {
         let result = trim_transport_block(&events, &clips, &block, Edge::Start, 2000.0);
         assert_eq!(result.applied_ms, 1000.0);
         assert_eq!(result.events.len(), events.len());
+    }
+
+    #[test]
+    fn delete_removes_block_and_its_orphaned_load() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(5000.0, "stop", "A"),
+        ];
+        let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let out = delete_transport_block(&events, &clips, &block);
+
+        assert!(find(&out, "play", 1000.0).is_none());
+        assert!(find(&out, "stop", 5000.0).is_none());
+        // The only block using the load is gone, so the load is dropped too.
+        assert!(!out.iter().any(|e| e.event_type == "load_track"));
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
+        assert!(rebuilt.is_empty());
+    }
+
+    #[test]
+    fn delete_keeps_load_shared_by_another_block() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(3000.0, "stop", "A"),
+            ev(6000.0, "play", "A"),
+            ev(8000.0, "stop", "A"),
+        ];
+        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 6000.0, 8000.0, 1, 5.0)];
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let out = delete_transport_block(&events, &clips, &block);
+        // A later block still plays from the same load, so the load survives.
+        assert!(out.iter().any(|e| e.event_type == "load_track"));
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
+        assert_eq!(rebuilt.len(), 1);
+    }
+
+    #[test]
+    fn delete_glued_predecessor_gets_a_stop() {
+        // Two back-to-back blocks (no stop between); deleting the second must stop
+        // the first at the boundary so it doesn't bleed into the gap.
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(3000.0, "stop", "A"),
+            ev(3000.0, "play", "A"),
+            ev(5000.0, "stop", "A"),
+        ];
+        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 3000.0, 5000.0, 1, 2.0)];
+        let block = blocks_for_deck(&clips, "A")[1].clone();
+
+        let out = delete_transport_block(&events, &clips, &block);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
+        assert_eq!(rebuilt.len(), 1);
+        assert!((rebuilt[0].session_end_ms - 3000.0).abs() < 1.0);
     }
 }

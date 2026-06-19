@@ -9,35 +9,22 @@ export type LaneHeight = { key: LaneKey; height: number };
 
 export function computeRowLayout(
   decks: { deckId: DeckId; laneHeights: LaneHeight[] }[],
-  topY: number
+  topY: number,
+  waveformHeight: number = ROW_H
 ): RowLayout[] {
   const rows: RowLayout[] = [];
   let rowY = topY;
   for (const { deckId, laneHeights } of decks) {
-    let sublaneTop = rowY + ROW_H;
+    let sublaneTop = rowY + waveformHeight;
     const lanes: SublaneLayout[] = laneHeights.map(({ key, height }) => {
       const sublane = { key, top: sublaneTop, height };
       sublaneTop += height;
       return sublane;
     });
-    rows.push({ deckId, top: rowY, height: sublaneTop - rowY, lanes });
+    rows.push({ deckId, top: rowY, height: sublaneTop - rowY, waveformHeight, lanes });
     rowY = sublaneTop;
   }
   return rows;
-}
-
-export type LaneRect = { top: number; height: number };
-
-export function selectedLaneRect(
-  sel: { deck: string; lane: string } | null,
-  rows: RowLayout[],
-  masterRect: LaneRect | null
-): LaneRect | null {
-  if (!sel) return null;
-  if (sel.deck === 'master') return masterRect;
-  const row = rows.find((candidate) => candidate.deckId === sel.deck);
-  const sublane = row?.lanes.find((lane) => lane.key === sel.lane);
-  return sublane ? { top: sublane.top, height: sublane.height } : null;
 }
 
 export type ClipGestureKind = 'move' | 'trim-start' | 'trim-end';

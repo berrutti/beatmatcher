@@ -7,18 +7,21 @@
 // after the module has initialized.
 
 import init, {
-  buildClips as wasmBuildClips,
-  buildLanes as wasmBuildLanes,
+  buildTimeline as wasmBuildTimeline,
   blocksForDeck as wasmBlocksForDeck,
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
   trimTransportBlock as wasmTrim,
+  deleteTransportBlock as wasmDeleteBlock,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   originalValueAt as wasmOriginalValueAt,
   spliceLaneEvents as wasmSplice,
   filterActiveAt as wasmFilterActiveAt,
   toggleFilterActiveRange as wasmToggleFilter,
+  deleteFilterActiveSpan as wasmDeleteFilterSpan,
+  resizeFilterActiveSpan as wasmResizeFilterSpan,
+  moveFilterActiveSpan as wasmMoveFilterSpan,
   nudgeValueAt as wasmNudgeValueAt,
   paintNudgeRange as wasmPaintNudge,
   deleteNudgeRange as wasmDeleteNudge,
@@ -55,31 +58,54 @@ const parse = <T>(json: string): T => JSON.parse(json) as T;
 type RawClip = Omit<Clip, 'trackName'>;
 type RawLoadedSpan = Omit<LoadedSpan, 'trackName'>;
 
-export function buildClips(
+// Clips, loaded spans, and automation lanes in a single boundary crossing: the
+// editor needs all of them on every event change, so deriving them together
+// serializes the event list once instead of once per builder. Track display
+// names are still resolved here (the Rust core returns paths only).
+export function buildTimeline(
   events: SessionEvent[],
-  nameForPath: (path: string) => string
-): { clips: Clip[]; loadedSpans: LoadedSpan[] } {
-  const raw = parse<{ clips: RawClip[]; loadedSpans: RawLoadedSpan[] }>(
-    wasmBuildClips(JSON.stringify(events))
-  );
-  return {
-    clips: raw.clips.map((clip) => ({ ...clip, trackName: nameForPath(clip.trackPath) })),
-    loadedSpans: raw.loadedSpans.map((span) => ({
-      ...span,
-      trackName: nameForPath(span.trackPath)
-    }))
-  };
-}
-
-export function buildLanes(
-  events: SessionEvent[],
-  durationMs: number
+  durationMs: number,
+  pitchOptions: readonly number[],
+  nameForPath: (path: string) => string,
+  gridForPath: (path: string) => { bpm: number; beatOffsetSec: number } | null
 ): {
+  clips: Clip[];
+  loadedSpans: LoadedSpan[];
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
 } {
-  return parse(wasmBuildLanes(JSON.stringify(events), durationMs));
+  const raw = parse<{
+    clips: RawClip[];
+    loadedSpans: RawLoadedSpan[];
+    deckLanes: Record<string, DeckLanes>;
+    masterLanes: MasterLanes;
+    deckNudges: Record<string, NudgeSpan[]>;
+  }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
+  return {
+    // The beat grid (bpm + offset) is a property of the track, not of the
+    // recording, so it is looked up by path from the track's saved grid (the
+    // same source the edit view draws from). This keeps the session beats
+    // aligned with the edit view for every clip, including older recordings
+    // whose events never captured the offset. Recorded values stay as a
+    // fallback for tracks missing from the collection.
+    clips: raw.clips.map((clip) => {
+      const grid = gridForPath(clip.trackPath);
+      return {
+        ...clip,
+        trackName: nameForPath(clip.trackPath),
+        bpm: grid?.bpm ?? clip.bpm,
+        beatOffsetSec: grid?.beatOffsetSec ?? clip.beatOffsetSec
+      };
+    }),
+    loadedSpans: raw.loadedSpans.map((span) => ({
+      ...span,
+      trackName: nameForPath(span.trackPath)
+    })),
+    deckLanes: raw.deckLanes,
+    masterLanes: raw.masterLanes,
+    deckNudges: raw.deckNudges
+  };
 }
 
 export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {
@@ -129,6 +155,16 @@ export function trimTransportBlock(
   // No-op: preserve the input reference, same reasoning as moveTransportBlock.
   if (result.appliedMs === unchangedMs) return { events, appliedMs: result.appliedMs };
   return result;
+}
+
+export function deleteTransportBlock(
+  events: SessionEvent[],
+  clips: Clip[],
+  block: TransportBlock
+): SessionEvent[] {
+  return parse(
+    wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block))
+  );
 }
 
 // Lane ops take a lane key plus the rate range (only used by the rate lane;
@@ -184,6 +220,42 @@ export function toggleFilterActiveRange(
   t1: number
 ): SessionEvent[] {
   return parse(wasmToggleFilter(JSON.stringify(events), deck, t0, t1));
+}
+
+export function deleteFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number
+): SessionEvent[] {
+  return parse(wasmDeleteFilterSpan(JSON.stringify(events), deck, startMs, endMs));
+}
+
+export function resizeFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  edge: 'start' | 'end',
+  newMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return parse(
+    wasmResizeFilterSpan(JSON.stringify(events), deck, startMs, endMs, edge, newMs, durationMs)
+  );
+}
+
+export function moveFilterActiveSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  deltaMs: number,
+  durationMs: number
+): SessionEvent[] {
+  return parse(
+    wasmMoveFilterSpan(JSON.stringify(events), deck, startMs, endMs, deltaMs, durationMs)
+  );
 }
 
 export function nudgeValueAt(

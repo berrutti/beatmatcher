@@ -10,22 +10,24 @@ pub mod sim;
 pub mod timeline;
 
 pub use clip_edit::{
-    block_bounds, blocks_for_deck, move_transport_block, trim_transport_block, Edge, MoveResult,
-    TransportBlock, TrimResult, MIN_BLOCK_MS,
+    block_bounds, blocks_for_deck, delete_transport_block, move_transport_block,
+    trim_transport_block, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
-    decimate_steps, delete_nudge_range, filter_active_at, lane_spec_for, normalize_gesture_samples,
-    nudge_value_at, original_value_at, paint_nudge_range, relocate_event_paths, splice_lane_events,
-    toggle_filter_active_range, EditableLane, LaneSpec, MIN_GESTURE_MS,
+    decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
+    move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
+    paint_nudge_range, relocate_event_paths, resize_filter_active_span, splice_lane_events,
+    toggle_filter_active_range,
+    EditableLane, LaneSpec, MIN_GESTURE_MS,
 };
 pub use sim::{
     build_snapshots, event_sim_order, sim_apply_event, sim_pos, sim_state_from_snapshot, DeckSim,
     DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim, StripSnap, DEFAULT_MASTER_GAIN,
 };
 pub use timeline::{
-    build_clips, build_lanes, Clip, ClipsBuild, DeckLanes, FilterActiveSpan, LanePoint, LanesBuild,
-    LoadedSpan, LoopRegion, MasterLanes, NudgeSpan,
+    build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
+    LanePoint, LanesBuild, LoadedSpan, LoopRegion, MasterLanes, NudgeSpan, TimelineBuild, WaveSeg,
 };
 
 // WASM boundary for the frontend. Pure compute only: events in as JSON, the
@@ -40,22 +42,19 @@ mod wasm {
         serde_json::from_str(events_json).map_err(|e| JsError::new(&e.to_string()))
     }
 
-    /// Derive the editor clips + loaded spans from the event stream.
-    /// Returns `{ "clips": [...], "loadedSpans": [...] }` as JSON.
-    /// `trackName` is not included; the caller fills it from the collection.
-    #[wasm_bindgen(js_name = buildClips)]
-    pub fn build_clips(events_json: &str) -> Result<String, JsError> {
+    /// Derive clips, loaded spans, and automation lanes (gain/eq/filter/rate,
+    /// filter-active spans, nudge spans) in one pass so the editor crosses the
+    /// boundary (and serializes the event list) once per change. `trackName` is
+    /// not included on clips/spans; the caller fills it from the collection.
+    /// Returns `{ clips, loadedSpans, deckLanes, masterLanes, deckNudges }`.
+    #[wasm_bindgen(js_name = buildTimeline)]
+    pub fn build_timeline(
+        events_json: &str,
+        duration_ms: f64,
+        pitch_options: &[f64],
+    ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        let result = crate::build_clips(&events);
-        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
-    }
-
-    /// Derive the automation lanes (gain/eq/filter/rate), filter-active spans,
-    /// and nudge spans. Returns `{ deckLanes, masterLanes, deckNudges }` JSON.
-    #[wasm_bindgen(js_name = buildLanes)]
-    pub fn build_lanes(events_json: &str, duration_ms: f64) -> Result<String, JsError> {
-        let events = parse_events(events_json)?;
-        let result = crate::build_lanes(&events, duration_ms);
+        let result = crate::build_timeline(&events, duration_ms, pitch_options);
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
     }
 
@@ -132,6 +131,19 @@ mod wasm {
         };
         let result = crate::trim_transport_block(&events, &clips, &block, edge, new_ms);
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Delete a transport block (drop its play/stop). Returns the events JSON.
+    #[wasm_bindgen(js_name = deleteTransportBlock)]
+    pub fn delete_transport_block(
+        events_json: &str,
+        clips_json: &str,
+        block_json: &str,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let clips = parse_clips(clips_json)?;
+        let block = parse_block(block_json)?;
+        events_to_json(crate::delete_transport_block(&events, &clips, &block))
     }
 
     fn parse_points(points_json: &str) -> Result<Vec<crate::LanePoint>, JsError> {
@@ -229,6 +241,66 @@ mod wasm {
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
         events_to_json(crate::toggle_filter_active_range(&events, deck, t0, t1))
+    }
+
+    /// Delete the filter-active span [start_ms, end_ms] (its on/off event pair).
+    #[wasm_bindgen(js_name = deleteFilterActiveSpan)]
+    pub fn delete_filter_active_span(
+        events_json: &str,
+        deck: &str,
+        start_ms: f64,
+        end_ms: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::delete_filter_active_span(
+            &events, deck, start_ms, end_ms,
+        ))
+    }
+
+    /// Stretch the `start` or `end` edge of the filter-active span to `new_ms`.
+    #[wasm_bindgen(js_name = resizeFilterActiveSpan)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_filter_active_span(
+        events_json: &str,
+        deck: &str,
+        start_ms: f64,
+        end_ms: f64,
+        edge: &str,
+        new_ms: f64,
+        duration_ms: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::resize_filter_active_span(
+            &events,
+            deck,
+            start_ms,
+            end_ms,
+            edge,
+            new_ms,
+            duration_ms,
+        ))
+    }
+
+    /// Slide the whole filter-active span [`start_ms`, `end_ms`] by `delta_ms`.
+    #[wasm_bindgen(js_name = moveFilterActiveSpan)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_filter_active_span(
+        events_json: &str,
+        deck: &str,
+        start_ms: f64,
+        end_ms: f64,
+        delta_ms: f64,
+        duration_ms: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::move_filter_active_span(
+            &events,
+            deck,
+            start_ms,
+            end_ms,
+            delta_ms,
+            duration_ms,
+        ))
     }
 
     /// The nudge percent active for `deck` at `ms` (0 when none).

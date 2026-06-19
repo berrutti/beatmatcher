@@ -565,8 +565,8 @@ fn apply_event_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::DeckState;
-    use std::collections::HashMap;
+    use crate::audio::{ChannelStrip, DeckState};
+    use std::collections::{HashMap, HashSet};
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;
@@ -648,109 +648,31 @@ mod tests {
     // playback keeps tight. This drives the real engine once and checks every
     // 100ms checkpoint against sim_pos.
 
-    fn apply_deck_event(d: &mut DeckState, ev: &SessionEvent, cache: &SampleCache) {
-        let srf = SR_F;
-        let clamp = |f: f64, d: &DeckState| f.min(d.total_frames as f64);
-        match ev.event_type.as_str() {
-            "deck_snapshot" => {
-                let path = ev.path.as_ref().unwrap();
-                let (samples, ch) = cache.get(path).unwrap();
-                d.samples = samples.clone();
-                d.channels = *ch;
-                d.total_frames = samples.len() / ch;
-                d.device_sample_rate = SR;
-                if let Some(p) = ev.position_sec {
-                    let f = clamp(p * srf, d);
-                    d.main_pos = f;
-                }
-                if let Some(c) = ev.cue_point_sec {
-                    d.cue_point = clamp(c * srf, d);
-                }
-                if let Some(r) = ev.playback_rate {
-                    d.playback_rate = r.max(0.1);
-                }
-                if let Some(la) = ev.loop_active {
-                    d.loop_active = la;
-                }
-                if let Some(le) = ev.loop_end_sec {
-                    d.loop_end = clamp(le * srf, d);
-                }
-                if ev.is_playing == Some(true) {
-                    d.is_playing = true;
-                }
-            }
-            "play" => {
-                if let Some(s) = ev.sec {
-                    d.main_pos = clamp(s * srf, d);
-                }
-                d.is_playing = true;
-            }
-            "stop" => d.is_playing = false,
-            "seek" => {
-                if let Some(s) = ev.sec {
-                    let f = clamp(s * srf, d);
-                    d.main_pos = f;
-                    if d.loop_active && (f < d.cue_point || f >= d.loop_end) {
-                        d.loop_active = false;
-                    }
-                }
-            }
-            "set_playback_rate" => {
-                if let Some(r) = ev.rate {
-                    d.playback_rate = r.max(0.1);
-                }
-            }
-            "loop_out" => {
-                if let Some(ss) = ev.start_sec {
-                    d.cue_point = clamp(ss * srf, d);
-                }
-                if let Some(es) = ev.end_sec {
-                    d.loop_end = clamp(es * srf, d);
-                }
-                d.loop_active = true;
-            }
-            "exit_loop" => d.loop_active = false,
-            "set_nudge" => {
-                if let Some(p) = ev.percent {
-                    d.nudge_factor = 1.0 + p / 100.0;
-                }
-            }
-            "stopped_at_cue" | "stop_at_cue" => {
-                d.is_playing = false;
-                if let Some(c) = ev.cue_point_sec {
-                    d.main_pos = clamp(c * srf, d);
-                }
-            }
-            "cue_preview_start" => {
-                let cp = ev.cue_point_sec.unwrap_or(d.cue_point / srf);
-                let f = clamp(cp * srf, d);
-                d.cue_point = f;
-                d.main_pos = f;
-                d.is_playing = true;
-            }
-            "cue_preview_end" => {
-                let cp = ev.cue_point_sec.unwrap_or(d.cue_point / srf);
-                let f = clamp(cp * srf, d);
-                d.is_playing = false;
-                d.main_pos = f;
-            }
-            "loop_in" => {
-                if let Some(cs) = ev.cue_sec {
-                    d.cue_point = clamp(cs * srf, d);
-                }
-                d.loop_active = false;
-                d.loop_end = 0.0;
-            }
-            "reloop" => {
-                if d.loop_end > d.cue_point {
-                    d.main_pos = d.cue_point;
-                    if d.is_playing {
-                        d.loop_active = true;
-                    }
-                }
-            }
-            _ => {}
+    // Drive an event through the REAL production applier (`apply_deck_command`),
+    // the same code path the live scheduler and offline renderer use. The test
+    // must never reimplement command semantics here: a private copy could pass
+    // the parity check while production diverges. `overshoot_frames` is 0.0
+    // (a no-op, matching the offline renderer), since the analytic sim models no
+    // sub-buffer start latency. Master-gain events carry no deck and are
+    // dispatched separately in production, so they're skipped here too.
+    fn apply_deck_event(
+        d: &mut DeckState,
+        s: &mut ChannelStrip,
+        ev: &SessionEvent,
+        cache: &SampleCache,
+    ) {
+        let Some(cmd) = ev.command() else { return };
+        if cmd.deck_id().is_none() {
+            return;
         }
+        let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
+            cache
+                .get(path)
+                .map(|(samples, channels)| (samples.clone(), *channels))
+                .ok_or_else(|| format!("cache miss for {path}"))
+        };
+        audio::apply_deck_command(&cmd, d, s, SR, 0.0, &mut load_samples)
+            .expect("apply_deck_command failed in parity test");
     }
 
     fn check_sim_vs_engine(events: &[SessionEvent], cache: &SampleCache, seconds: usize) {
@@ -783,6 +705,7 @@ mod tests {
         sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
 
         let mut d = DeckState::empty(SR);
+        let mut s = ChannelStrip::new(SR_F as f32);
         let total_frames = seconds * SR as usize;
         let mut ei = 0usize;
         let mut max_diff = 0.0f64;
@@ -790,7 +713,7 @@ mod tests {
         for n in 0..total_frames {
             let cur_ms = n as f64 / SR_F * 1000.0;
             while ei < sorted.len() && sorted[ei].elapsed_ms <= cur_ms {
-                apply_deck_event(&mut d, sorted[ei], cache);
+                apply_deck_event(&mut d, &mut s, sorted[ei], cache);
                 ei += 1;
             }
             if n % (SR as usize / 10) == 0 && n > 0 {
@@ -848,43 +771,8 @@ mod tests {
             mk(18_000.0, "exit_loop"),
         ];
 
-        let mut sorted: Vec<&SessionEvent> = events.iter().collect();
-        sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
-
         // Drive the real engine once to 25s, checking sim_pos every 100ms.
-        let mut d = DeckState::empty(SR);
-        let total_frames = 25 * SR as usize;
-        let mut ei = 0usize;
-        let mut max_diff = 0.0f64;
-        let mut worst_t = 0.0f64;
-        for n in 0..total_frames {
-            let cur_ms = n as f64 / SR_F * 1000.0;
-            while ei < sorted.len() && sorted[ei].elapsed_ms <= cur_ms {
-                apply_deck_event(&mut d, sorted[ei], &cache);
-                ei += 1;
-            }
-            if n % (SR as usize / 10) == 0 && n > 0 {
-                let sim = playthrough_pos(&events, cur_ms, &cache, "A").unwrap();
-                // Fold a not-yet-wrapped loop overshoot the same way next_pos
-                // will on the following tick, so we compare steady-state
-                // positions rather than the one-tick engagement transient.
-                let mut actual = d.main_pos;
-                if d.loop_active && d.loop_end > d.cue_point && actual >= d.loop_end {
-                    let dur = d.loop_end - d.cue_point;
-                    actual = d.cue_point + (actual - d.loop_end) % dur;
-                }
-                let diff = (sim - actual).abs();
-                if diff > max_diff {
-                    max_diff = diff;
-                    worst_t = cur_ms;
-                }
-            }
-            d.main_tick();
-        }
-        assert!(
-            max_diff < 2.0,
-            "sim_pos diverges from real engine by {max_diff} frames at t={worst_t}ms"
-        );
+        check_sim_vs_engine(&events, &cache, 25);
     }
 
     #[test]
@@ -960,5 +848,201 @@ mod tests {
         let cache = cached_track(path, 60);
         let events = loop_cycle_events(path);
         check_sim_vs_engine(&events, &cache, 20);
+    }
+
+    // ── exhaustive variant coverage ───────────────────────────────────────────
+    //
+    // The analytic sim (`sim_apply_event`) and the real engine
+    // (`apply_deck_command`) are two models of the same command semantics. The
+    // type system forces both to HANDLE every variant, but not to AGREE. This
+    // match is the compile-time guard that every variant is also covered by the
+    // sim-vs-engine parity test: it maps each `SessionCommand` to its canonical
+    // .bms `type` string and whether it moves the playhead. Adding a variant
+    // fails to compile here until it's classified; if it moves the playhead it
+    // must then be exercised by `full_coverage_events` (asserted at runtime).
+    fn variant_catalog(cmd: &SessionCommand) -> (&'static str, bool) {
+        match cmd {
+            SessionCommand::DeckSnapshot { .. } => ("deck_snapshot", true),
+            SessionCommand::LoadTrack { .. } => ("load_track", true),
+            SessionCommand::EjectTrack { .. } => ("eject_track", true),
+            SessionCommand::Play { .. } => ("play", true),
+            SessionCommand::Stop { .. } => ("stop", true),
+            SessionCommand::StopAtCue { .. } => ("stopped_at_cue", true),
+            SessionCommand::Seek { .. } => ("seek", true),
+            SessionCommand::SetPlaybackRate { .. } => ("set_playback_rate", true),
+            SessionCommand::SetNudge { .. } => ("set_nudge", true),
+            SessionCommand::LoopIn { .. } => ("loop_in", true),
+            SessionCommand::LoopOut { .. } => ("loop_out", true),
+            SessionCommand::ExitLoop { .. } => ("exit_loop", true),
+            SessionCommand::Reloop { .. } => ("reloop", true),
+            SessionCommand::CuePreviewStart { .. } => ("cue_preview_start", true),
+            SessionCommand::CuePreviewEnd { .. } => ("cue_preview_end", true),
+            SessionCommand::SetBeatGrid { .. } => ("set_beat_grid", false),
+            SessionCommand::SetVolume { .. } => ("set_volume", false),
+            SessionCommand::SetEq { .. } => ("set_eq", false),
+            SessionCommand::SetFilter { .. } => ("set_filter", false),
+            SessionCommand::SetFilterActive { .. } => ("set_filter_active", false),
+            SessionCommand::SetMasterGain { .. } => ("set_master_gain", false),
+        }
+    }
+
+    // The playhead-moving variants that `full_coverage_events` must exercise.
+    // Keep in sync with the `true` arms of `variant_catalog` above; a new variant
+    // surfaces as a compile error there, and `coverage_list_matches_catalog`
+    // catches any tag typo or duplication between the two.
+    const POSITION_AFFECTING_TAGS: [&str; 15] = [
+        "deck_snapshot",
+        "load_track",
+        "eject_track",
+        "play",
+        "stop",
+        "stopped_at_cue",
+        "seek",
+        "set_playback_rate",
+        "set_nudge",
+        "loop_in",
+        "loop_out",
+        "exit_loop",
+        "reloop",
+        "cue_preview_start",
+        "cue_preview_end",
+    ];
+
+    // One coherent ~30s timeline on deck A that exercises every command variant.
+    // Position-affecting events are checked against the real engine every 100ms;
+    // the strip/master/beat-grid events are along for the ride (they must not
+    // perturb the playhead).
+    fn full_coverage_events(path: &str) -> Vec<SessionEvent> {
+        vec![
+            SessionEvent {
+                path: Some(path.to_string()),
+                is_playing: Some(true),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                cue_point_sec: Some(0.0),
+                ..deck_ev("deck_snapshot", 0.0, "A")
+            },
+            SessionEvent {
+                bpm: Some(128.0),
+                beat_offset_sec: Some(0.0),
+                ..deck_ev("set_beat_grid", 1000.0, "A")
+            },
+            SessionEvent {
+                rate: Some(1.03),
+                ..deck_ev("set_playback_rate", 2000.0, "A")
+            },
+            SessionEvent {
+                percent: Some(2.0),
+                ..deck_ev("set_nudge", 3000.0, "A")
+            },
+            SessionEvent {
+                percent: Some(0.0),
+                ..deck_ev("set_nudge", 3500.0, "A")
+            },
+            SessionEvent {
+                gain: Some(0.8),
+                ..deck_ev("set_volume", 4000.0, "A")
+            },
+            SessionEvent {
+                band: Some("low".to_string()),
+                db: Some(-3.0),
+                ..deck_ev("set_eq", 4100.0, "A")
+            },
+            SessionEvent {
+                value: Some(0.5),
+                ..deck_ev("set_filter", 4200.0, "A")
+            },
+            SessionEvent {
+                active: Some(true),
+                ..deck_ev("set_filter_active", 4300.0, "A")
+            },
+            SessionEvent {
+                gain: Some(0.9),
+                ..deck_ev("set_master_gain", 4500.0, "A")
+            },
+            SessionEvent {
+                cue_sec: Some(5.0),
+                ..deck_ev("loop_in", 5000.0, "A")
+            },
+            SessionEvent {
+                start_sec: Some(5.0),
+                end_sec: Some(7.0),
+                ..deck_ev("loop_out", 6000.0, "A")
+            },
+            deck_ev("exit_loop", 11_000.0, "A"),
+            deck_ev("reloop", 13_000.0, "A"),
+            SessionEvent {
+                sec: Some(20.0),
+                ..deck_ev("seek", 16_000.0, "A")
+            },
+            deck_ev("stop", 17_000.0, "A"),
+            SessionEvent {
+                cue_point_sec: Some(20.0),
+                ..deck_ev("cue_preview_start", 18_000.0, "A")
+            },
+            SessionEvent {
+                cue_point_sec: Some(20.0),
+                ..deck_ev("cue_preview_end", 18_800.0, "A")
+            },
+            deck_ev("play", 19_000.0, "A"),
+            SessionEvent {
+                cue_point_sec: Some(20.0),
+                ..deck_ev("stopped_at_cue", 21_000.0, "A")
+            },
+            SessionEvent {
+                sec: Some(20.0),
+                ..deck_ev("play", 22_000.0, "A")
+            },
+            deck_ev("eject_track", 24_000.0, "A"),
+            SessionEvent {
+                path: Some(path.to_string()),
+                beat_offset_sec: Some(0.0),
+                ..deck_ev("load_track", 25_000.0, "A")
+            },
+            deck_ev("play", 25_500.0, "A"),
+        ]
+    }
+
+    #[test]
+    fn coverage_list_matches_catalog() {
+        // Every tag in the list is a position-affecting variant per the catalog,
+        // and the list has no duplicates: binds the hand-maintained list to the
+        // exhaustive match so the two cannot silently drift apart.
+        let unique: HashSet<&str> = POSITION_AFFECTING_TAGS.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            POSITION_AFFECTING_TAGS.len(),
+            "POSITION_AFFECTING_TAGS has duplicates"
+        );
+    }
+
+    #[test]
+    fn full_coverage_events_exercise_every_position_variant() {
+        let events = full_coverage_events("/fake/a.wav");
+        let mut seen: HashSet<&str> = HashSet::new();
+        for ev in &events {
+            let cmd = ev
+                .command()
+                .unwrap_or_else(|| panic!("event {} did not convert to a command", ev.event_type));
+            let (tag, position_affecting) = variant_catalog(&cmd);
+            assert_eq!(tag, ev.event_type, "catalog tag mismatch for {tag}");
+            if position_affecting {
+                seen.insert(tag);
+            }
+        }
+        for tag in POSITION_AFFECTING_TAGS {
+            assert!(
+                seen.contains(tag),
+                "full_coverage_events does not exercise position-affecting variant `{tag}`"
+            );
+        }
+    }
+
+    #[test]
+    fn sim_matches_engine_for_every_variant() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = full_coverage_events(path);
+        check_sim_vs_engine(&events, &cache, 30);
     }
 }

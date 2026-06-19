@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 
 import {
   computeRowLayout,
-  selectedLaneRect,
   ghostSpan,
   clipGestureDeltaSec,
   selectionSpanFor
@@ -21,6 +20,9 @@ function clip(overrides: Partial<Clip>): Clip {
     playbackRate: 1,
     blockId: 0,
     loop: null,
+    waveSegments: [],
+    bpm: null,
+    beatOffsetSec: null,
     ...overrides
   };
 }
@@ -52,27 +54,16 @@ describe('computeRowLayout', () => {
       lanes: []
     });
   });
-});
 
-describe('selectedLaneRect', () => {
-  const rows = computeRowLayout([{ deckId: 'A', laneHeights: [{ key: 'gain', height: 16 }] }], 16);
-  const master = { top: 200, height: 32 };
-
-  it('resolves the master lane to the master rect', () => {
-    expect(selectedLaneRect({ deck: 'master', lane: 'masterGain' }, rows, master)).toEqual(master);
-  });
-
-  it('resolves a deck sublane to its rect', () => {
-    expect(selectedLaneRect({ deck: 'A', lane: 'gain' }, rows, master)).toEqual({
-      top: 16 + ROW_H,
-      height: 16
-    });
-  });
-
-  it('returns null for an unknown deck or lane and for no selection', () => {
-    expect(selectedLaneRect({ deck: 'B', lane: 'gain' }, rows, master)).toBeNull();
-    expect(selectedLaneRect({ deck: 'A', lane: 'filter' }, rows, master)).toBeNull();
-    expect(selectedLaneRect(null, rows, master)).toBeNull();
+  it('uses a custom waveform height for the strip and the lane offset', () => {
+    const rows = computeRowLayout(
+      [{ deckId: 'A', laneHeights: [{ key: 'filter', height: 64 }] }],
+      0,
+      120
+    );
+    expect(rows[0].waveformHeight).toBe(120);
+    expect(rows[0].lanes[0].top).toBe(120); // lane sits directly below the waveform
+    expect(rows[0].height).toBe(120 + 64);
   });
 });
 

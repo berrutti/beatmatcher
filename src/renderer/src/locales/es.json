@@ -209,6 +209,7 @@
     "missingFiles": "Estos archivos de audio no se encontraron. Elige la carpeta que los contiene para restaurar la reproducción:",
     "locate": "ELEGIR CARPETA",
     "deleteNudge": "Eliminar nudge",
+    "deleteFilterRegion": "Eliminar región de filtro",
     "mute": "Silenciar",
     "solo": "Solo",
     "lanesMenu": "Carriles"

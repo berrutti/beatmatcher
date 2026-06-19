@@ -233,6 +233,7 @@ pub fn run() {
             commands::get_master_level,
             commands::get_spectral_waveform_region,
             commands::get_track_amplitude_waveform,
+            commands::get_track_amplitude_region,
             commands::list_audio_devices,
             commands::load_track,
             commands::pick_save_path,

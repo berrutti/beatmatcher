@@ -33,6 +33,27 @@ pub struct Clip {
     pub block_id: u32,
     #[serde(rename = "loop")]
     pub loop_region: Option<LoopRegion>,
+    // The clip's wall span split into constant-effective-rate (rate*nudge)
+    // pieces, each mapping a track-time window to a wall-time window. Drawing the
+    // waveform/beats per segment is what makes them compress/stretch correctly
+    // when the rate or nudge changes mid-clip.
+    #[serde(default)]
+    pub wave_segments: Vec<WaveSeg>,
+    // Beat grid in effect when the clip started (recorded, not the live
+    // collection value). `None` bpm means no grid was known: draw no beats.
+    #[serde(default)]
+    pub bpm: Option<f64>,
+    #[serde(default)]
+    pub beat_offset_sec: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveSeg {
+    pub wall_start_ms: f64,
+    pub wall_end_ms: f64,
+    pub track_start_sec: f64,
+    pub track_end_sec: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -67,8 +88,14 @@ struct DeckState {
     clip_track_start_sec: f64,
     clip_rate: f64,
     clip_path: Option<String>,
+    clip_bpm: Option<f64>,
+    clip_beat_offset_sec: f64,
     load_span_start_ms: Option<f64>,
     load_span_path: Option<String>,
+    bpm: Option<f64>,
+    beat_offset_sec: f64,
+    // (wall_ms, effective_rate) whenever rate or nudge changed, in event order.
+    eff_rate_changes: Vec<(f64, f64)>,
 }
 
 fn make_deck_state() -> DeckState {
@@ -102,11 +129,71 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
     deck.pos_mark_ms = ms;
 }
 
+// Record the effective rate (rate*nudge) at `ms` so finalize_clip can slice a
+// clip's wall span into constant-rate wave segments. Call after any change to
+// `deck.rate` or `deck.nudge_factor`.
+fn record_eff_rate(deck: &mut DeckState, ms: f64) {
+    deck.eff_rate_changes.push((ms, deck.rate * deck.nudge_factor));
+}
+
+// Effective rate in force at `ms` (the last recorded change at/before it).
+fn eff_rate_at(changes: &[(f64, f64)], ms: f64) -> f64 {
+    let mut rate = 1.0;
+    for &(t, r) in changes {
+        if t <= ms {
+            rate = r;
+        } else {
+            break;
+        }
+    }
+    rate
+}
+
+// Slice [clip_start_ms, clip_end_ms] at each rate change inside it, integrating
+// the track position forward at each piece's effective rate. The piece track
+// deltas sum to the same end position advance_position produced, so the segments
+// tile the clip exactly.
+fn wave_segments_for(
+    changes: &[(f64, f64)],
+    clip_start_ms: f64,
+    clip_end_ms: f64,
+    track_start_sec: f64,
+) -> Vec<WaveSeg> {
+    if clip_end_ms <= clip_start_ms {
+        return Vec::new();
+    }
+    let mut bounds = vec![clip_start_ms];
+    for &(t, _) in changes {
+        if t > clip_start_ms && t < clip_end_ms {
+            bounds.push(t);
+        }
+    }
+    bounds.push(clip_end_ms);
+    bounds.dedup();
+
+    let mut segs = Vec::new();
+    let mut track = track_start_sec;
+    for pair in bounds.windows(2) {
+        let (w0, w1) = (pair[0], pair[1]);
+        let track_end = track + ((w1 - w0) / 1000.0) * eff_rate_at(changes, w0);
+        segs.push(WaveSeg {
+            wall_start_ms: w0,
+            wall_end_ms: w1,
+            track_start_sec: track,
+            track_end_sec: track_end,
+        });
+        track = track_end;
+    }
+    segs
+}
+
 fn start_clip(deck: &mut DeckState, ms: f64) {
     deck.clip_start_ms = Some(ms);
     deck.clip_track_start_sec = deck.track_pos_sec;
     deck.clip_rate = deck.rate;
     deck.clip_path = deck.path.clone();
+    deck.clip_bpm = deck.bpm;
+    deck.clip_beat_offset_sec = deck.beat_offset_sec;
 }
 
 fn engage_loop(deck: &mut DeckState, ms: f64) {
@@ -114,6 +201,8 @@ fn engage_loop(deck: &mut DeckState, ms: f64) {
     deck.loop_engaged_ms = Some(ms);
     deck.clip_path = deck.path.clone();
     deck.clip_rate = deck.rate;
+    deck.clip_bpm = deck.bpm;
+    deck.clip_beat_offset_sec = deck.beat_offset_sec;
     deck.clip_start_ms = Some(ms);
     // The engine never jumps to the loop start when a loop engages: a playhead
     // already past the end (late quantized loop_out press) wraps its overshoot
@@ -158,6 +247,10 @@ fn finalize_clip(
                         break;
                     }
                     let iter_end = (iter_start + iter_dur_ms).min(end_ms);
+                    // One segment per iteration: the loop runs at a constant rate,
+                    // so the iteration's track window maps linearly to its wall window.
+                    let iter_track_end =
+                        iter_track_start_sec + ((iter_end - iter_start) / 1000.0) * loop_rate;
                     out.push(Clip {
                         deck: deck_id.to_string(),
                         session_start_ms: iter_start,
@@ -170,6 +263,14 @@ fn finalize_clip(
                             start_sec: loop_start_sec,
                             end_sec: loop_end_sec,
                         }),
+                        wave_segments: vec![WaveSeg {
+                            wall_start_ms: iter_start,
+                            wall_end_ms: iter_end,
+                            track_start_sec: iter_track_start_sec,
+                            track_end_sec: iter_track_end,
+                        }],
+                        bpm: deck.clip_bpm,
+                        beat_offset_sec: Some(deck.clip_beat_offset_sec),
                     });
                     iter_start += iter_dur_ms;
                     iter_track_start_sec = loop_start_sec;
@@ -186,6 +287,12 @@ fn finalize_clip(
         // stops, regardless of how long the clip was).
         if let Some(clip_path) = &deck.clip_path {
             if end_ms > clip_start {
+                let wave_segments = wave_segments_for(
+                    &deck.eff_rate_changes,
+                    clip_start,
+                    end_ms,
+                    deck.clip_track_start_sec,
+                );
                 out.push(Clip {
                     deck: deck_id.to_string(),
                     session_start_ms: clip_start,
@@ -195,6 +302,9 @@ fn finalize_clip(
                     playback_rate: deck.clip_rate,
                     block_id: allocate(),
                     loop_region: None,
+                    wave_segments,
+                    bpm: deck.clip_bpm,
+                    beat_offset_sec: Some(deck.clip_beat_offset_sec),
                 });
             }
         }
@@ -255,6 +365,10 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             "deck_snapshot" => {
                 deck.path = ev.path.clone();
                 deck.rate = ev.playback_rate.unwrap_or(1.0);
+                if let Some(bpm) = ev.bpm {
+                    deck.bpm = Some(bpm);
+                }
+                record_eff_rate(deck, ev.elapsed_ms);
                 deck.track_pos_sec = ev.position_sec.unwrap_or(0.0);
                 // loop start = cue_point by invariant; deck_snapshot logs
                 // cue_point_sec, not loop_start_sec.
@@ -282,6 +396,10 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 deck.load_span_path = deck.path.clone();
                 deck.track_pos_sec = 0.0;
                 deck.nudge_factor = 1.0;
+                // A freshly loaded track has no grid until set_beat_grid/analyze.
+                deck.bpm = None;
+                deck.beat_offset_sec = 0.0;
+                record_eff_rate(deck, ev.elapsed_ms);
                 deck.loop_start_sec = None;
                 deck.loop_end_sec = None;
                 deck.loop_active = false;
@@ -364,12 +482,23 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             "set_playback_rate" => {
                 if let Some(rate) = ev.rate {
                     deck.rate = rate;
+                    record_eff_rate(deck, ev.elapsed_ms);
                 }
             }
 
             "set_nudge" => {
                 if let Some(percent) = ev.percent {
                     deck.nudge_factor = 1.0 + percent / 100.0;
+                    record_eff_rate(deck, ev.elapsed_ms);
+                }
+            }
+
+            "set_beat_grid" => {
+                if let Some(bpm) = ev.bpm {
+                    deck.bpm = Some(bpm);
+                }
+                if let Some(off) = ev.beat_offset_sec {
+                    deck.beat_offset_sec = off;
                 }
             }
 
@@ -445,18 +574,34 @@ pub const DEFAULT_EQ_DB: f64 = 0.0;
 pub const DEFAULT_FILTER_VALUE: f64 = 0.0;
 pub const DEFAULT_RATE: f64 = 1.0;
 
-// The lane range is derived from the session's own rate values (not the live
-// pitch-range setting) because a session may have been recorded under a
-// different setting. Ranges below 8% are skipped so a flat session still gets a
-// usable drawing range. These are PITCH_RANGE_OPTIONS filtered to >= 8.
-const RATE_RANGE_STEPS_PCT: [f64; 5] = [8.0, 10.0, 16.0, 50.0, 100.0];
+// A lane narrower than this is unreadable, so a flat (or barely-pitched) session
+// still draws at +/-8%. This is a timeline-drawing floor, not a pitch setting.
+const MIN_RATE_RANGE_PCT: f64 = 8.0;
 
-pub fn rate_range_pct_for(max_deviation_pct: f64) -> f64 {
-    RATE_RANGE_STEPS_PCT
+// The selectable lane ranges, derived from the caller's pitch-range options
+// (the frontend's `PITCH_RANGE_OPTIONS`, passed across the WASM boundary so the
+// values live in exactly one place). Options below the drawing floor are
+// dropped; the smallest surviving step is the default range.
+fn rate_steps_pct(pitch_options: &[f64]) -> Vec<f64> {
+    let mut steps: Vec<f64> = pitch_options
+        .iter()
+        .copied()
+        .filter(|&pct| pct >= MIN_RATE_RANGE_PCT)
+        .collect();
+    steps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if steps.is_empty() {
+        steps.push(MIN_RATE_RANGE_PCT);
+    }
+    steps
+}
+
+// Smallest step that still covers the session's largest rate deviation.
+pub fn rate_range_pct_for(max_deviation_pct: f64, steps: &[f64]) -> f64 {
+    steps
         .iter()
         .copied()
         .find(|&pct| pct >= max_deviation_pct)
-        .unwrap_or(RATE_RANGE_STEPS_PCT[RATE_RANGE_STEPS_PCT.len() - 1])
+        .unwrap_or_else(|| steps.last().copied().unwrap_or(MIN_RATE_RANGE_PCT))
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -507,6 +652,35 @@ pub struct LanesBuild {
     pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineBuild {
+    pub clips: Vec<Clip>,
+    pub loaded_spans: Vec<LoadedSpan>,
+    pub deck_lanes: BTreeMap<String, DeckLanes>,
+    pub master_lanes: MasterLanes,
+    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
+}
+
+// Clips and lanes from one event list. The editor needs both on every event
+// change; deriving them together lets callers cross the WASM boundary once
+// instead of serializing the event list twice.
+pub fn build_timeline(
+    events: &[SessionEvent],
+    duration_ms: f64,
+    pitch_options: &[f64],
+) -> TimelineBuild {
+    let clips = build_clips(events);
+    let lanes = build_lanes(events, duration_ms, pitch_options);
+    TimelineBuild {
+        clips: clips.clips,
+        loaded_spans: clips.loaded_spans,
+        deck_lanes: lanes.deck_lanes,
+        master_lanes: lanes.master_lanes,
+        deck_nudges: lanes.deck_nudges,
+    }
+}
+
 fn make_deck_lanes() -> DeckLanes {
     DeckLanes {
         gain: vec![LanePoint {
@@ -533,8 +707,10 @@ fn make_deck_lanes() -> DeckLanes {
             ms: 0.0,
             value: DEFAULT_RATE,
         }],
-        rate_min: 1.0 - RATE_RANGE_STEPS_PCT[0] / 100.0,
-        rate_max: 1.0 + RATE_RANGE_STEPS_PCT[0] / 100.0,
+        // Placeholder: build_lanes overwrites both once the session's largest
+        // rate deviation (and thus the range step) is known.
+        rate_min: DEFAULT_RATE,
+        rate_max: DEFAULT_RATE,
         filter_active: Vec::new(),
     }
 }
@@ -550,7 +726,7 @@ fn extend_to_end(points: &mut Vec<LanePoint>, duration_ms: f64) {
     }
 }
 
-pub fn build_lanes(events: &[SessionEvent], duration_ms: f64) -> LanesBuild {
+pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f64]) -> LanesBuild {
     let mut deck_lanes: BTreeMap<String, DeckLanes> = BTreeMap::new();
     let mut filter_active_since_ms: BTreeMap<String, Option<f64>> = BTreeMap::new();
     let mut nudge_since: BTreeMap<String, Option<(f64, f64)>> = BTreeMap::new();
@@ -766,7 +942,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64) -> LanesBuild {
             max_rate_deviation_pct = max_rate_deviation_pct.max((p.value - 1.0).abs() * 100.0);
         }
     }
-    let range_pct = rate_range_pct_for(max_rate_deviation_pct);
+    let range_pct = rate_range_pct_for(max_rate_deviation_pct, &rate_steps_pct(pitch_options));
     for auto in deck_lanes.values_mut() {
         auto.rate_min = 1.0 - range_pct / 100.0;
         auto.rate_max = 1.0 + range_pct / 100.0;
@@ -782,6 +958,10 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64) -> LanesBuild {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The frontend's PITCH_RANGE_OPTIONS, the single source these tests pin
+    // their expected lane ranges to (8% -> +/-0.08, 10% -> +/-0.10, etc.).
+    const PITCH_OPTS: [f64; 6] = [6.0, 8.0, 10.0, 16.0, 50.0, 100.0];
 
     fn ev(event_type: &str, elapsed_ms: f64, deck: Option<&str>) -> SessionEvent {
         SessionEvent {
@@ -805,6 +985,50 @@ mod tests {
         .unwrap();
         assert!(json.get("loadedSpans").is_some());
         assert!(json.get("loaded_spans").is_none());
+    }
+
+    #[test]
+    fn wave_segments_split_at_rate_and_nudge_and_stamp_grid() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev("load_track", 0.0, Some("A"))
+            },
+            SessionEvent {
+                bpm: Some(120.0),
+                beat_offset_sec: Some(0.1),
+                ..ev("set_beat_grid", 50.0, Some("A"))
+            },
+            ev("play", 1000.0, Some("A")),
+            SessionEvent {
+                rate: Some(2.0),
+                ..ev("set_playback_rate", 3000.0, Some("A"))
+            },
+            SessionEvent {
+                percent: Some(50.0),
+                ..ev("set_nudge", 4000.0, Some("A"))
+            },
+            ev("stop", 5000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 1);
+        let c = &clips[0];
+        // Grid captured at clip start rides on the clip.
+        assert_eq!(c.bpm, Some(120.0));
+        assert_eq!(c.beat_offset_sec, Some(0.1));
+        // Three constant-rate pieces: 1x, then 2x, then 2x*1.5=3x effective.
+        let segs = &c.wave_segments;
+        assert_eq!(segs.len(), 3);
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(approx(segs[0].wall_start_ms, 1000.0) && approx(segs[0].wall_end_ms, 3000.0));
+        assert!(approx(segs[0].track_start_sec, 0.0) && approx(segs[0].track_end_sec, 2.0));
+        assert!(approx(segs[1].wall_start_ms, 3000.0) && approx(segs[1].wall_end_ms, 4000.0));
+        assert!(approx(segs[1].track_start_sec, 2.0) && approx(segs[1].track_end_sec, 4.0));
+        assert!(approx(segs[2].wall_start_ms, 4000.0) && approx(segs[2].wall_end_ms, 5000.0));
+        assert!(approx(segs[2].track_start_sec, 4.0) && approx(segs[2].track_end_sec, 7.0));
+        // Segments tile the clip with no gaps and cover the full track advance.
+        assert!(approx(segs[0].track_end_sec, segs[1].track_start_sec));
+        assert!(approx(segs[1].track_end_sec, segs[2].track_start_sec));
     }
 
     #[test]
@@ -1367,7 +1591,7 @@ mod tests {
             gain: Some(1.0),
             ..ev("set_volume", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         let a = &deck_lanes["A"];
         assert_eq!(
             a.gain[0],
@@ -1385,7 +1609,7 @@ mod tests {
 
     #[test]
     fn seeds_master_gain_default_at_ms_zero() {
-        let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0);
+        let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
         assert_eq!(master_lanes.gain[0].ms, 0.0);
     }
 
@@ -1405,7 +1629,7 @@ mod tests {
             deck_lanes,
             master_lanes,
             ..
-        } = build_lanes(&events, 10_000.0);
+        } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         let gain = &deck_lanes["A"].gain;
         assert_eq!(
             *gain.last().unwrap(),
@@ -1423,7 +1647,7 @@ mod tests {
             gain: Some(0.7),
             ..ev("set_volume", 1000.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         let gain = &deck_lanes["A"].gain;
         assert_eq!(gain.len(), 3);
         assert_eq!(
@@ -1460,7 +1684,7 @@ mod tests {
                 ..ev("set_eq", 300.0, Some("A"))
             },
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(deck_lanes["A"].eq_low[1].value, -3.0);
         assert_eq!(deck_lanes["A"].eq_mid[1].value, 2.0);
         assert_eq!(deck_lanes["A"].eq_high[1].value, 4.0);
@@ -1472,7 +1696,7 @@ mod tests {
             gain: Some(0.5),
             ..ev("set_master_gain", 1500.0, None)
         }];
-        let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(master_lanes.gain[1].value, 0.5);
         assert_eq!(master_lanes.gain[1].ms, 1500.0);
         assert_eq!(master_lanes.gain.last().unwrap().ms, 5000.0);
@@ -1490,7 +1714,7 @@ mod tests {
                 ..ev("set_filter_active", 4000.0, Some("A"))
             },
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1516,7 +1740,7 @@ mod tests {
                 ..ev("set_filter_active", 4000.0, Some("A"))
             },
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1532,7 +1756,7 @@ mod tests {
             active: Some(true),
             ..ev("set_filter_active", 7000.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1554,7 +1778,7 @@ mod tests {
                 ..ev("set_nudge", 1500.0, Some("A"))
             },
         ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_nudges["A"],
             vec![NudgeSpan {
@@ -1581,7 +1805,7 @@ mod tests {
                 ..ev("set_nudge", 1500.0, Some("A"))
             },
         ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_nudges["A"],
             vec![NudgeSpan {
@@ -1598,7 +1822,7 @@ mod tests {
             percent: Some(6.0),
             ..ev("set_nudge", 9000.0, Some("A"))
         }];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_nudges["A"],
             vec![NudgeSpan {
@@ -1629,7 +1853,7 @@ mod tests {
                 ..ev("set_nudge", 4000.0, Some("B"))
             },
         ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_nudges["A"],
             vec![NudgeSpan {
@@ -1654,7 +1878,7 @@ mod tests {
             rate: Some(1.05),
             ..ev("set_playback_rate", 2000.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].rate,
             vec![
@@ -1683,7 +1907,7 @@ mod tests {
             playback_rate: Some(0.96),
             ..ev("deck_snapshot", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].rate,
             vec![
@@ -1715,7 +1939,7 @@ mod tests {
                 ..ev("set_volume", 200.0, Some("B"))
             },
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.9).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 1.1).abs() < 1e-9);
         assert!((deck_lanes["B"].rate_min - 0.9).abs() < 1e-9);
@@ -1728,7 +1952,7 @@ mod tests {
             gain: Some(1.0),
             ..ev("set_volume", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.92).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 1.08).abs() < 1e-9);
     }
@@ -1739,15 +1963,15 @@ mod tests {
             rate: Some(3.0),
             ..ev("set_playback_rate", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0);
+        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.0).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn rate_range_pct_for_matches_steps() {
-        assert_eq!(rate_range_pct_for(0.0), 8.0);
-        assert_eq!(rate_range_pct_for(9.0), 10.0);
-        assert_eq!(rate_range_pct_for(200.0), 100.0);
+        assert_eq!(rate_range_pct_for(0.0, &rate_steps_pct(&PITCH_OPTS)), 8.0);
+        assert_eq!(rate_range_pct_for(9.0, &rate_steps_pct(&PITCH_OPTS)), 10.0);
+        assert_eq!(rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)), 100.0);
     }
 }

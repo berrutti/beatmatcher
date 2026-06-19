@@ -1,19 +1,31 @@
 import { computed, type Ref } from 'vue';
 import type { ParsedSession } from '@renderer/stores/session';
-import { buildClips, buildLanes } from '@renderer/utils/sessionCore';
+import { buildTimeline } from '@renderer/utils/sessionCore';
+import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
+
+export type WaveSegment = {
+  wallStartMs: number;
+  wallEndMs: number;
+  trackStartSec: number;
+  trackEndSec: number;
+};
 
 export type Clip = {
-  deck: string;
-  sessionStartMs: number;
-  sessionEndMs: number;
-  trackPath: string;
-  trackName: string;
-  trackStartSec: number;
-  playbackRate: number;
-  // Clips emitted together form one editable unit: loop iterations share a
-  // blockId; a regular play segment is a block of its own.
+  // Clips emitted together form one editable unit: loop iterations share a blockId; a regular play segment is a block of its own.
   blockId: number;
+  // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
+  bpm: number | null;
+  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
+  waveSegments: WaveSegment[];
+  beatOffsetSec: number | null;
+  deck: string;
   loop: { startSec: number; endSec: number } | null;
+  playbackRate: number;
+  sessionEndMs: number;
+  sessionStartMs: number;
+  trackName: string;
+  trackPath: string;
+  trackStartSec: number;
 };
 
 export type LoadedSpan = {
@@ -64,29 +76,39 @@ function defaultNameForPath(path: string): string {
 
 export function useSessionTimeline(
   session: Ref<ParsedSession | null>,
-  nameForPath: (path: string) => string = defaultNameForPath
+  nameForPath: (path: string) => string = defaultNameForPath,
+  gridForPath: (path: string) => { bpm: number; beatOffsetSec: number } | null = () => null
 ) {
-  const built = computed(() => {
-    if (!session.value) return { clips: [] as Clip[], loadedSpans: [] as LoadedSpan[] };
-    return buildClips(session.value.events, nameForPath);
-  });
-
-  const lanesBuilt = computed<{
+  const built = computed<{
+    clips: Clip[];
+    loadedSpans: LoadedSpan[];
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
   }>(() => {
     if (!session.value) {
-      return { deckLanes: {}, masterLanes: { gain: [] }, deckNudges: {} };
+      return {
+        clips: [],
+        loadedSpans: [],
+        deckLanes: {},
+        masterLanes: { gain: [] },
+        deckNudges: {}
+      };
     }
-    return buildLanes(session.value.events, session.value.durationMs);
+    return buildTimeline(
+      session.value.events,
+      session.value.durationMs,
+      PITCH_RANGE_OPTIONS,
+      nameForPath,
+      gridForPath
+    );
   });
 
   const clips = computed(() => built.value.clips);
   const loadedSpans = computed(() => built.value.loadedSpans);
-  const deckLanes = computed(() => lanesBuilt.value.deckLanes);
-  const masterLanes = computed(() => lanesBuilt.value.masterLanes);
-  const deckNudges = computed(() => lanesBuilt.value.deckNudges);
+  const deckLanes = computed(() => built.value.deckLanes);
+  const masterLanes = computed(() => built.value.masterLanes);
+  const deckNudges = computed(() => built.value.deckNudges);
 
   return { clips, loadedSpans, deckLanes, masterLanes, deckNudges };
 }

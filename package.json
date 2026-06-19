@@ -20,7 +20,7 @@
     "test:watch": "vitest",
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path session-core/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

@@ -6,7 +6,7 @@ A desktop app for practicing beat matching. Two or Four independent decks to pla
 
 ## Download
 
-Get the latest release for macOS or Windows from the [Releases](https://github.com/berrutti/beatmatcher/releases) page.
+Get the latest release for macOS, Windows or Linux (experimental) from the [Releases](https://github.com/berrutti/beatmatcher/releases) page.
 
 ### macOS note
 

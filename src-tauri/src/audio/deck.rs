@@ -97,7 +97,7 @@ impl ChannelStrip {
         self.set_eq_band("low", 0.0);
         self.set_eq_band("mid", 0.0);
         self.set_eq_band("high", 0.0);
-        self.set_filter(0.5);
+        self.set_filter(0.0);
         self.set_filter_active(false);
     }
 

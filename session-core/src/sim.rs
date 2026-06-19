@@ -71,7 +71,7 @@ impl Default for StripSim {
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
-            filter_value: 0.5,
+            filter_value: 0.0,
             filter_active: false,
         }
     }
@@ -127,7 +127,7 @@ impl Default for StripSnap {
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
-            filter_value: 0.5,
+            filter_value: 0.0,
             filter_active: false,
         }
     }
@@ -1586,6 +1586,22 @@ mod tests {
         let snaps = build_snapshots(&events, SR, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
         assert_eq!(strip.filter_value, -0.5);
+        assert!(strip.filter_active);
+    }
+
+    #[test]
+    fn filter_defaults_to_center_so_active_without_a_curve_is_transparent() {
+        // Turning the filter on with no set_filter value must leave the knob at 0
+        // (center/bypass), matching the timeline's DEFAULT_FILTER_VALUE. A stale
+        // non-zero default would audibly filter where the drawn curve reads 0
+        // (e.g. after stretching an active region back over an un-drawn stretch).
+        let events = vec![SessionEvent {
+            active: Some(true),
+            ..deck_ev("set_filter_active", 1000.0, "A")
+        }];
+        let snaps = build_snapshots(&events, SR, &HashMap::new());
+        let strip = snaps.last().unwrap().strips.get("A").unwrap();
+        assert_eq!(strip.filter_value, 0.0);
         assert!(strip.filter_active);
     }
 

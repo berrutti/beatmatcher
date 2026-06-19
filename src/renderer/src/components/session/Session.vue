@@ -9,7 +9,7 @@
     <p class="session__modal-body">{{ $t('session.discardBody') }}</p>
   </Modal>
 
-  <div class="session">
+  <div class="session" v-bind="$attrs">
     <div class="session__body">
       <div
         v-if="!session.session"
@@ -102,7 +102,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+defineOptions({ inheritAttrs: false });
+import { ref, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
@@ -126,18 +127,11 @@ const { session: sessionRef } = storeToRefs(session);
 
 const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
   sessionRef,
-  (path) => collection.getName(path)
-);
-
-watch(
-  clips,
-  (list) => {
-    const paths = new Set(list.map((clip) => clip.trackPath));
-    for (const path of paths) {
-      session.ensureWaveform(path).catch(() => {});
-    }
-  },
-  { immediate: true }
+  (path) => collection.getName(path),
+  (path) => {
+    const saved = collection.getSaved(path);
+    return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
+  }
 );
 
 const isFileDragOver = ref(false);
