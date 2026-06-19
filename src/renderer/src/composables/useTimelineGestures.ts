@@ -702,7 +702,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (hit.target === 'clip' || hit.target === 'clipBand') {
       if (!deps.isEditMode()) return '';
       if (shiftKey) return 'crosshair';
-      if (hit.target === 'clip') return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
+      if (hit.target === 'clip')
+        return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
       return '';
     }
     if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
