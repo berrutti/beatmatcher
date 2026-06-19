@@ -10,7 +10,7 @@ function fakeItem(hit: Hit | null): SceneItem {
   };
 }
 
-function cursorFor(hit: Hit | null, editMode = true): string {
+function cursorFor(hit: Hit | null, editMode = true, shiftKey = false): string {
   const deps: GestureDeps = {
     camera: {} as GestureDeps['camera'],
     emit: () => {},
@@ -20,6 +20,7 @@ function cursorFor(hit: Hit | null, editMode = true): string {
     getEvents: () => [],
     getDeckLanes: () => ({}),
     laneHeight: () => 64,
+    waveformHeight: () => 80,
     isEditMode: () => editMode,
     durationMs: () => 1000,
     nudgeDirectionAt: () => 1,
@@ -28,7 +29,7 @@ function cursorFor(hit: Hit | null, editMode = true): string {
     requestRender: () => {},
     setCursor: () => {}
   };
-  return useTimelineGestures(deps).cursorFor({ x: 50, y: 50 });
+  return useTimelineGestures(deps).cursorFor({ x: 50, y: 50 }, shiftKey);
 }
 
 describe('cursorFor', () => {
@@ -41,6 +42,13 @@ describe('cursorFor', () => {
   it('shows no clip cursor outside edit mode', () => {
     expect(cursorFor({ target: 'clip', part: 'body' }, false)).toBe('');
     expect(cursorFor({ target: 'clip', part: 'start' }, false)).toBe('');
+  });
+
+  it('shows the draw cursor when Shift is held over a clip in edit mode (nudge paint)', () => {
+    expect(cursorFor({ target: 'clip', part: 'body' }, true, true)).toBe('crosshair');
+    expect(cursorFor({ target: 'clip', part: 'start' }, true, true)).toBe('crosshair');
+    // Shift outside edit mode still paints nothing.
+    expect(cursorFor({ target: 'clip', part: 'body' }, false, true)).toBe('');
   });
 
   it('shows grab on a filter region body and ew-resize on its edges', () => {

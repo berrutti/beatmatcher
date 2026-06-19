@@ -72,20 +72,24 @@ export function useTimelineController(opts: {
     const sel = filterSelection.value;
     if (!sel) return null;
     const mid = (sel.startMs + sel.endMs) / 2;
-    const span = deckLanes[sel.deck]?.filterActive?.find((s) => mid >= s.startMs && mid <= s.endMs);
+    const span = deckLanes[sel.deck]?.filterActive?.find(
+      (active) => mid >= active.startMs && mid <= active.endMs
+    );
     return span ? { deck: sel.deck, span } : null;
   }
 
   function selectBlock(block: TransportBlock, ms: number): void {
     if (block.loop && unlockedBlockIds.value.has(block.blockId)) {
       // Pick the iteration under the cursor.
-      const iters = opts
+      const iterations = opts
         .getClips()
-        .filter((c) => c.deck === block.deck && c.blockId === block.blockId)
-        .sort((a, b) => a.sessionStartMs - b.sessionStartMs);
-      const iter = iters.find((c) => ms >= c.sessionStartMs && ms <= c.sessionEndMs) ?? iters[0];
-      clipSelection.value = iter
-        ? { deck: block.deck, blockId: block.blockId, iterationStartMs: iter.sessionStartMs }
+        .filter((clip) => clip.deck === block.deck && clip.blockId === block.blockId)
+        .sort((first, second) => first.sessionStartMs - second.sessionStartMs);
+      const iteration =
+        iterations.find((clip) => ms >= clip.sessionStartMs && ms <= clip.sessionEndMs) ??
+        iterations[0];
+      clipSelection.value = iteration
+        ? { deck: block.deck, blockId: block.blockId, iterationStartMs: iteration.sessionStartMs }
         : { deck: block.deck, blockId: block.blockId, iterationStartMs: null };
     } else {
       clipSelection.value = { deck: block.deck, blockId: block.blockId, iterationStartMs: null };
@@ -260,7 +264,9 @@ export function useTimelineController(opts: {
   function deleteSelectedClip(): void {
     const sel = clipSelection.value;
     if (!sel) return;
-    const block = blocksForDeck(opts.getClips(), sel.deck).find((b) => b.blockId === sel.blockId);
+    const block = blocksForDeck(opts.getClips(), sel.deck).find(
+      (candidate) => candidate.blockId === sel.blockId
+    );
     if (block) handleIntent({ type: 'clip.delete', block });
   }
 

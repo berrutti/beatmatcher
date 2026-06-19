@@ -49,6 +49,12 @@ const MIN_VIEW_MS = 200;
 const DRAG_THRESHOLD_PX = 3;
 const EDGE_SNAP_PX = 8;
 
+// Bounds for the draggable lane and waveform strip heights, in pixels.
+const MIN_LANE_HEIGHT_PX = 10;
+const MAX_LANE_HEIGHT_PX = 240;
+const MIN_WAVEFORM_HEIGHT_PX = 40;
+const MAX_WAVEFORM_HEIGHT_PX = 240;
+
 type Camera = ReturnType<typeof useTimelineView>;
 
 export type GestureDeps = {
@@ -153,8 +159,8 @@ export function useTimelineGestures(deps: GestureDeps) {
   }
 
   function laneRange(lane: EditableLaneKey, deck: string): { min: number; max: number } {
-    const d = deps.getDeckLanes()[deck];
-    const spec = laneSpecFor(lane, { rateMin: d?.rateMin, rateMax: d?.rateMax });
+    const deckLanes = deps.getDeckLanes()[deck];
+    const spec = laneSpecFor(lane, { rateMin: deckLanes?.rateMin, rateMax: deckLanes?.rateMax });
     return { min: spec.min, max: spec.max };
   }
 
@@ -203,13 +209,23 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'laneSeparator': {
-        const h = deps.laneHeight();
-        active = { kind: 'lane-resize', startY: pt.y, startHeight: h, height: h };
+        const laneHeight = deps.laneHeight();
+        active = {
+          kind: 'lane-resize',
+          startY: pt.y,
+          startHeight: laneHeight,
+          height: laneHeight
+        };
         return;
       }
       case 'waveformSeparator': {
-        const h = deps.waveformHeight();
-        active = { kind: 'waveform-resize', startY: pt.y, startHeight: h, height: h };
+        const waveformHeight = deps.waveformHeight();
+        active = {
+          kind: 'waveform-resize',
+          startY: pt.y,
+          startHeight: waveformHeight,
+          height: waveformHeight
+        };
         return;
       }
       case 'laneDropdown':
@@ -400,33 +416,33 @@ export function useTimelineGestures(deps: GestureDeps) {
   }
 
   function onMouseUp(): void {
-    const g = active;
+    const gesture = active;
     active = null;
-    if (!g) return;
-    switch (g.kind) {
+    if (!gesture) return;
+    switch (gesture.kind) {
       case 'lane-resize':
-        deps.emit({ type: 'lane.resize', height: g.height });
+        deps.emit({ type: 'lane.resize', height: gesture.height });
         break;
       case 'waveform-resize':
-        deps.emit({ type: 'waveform.resize', height: g.height });
+        deps.emit({ type: 'waveform.resize', height: gesture.height });
         break;
       case 'lane-draw':
-        if (g.samples.length > 0) {
-          let t0 = Infinity;
-          let t1 = -Infinity;
-          for (const s of g.samples) {
-            t0 = Math.min(t0, s.ms);
-            t1 = Math.max(t1, s.ms);
+        if (gesture.samples.length > 0) {
+          let minMs = Infinity;
+          let maxMs = -Infinity;
+          for (const sample of gesture.samples) {
+            minMs = Math.min(minMs, sample.ms);
+            maxMs = Math.max(maxMs, sample.ms);
           }
           deps.emit({
             type: 'lane.draw',
-            deck: g.deck,
-            lane: g.lane,
-            samples: g.samples,
-            t0,
-            t1,
-            rateMin: g.min,
-            rateMax: g.max
+            deck: gesture.deck,
+            lane: gesture.lane,
+            samples: gesture.samples,
+            t0: minMs,
+            t1: maxMs,
+            rateMin: gesture.min,
+            rateMax: gesture.max
           });
           dragged = true;
         }
@@ -434,43 +450,53 @@ export function useTimelineGestures(deps: GestureDeps) {
       case 'nudge-paint':
         deps.emit({
           type: 'nudge.paint',
-          deck: g.deck,
-          t0: Math.min(g.startMs, g.currentMs),
-          t1: Math.max(g.startMs, g.currentMs),
-          direction: g.direction
+          deck: gesture.deck,
+          t0: Math.min(gesture.startMs, gesture.currentMs),
+          t1: Math.max(gesture.startMs, gesture.currentMs),
+          direction: gesture.direction
         });
         dragged = true;
         break;
       case 'filter-paint':
         deps.emit({
           type: 'filter.toggle',
-          deck: g.deck,
-          t0: Math.min(g.startMs, g.currentMs),
-          t1: Math.max(g.startMs, g.currentMs)
+          deck: gesture.deck,
+          t0: Math.min(gesture.startMs, gesture.currentMs),
+          t1: Math.max(gesture.startMs, gesture.currentMs)
         });
         dragged = true;
         break;
       case 'filter-resize':
         deps.emit({
           type: 'filterRegion.resize',
-          deck: g.deck,
-          span: g.span,
-          edge: g.edge,
-          newMs: g.currentMs
+          deck: gesture.deck,
+          span: gesture.span,
+          edge: gesture.edge,
+          newMs: gesture.currentMs
         });
         dragged = true;
         break;
       case 'filter-move':
         if (!dragged) break; // a plain body click just selects (handled on click)
-        if (Math.abs(g.deltaMs) >= 1)
-          deps.emit({ type: 'filterRegion.move', deck: g.deck, span: g.span, deltaMs: g.deltaMs });
+        if (Math.abs(gesture.deltaMs) >= 1)
+          deps.emit({
+            type: 'filterRegion.move',
+            deck: gesture.deck,
+            span: gesture.span,
+            deltaMs: gesture.deltaMs
+          });
         break;
       case 'clip':
         if (!dragged) break; // a press without movement is a scrub click, not an edit
-        if (g.edge)
-          deps.emit({ type: 'clip.trim', block: g.block, edge: g.edge, newMs: g.targetMs });
-        else if (Math.abs(g.deltaMs) >= 1)
-          deps.emit({ type: 'clip.move', block: g.block, deltaMs: g.deltaMs });
+        if (gesture.edge)
+          deps.emit({
+            type: 'clip.trim',
+            block: gesture.block,
+            edge: gesture.edge,
+            newMs: gesture.targetMs
+          });
+        else if (Math.abs(gesture.deltaMs) >= 1)
+          deps.emit({ type: 'clip.move', block: gesture.block, deltaMs: gesture.deltaMs });
         break;
     }
     deps.setCursor('');
@@ -579,15 +605,15 @@ export function useTimelineGestures(deps: GestureDeps) {
     const vc = deps.getVc();
     const msToX = makeMsToX(vc.view, vc.trackW);
     if (active.kind === 'lane-draw' && active.samples.length > 0) {
-      const g = active;
-      const cursor = g.samples[g.samples.length - 1];
+      const gesture = active;
+      const cursor = gesture.samples[gesture.samples.length - 1];
       return [
         overlay((ctx) =>
           drawValueGesturePreview(
             ctx,
-            g,
-            normalize(g.samples),
-            formatLaneValue(g.lane, cursor.value),
+            gesture,
+            normalize(gesture.samples),
+            formatLaneValue(gesture.lane, cursor.value),
             cursor.ms,
             msToX,
             vc.canvasW
@@ -596,17 +622,17 @@ export function useTimelineGestures(deps: GestureDeps) {
       ];
     }
     if (active.kind === 'nudge-paint') {
-      const g = active;
+      const gesture = active;
       return [
         overlay((ctx) =>
           drawNudgeGesturePreview(
             ctx,
-            Math.min(g.startMs, g.currentMs),
-            Math.max(g.startMs, g.currentMs),
-            g.direction * deps.nudgeSensitivity(),
-            g.rowTop,
+            Math.min(gesture.startMs, gesture.currentMs),
+            Math.max(gesture.startMs, gesture.currentMs),
+            gesture.direction * deps.nudgeSensitivity(),
+            gesture.rowTop,
             deps.waveformHeight(),
-            g.currentMs,
+            gesture.currentMs,
             msToX,
             vc.canvasW
           )
@@ -614,19 +640,19 @@ export function useTimelineGestures(deps: GestureDeps) {
       ];
     }
     if (active.kind === 'filter-paint') {
-      const g = active;
-      const t0 = Math.min(g.startMs, g.currentMs);
-      const want = !filterActiveAt(deps.getEvents(), g.deck, t0, false);
+      const gesture = active;
+      const startMs = Math.min(gesture.startMs, gesture.currentMs);
+      const wantActive = !filterActiveAt(deps.getEvents(), gesture.deck, startMs, false);
       return [
         overlay((ctx) =>
           drawPaintGesturePreview(
             ctx,
-            t0,
-            Math.max(g.startMs, g.currentMs),
-            want,
-            g.top,
-            g.height,
-            g.currentMs,
+            startMs,
+            Math.max(gesture.startMs, gesture.currentMs),
+            wantActive,
+            gesture.top,
+            gesture.height,
+            gesture.currentMs,
             msToX,
             vc.canvasW
           )
@@ -634,25 +660,27 @@ export function useTimelineGestures(deps: GestureDeps) {
       ];
     }
     if (active.kind === 'clip' && dragged) {
-      const g = active;
-      const kind = g.edge ? (g.edge === 'start' ? 'trim-start' : 'trim-end') : 'move';
+      const gesture = active;
+      const kind = gesture.edge ? (gesture.edge === 'start' ? 'trim-start' : 'trim-end') : 'move';
       const deltaSec = clipGestureDeltaSec(
         kind,
-        g.deltaMs,
-        g.targetMs,
-        g.block.startMs,
-        g.block.endMs
+        gesture.deltaMs,
+        gesture.targetMs,
+        gesture.block.startMs,
+        gesture.block.endMs
       );
       return [
         overlay((ctx) =>
           drawClipGhosts(
             ctx,
-            g.clips.map((c) => ghostSpan(c, { kind, deltaMs: g.deltaMs, targetMs: g.targetMs })),
-            g.rowTop,
+            gesture.clips.map((clip) =>
+              ghostSpan(clip, { kind, deltaMs: gesture.deltaMs, targetMs: gesture.targetMs })
+            ),
+            gesture.rowTop,
             deps.waveformHeight(),
-            deps.accentFor(g.block.deck),
+            deps.accentFor(gesture.block.deck),
             `${deltaSec > 0 ? '+' : ''}${deltaSec.toFixed(2)}s`,
-            g.block.startMs + (kind === 'move' ? g.deltaMs : 0),
+            gesture.block.startMs + (kind === 'move' ? gesture.deltaMs : 0),
             msToX,
             vc.canvasW
           )
@@ -662,18 +690,22 @@ export function useTimelineGestures(deps: GestureDeps) {
     return [];
   }
 
-  function cursorFor(pt: Point): string {
+  function cursorFor(pt: Point, shiftKey = false): string {
     const hit = hitAt(pt);
     if (!hit) return '';
     if (hit.target === 'scrollbar') return 'pointer';
     if (hit.target === 'laneSeparator' || hit.target === 'waveformSeparator') return 'row-resize';
     if (hit.target === 'overview')
       return hit.part === 'resize-left' || hit.part === 'resize-right' ? 'ew-resize' : 'grab';
-    if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
-    if (hit.target === 'clip') {
+    // Shift over the waveform paints a nudge, so show the same draw cursor the
+    // lanes use rather than the move/trim cursor.
+    if (hit.target === 'clip' || hit.target === 'clipBand') {
       if (!deps.isEditMode()) return '';
-      return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
+      if (shiftKey) return 'crosshair';
+      if (hit.target === 'clip') return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
+      return '';
     }
+    if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
     if (hit.target === 'laneDropdown') return 'pointer';
     if (hit.target === 'lane') return 'crosshair';
     return '';
@@ -703,10 +735,10 @@ export function useTimelineGestures(deps: GestureDeps) {
     const bounds = blockBounds(deps.getEvents(), allClips, block);
     const grabMs = vc.xToMs(pt.x);
     const blockClips = allClips.filter(
-      (c) =>
-        c.deck === block.deck &&
-        c.sessionStartMs >= block.startMs - 1 &&
-        c.sessionEndMs <= block.endMs + 1
+      (clip) =>
+        clip.deck === block.deck &&
+        clip.sessionStartMs >= block.startMs - 1 &&
+        clip.sessionEndMs <= block.endMs + 1
     );
     active = {
       kind: 'clip',
@@ -771,7 +803,6 @@ export function useTimelineGestures(deps: GestureDeps) {
   };
 }
 
-// ── module-local pure helpers ─────────────────────────────────────────────────
 function overlay(draw: (ctx: CanvasRenderingContext2D) => void): SceneItem {
   return {
     bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: vc.canvasH }),
@@ -798,12 +829,12 @@ function snapToEdges(value: number, candidates: number[], toleranceMs: number): 
   return best;
 }
 
-function clampLaneHeight(h: number): number {
-  return Math.min(240, Math.max(10, h));
+function clampLaneHeight(height: number): number {
+  return Math.min(MAX_LANE_HEIGHT_PX, Math.max(MIN_LANE_HEIGHT_PX, height));
 }
 
-function clampWaveformHeight(h: number): number {
-  return Math.min(240, Math.max(40, h));
+function clampWaveformHeight(height: number): number {
+  return Math.min(MAX_WAVEFORM_HEIGHT_PX, Math.max(MIN_WAVEFORM_HEIGHT_PX, height));
 }
 
 function overviewDrag(
@@ -818,7 +849,9 @@ function overviewDrag(
 }
 
 function normalize(samples: LanePoint[]): LanePoint[] {
-  const byMs = new Map<number, number>();
-  for (const s of samples) byMs.set(s.ms, s.value);
-  return [...byMs.entries()].map(([ms, value]) => ({ ms, value })).sort((a, b) => a.ms - b.ms);
+  const valueByMs = new Map<number, number>();
+  for (const sample of samples) valueByMs.set(sample.ms, sample.value);
+  return [...valueByMs.entries()]
+    .map(([ms, value]) => ({ ms, value }))
+    .sort((first, second) => first.ms - second.ms);
 }

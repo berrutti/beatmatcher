@@ -5,7 +5,12 @@
 // so the camera can clamp vertical scroll.
 
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
-import { MASTER_ROW_H, type LaneKey, type RowLayout } from '@renderer/utils/timelineDraw';
+import {
+  MASTER_ROW_H,
+  TrackWaveform,
+  type LaneKey,
+  type RowLayout
+} from '@renderer/utils/timelineDraw';
 import {
   computeRowLayout,
   selectionSpanFor,
@@ -34,8 +39,7 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
-  NudgeSpan,
-  TrackWaveform
+  NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
 
 export type SceneInput = {
@@ -69,8 +73,6 @@ export type SceneResult = {
   items: SceneItem[];
   rows: RowLayout[];
   contentHeight: number;
-  masterTop: number;
-  masterHeight: number;
 };
 
 export function buildScene(input: SceneInput): SceneResult {
@@ -79,14 +81,20 @@ export function buildScene(input: SceneInput): SceneResult {
     deckId,
     laneHeights: input.editMode ? [{ key: input.laneFor(deckId), height: input.laneHeight }] : []
   }));
-  const rows = computeRowLayout(deckSpecs, vc.laneOriginY, input.waveformHeight);
+  // The master lane sits at the top, directly below the time ruler and above
+  // every deck row; the deck rows begin below it.
+  const masterTop = vc.laneOriginY;
+  const masterHeight = MASTER_ROW_H;
+  const rows = computeRowLayout(deckSpecs, masterTop + masterHeight, input.waveformHeight);
 
   const items: SceneItem[] = [tickRowItem()];
 
-  rows.forEach((row, ri) => {
+  items.push(masterItem(masterTop, masterHeight, input.masterLanes));
+
+  rows.forEach((row, rowIndex) => {
     const deck = row.deckId;
     items.push(
-      deckChromeItem(row, ri, {
+      deckChromeItem(row, rowIndex, {
         accent: input.accentFor(deck),
         audible: input.audibleFor(deck),
         solo: input.soloFor(deck),
@@ -125,11 +133,8 @@ export function buildScene(input: SceneInput): SceneResult {
   });
 
   const lastRow = rows[rows.length - 1];
-  const masterTop = lastRow ? lastRow.top + lastRow.height : vc.laneOriginY;
-  const masterHeight = MASTER_ROW_H;
-  items.push(masterItem(masterTop, masterHeight, input.masterLanes));
-
-  const bottomY = Math.min(masterTop + masterHeight, vc.scrollViewport.bottom);
+  const contentBottom = lastRow ? lastRow.top + lastRow.height : masterTop + masterHeight;
+  const bottomY = Math.min(contentBottom, vc.scrollViewport.bottom);
   items.push(playheadItem(input.playheadMs, bottomY));
 
   if (input.overlays) items.push(...input.overlays);
@@ -150,7 +155,7 @@ export function buildScene(input: SceneInput): SceneResult {
 
   items.push(frameGuttersItem());
 
-  const contentHeight = rows.reduce((sum, r) => sum + r.height, 0) + masterHeight;
+  const contentHeight = rows.reduce((sum, row) => sum + row.height, 0) + masterHeight;
 
-  return { items, rows, contentHeight, masterTop, masterHeight };
+  return { items, rows, contentHeight };
 }

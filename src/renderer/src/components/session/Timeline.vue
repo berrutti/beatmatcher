@@ -176,8 +176,8 @@ const { deckMenu, lanePicker, filterMenu } = controller;
 let sceneItems: SceneItem[] = [];
 
 function viewContext(): ViewContext {
-  const c = containerEl.value;
-  return camera.viewContext(c?.clientWidth ?? 0, c?.clientHeight ?? 0);
+  const container = containerEl.value;
+  return camera.viewContext(container?.clientWidth ?? 0, container?.clientHeight ?? 0);
 }
 
 const gestures = useTimelineGestures({
@@ -301,16 +301,24 @@ function onCanvasWheel(e: WheelEvent): void {
   gestures.onWheel(e, canvasEl.value.getBoundingClientRect());
 }
 
+// Last hover position (canvas-local), kept so a Shift press/release can refresh
+// the cursor without the pointer moving.
+let lastHoverPoint: { x: number; y: number } | null = null;
+
+function applyHoverCursor(shiftKey: boolean): void {
+  if (gestures.hasActive() || !canvasEl.value || !lastHoverPoint) return;
+  canvasEl.value.style.cursor = gestures.cursorFor(lastHoverPoint, shiftKey);
+}
+
 function onCanvasHoverMove(e: MouseEvent): void {
   if (gestures.hasActive() || !canvasEl.value) return;
   const rect = canvasEl.value.getBoundingClientRect();
-  canvasEl.value.style.cursor = gestures.cursorFor({
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top
-  });
+  lastHoverPoint = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  applyHoverCursor(e.shiftKey);
 }
 
 function onCanvasHoverLeave(): void {
+  lastHoverPoint = null;
   if (!gestures.hasActive() && canvasEl.value) canvasEl.value.style.cursor = '';
 }
 
@@ -458,6 +466,10 @@ watch(
 // Delete/Backspace removes whichever editable thing is selected (clip takes
 // precedence over a filter span). Edit-mode only; the commit stops playback.
 function onKeyDown(e: KeyboardEvent): void {
+  if (e.key === 'Shift') {
+    applyHoverCursor(true);
+    return;
+  }
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (!editStore.editMode) return;
   if (controller.clipSelection.value) {
@@ -467,6 +479,10 @@ function onKeyDown(e: KeyboardEvent): void {
     e.preventDefault();
     controller.deleteSelectedFilterSpan(props.deckLanes);
   }
+}
+
+function onKeyUp(e: KeyboardEvent): void {
+  if (e.key === 'Shift') applyHoverCursor(false);
 }
 
 // blockIds are reallocated whenever clips rebuild (any edit), so clip selection
@@ -496,6 +512,7 @@ onMounted(() => {
   });
   if (containerEl.value) ro.observe(containerEl.value);
   window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
   scheduleRender();
 });
 
@@ -503,6 +520,7 @@ onUnmounted(() => {
   ro?.disconnect();
   if (lodTimer !== null) clearTimeout(lodTimer);
   window.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('keyup', onKeyUp);
   window.removeEventListener('mousemove', onWindowMove);
   window.removeEventListener('mouseup', onWindowUp);
 });

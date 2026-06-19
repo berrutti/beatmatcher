@@ -66,7 +66,8 @@ export function buildTimeline(
   events: SessionEvent[],
   durationMs: number,
   pitchOptions: readonly number[],
-  nameForPath: (path: string) => string
+  nameForPath: (path: string) => string,
+  gridForPath: (path: string) => { bpm: number; beatOffsetSec: number } | null
 ): {
   clips: Clip[];
   loadedSpans: LoadedSpan[];
@@ -82,7 +83,21 @@ export function buildTimeline(
     deckNudges: Record<string, NudgeSpan[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
-    clips: raw.clips.map((clip) => ({ ...clip, trackName: nameForPath(clip.trackPath) })),
+    // The beat grid (bpm + offset) is a property of the track, not of the
+    // recording, so it is looked up by path from the track's saved grid (the
+    // same source the edit view draws from). This keeps the session beats
+    // aligned with the edit view for every clip, including older recordings
+    // whose events never captured the offset. Recorded values stay as a
+    // fallback for tracks missing from the collection.
+    clips: raw.clips.map((clip) => {
+      const grid = gridForPath(clip.trackPath);
+      return {
+        ...clip,
+        trackName: nameForPath(clip.trackPath),
+        bpm: grid?.bpm ?? clip.bpm,
+        beatOffsetSec: grid?.beatOffsetSec ?? clip.beatOffsetSec
+      };
+    }),
     loadedSpans: raw.loadedSpans.map((span) => ({
       ...span,
       trackName: nameForPath(span.trackPath)

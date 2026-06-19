@@ -127,7 +127,11 @@ const { session: sessionRef } = storeToRefs(session);
 
 const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
   sessionRef,
-  (path) => collection.getName(path)
+  (path) => collection.getName(path),
+  (path) => {
+    const saved = collection.getSaved(path);
+    return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
+  }
 );
 
 const isFileDragOver = ref(false);

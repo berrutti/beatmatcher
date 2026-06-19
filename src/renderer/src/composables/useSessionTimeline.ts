@@ -11,24 +11,21 @@ export type WaveSegment = {
 };
 
 export type Clip = {
-  deck: string;
-  sessionStartMs: number;
-  sessionEndMs: number;
-  trackPath: string;
-  trackName: string;
-  trackStartSec: number;
-  playbackRate: number;
-  // Clips emitted together form one editable unit: loop iterations share a
-  // blockId; a regular play segment is a block of its own.
+  // Clips emitted together form one editable unit: loop iterations share a blockId; a regular play segment is a block of its own.
   blockId: number;
-  loop: { startSec: number; endSec: number } | null;
-  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time
-  // window to a wall-time window. Drawing the waveform and beats per segment is
-  // what keeps them stretched/compressed correctly across rate changes.
-  waveSegments: WaveSegment[];
   // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
   bpm: number | null;
+  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
+  waveSegments: WaveSegment[];
   beatOffsetSec: number | null;
+  deck: string;
+  loop: { startSec: number; endSec: number } | null;
+  playbackRate: number;
+  sessionEndMs: number;
+  sessionStartMs: number;
+  trackName: string;
+  trackPath: string;
+  trackStartSec: number;
 };
 
 export type LoadedSpan = {
@@ -79,7 +76,8 @@ function defaultNameForPath(path: string): string {
 
 export function useSessionTimeline(
   session: Ref<ParsedSession | null>,
-  nameForPath: (path: string) => string = defaultNameForPath
+  nameForPath: (path: string) => string = defaultNameForPath,
+  gridForPath: (path: string) => { bpm: number; beatOffsetSec: number } | null = () => null
 ) {
   const built = computed<{
     clips: Clip[];
@@ -101,7 +99,8 @@ export function useSessionTimeline(
       session.value.events,
       session.value.durationMs,
       PITCH_RANGE_OPTIONS,
-      nameForPath
+      nameForPath,
+      gridForPath
     );
   });
 

@@ -70,14 +70,30 @@ const FILTER_HPF_COLOR = '#fb923c';
 const FILTER_LPF_COLOR = '#38bdf8';
 const FILTER_NEUTRAL_COLOR = '#666666';
 const GAIN_COLOR = '#e5e5e5';
+const GAIN_MIN = 0;
+const GAIN_MAX = 1;
+// Tighter inset than the deck lanes' laneValuePad, sized for the short master row.
+const MASTER_GAIN_INSET_Y = 2;
 const LANE_DROPDOWN_COLOR = '#06b6d4';
 const MASTER_LABEL_COLOR = '#888';
 const MIN_BEAT_SPACING_PX = 8;
+const BEATS_PER_BAR = 4;
+const BEAT_LINE_W = 1;
+// Vertical breathing room above and below clip bands, loaded spans, and clip
+// selection boxes within the waveform strip.
+const CLIP_BAND_INSET_Y = 4;
 const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
 const NUDGE_LINE_W = 2;
 const RATE_COLOR = '#a78bfa';
 const SOLO_COLOR = '#eab308';
+
+// Row divider: a dark gap topped by a bright hairline, heavier than the 1px
+// sublane-group separators so deck/master boundaries stand out.
+const ROW_DIVIDER_H = 3;
+const ROW_DIVIDER_LINE_H = 1;
+const ROW_DIVIDER_GAP_COLOR = '#000';
+const ROW_DIVIDER_LINE_COLOR = '#5a5a5a';
 
 export type SublaneLayout = { key: LaneKey; top: number; height: number };
 export type RowLayout = {
@@ -157,18 +173,18 @@ function clipWaveSegments(clip: Clip): WaveSegment[] {
 
 // Mean amplitude over the track-time range [t0, t1] within a region, or null if
 // that range lies outside the region (so the caller can fall back to a coarser one).
-function sampleRegion(region: WaveformRegion, t0: number, t1: number): number | null {
+function sampleRegion(region: WaveformRegion, startSec: number, endSec: number): number | null {
   const span = region.endSec - region.startSec;
   if (span <= 0) return null;
-  const f0 = (t0 - region.startSec) / span;
-  const f1 = (t1 - region.startSec) / span;
-  if (f1 <= 0 || f0 >= 1) return null;
-  const n = region.amps.length;
-  const i0 = Math.min(n - 1, Math.max(0, (f0 * n) | 0));
-  const i1 = Math.min(n - 1, Math.max(i0, (f1 * n - 1e-9) | 0));
+  const startFrac = (startSec - region.startSec) / span;
+  const endFrac = (endSec - region.startSec) / span;
+  if (endFrac <= 0 || startFrac >= 1) return null;
+  const sampleCount = region.amps.length;
+  const startIdx = Math.min(sampleCount - 1, Math.max(0, (startFrac * sampleCount) | 0));
+  const endIdx = Math.min(sampleCount - 1, Math.max(startIdx, (endFrac * sampleCount - 1e-9) | 0));
   let sum = 0;
-  for (let i = i0; i <= i1; i++) sum += region.amps[i];
-  return sum / (i1 - i0 + 1);
+  for (let idx = startIdx; idx <= endIdx; idx++) sum += region.amps[idx];
+  return sum / (endIdx - startIdx + 1);
 }
 
 export function drawClipWaveform(
@@ -253,19 +269,19 @@ export function drawClipBeatGrid(
     const segX0 = msToX(seg.wallStartMs);
     const pxPerWallSec = (msToX(seg.wallEndMs) - segX0) / segWallSec;
     const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
-    if (pxPerBeat < 0.5) continue;
+    if (pxPerBeat < BEAT_LINE_W) continue;
 
     let step = 1;
-    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= 4;
+    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= BEATS_PER_BAR;
 
     const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
     const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);
-    for (let b = firstBeat; b <= lastBeat; b++) {
-      if (b % step !== 0) continue;
-      const t = beatOffset + b * beatDurSec;
-      const x = segX0 + ((t - seg.trackStartSec) / effRate) * pxPerWallSec;
-      ctx.fillStyle = b % (step * 4) === 0 ? DOWNBEAT_LINE_COLOR : BEAT_LINE_COLOR;
-      ctx.fillRect(x, rectY, 1, rectHeight);
+    for (let beat = firstBeat; beat <= lastBeat; beat++) {
+      if (beat % step !== 0) continue;
+      const beatSec = beatOffset + beat * beatDurSec;
+      const beatX = segX0 + ((beatSec - seg.trackStartSec) / effRate) * pxPerWallSec;
+      ctx.fillStyle = beat % (step * BEATS_PER_BAR) === 0 ? DOWNBEAT_LINE_COLOR : BEAT_LINE_COLOR;
+      ctx.fillRect(beatX, rectY, BEAT_LINE_W, rectHeight);
     }
   }
 
@@ -508,8 +524,8 @@ export function drawLoadedSpan(
 ): void {
   const spanX = msToX(span.startMs);
   const spanWidth = Math.max(2, msToX(span.endMs) - spanX);
-  const spanY = rowY + 4;
-  const spanHeight = rowH - 8;
+  const spanY = rowY + CLIP_BAND_INSET_Y;
+  const spanHeight = rowH - 2 * CLIP_BAND_INSET_Y;
 
   ctx.fillStyle = accent + '18';
   ctx.fillRect(spanX, spanY, spanWidth, spanHeight);
@@ -529,8 +545,8 @@ export function drawLoadedSpanLabel(
   const spanX = msToX(span.startMs);
   const spanWidth = Math.max(2, msToX(span.endMs) - spanX);
   if (spanWidth <= 40) return;
-  const spanY = rowY + 4;
-  const spanHeight = rowH - 8;
+  const spanY = rowY + CLIP_BAND_INSET_Y;
+  const spanHeight = rowH - 2 * CLIP_BAND_INSET_Y;
   ctx.save();
   ctx.beginPath();
   ctx.rect(spanX + 3, spanY, spanWidth - 6, spanHeight);
@@ -560,8 +576,8 @@ export function drawClip(
 ): void {
   const clipX = msToX(clip.sessionStartMs);
   const clipWidth = Math.max(2, msToX(clip.sessionEndMs) - clipX);
-  const clipY = rowY + 4;
-  const clipHeight = rowH - 8;
+  const clipY = rowY + CLIP_BAND_INSET_Y;
+  const clipHeight = rowH - 2 * CLIP_BAND_INSET_Y;
 
   ctx.fillStyle = accent + '55';
   ctx.fillRect(clipX, clipY, clipWidth, clipHeight);
@@ -583,15 +599,15 @@ export function drawClipSelection(
   rowH: number,
   msToX: (ms: number) => number
 ): void {
-  const x = msToX(startMs);
-  const width = Math.max(2, msToX(endMs) - x);
-  const y = rowY + 4;
-  const height = rowH - 8;
+  const selectionX = msToX(startMs);
+  const selectionWidth = Math.max(2, msToX(endMs) - selectionX);
+  const selectionY = rowY + CLIP_BAND_INSET_Y;
+  const selectionHeight = rowH - 2 * CLIP_BAND_INSET_Y;
   ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
-  ctx.fillRect(x, y, width, height);
+  ctx.fillRect(selectionX, selectionY, selectionWidth, selectionHeight);
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
   ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.strokeRect(selectionX + 0.5, selectionY + 0.5, selectionWidth - 1, selectionHeight - 1);
 }
 
 export function drawNudgeSpans(
@@ -602,8 +618,8 @@ export function drawNudgeSpans(
   msToX: (ms: number) => number
 ): void {
   if (nudgeSpans.length === 0) return;
-  const innerY = rowY + 4;
-  const innerHeight = rowH - 8;
+  const innerY = rowY + CLIP_BAND_INSET_Y;
+  const innerHeight = rowH - 2 * CLIP_BAND_INSET_Y;
   ctx.fillStyle = NUDGE_COLOR;
   for (const span of nudgeSpans) {
     const nudgeX = msToX(span.startMs);
@@ -670,21 +686,26 @@ export function drawMasterGainLane(
   points: LanePoint[],
   masterTopY: number,
   masterRowH: number,
+  canvasWidth: number,
   msToX: (ms: number) => number,
   viewStart: number,
   viewEnd: number
 ): void {
-  drawLaneSteps(
-    ctx,
-    points,
-    masterTopY + 2,
-    masterRowH - 4,
-    0,
-    1,
-    GAIN_COLOR,
-    msToX,
-    viewStart,
-    viewEnd
+  // Clip to the track area like the deck lanes do, so the level line never
+  // bleeds left into the "M" label gutter or right into the padding.
+  withLaneClip(ctx, masterTopY, masterRowH, canvasWidth, () =>
+    drawLaneSteps(
+      ctx,
+      points,
+      masterTopY + MASTER_GAIN_INSET_Y,
+      masterRowH - 2 * MASTER_GAIN_INSET_Y,
+      GAIN_MIN,
+      GAIN_MAX,
+      GAIN_COLOR,
+      msToX,
+      viewStart,
+      viewEnd
+    )
   );
 }
 
@@ -802,18 +823,7 @@ export function drawMasterRowChrome(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('M', LABEL_W / 2, top + height / 2);
-}
-
-export function drawSelectedLaneHighlight(
-  ctx: CanvasRenderingContext2D,
-  rect: { top: number; height: number },
-  trackW: number
-): void {
-  ctx.fillStyle = '#06b6d414';
-  ctx.fillRect(LABEL_W, rect.top, trackW, rect.height);
-  ctx.strokeStyle = '#06b6d4';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(LABEL_W + 0.5, rect.top + 0.5, trackW - 1, rect.height - 1);
+  drawRowDivider(ctx, top + height - ROW_DIVIDER_H, canvasW);
 }
 
 export function drawValueGesturePreview(
@@ -915,20 +925,26 @@ export function drawClipGhosts(
   drawOutlinedLabel(ctx, label, labelX, rowTop + 12);
 }
 
-// Deck row dividers, drawn full-width (including the label column) after the
-// track clip is restored. Deliberately heavier than the 1px sublane-group
-// separators so deck boundaries stand out: a dark gap with a bright hairline.
+// One row divider, drawn full-width (including the label column). Used below
+// each deck row and below the master row so every row separates the same way.
+export function drawRowDivider(
+  ctx: CanvasRenderingContext2D,
+  dividerY: number,
+  canvasW: number
+): void {
+  ctx.fillStyle = ROW_DIVIDER_GAP_COLOR;
+  ctx.fillRect(0, dividerY, canvasW, ROW_DIVIDER_H);
+  ctx.fillStyle = ROW_DIVIDER_LINE_COLOR;
+  ctx.fillRect(0, dividerY, canvasW, ROW_DIVIDER_LINE_H);
+}
+
 export function drawRowDividers(
   ctx: CanvasRenderingContext2D,
   rows: RowLayout[],
   canvasW: number
 ): void {
   for (const row of rows) {
-    const dividerY = row.top + row.height - 3;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, dividerY, canvasW, 3);
-    ctx.fillStyle = '#5a5a5a';
-    ctx.fillRect(0, dividerY, canvasW, 1);
+    drawRowDivider(ctx, row.top + row.height - ROW_DIVIDER_H, canvasW);
   }
 }
 

@@ -656,11 +656,10 @@ fn orphaned_own_load(
         if event.deck.as_deref() != Some(deck) {
             continue;
         }
-        if event.event_type == "load_track" && near(event.elapsed_ms, own) {
-            discarded.insert(idx);
-        } else if (event.event_type == "set_playback_rate" || event.event_type == "set_beat_grid")
-            && event.elapsed_ms >= own - EPS_MS
-            && event.elapsed_ms < block_t0 - EPS_MS
+        if (event.event_type == "load_track" && near(event.elapsed_ms, own))
+            || ((event.event_type == "set_playback_rate" || event.event_type == "set_beat_grid")
+                && event.elapsed_ms >= own - EPS_MS
+                && event.elapsed_ms < block_t0 - EPS_MS)
         {
             discarded.insert(idx);
         }

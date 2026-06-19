@@ -50,7 +50,7 @@ export function useTimelineView(durationMs: () => number) {
   // Reset to the whole session whenever the duration becomes known/changes.
   watch(
     () => durationMs(),
-    (d) => setView({ start: 0, duration: d || 1 }),
+    (duration) => setView({ start: 0, duration: duration || 1 }),
     { immediate: true }
   );
 

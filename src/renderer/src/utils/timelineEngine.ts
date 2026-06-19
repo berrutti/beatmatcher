@@ -65,10 +65,10 @@ export function renderScene(
   vc: ViewContext
 ): void {
   for (const item of items) {
-    const r = item.bounds(vc);
+    const bounds = item.bounds(vc);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.rect(bounds.x, bounds.y, bounds.w, bounds.h);
     ctx.clip();
     item.draw(ctx, vc);
     ctx.restore();

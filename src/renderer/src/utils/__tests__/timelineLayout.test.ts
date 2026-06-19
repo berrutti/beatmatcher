@@ -2,11 +2,9 @@ import { describe, it, expect } from 'vitest';
 
 import {
   computeRowLayout,
-  selectedLaneRect,
   ghostSpan,
   clipGestureDeltaSec,
-  selectionSpanFor,
-  findLaneSeparator
+  selectionSpanFor
 } from '../timelineLayout';
 import { ROW_H } from '../timelineDraw';
 import type { Clip } from '@renderer/composables/useSessionTimeline';
@@ -66,57 +64,6 @@ describe('computeRowLayout', () => {
     expect(rows[0].waveformHeight).toBe(120);
     expect(rows[0].lanes[0].top).toBe(120); // lane sits directly below the waveform
     expect(rows[0].height).toBe(120 + 64);
-  });
-});
-
-describe('laneSeparatorAt', () => {
-  const rows = computeRowLayout(
-    [
-      {
-        deckId: 'A',
-        laneHeights: [
-          { key: 'gain', height: 16 },
-          { key: 'filter', height: 64 }
-        ]
-      }
-    ],
-    16
-  );
-  // gain bottom edge = 16 + ROW_H + 16; filter bottom edge = 16 + ROW_H + 16 + 64.
-  const gainEdge = 16 + ROW_H + 16;
-  const filterEdge = gainEdge + 64;
-
-  it('matches the lane whose bottom edge is within grab range', () => {
-    expect(findLaneSeparator(rows, gainEdge, 3)).toBe('gain');
-    expect(findLaneSeparator(rows, gainEdge + 2, 3)).toBe('gain');
-    expect(findLaneSeparator(rows, filterEdge, 3)).toBe('filter');
-  });
-
-  it('returns null away from any separator and when no lanes exist', () => {
-    expect(findLaneSeparator(rows, gainEdge + 8, 3)).toBeNull();
-    expect(findLaneSeparator([], gainEdge, 3)).toBeNull();
-  });
-});
-
-describe('selectedLaneRect', () => {
-  const rows = computeRowLayout([{ deckId: 'A', laneHeights: [{ key: 'gain', height: 16 }] }], 16);
-  const master = { top: 200, height: 32 };
-
-  it('resolves the master lane to the master rect', () => {
-    expect(selectedLaneRect({ deck: 'master', lane: 'masterGain' }, rows, master)).toEqual(master);
-  });
-
-  it('resolves a deck sublane to its rect', () => {
-    expect(selectedLaneRect({ deck: 'A', lane: 'gain' }, rows, master)).toEqual({
-      top: 16 + ROW_H,
-      height: 16
-    });
-  });
-
-  it('returns null for an unknown deck or lane and for no selection', () => {
-    expect(selectedLaneRect({ deck: 'B', lane: 'gain' }, rows, master)).toBeNull();
-    expect(selectedLaneRect({ deck: 'A', lane: 'filter' }, rows, master)).toBeNull();
-    expect(selectedLaneRect(null, rows, master)).toBeNull();
   });
 });
 
