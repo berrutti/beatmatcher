@@ -943,6 +943,34 @@ pub(crate) async fn read_track_tags(path: String) -> audio::TrackTags {
         })
 }
 
+// Mirrors the "filename (1).ext" pattern browsers use for repeat downloads,
+// since this path is auto-derived from the audio filename and never goes
+// through a save dialog the user could redirect away from an existing file.
+fn unique_path(path: &str) -> String {
+    if !std::path::Path::new(path).exists() {
+        return path.to_string();
+    }
+    let path = std::path::Path::new(path);
+    let parent = path.parent();
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let extension = path.extension().and_then(|s| s.to_str());
+    let mut counter = 1;
+    loop {
+        let candidate_name = match extension {
+            Some(extension) => format!("{stem} ({counter}).{extension}"),
+            None => format!("{stem} ({counter})"),
+        };
+        let candidate = match parent {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join(&candidate_name),
+            _ => std::path::PathBuf::from(&candidate_name),
+        };
+        if !candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+        counter += 1;
+    }
+}
+
 #[tauri::command]
 pub(crate) fn save_recording(
     state: tauri::State<'_, AppState>,
@@ -969,7 +997,7 @@ pub(crate) fn save_recording(
             .or_else(|| dest.strip_suffix(".flac"))
             .or_else(|| dest.strip_suffix(".FLAC"))
             .unwrap_or(&dest);
-        let log_dest = format!("{}.bms", stem);
+        let log_dest = unique_path(&format!("{}.bms", stem));
         if let Err(e) = std::fs::write(&log_dest, log.as_bytes()) {
             eprintln!("save_recording: failed to write session log {log_dest}: {e}");
         }
