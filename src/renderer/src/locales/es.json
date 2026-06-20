@@ -21,7 +21,7 @@
     "rec": "REC",
     "fourDecks": "4 DECKS",
     "twoDecks": "2 DECKS",
-    "swarmHint": "Mantén Espacio",
+    "swarmHint": "Mantén presionados los números",
     "swarm": "SWARM",
     "vol": "VOL",
     "master": "MASTER",
@@ -181,7 +181,8 @@
     "noTrackLoaded": "Ninguna pista cargada"
   },
   "mixer": {
-    "cue": "CUE"
+    "cue": "CUE",
+    "cueHint": "Activar CUE: Espacio + número"
   },
   "performance": {
     "collection": "COLECCIÓN"
@@ -210,6 +211,8 @@
     "locate": "ELEGIR CARPETA",
     "deleteNudge": "Eliminar nudge",
     "deleteFilterRegion": "Eliminar región de filtro",
+    "setClipBpm": "Ajustar BPM (todo el clip)…",
+    "setBpmFromHere": "Ajustar BPM desde aquí…",
     "mute": "Silenciar",
     "solo": "Solo",
     "lanesMenu": "Carriles"

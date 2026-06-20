@@ -13,13 +13,19 @@ import { type ClipSelectionRef } from '@renderer/utils/timelineLayout';
 import { blocksForDeck } from '@renderer/utils/clipEditOps';
 import type { Clip, FilterActiveSpan, NudgeSpan } from '@renderer/composables/useSessionTimeline';
 import type { TransportBlock } from '@renderer/utils/types';
-import type { Intent } from '@renderer/utils/timelineIntents';
+import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
 const DEFAULT_DECK_LANE: LaneKey = 'filter';
 const DEFAULT_LANE_H = 96;
 
-export type DeckMenu = { deck: string; x: number; y: number; nudge: NudgeSpan | null };
+export type DeckMenu = {
+  deck: string;
+  x: number;
+  y: number;
+  nudge: NudgeSpan | null;
+  bpm: BpmContext | null;
+};
 export type LanePicker = { deck: string; x: number; y: number };
 export type FilterMenu = { deck: string; span: FilterActiveSpan; x: number; y: number };
 
@@ -111,10 +117,6 @@ export function useTimelineController(opts: {
         break;
       case 'view.set':
         opts.camera.setView(intent.view);
-        break;
-      case 'scroll.set':
-        opts.camera.scrollY.value = intent.scrollY;
-        opts.requestRender();
         break;
       case 'lane.openDropdown':
         lanePicker.value = { deck: intent.deck, x: intent.clientX, y: intent.clientY };
@@ -235,7 +237,8 @@ export function useTimelineController(opts: {
           deck: intent.deck,
           x: intent.clientX,
           y: intent.clientY,
-          nudge: intent.nudge
+          nudge: intent.nudge,
+          bpm: intent.bpm
         };
         break;
       case 'menu.filterRegion':

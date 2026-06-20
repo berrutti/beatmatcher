@@ -1,16 +1,23 @@
 <template>
   <div class="timeline" ref="containerEl">
-    <canvas
-      ref="canvasEl"
-      class="timeline__canvas"
-      @click="onCanvasClick"
-      @dblclick="onCanvasDblClick"
-      @contextmenu.prevent="onCanvasContextMenu"
-      @wheel.prevent="onCanvasWheel"
-      @mousedown="onCanvasMouseDown"
-      @mousemove="onCanvasHoverMove"
-      @mouseleave="onCanvasHoverLeave"
-    />
+    <!-- Real scroll container so vertical overflow uses the browser's native
+         scrollbar. The canvas is sticky (always fills the viewport and redraws
+         the visible slice); the sizer is an empty spacer whose height is the
+         scrollable amount, giving the scrollbar its range. -->
+    <div class="timeline__scroll" ref="scrollEl" @scroll="onScroll">
+      <canvas
+        ref="canvasEl"
+        class="timeline__canvas"
+        @click="onCanvasClick"
+        @dblclick="onCanvasDblClick"
+        @contextmenu.prevent="onCanvasContextMenu"
+        @wheel="onCanvasWheel"
+        @mousedown="onCanvasMouseDown"
+        @mousemove="onCanvasHoverMove"
+        @mouseleave="onCanvasHoverLeave"
+      />
+      <div class="timeline__sizer" ref="sizerEl" aria-hidden="true" />
+    </div>
   </div>
 
   <Teleport to="body">
@@ -22,23 +29,35 @@
       @click.stop
     >
       <button v-if="deckMenu.nudge" class="lane-menu__item" @click="onDeleteNudge">
-        <span class="lane-menu__check"></span>
         {{ $t('session.deleteNudge') }}
       </button>
+      <button
+        v-if="editStore.editMode && deckMenu.bpm"
+        class="lane-menu__item"
+        @click="onOpenBpmDialog('clip')"
+      >
+        {{ $t('session.setClipBpm') }}
+      </button>
+      <button
+        v-if="editStore.editMode && deckMenu.bpm"
+        class="lane-menu__item"
+        @click="onOpenBpmDialog('fromHere')"
+      >
+        {{ $t('session.setBpmFromHere') }}
+      </button>
       <button class="lane-menu__item" @click="onToggleMute">
+        {{ $t('session.mute') }}
         <span class="lane-menu__check">{{
           sessionStore.mutedDecks.has(deckMenu.deck) ? '✓' : ''
         }}</span>
-        {{ $t('session.mute') }}
       </button>
       <button class="lane-menu__item" @click="onToggleSolo">
+        {{ $t('session.solo') }}
         <span class="lane-menu__check">{{
           sessionStore.soloDecks.has(deckMenu.deck) ? '✓' : ''
         }}</span>
-        {{ $t('session.solo') }}
       </button>
       <div v-if="editStore.editMode" class="lane-menu__item lane-menu__item--sub">
-        <span class="lane-menu__check"></span>
         {{ $t('session.lanesMenu') }}
         <span class="lane-menu__arrow">▶</span>
         <div class="lane-menu__submenu">
@@ -48,10 +67,10 @@
             class="lane-menu__item"
             @click="onPickLaneFromMenu(key)"
           >
+            {{ $t(`session.lanes.${key}`) }}
             <span class="lane-menu__check">{{
               controller.laneFor(deckMenu.deck) === key ? '✓' : ''
             }}</span>
-            {{ $t(`session.lanes.${key}`) }}
           </button>
         </div>
       </div>
@@ -71,10 +90,10 @@
       @click.stop
     >
       <button v-for="key in LANE_KEYS" :key="key" class="lane-menu__item" @click="onPickLane(key)">
+        {{ $t(`session.lanes.${key}`) }}
         <span class="lane-menu__check">{{
           controller.laneFor(lanePicker.deck) === key ? '✓' : ''
         }}</span>
-        {{ $t(`session.lanes.${key}`) }}
       </button>
     </div>
     <div
@@ -92,7 +111,6 @@
       @click.stop
     >
       <button class="lane-menu__item" @click="onDeleteFilterRegion">
-        <span class="lane-menu__check"></span>
         {{ $t('session.deleteFilterRegion') }}
       </button>
     </div>
@@ -101,6 +119,14 @@
       class="lane-menu__backdrop"
       @click="filterMenu = null"
       @contextmenu.prevent="filterMenu = null"
+    />
+
+    <!-- Set-BPM dialog: insert a rate change at the right-clicked point. -->
+    <BpmModal
+      :open="bpmDialog !== null"
+      :current-bpm="bpmDialog?.currentBpm ?? null"
+      @submit="onSetBpm"
+      @cancel="bpmDialog = null"
     />
   </Teleport>
 </template>
@@ -132,6 +158,8 @@ import { buildScene } from '@renderer/composables/useTimelineScene';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useSettingsStore } from '@renderer/stores/settings';
+import BpmModal from '@renderer/components/modals/BpmModal.vue';
+import type { BpmContext } from '@renderer/utils/timelineIntents';
 
 // Waveform LOD: as the user zooms, refetch only the VISIBLE track region of each
 // visible track at ~one point per physical pixel (oversampled a touch). Because
@@ -160,6 +188,8 @@ const editStore = useSessionEditStore();
 const settingsStore = useSettingsStore();
 
 const containerEl = ref<HTMLDivElement | null>(null);
+const scrollEl = ref<HTMLDivElement | null>(null);
+const sizerEl = ref<HTMLDivElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 
 const camera = useTimelineView(() => props.durationMs);
@@ -176,8 +206,8 @@ const { deckMenu, lanePicker, filterMenu } = controller;
 let sceneItems: SceneItem[] = [];
 
 function viewContext(): ViewContext {
-  const container = containerEl.value;
-  return camera.viewContext(container?.clientWidth ?? 0, container?.clientHeight ?? 0);
+  const el = scrollEl.value;
+  return camera.viewContext(el?.clientWidth ?? 0, el?.clientHeight ?? 0);
 }
 
 const gestures = useTimelineGestures({
@@ -213,11 +243,11 @@ function scheduleRender(): void {
 
 function render(): void {
   const canvas = canvasEl.value;
-  const container = containerEl.value;
-  if (!canvas || !container) return;
+  const scroll = scrollEl.value;
+  if (!canvas || !scroll) return;
   const dpr = window.devicePixelRatio || 1;
-  const cw = container.clientWidth;
-  const ch = container.clientHeight;
+  const cw = scroll.clientWidth;
+  const ch = scroll.clientHeight;
   if (cw === 0 || ch === 0) return;
 
   canvas.width = cw * dpr;
@@ -253,14 +283,26 @@ function render(): void {
     mutedFor: (deck) => sessionStore.mutedDecks.has(deck),
     clipSelection: controller.clipSelection.value,
     filterSelection: controller.filterSelection.value,
-    scrollY: camera.scrollY.value,
-    maxScrollY: camera.maxScrollY(),
     overlays: gestures.overlays()
   });
 
   camera.setContentMetrics(scene.contentHeight, vc.scrollViewport.bottom - vc.scrollViewport.top);
+  // The spacer's height is the scrollable amount, so the native scrollbar's
+  // range matches camera.scrollY exactly. Re-sync scrollTop in case the content
+  // shrank and setContentMetrics clamped scrollY below the element's position.
+  if (sizerEl.value) sizerEl.value.style.height = `${camera.maxScrollY()}px`;
+  if (scroll.scrollTop !== camera.scrollY.value) scroll.scrollTop = camera.scrollY.value;
   sceneItems = scene.items;
   renderScene(ctx, scene.items, vc);
+}
+
+// The native scrollbar / wheel moved the container: mirror it into the camera so
+// the next frame redraws the rows at the new offset.
+function onScroll(): void {
+  const scroll = scrollEl.value;
+  if (!scroll || camera.scrollY.value === scroll.scrollTop) return;
+  camera.scrollY.value = scroll.scrollTop;
+  scheduleRender();
 }
 
 function onCanvasMouseDown(e: MouseEvent): void {
@@ -353,6 +395,31 @@ function onDeleteFilterRegion(): void {
   filterMenu.value = null;
   if (!menu) return;
   controller.handleIntent({ type: 'filterRegion.delete', deck: menu.deck, span: menu.span });
+}
+
+// Right-clicked clip's set-BPM target, captured when the dialog opens so the
+// edit applies even after the menu closes. `mode` picks whole-clip vs from-here.
+const bpmDialog = ref<({ deck: string; mode: 'clip' | 'fromHere' } & BpmContext) | null>(null);
+
+function onOpenBpmDialog(mode: 'clip' | 'fromHere'): void {
+  const menu = deckMenu.value;
+  deckMenu.value = null;
+  if (!menu?.bpm) return;
+  bpmDialog.value = { deck: menu.deck, mode, ...menu.bpm };
+}
+
+function onSetBpm(bpm: number): void {
+  const dialog = bpmDialog.value;
+  bpmDialog.value = null;
+  if (!dialog || dialog.trackBpm <= 0) return;
+  const rate = bpm / dialog.trackBpm;
+  if (dialog.mode === 'clip') {
+    editStore
+      .commitSetClipBpm(dialog.deck, dialog.clipStartMs, dialog.clipEndMs, rate)
+      .catch(() => {});
+  } else {
+    editStore.commitSetBpm(dialog.deck, dialog.atMs, rate).catch(() => {});
+  }
 }
 
 // Ask the session store for a finer waveform on each visible track when the zoom
@@ -510,7 +577,9 @@ onMounted(() => {
     scheduleRender();
     scheduleWaveformLod();
   });
-  if (containerEl.value) ro.observe(containerEl.value);
+  // Observe the scroll element's content box so a re-render also fires when the
+  // native scrollbar appears/disappears (which changes the usable canvas width).
+  if (scrollEl.value) ro.observe(scrollEl.value);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   scheduleRender();
@@ -566,8 +635,27 @@ watch(
   position: relative;
 }
 
+.timeline__scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Sticky so the canvas stays pinned to the viewport top and keeps filling it
+   while the container scrolls; the render redraws the visible rows per scroll. */
 .timeline__canvas {
   display: block;
+  position: sticky;
+  top: 0;
+}
+
+/* Empty spacer that gives the scroll container its scrollable height. Behind
+   the sticky canvas and click-through so it never intercepts canvas pointer
+   events where it overlaps. */
+.timeline__sizer {
+  width: 1px;
+  pointer-events: none;
 }
 
 .lane-menu__backdrop {
@@ -583,7 +671,6 @@ watch(
   border: 1px solid #333;
   border-radius: 4px;
   padding: 4px 0;
-  min-width: 140px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
   font-family: var(--font);
 }
@@ -609,9 +696,13 @@ watch(
   color: #fff;
 }
 
+/* Right-aligned, fixed-width column so toggle items show their check on the
+   right while plain action items just left-align their label. The width is
+   always reserved (glyph blank when inactive) so toggling never resizes the menu. */
 .lane-menu__check {
-  display: inline-block;
+  margin-left: auto;
   width: 1em;
+  text-align: center;
   color: #06b6d4;
 }
 
@@ -634,7 +725,6 @@ watch(
   border: 1px solid #333;
   border-radius: 4px;
   padding: 4px 0;
-  min-width: 140px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
 }
 

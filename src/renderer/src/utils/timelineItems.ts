@@ -16,6 +16,7 @@ import {
   drawMasterGainLane,
   drawDeckLanes,
   drawClip,
+  drawClipBpmLabels,
   drawClipSelection,
   drawLoadedSpan,
   drawLoadedSpanLabel,
@@ -43,10 +44,6 @@ import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 // Thin grab tolerance for edges/separators, in pixels.
 const EDGE_GRAB_PX = 6;
 const SEPARATOR_GRAB_PX = 3;
-
-const SCROLLBAR_W = 6;
-const SCROLLBAR_RIGHT_GAP = 3;
-const SCROLLBAR_MIN_THUMB_H = 24;
 
 // The playhead's drawn line is 1px; its bounds are widened so the clip rect
 // the engine sets never clips the line at the view edges.
@@ -123,6 +120,13 @@ export function clipBandItem(
       for (const span of loadedSpans) {
         if (span.deck === row.deckId && visible(span.startMs, span.endMs)) {
           drawLoadedSpanLabel(ctx, span, row.top, waveformH, vc.msToX);
+        }
+      }
+      // Per-region BPM numbers, above the track name so each pitched/nudged
+      // region reads its tempo.
+      for (const clip of clips) {
+        if (clip.deck === row.deckId && visible(clip.sessionStartMs, clip.sessionEndMs)) {
+          drawClipBpmLabels(ctx, clip, row.top, waveformH, vc.msToX);
         }
       }
       if (selectionSpan && visible(selectionSpan.startMs, selectionSpan.endMs)) {
@@ -372,48 +376,6 @@ export function frameGuttersItem(): SceneItem {
     bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: vc.canvasH }),
     draw: (ctx, vc) => drawFrameGutters(ctx, vc.canvasW, vc.canvasH),
     hitTest: () => null
-  };
-}
-
-// ── vertical scrollbar (right gutter) ────────────────────────────────────────
-export function scrollbarItem(scrollY: number, maxScrollY: number): SceneItem | null {
-  if (maxScrollY <= 0) return null;
-  return {
-    bounds: (vc) => {
-      const top = vc.scrollViewport.top;
-      const trackH = vc.scrollViewport.bottom - top;
-      return {
-        x: vc.canvasW - SCROLLBAR_W - SCROLLBAR_RIGHT_GAP,
-        y: top,
-        w: SCROLLBAR_W,
-        h: trackH
-      };
-    },
-    draw: (ctx, vc) => {
-      const top = vc.scrollViewport.top;
-      const trackH = vc.scrollViewport.bottom - top;
-      const scrollbarX = vc.canvasW - SCROLLBAR_W - SCROLLBAR_RIGHT_GAP;
-      const contentH = trackH + maxScrollY;
-      const thumbH = Math.max(SCROLLBAR_MIN_THUMB_H, trackH * (trackH / contentH));
-      const thumbY = top + (scrollY / maxScrollY) * (trackH - thumbH);
-      ctx.fillStyle = '#ffffff12';
-      ctx.fillRect(scrollbarX, top, SCROLLBAR_W, trackH);
-      ctx.fillStyle = '#ffffff44';
-      ctx.fillRect(scrollbarX, thumbY, SCROLLBAR_W, thumbH);
-    },
-    hitTest: (pt, vc) => {
-      const top = vc.scrollViewport.top;
-      const trackH = vc.scrollViewport.bottom - top;
-      const contentH = trackH + maxScrollY;
-      const thumbH = Math.max(SCROLLBAR_MIN_THUMB_H, trackH * (trackH / contentH));
-      const thumbY = top + (scrollY / maxScrollY) * (trackH - thumbH);
-      const onThumb = pt.y >= thumbY && pt.y <= thumbY + thumbH;
-      return {
-        target: 'scrollbar',
-        part: onThumb ? 'thumb' : 'track',
-        data: { trackH, thumbH, top }
-      };
-    }
   };
 }
 

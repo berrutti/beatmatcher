@@ -40,7 +40,7 @@ import type {
   FilterActiveSpan,
   NudgeSpan
 } from '@renderer/composables/useSessionTimeline';
-import type { IntentHandler } from '@renderer/utils/timelineIntents';
+import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 import type { SessionEvent } from '@renderer/stores/session';
 
@@ -79,7 +79,6 @@ export type GestureDeps = {
 // The drag in progress. Each variant carries just what its move/up needs.
 type ActiveGesture =
   | { kind: 'track-pan'; startView: { start: number; duration: number } }
-  | { kind: 'scroll-y'; startY: number; startScroll: number; trackTravel: number }
   | { kind: 'lane-resize'; startY: number; startHeight: number; height: number }
   | { kind: 'waveform-resize'; startY: number; startHeight: number; height: number }
   | {
@@ -176,22 +175,6 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (!hit) return;
 
     switch (hit.target) {
-      case 'scrollbar': {
-        const data = hit.data as { trackH: number; thumbH: number; top: number };
-        const range = data.trackH - data.thumbH;
-        const max = deps.camera.maxScrollY();
-        let scroll = deps.camera.scrollY.value;
-        if (hit.part === 'track') {
-          const targetThumbY = Math.min(
-            data.top + range,
-            Math.max(data.top, pt.y - data.thumbH / 2)
-          );
-          scroll = range > 0 ? ((targetThumbY - data.top) / range) * max : 0;
-          deps.emit({ type: 'scroll.set', scrollY: scroll });
-        }
-        active = { kind: 'scroll-y', startY: pt.y, startScroll: scroll, trackTravel: range };
-        return;
-      }
       case 'overview': {
         const part = hit.part as 'move' | 'resize-left' | 'resize-right' | 'outside';
         if (part === 'outside') {
@@ -330,16 +313,6 @@ export function useTimelineGestures(deps: GestureDeps) {
       case 'track-pan':
         deps.camera.panByPixels(e.clientX - startClientX, vc.trackW);
         return;
-      case 'scroll-y': {
-        const max = deps.camera.maxScrollY();
-        const dScroll =
-          active.trackTravel > 0 ? ((pt.y - active.startY) * max) / active.trackTravel : 0;
-        deps.emit({
-          type: 'scroll.set',
-          scrollY: Math.min(max, Math.max(0, active.startScroll + dScroll))
-        });
-        return;
-      }
       case 'lane-resize': {
         active.height = clampLaneHeight(active.startHeight + (pt.y - active.startY));
         deps.emit({ type: 'lane.resize', height: active.height });
@@ -533,8 +506,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       deps.emit({ type: 'seek', ms });
       return;
     }
-    if (hit.target === 'laneDropdown' || hit.target === 'scrollbar' || hit.target === 'overview')
-      return;
+    if (hit.target === 'laneDropdown' || hit.target === 'overview') return;
     // lane / clipBand / master background: seek and clear selections.
     deps.emit({ type: 'clip.clearSelection' });
     deps.emit({ type: 'filterRegion.clearSelection' });
@@ -560,6 +532,30 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
   }
 
+  // The BPM context for a "Set BPM" menu item: the non-loop clip under `ms` on
+  // `deck` that has a known grid, with the tempo currently playing there (track
+  // bpm scaled by the segment's effective rate). Null when no such clip exists,
+  // so the menu item only appears over a pitchable clip.
+  function bpmContextAt(deck: string, ms: number): BpmContext | null {
+    for (const clip of deps.getClips()) {
+      if (clip.deck !== deck || clip.loop) continue;
+      if (ms < clip.sessionStartMs || ms > clip.sessionEndMs) continue;
+      if (!clip.bpm || clip.bpm <= 0) return null;
+      const seg = clip.waveSegments.find((s) => ms >= s.wallStartMs && ms <= s.wallEndMs);
+      const wallSec = seg ? (seg.wallEndMs - seg.wallStartMs) / 1000 : 0;
+      const trackSpan = seg ? seg.trackEndSec - seg.trackStartSec : 0;
+      const effRate = seg && wallSec > 0 && trackSpan > 0 ? trackSpan / wallSec : clip.playbackRate;
+      return {
+        atMs: ms,
+        clipStartMs: clip.sessionStartMs,
+        clipEndMs: clip.sessionEndMs,
+        trackBpm: clip.bpm,
+        currentBpm: clip.bpm * effRate
+      };
+    }
+    return null;
+  }
+
   function onContextMenu(e: MouseEvent, rect: DOMRect): void {
     const pt = pointFrom(e, rect);
     const hit = hitAt(pt);
@@ -580,7 +576,8 @@ export function useTimelineGestures(deps: GestureDeps) {
         deck: hit.deck,
         clientX: e.clientX,
         clientY: e.clientY,
-        nudge: hit.target === 'nudgeSpan' ? (hit.data as NudgeSpan) : null
+        nudge: hit.target === 'nudgeSpan' ? (hit.data as NudgeSpan) : null,
+        bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(pt.x)) : null
       });
     }
   }
@@ -590,11 +587,13 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (vc.trackW <= 0) return;
     const pt = pointFrom(e, rect);
     if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
       deps.camera.zoomAt(fracAtClientLocalX(pt.x, vc), e.deltaY);
     } else if (deps.camera.maxScrollY() > 0 && Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
-      deps.camera.scrollByPixels(e.deltaY);
-      deps.requestRender();
+      // Vertical scroll is owned by the native scroll container; don't
+      // preventDefault so the browser scrolls it and fires its scroll event.
     } else {
+      e.preventDefault();
       deps.camera.panByMsDelta((e.deltaX || e.deltaY) * (vc.view.duration / vc.trackW));
     }
   }
@@ -693,7 +692,6 @@ export function useTimelineGestures(deps: GestureDeps) {
   function cursorFor(pt: Point, shiftKey = false): string {
     const hit = hitAt(pt);
     if (!hit) return '';
-    if (hit.target === 'scrollbar') return 'pointer';
     if (hit.target === 'laneSeparator' || hit.target === 'waveformSeparator') return 'row-resize';
     if (hit.target === 'overview')
       return hit.part === 'resize-left' || hit.part === 'resize-right' ? 'ew-resize' : 'grab';

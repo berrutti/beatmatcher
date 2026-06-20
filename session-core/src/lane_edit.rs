@@ -256,6 +256,67 @@ pub fn splice_lane_events(
     sort_by_ms(kept)
 }
 
+// Insert (or replace) a single set_playback_rate point for `deck` at `ms`. The
+// rate lane is a step function, so one inserted point holds until the next
+// existing change. Backs the editor's "Set BPM" (right-click a clip), which
+// converts a target BPM to rate = target_bpm / track_bpm before calling here.
+pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> Vec<SessionEvent> {
+    let mut kept: Vec<SessionEvent> = events
+        .iter()
+        .filter(|e| {
+            !(e.event_type == "set_playback_rate"
+                && e.deck.as_deref() == Some(deck)
+                && (e.elapsed_ms - ms).abs() < f64::EPSILON)
+        })
+        .cloned()
+        .collect();
+    kept.push(SessionEvent {
+        rate: Some(rate),
+        ..SessionEvent::at(ms, "set_playback_rate", deck)
+    });
+    sort_by_ms(kept)
+}
+
+// Set one uniform rate over the whole clip span [start_ms, end_ms]: drop the
+// deck's rate changes inside it, open with `rate` at start_ms, and restore the
+// pre-edit rate at end_ms so playback after the clip is unchanged. Backs the
+// editor's "Set BPM (whole clip)". Unlike splice_lane_events the rate is NOT
+// clamped to the lane's display range, since the user typed an explicit BPM.
+pub fn set_rate_span(
+    events: &[SessionEvent],
+    deck: &str,
+    start_ms: f64,
+    end_ms: f64,
+    rate: f64,
+) -> Vec<SessionEvent> {
+    if end_ms <= start_ms {
+        return events.to_vec();
+    }
+    let spec = lane_spec_for(EditableLane::Rate, None, None);
+    let restore = original_value_at(events, &spec, deck, end_ms);
+    let mut kept: Vec<SessionEvent> = events
+        .iter()
+        .filter(|e| {
+            !(e.event_type == "set_playback_rate"
+                && e.deck.as_deref() == Some(deck)
+                && e.elapsed_ms >= start_ms
+                && e.elapsed_ms <= end_ms)
+        })
+        .cloned()
+        .collect();
+    kept.push(SessionEvent {
+        rate: Some(rate),
+        ..SessionEvent::at(start_ms, "set_playback_rate", deck)
+    });
+    if (restore - rate).abs() > f64::EPSILON {
+        kept.push(SessionEvent {
+            rate: Some(restore),
+            ..SessionEvent::at(end_ms, "set_playback_rate", deck)
+        });
+    }
+    sort_by_ms(kept)
+}
+
 // Scans backwards for the last event of `event_type` for `deck` at or before
 // `ms` (or strictly before, if `!inclusive`) and returns the field `get`
 // extracts from it, or `default` if none is found.
@@ -631,6 +692,70 @@ mod tests {
     fn gain_at(events: &[SessionEvent], ms: f64) -> f64 {
         let spec = lane_spec_for(EditableLane::Gain, None, None);
         original_value_at(events, &spec, "A", ms)
+    }
+
+    #[test]
+    fn set_rate_at_inserts_one_point_that_holds_until_next_change() {
+        let events = vec![
+            SessionEvent {
+                rate: Some(1.0),
+                ..ev(0.0, "set_playback_rate", "A")
+            },
+            SessionEvent {
+                rate: Some(1.05),
+                ..ev(8000.0, "set_playback_rate", "A")
+            },
+        ];
+        let out = set_rate_at(&events, "A", 3000.0, 0.98);
+        let spec = lane_spec_for(EditableLane::Rate, Some(0.92), Some(1.08));
+        // Inserted value holds from 3000 until the existing change at 8000.
+        assert!((original_value_at(&out, &spec, "A", 3000.0) - 0.98).abs() < 1e-9);
+        assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.98).abs() < 1e-9);
+        // The later change survives (not "to clip end" semantics).
+        assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.05).abs() < 1e-9);
+        // Earlier value is untouched.
+        assert!((original_value_at(&out, &spec, "A", 2999.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_rate_span_makes_clip_uniform_and_restores_after() {
+        let events = vec![
+            SessionEvent {
+                rate: Some(1.0),
+                ..ev(0.0, "set_playback_rate", "A")
+            },
+            // A mid-clip change that "Set BPM (whole clip)" should flatten away.
+            SessionEvent {
+                rate: Some(1.04),
+                ..ev(5000.0, "set_playback_rate", "A")
+            },
+        ];
+        // Clip span [2000, 8000]; set whole clip to rate 0.97.
+        let out = set_rate_span(&events, "A", 2000.0, 8000.0, 0.97);
+        let spec = lane_spec_for(EditableLane::Rate, Some(0.92), Some(1.08));
+        // Uniform across the clip (the 1.04 mid-clip change is gone).
+        assert!((original_value_at(&out, &spec, "A", 2000.0) - 0.97).abs() < 1e-9);
+        assert!((original_value_at(&out, &spec, "A", 5000.0) - 0.97).abs() < 1e-9);
+        assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.97).abs() < 1e-9);
+        // After the clip the pre-edit rate (1.04, in force at clip end) is restored.
+        assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.04).abs() < 1e-9);
+        // Before the clip is untouched.
+        assert!((original_value_at(&out, &spec, "A", 1000.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_rate_at_replaces_an_exact_duplicate() {
+        let events = vec![SessionEvent {
+            rate: Some(0.95),
+            ..ev(3000.0, "set_playback_rate", "A")
+        }];
+        let out = set_rate_at(&events, "A", 3000.0, 0.99);
+        let rate_events: Vec<_> = out
+            .iter()
+            .filter(|e| e.event_type == "set_playback_rate")
+            .collect();
+        assert_eq!(rate_events.len(), 1);
+        assert_eq!(rate_events[0].rate, Some(0.99));
     }
 
     #[test]

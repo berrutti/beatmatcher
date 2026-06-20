@@ -21,7 +21,7 @@
     "rec": "REC",
     "fourDecks": "4 DECKS",
     "twoDecks": "2 DECKS",
-    "swarmHint": "Leertaste halten",
+    "swarmHint": "Zahlentasten halten",
     "swarm": "SCHWARM",
     "vol": "LAUTST.",
     "master": "MASTER",
@@ -181,7 +181,8 @@
     "noTrackLoaded": "Kein Track geladen"
   },
   "mixer": {
-    "cue": "CUE"
+    "cue": "CUE",
+    "cueHint": "CUE umschalten: Leertaste + Zahl"
   },
   "performance": {
     "collection": "SAMMLUNG"
@@ -210,6 +211,8 @@
     "locate": "ORDNER WÄHLEN",
     "deleteNudge": "Nudge löschen",
     "deleteFilterRegion": "Filterbereich löschen",
+    "setClipBpm": "BPM festlegen (ganzer Clip)…",
+    "setBpmFromHere": "BPM ab hier festlegen…",
     "mute": "Stumm",
     "solo": "Solo",
     "lanesMenu": "Spuren"

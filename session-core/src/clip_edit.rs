@@ -725,7 +725,7 @@ pub fn delete_transport_block(
             kept.push(event.clone());
             continue;
         }
-        // Inside [t0, t1]: the block's own play/stop/loop events — drop them.
+        // Inside [t0, t1]: the block's own play/stop/loop events. Drop them.
     }
     if prev_glued {
         if let Some(prev) = &prev {

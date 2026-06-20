@@ -24,6 +24,8 @@ import {
   nudgeValueAt as coreNudgeValueAt,
   paintNudgeRange as corePaintNudgeRange,
   deleteNudgeRange as coreDeleteNudgeRange,
+  setRateAt as coreSetRateAt,
+  setRateSpan as coreSetRateSpan,
   relocateEventPaths as coreRelocateEventPaths
 } from '@renderer/utils/sessionCore';
 
@@ -254,6 +256,29 @@ export function deleteNudgeRange(
     !(event.elapsed_ms === t1 && event.percent !== 0);
   if (!events.some(inRange)) return events;
   return coreDeleteNudgeRange(events, deck, t0, t1);
+}
+
+// Inserts one set_playback_rate point at `ms`, holding until the next existing
+// change. The "Set BPM" right-click converts a target BPM to rate before calling.
+export function setRateAt(
+  events: SessionEvent[],
+  deck: string,
+  ms: number,
+  rate: number
+): SessionEvent[] {
+  return coreSetRateAt(events, deck, ms, rate);
+}
+
+// Sets one uniform rate across a whole clip span (restores the pre-edit rate
+// after). The "Set BPM (whole clip)" right-click converts a target BPM to rate.
+export function setRateSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  rate: number
+): SessionEvent[] {
+  return coreSetRateSpan(events, deck, startMs, endMs, rate);
 }
 
 // Rewrites event track paths after the user relocates missing files. Returns
