@@ -7,7 +7,7 @@ import {
   selectionSpanFor
 } from '../timelineLayout';
 import { ROW_H } from '../timelineDraw';
-import type { Clip } from '@renderer/composables/useSessionTimeline';
+import type { Clip } from '@renderer/utils/types';
 
 function clip(overrides: Partial<Clip>): Clip {
   return {

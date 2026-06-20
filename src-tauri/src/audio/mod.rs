@@ -182,11 +182,11 @@ impl AppAudio {
         *self
             .current_cue_id
             .lock()
-            .expect("stream id mutex poisoned") = device_id.to_string();
+            .unwrap_or_else(|e| e.into_inner()) = device_id.to_string();
         *self
             .current_cue_offset
             .lock()
-            .expect("stream offset mutex poisoned") = channel_offset;
+            .unwrap_or_else(|e| e.into_inner()) = channel_offset;
         self.rebuild_streams()
     }
 
@@ -199,11 +199,11 @@ impl AppAudio {
         *self
             .current_main_id
             .lock()
-            .expect("stream id mutex poisoned") = device_id.to_string();
+            .unwrap_or_else(|e| e.into_inner()) = device_id.to_string();
         *self
             .current_main_offset
             .lock()
-            .expect("stream offset mutex poisoned") = channel_offset;
+            .unwrap_or_else(|e| e.into_inner()) = channel_offset;
         self.rebuild_streams()
     }
 
@@ -233,21 +233,21 @@ impl AppAudio {
         let main_id = self
             .current_main_id
             .lock()
-            .expect("stream id mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         let main_off = *self
             .current_main_offset
             .lock()
-            .expect("stream offset mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         let cue_id = self
             .current_cue_id
             .lock()
-            .expect("stream id mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         let cue_off = *self
             .current_cue_offset
             .lock()
-            .expect("stream offset mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         let buf_frames = self.buffer_frames.load(Ordering::Relaxed);
 
         log::info!(
@@ -292,13 +292,13 @@ impl AppAudio {
             if let Some(s) = self
                 ._main_stream
                 .lock()
-                .expect("main stream mutex poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
             {
                 s.0.pause().ok();
             }
             {
-                let mut guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
+                let mut guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = guard.as_ref() {
                     s.0.pause().ok();
                 }
@@ -306,10 +306,7 @@ impl AppAudio {
             }
             self.sync_cue_positions();
             {
-                let mut guard = self
-                    ._main_stream
-                    .lock()
-                    .expect("main stream mutex poisoned");
+                let mut guard = self._main_stream.lock().unwrap_or_else(|e| e.into_inner());
                 *guard = Some(SendStream(stream));
                 guard
                     .as_ref()
@@ -378,13 +375,13 @@ impl AppAudio {
             if let Some(s) = self
                 ._main_stream
                 .lock()
-                .expect("main stream mutex poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
             {
                 s.0.pause().ok();
             }
             {
-                let guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
+                let guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = guard.as_ref() {
                     s.0.pause().ok();
                 }
@@ -392,10 +389,7 @@ impl AppAudio {
             self.sync_cue_positions();
 
             {
-                let mut guard = self
-                    ._main_stream
-                    .lock()
-                    .expect("main stream mutex poisoned");
+                let mut guard = self._main_stream.lock().unwrap_or_else(|e| e.into_inner());
                 match new_main_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
@@ -410,7 +404,7 @@ impl AppAudio {
                 }
             }
             {
-                let mut guard = self._cue_stream.lock().expect("cue stream mutex poisoned");
+                let mut guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
                 match new_cue_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
@@ -432,7 +426,7 @@ impl AppAudio {
 
     fn sync_cue_positions(&self) {
         for deck_arc in self.decks.values() {
-            let mut deck = deck_arc.lock().expect("deck mutex poisoned");
+            let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             deck.cue_pos = deck.main_pos;
         }
     }
@@ -447,17 +441,14 @@ impl AppAudio {
             .map(|(id, strip)| {
                 (
                     id.clone(),
-                    strip
-                        .lock()
-                        .expect("channel strip mutex poisoned")
-                        .get_level(),
+                    strip.lock().unwrap_or_else(|e| e.into_inner()).get_level(),
                 )
             })
             .collect()
     }
 
     pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
-        let mut recording = self.recording.lock().expect("recording mutex poisoned");
+        let mut recording = self.recording.lock().unwrap_or_else(|e| e.into_inner());
         if recording.is_some() {
             return Err("already recording".to_string());
         }
@@ -476,7 +467,7 @@ impl AppAudio {
             .monitor
             .record_tx
             .lock()
-            .expect("recording channel mutex poisoned") = Some(tx);
+            .unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
         let thread = if use_flac {
@@ -492,12 +483,12 @@ impl AppAudio {
         self.monitor
             .record_tx
             .lock()
-            .expect("recording channel mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .take();
         let state = self
             .recording
             .lock()
-            .expect("recording mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .take();
         if let Some(s) = state {
             s.thread
@@ -512,7 +503,7 @@ impl AppAudio {
     pub fn is_recording(&self) -> bool {
         self.recording
             .lock()
-            .expect("recording mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .is_some()
     }
 }

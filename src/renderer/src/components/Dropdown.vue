@@ -70,8 +70,8 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
 }
 
 .dropdown__trigger:hover {
-  border-color: #06b6d4;
-  color: #06b6d4;
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
 }
 
 .dropdown__chevron {
@@ -111,6 +111,6 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
 }
 
 .dropdown__item--active {
-  color: #06b6d4;
+  color: var(--color-accent-cyan);
 }
 </style>

@@ -33,13 +33,7 @@ import {
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
 import type { DeckId } from '@renderer/stores/decks';
-import type {
-  Clip,
-  LoadedSpan,
-  DeckLanes,
-  MasterLanes,
-  NudgeSpan
-} from '@renderer/composables/useSessionTimeline';
+import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
 
 export type SceneInput = {
   vc: ViewContext;

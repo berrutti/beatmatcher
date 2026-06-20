@@ -124,7 +124,7 @@ impl AppState {
         if let Some(logger) = self
             .session
             .lock()
-            .expect("session mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .as_mut()
         {
             logger.log(event_type, payload);

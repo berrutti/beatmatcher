@@ -106,9 +106,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { formatMs } from '@renderer/utils/time';
 import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
@@ -120,7 +121,6 @@ const props = defineProps<{ deck: Deck }>();
 
 const viewEl = ref<HTMLElement | null>(null);
 const pendingLoad = ref<LoadableTrack | null>(null);
-const isDragOver = ref(false);
 const bpmModalOpen = ref(false);
 
 const collectionStore = useCollectionStore();
@@ -149,27 +149,7 @@ function onResizeStart(e: PointerEvent) {
   window.addEventListener('pointerup', onUp);
 }
 
-function onWindowPointerMove(e: PointerEvent) {
-  if (!viewEl.value) return;
-  const rect = viewEl.value.getBoundingClientRect();
-  isDragOver.value =
-    e.clientX >= rect.left &&
-    e.clientX <= rect.right &&
-    e.clientY >= rect.top &&
-    e.clientY <= rect.bottom;
-}
-
-watch(
-  () => collectionStore.draggingPath,
-  (path) => {
-    if (path) {
-      window.addEventListener('pointermove', onWindowPointerMove);
-    } else {
-      window.removeEventListener('pointermove', onWindowPointerMove);
-      isDragOver.value = false;
-    }
-  }
-);
+const { isDragOver } = useCollectionDragOver(viewEl);
 
 function onSetGrid() {
   props.deck.setBeatOffset(props.deck.getPlayheadPosition());
@@ -203,10 +183,7 @@ function onBpmSubmit(bpm: number) {
 }
 
 onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => {
-  window.removeEventListener('bm:collection-drop', onCollectionDrop);
-  window.removeEventListener('pointermove', onWindowPointerMove);
-});
+onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionDrop));
 </script>
 
 <style scoped>

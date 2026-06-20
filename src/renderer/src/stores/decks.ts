@@ -16,7 +16,7 @@ export const DECK_ACCENTS: Readonly<Record<string, string>> = {
   E: '#a855f7'
 };
 
-export type LoopRegion = {
+type LoopRegion = {
   startSec: number;
   endSec: number;
   beats: number;

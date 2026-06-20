@@ -5,7 +5,7 @@ import type {
   DeckLanes,
   LanePoint,
   NudgeSpan
-} from '@renderer/composables/useSessionTimeline';
+} from '@renderer/utils/types';
 import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
 import { EQ_MIN_DB, EQ_MAX_DB, FILTER_DEAD_ZONE } from '@renderer/stores/mixer';
 import { formatMs } from '@renderer/utils/time';
@@ -33,16 +33,15 @@ export const ROW_H = 80;
 export const LABEL_W = 32;
 export const TICK_H = 16;
 export const PADDING = 12;
-export const SUBLANE_H = 16;
+const SUBLANE_H = 16;
 export const MASTER_ROW_H = SUBLANE_H * 2;
 export const OVERVIEW_H = 22;
 export const OVERVIEW_GAP = 4;
 
 export const LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
 export type LaneKey = (typeof LANE_KEYS)[number];
-export type LaneVisibility = Partial<Record<LaneKey, boolean>>;
 
-export const LANE_GROUP: Record<LaneKey, number> = {
+const LANE_GROUP: Record<LaneKey, number> = {
   gain: 0,
   filter: 1,
   rate: 2,
@@ -50,7 +49,7 @@ export const LANE_GROUP: Record<LaneKey, number> = {
   eqMid: 3,
   eqHigh: 3
 };
-export const LANE_SHORT_LABELS: Record<LaneKey, string> = {
+const LANE_SHORT_LABELS: Record<LaneKey, string> = {
   gain: 'G',
   filter: 'F',
   rate: 'RT',
@@ -109,7 +108,7 @@ export type RowLayout = {
 };
 export type OverviewRect = { y: number; h: number };
 
-export function formatTickLabel(ms: number, tickIntervalMs: number): string {
+function formatTickLabel(ms: number, tickIntervalMs: number): string {
   if (tickIntervalMs < 1000) {
     const totalSec = Math.floor(ms / 1000);
     const mins = Math.floor(totalSec / 60);
@@ -120,7 +119,7 @@ export function formatTickLabel(ms: number, tickIntervalMs: number): string {
   return formatMs(ms);
 }
 
-export function valueToY(
+function valueToY(
   laneY: number,
   laneHeight: number,
   minVal: number,
@@ -149,7 +148,7 @@ export function yToValue(
   return Math.min(maxVal, Math.max(minVal, value));
 }
 
-export function filterColorFor(value: number): string {
+function filterColorFor(value: number): string {
   if (value < -FILTER_DEAD_ZONE) return FILTER_LPF_COLOR;
   if (value > FILTER_DEAD_ZONE) return FILTER_HPF_COLOR;
   return FILTER_NEUTRAL_COLOR;
@@ -190,7 +189,7 @@ function sampleRegion(region: WaveformRegion, startSec: number, endSec: number):
   return sum / (endIdx - startIdx + 1);
 }
 
-export function drawClipWaveform(
+function drawClipWaveform(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
   waveform: TrackWaveform | undefined,
@@ -246,7 +245,7 @@ export function drawClipWaveform(
 // Beat grid over a clip, drawn per wave segment so the lines compress/stretch
 // with the waveform when the rate changes. Ported from EditWaveform's LOD steps
 // (1 -> 4 -> 16 -> ... beats), but mapped through each segment's track->wall rate.
-export function drawClipBeatGrid(
+function drawClipBeatGrid(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
   rectY: number,
@@ -329,7 +328,7 @@ export function drawClipBpmLabels(
 // Draws a zero-order-hold (step) graph: each point's value is held flat until
 // the next point's time, then jumps. This matches how parameters actually change:
 // session events fire at the moment a value changes, not gradually beforehand.
-export function drawLaneSteps(
+function drawLaneSteps(
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   laneY: number,
@@ -369,7 +368,7 @@ export function drawLaneSteps(
   }
 }
 
-export function drawFilterLane(
+function drawFilterLane(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
   deckData: DeckLanes,
@@ -424,7 +423,7 @@ function drawLaneCenterLine(
   ctx.restore();
 }
 
-export function drawRateLane(
+function drawRateLane(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
   deckData: DeckLanes,
@@ -451,7 +450,7 @@ export function drawRateLane(
   );
 }
 
-export function drawEqLane(
+function drawEqLane(
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   color: string,
@@ -464,7 +463,7 @@ export function drawEqLane(
   drawLaneSteps(ctx, points, laneY, laneH, EQ_MIN_DB, EQ_MAX_DB, color, msToX, viewStart, viewEnd);
 }
 
-export type LaneDrawer = (
+type LaneDrawer = (
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
   deckData: DeckLanes,
@@ -475,7 +474,7 @@ export type LaneDrawer = (
   viewEnd: number
 ) => void;
 
-export const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
+const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
   gain: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
     drawLaneSteps(ctx, deckData.gain, laneY, laneH, 0, 1, GAIN_COLOR, msToX, viewStart, viewEnd),
   filter: drawFilterLane,
@@ -492,7 +491,7 @@ export const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
 // contained, so strokes/outlines (committed lines, the in-progress gesture, the
 // filter-span selection box, anything future) can't spill past the lane's
 // dividers, instead of every drawer guarding its own edges.
-export function withLaneClip(
+function withLaneClip(
   ctx: CanvasRenderingContext2D,
   top: number,
   height: number,
@@ -755,7 +754,7 @@ export function makeMsToX(view: ViewWindow, trackWidth: number): (ms: number) =>
 // Renderers extracted from Timeline.vue's draw(): each takes the context plus
 // explicit data, no component state, so draw() stays a short orchestrator.
 
-export function drawOutlinedLabel(
+function drawOutlinedLabel(
   ctx: CanvasRenderingContext2D,
   text: string,
   x: number,
@@ -965,11 +964,7 @@ export function drawClipGhosts(
 
 // One row divider, drawn full-width (including the label column). Used below
 // each deck row and below the master row so every row separates the same way.
-export function drawRowDivider(
-  ctx: CanvasRenderingContext2D,
-  dividerY: number,
-  canvasW: number
-): void {
+function drawRowDivider(ctx: CanvasRenderingContext2D, dividerY: number, canvasW: number): void {
   ctx.fillStyle = ROW_DIVIDER_GAP_COLOR;
   ctx.fillRect(0, dividerY, canvasW, ROW_DIVIDER_H);
   ctx.fillStyle = ROW_DIVIDER_LINE_COLOR;

@@ -81,19 +81,19 @@ async fn index_session(
         let cache = state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         build_snapshots(&session.events, sr, &cache)
     };
 
     state
         .session_snapshots
         .lock()
-        .expect("snapshots mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(path.clone(), snapshots);
     state
         .session_files
         .lock()
-        .expect("session files mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(path, Arc::new(session));
 }
 
@@ -105,19 +105,19 @@ pub(crate) fn unload_session(state: tauri::State<'_, AppState>, path: String) {
     let removed = state
         .session_files
         .lock()
-        .expect("session files mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .remove(&path);
     state
         .session_snapshots
         .lock()
-        .expect("snapshots mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .remove(&path);
     if let Some(session) = removed {
         let track_paths = session_track_paths(&session.events);
         let mut cache = state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         for track_path in track_paths {
             cache.remove(&track_path);
         }
@@ -153,7 +153,7 @@ pub(crate) async fn start_session_playback(
     let cached: Option<Arc<crate::offline_render::SessionFile>> = state
         .session_files
         .lock()
-        .expect("session files mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&path)
         .cloned();
     let session: Arc<crate::offline_render::SessionFile> = match cached {
@@ -173,7 +173,7 @@ pub(crate) async fn start_session_playback(
             state
                 .session_files
                 .lock()
-                .expect("session files mutex poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(path.clone(), parsed.clone());
             parsed
         }
@@ -189,7 +189,7 @@ pub(crate) async fn start_session_playback(
         let mut guard = state
             .session_playback_cancel
             .lock()
-            .expect("session_playback mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(old) = guard.take() {
             old.store(true, Ordering::Release);
         }
@@ -198,7 +198,7 @@ pub(crate) async fn start_session_playback(
     let old_handle = state
         .session_playback_handle
         .lock()
-        .expect("session_playback handle mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .take();
     if let Some(handle) = old_handle {
         let _ = handle.await;
@@ -214,7 +214,7 @@ pub(crate) async fn start_session_playback(
         state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone(),
     );
 
@@ -223,7 +223,7 @@ pub(crate) async fn start_session_playback(
         let snaps = state
             .session_snapshots
             .lock()
-            .expect("snapshots mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(snaps) = snaps.get(&path) {
             let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
             idx.checked_sub(1).map(|i| snaps[i].clone())
@@ -291,7 +291,7 @@ pub(crate) async fn start_session_playback(
             };
             let total_frames = samples.len() / channels;
             {
-                let mut d = arc.lock().expect("deck mutex poisoned");
+                let mut d = arc.lock().unwrap_or_else(|e| e.into_inner());
                 d.samples = samples.clone();
                 d.channels = *channels;
                 d.device_sample_rate = sr;
@@ -317,7 +317,7 @@ pub(crate) async fn start_session_playback(
         {
             let mut guards: Vec<_> = to_start
                 .iter()
-                .map(|a| a.lock().expect("deck mutex poisoned"))
+                .map(|a| a.lock().unwrap_or_else(|e| e.into_inner()))
                 .collect();
             for d in guards.iter_mut() {
                 d.is_playing = true;
@@ -355,7 +355,10 @@ pub(crate) async fn start_session_playback(
         if !cancel.load(Ordering::Acquire) {
             for id in ["A", "B", "C", "D"] {
                 if let Some(deck_arc) = audio.deck(id) {
-                    deck_arc.lock().expect("deck mutex poisoned").is_playing = false;
+                    deck_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_playing = false;
                 }
             }
             app_handle.emit("session-playback-ended", ()).ok();
@@ -365,7 +368,7 @@ pub(crate) async fn start_session_playback(
     *state
         .session_playback_handle
         .lock()
-        .expect("session_playback handle mutex poisoned") = Some(handle);
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
     Ok(())
 }
@@ -375,29 +378,31 @@ pub(crate) fn stop_session_playback(state: tauri::State<'_, AppState>) {
     let mut guard = state
         .session_playback_cancel
         .lock()
-        .expect("session_playback mutex poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(cancel) = guard.take() {
         cancel.store(true, Ordering::Release);
     }
     for id in ["A", "B", "C", "D"] {
         if let Some(deck_arc) = state.audio.deck(id) {
-            deck_arc.lock().expect("deck mutex poisoned").is_playing = false;
+            deck_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_playing = false;
         }
     }
 }
 
 fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
     events
         .iter()
         .filter_map(|e| match e.command() {
             Some(
                 SessionCommand::DeckSnapshot { path, .. } | SessionCommand::LoadTrack { path, .. },
-            ) => Some(path),
+            ) => Some(path.to_string()),
             _ => None,
         })
-        .filter(|p| seen.insert(p.to_string()))
-        .map(|p| p.to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -406,7 +411,7 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
         let cache = state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         paths
             .into_iter()
             .filter(|p| !cache.contains_key(p))
@@ -442,7 +447,7 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
     let mut cache = state
         .session_track_cache
         .lock()
-        .expect("track cache mutex poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     for (p, samples, channels) in newly_loaded {
         cache.insert(p, (Arc::new(samples), channels));
     }
@@ -451,10 +456,10 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
 fn reset_all(audio: &audio::AppAudio) {
     for id in ["A", "B", "C", "D"] {
         if let Some(deck_arc) = audio.deck(id) {
-            deck_arc.lock().expect("deck mutex poisoned").reset();
+            deck_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(strip_arc) = audio.strip(id) {
-            strip_arc.lock().expect("strip mutex poisoned").reset();
+            strip_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
     }
     audio.monitor.set_master_gain(DEFAULT_MASTER_GAIN);
@@ -465,7 +470,7 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     for id in ["A", "B", "C", "D"] {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
-            let mut s = strip_arc.lock().expect("strip mutex poisoned");
+            let mut s = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
             s.set_gain(snap.gain);
             s.set_eq_band("low", snap.eq_low);
             s.set_eq_band("mid", snap.eq_mid);
@@ -540,8 +545,8 @@ fn apply_event_live(
     let (Some(deck_a), Some(strip_a)) = (audio.deck(id), audio.strip(id)) else {
         return;
     };
-    let mut d = deck_a.lock().expect("deck mutex poisoned");
-    let mut s = strip_a.lock().expect("strip mutex poisoned");
+    let mut d = deck_a.lock().unwrap_or_else(|e| e.into_inner());
+    let mut s = strip_a.lock().unwrap_or_else(|e| e.into_inner());
 
     let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
         cache

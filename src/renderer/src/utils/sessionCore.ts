@@ -15,14 +15,12 @@ import init, {
   deleteTransportBlock as wasmDeleteBlock,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
-  originalValueAt as wasmOriginalValueAt,
   spliceLaneEvents as wasmSplice,
   filterActiveAt as wasmFilterActiveAt,
   toggleFilterActiveRange as wasmToggleFilter,
   deleteFilterActiveSpan as wasmDeleteFilterSpan,
   resizeFilterActiveSpan as wasmResizeFilterSpan,
   moveFilterActiveSpan as wasmMoveFilterSpan,
-  nudgeValueAt as wasmNudgeValueAt,
   paintNudgeRange as wasmPaintNudge,
   deleteNudgeRange as wasmDeleteNudge,
   setRateAt as wasmSetRateAt,
@@ -38,9 +36,10 @@ import type {
   DeckLanes,
   MasterLanes,
   NudgeSpan,
-  LanePoint
-} from '@renderer/composables/useSessionTimeline';
-import type { EditableLaneKey, TransportBlock } from '@renderer/utils/types';
+  LanePoint,
+  EditableLaneKey,
+  TransportBlock
+} from '@renderer/utils/types';
 
 let initPromise: Promise<void> | null = null;
 
@@ -195,17 +194,6 @@ export function spliceLaneEvents(
   );
 }
 
-export function originalValueAt(
-  events: SessionEvent[],
-  laneKey: EditableLaneKey,
-  deck: string,
-  ms: number,
-  rateMin = 0.92,
-  rateMax = 1.08
-): number {
-  return wasmOriginalValueAt(JSON.stringify(events), laneKey, deck, ms, rateMin, rateMax);
-}
-
 export function filterActiveAt(
   events: SessionEvent[],
   deck: string,
@@ -258,15 +246,6 @@ export function moveFilterActiveSpan(
   return parse(
     wasmMoveFilterSpan(JSON.stringify(events), deck, startMs, endMs, deltaMs, durationMs)
   );
-}
-
-export function nudgeValueAt(
-  events: SessionEvent[],
-  deck: string,
-  ms: number,
-  inclusive = true
-): number {
-  return wasmNudgeValueAt(JSON.stringify(events), deck, ms, inclusive);
 }
 
 export function paintNudgeRange(

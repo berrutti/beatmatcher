@@ -12,7 +12,7 @@ import {
   type SublaneLayout
 } from '@renderer/utils/timelineDraw';
 import type { ViewContext } from '@renderer/utils/timelineEngine';
-import type { Clip } from '@renderer/composables/useSessionTimeline';
+import type { Clip } from '@renderer/utils/types';
 
 // ms -> x as identity-ish; pt.x in these tests is given directly in ms units.
 const vc = { msToX: (ms: number) => ms, trackW: 10_000 } as ViewContext;

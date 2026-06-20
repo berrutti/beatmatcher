@@ -10,9 +10,8 @@ import { DECK_ACCENTS, type DeckId, useDecksStore } from '@renderer/stores/decks
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
 import { type ClipSelectionRef } from '@renderer/utils/timelineLayout';
-import { blocksForDeck } from '@renderer/utils/clipEditOps';
-import type { Clip, FilterActiveSpan, NudgeSpan } from '@renderer/composables/useSessionTimeline';
-import type { TransportBlock } from '@renderer/utils/types';
+import { blocksForDeck } from '@renderer/utils/sessionCore';
+import type { Clip, FilterActiveSpan, NudgeSpan, TransportBlock } from '@renderer/utils/types';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 

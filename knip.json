@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/renderer/src/main.ts", "vite.tauri.config.ts", "src/renderer/src/wasm-env.d.ts"],
+  "project": ["src/renderer/src/**/*.{ts,vue}"],
+  "ignoreBinaries": ["wasm-pack"]
+}

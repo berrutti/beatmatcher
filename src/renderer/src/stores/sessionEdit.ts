@@ -3,31 +3,33 @@ import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore, type SessionEvent, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
-import type { LanePoint } from '@renderer/composables/useSessionTimeline';
 import {
   laneSpecFor,
+  spliceLaneEvents,
+  deleteNudgeRange,
+  relocateEventPaths
+} from '@renderer/utils/sessionEditOps';
+import { basename, indexByBasename } from '@renderer/utils/path';
+import {
   normalizeGestureSamples,
   decimateSteps,
-  spliceLaneEvents,
   toggleFilterActiveRange,
   deleteFilterActiveSpan,
   resizeFilterActiveSpan,
   moveFilterActiveSpan,
   paintNudgeRange,
-  deleteNudgeRange,
   setRateAt,
   setRateSpan,
-  relocateEventPaths,
-  type EditableLaneKey
-} from '@renderer/utils/sessionEditOps';
-import { basename, indexByBasename } from '@renderer/utils/path';
-import {
   moveTransportBlock,
   trimTransportBlock,
   deleteTransportBlock
-} from '@renderer/utils/clipEditOps';
-import type { Clip } from '@renderer/composables/useSessionTimeline';
-import { TransportBlock } from '@renderer/utils/types';
+} from '@renderer/utils/sessionCore';
+import {
+  TransportBlock,
+  type EditableLaneKey,
+  type Clip,
+  type LanePoint
+} from '@renderer/utils/types';
 
 export type SelectedLane = { deck: string; lane: EditableLaneKey };
 
@@ -87,8 +89,8 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (previous) await previous;
     try {
       await invoke('update_session_events', { path, eventsJson });
-    } catch {
-      // ignored: the next sync or playback attempt surfaces the failure
+    } catch (err) {
+      console.error('[sessionEdit] failed to sync session events to Rust:', err);
     }
   }
 

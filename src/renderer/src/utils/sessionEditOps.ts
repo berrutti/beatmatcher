@@ -1,6 +1,6 @@
 import type { SessionEvent } from '@renderer/stores/session';
+import type { EditableLaneKey, LanePoint } from '@renderer/utils/types';
 import {
-  type LanePoint,
   DEFAULT_GAIN,
   DEFAULT_EQ_DB,
   DEFAULT_FILTER_VALUE,
@@ -13,30 +13,10 @@ import {
   DEFAULT_MASTER_GAIN
 } from '@renderer/stores/mixer';
 import {
-  normalizeGestureSamples as coreNormalizeGestureSamples,
-  decimateSteps as coreDecimateSteps,
   spliceLaneEvents as coreSpliceLaneEvents,
-  filterActiveAt as coreFilterActiveAt,
-  toggleFilterActiveRange as coreToggleFilterActiveRange,
-  deleteFilterActiveSpan as coreDeleteFilterActiveSpan,
-  resizeFilterActiveSpan as coreResizeFilterActiveSpan,
-  moveFilterActiveSpan as coreMoveFilterActiveSpan,
-  nudgeValueAt as coreNudgeValueAt,
-  paintNudgeRange as corePaintNudgeRange,
   deleteNudgeRange as coreDeleteNudgeRange,
-  setRateAt as coreSetRateAt,
-  setRateSpan as coreSetRateSpan,
   relocateEventPaths as coreRelocateEventPaths
 } from '@renderer/utils/sessionCore';
-
-export type EditableLaneKey =
-  | 'gain'
-  | 'eqLow'
-  | 'eqMid'
-  | 'eqHigh'
-  | 'filter'
-  | 'rate'
-  | 'masterGain';
 
 export type LaneSpec = {
   key: EditableLaneKey;
@@ -134,16 +114,6 @@ export function laneSpecFor(
   }
 }
 
-// A drag can scrub back and forth over the same time range; the last value
-// written at each timestamp is the one the user ended on.
-export function normalizeGestureSamples(samples: LanePoint[]): LanePoint[] {
-  return coreNormalizeGestureSamples(samples);
-}
-
-export function decimateSteps(points: LanePoint[], epsilon: number): LanePoint[] {
-  return coreDecimateSteps(points, epsilon);
-}
-
 // Replaces this lane's events inside [t0, t1] with the drawn points and restores
 // the original value at t1, so everything after the gesture sounds unchanged.
 // Returns a new array; the input and its event objects are never mutated.
@@ -156,85 +126,6 @@ export function spliceLaneEvents(
   points: LanePoint[]
 ): SessionEvent[] {
   return coreSpliceLaneEvents(events, spec.key, deck, t0, t1, points, spec.min, spec.max);
-}
-
-export function filterActiveAt(
-  events: SessionEvent[],
-  deck: string,
-  ms: number,
-  inclusive = true
-): boolean {
-  return coreFilterActiveAt(events, deck, ms, inclusive);
-}
-
-// Shift+drag on the filter lane: toggles the filter's on/off state over [t0, t1]
-// (on if it was off entering the range, off if it was on), independent of the
-// knob curve. The original state at t1 is restored, same locality rule as
-// value edits. Returns a new array; the input is never mutated.
-export function toggleFilterActiveRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number
-): SessionEvent[] {
-  return coreToggleFilterActiveRange(events, deck, t0, t1);
-}
-
-export function deleteFilterActiveSpan(
-  events: SessionEvent[],
-  deck: string,
-  startMs: number,
-  endMs: number
-): SessionEvent[] {
-  return coreDeleteFilterActiveSpan(events, deck, startMs, endMs);
-}
-
-export function resizeFilterActiveSpan(
-  events: SessionEvent[],
-  deck: string,
-  startMs: number,
-  endMs: number,
-  edge: 'start' | 'end',
-  newMs: number,
-  durationMs: number
-): SessionEvent[] {
-  return coreResizeFilterActiveSpan(events, deck, startMs, endMs, edge, newMs, durationMs);
-}
-
-export function moveFilterActiveSpan(
-  events: SessionEvent[],
-  deck: string,
-  startMs: number,
-  endMs: number,
-  deltaMs: number,
-  durationMs: number
-): SessionEvent[] {
-  return coreMoveFilterActiveSpan(events, deck, startMs, endMs, deltaMs, durationMs);
-}
-
-export function nudgeValueAt(
-  events: SessionEvent[],
-  deck: string,
-  ms: number,
-  inclusive = true
-): number {
-  return coreNudgeValueAt(events, deck, ms, inclusive);
-}
-
-// Shift+drag on a deck's waveform row paints a nudge over [t0, t1]: top half of
-// the row nudges up (positive percent), bottom half nudges down. The percent is
-// the same nudge sensitivity used by the performance keys, so painted nudges
-// sound identical to performed ones. The recorded value at t1 is restored
-// (normally 0; the recorded percent when the range ends inside an active nudge).
-// Returns a new array; the input is never mutated.
-export function paintNudgeRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number,
-  percent: number
-): SessionEvent[] {
-  return corePaintNudgeRange(events, deck, t0, t1, percent);
 }
 
 // Removes a nudge span: every set_nudge for the deck in [t0, t1], including
@@ -256,29 +147,6 @@ export function deleteNudgeRange(
     !(event.elapsed_ms === t1 && event.percent !== 0);
   if (!events.some(inRange)) return events;
   return coreDeleteNudgeRange(events, deck, t0, t1);
-}
-
-// Inserts one set_playback_rate point at `ms`, holding until the next existing
-// change. The "Set BPM" right-click converts a target BPM to rate before calling.
-export function setRateAt(
-  events: SessionEvent[],
-  deck: string,
-  ms: number,
-  rate: number
-): SessionEvent[] {
-  return coreSetRateAt(events, deck, ms, rate);
-}
-
-// Sets one uniform rate across a whole clip span (restores the pre-edit rate
-// after). The "Set BPM (whole clip)" right-click converts a target BPM to rate.
-export function setRateSpan(
-  events: SessionEvent[],
-  deck: string,
-  startMs: number,
-  endMs: number,
-  rate: number
-): SessionEvent[] {
-  return coreSetRateSpan(events, deck, startMs, endMs, rate);
 }
 
 // Rewrites event track paths after the user relocates missing files. Returns

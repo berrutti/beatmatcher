@@ -2,7 +2,7 @@
   <div class="topstrip">
     <template v-if="appMode.mode === 'performance'">
       <button
-        class="topstrip__rec-btn"
+        class="btn-secondary topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
         :title="mixer.isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
         tabindex="-1"
@@ -11,7 +11,11 @@
         {{ $t('topStrip.rec') }}
       </button>
 
-      <button class="topstrip__deck-count-btn" tabindex="-1" @click="mixer.toggleDeckCount()">
+      <button
+        class="btn-secondary topstrip__deck-count-btn"
+        tabindex="-1"
+        @click="mixer.toggleDeckCount()"
+      >
         {{ mixer.deckCount === 4 ? $t('topStrip.fourDecks') : $t('topStrip.twoDecks') }}
       </button>
 
@@ -134,14 +138,20 @@
         </select>
       </template>
 
-      <button class="topstrip__refresh" tabindex="-1" @click="mixer.loadOutputDevices()">↻</button>
+      <button
+        class="btn-secondary topstrip__refresh"
+        tabindex="-1"
+        @click="mixer.loadOutputDevices()"
+      >
+        ↻
+      </button>
       <span v-if="mixer.deviceError" class="topstrip__error">{{ mixer.deviceError }}</span>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watchEffect, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, useDecksStore, type DeckId } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
@@ -151,12 +161,16 @@ const mixer = useMixerStore();
 const decksStore = useDecksStore();
 const appMode = useAppModeStore();
 
-watchEffect(() => {
-  for (const id of DECKS_DISPOSITION) {
-    const path = decksStore.decks[id].loadedPath;
-    if (path) mixer.markPlayed(path);
+const stopMarkPlayedWatch = watch(
+  () => DECKS_DISPOSITION.map((id) => decksStore.decks[id].loadedPath),
+  (loadedPaths) => {
+    for (const path of loadedPaths) {
+      if (path) mixer.markPlayed(path);
+    }
   }
-});
+);
+
+onUnmounted(stopMarkPlayedWatch);
 
 const activeDecks = computed<DeckId[]>(() =>
   mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
@@ -202,7 +216,6 @@ async function onRecClick() {
     } else {
       await mixer.discardRecording(tempPath);
     }
-    mixer.isRecording = false;
   } else {
     await mixer.startRecording();
   }
@@ -252,8 +265,8 @@ onUnmounted(() => {
     #22c55e 0%,
     #22c55e 65%,
     #facc15 80%,
-    #ef4444 92%,
-    #ef4444 100%
+    var(--color-danger) 92%,
+    var(--color-danger) 100%
   );
   border: 0.5px solid var(--color-border);
   border-radius: 1px;
@@ -296,9 +309,9 @@ onUnmounted(() => {
 }
 
 .topstrip__swarm-btn--active {
-  border-color: #fbbf24;
-  color: #fbbf24;
-  background: color-mix(in srgb, #fbbf24 15%, transparent);
+  border-color: var(--color-accent-amber);
+  color: var(--color-accent-amber);
+  background: color-mix(in srgb, var(--color-accent-amber) 15%, transparent);
   animation: swarm-pulse 1.2s ease-in-out infinite;
 }
 
@@ -321,7 +334,7 @@ onUnmounted(() => {
 }
 
 .topstrip__swarm-deck--on {
-  color: #fbbf24;
+  color: var(--color-accent-amber);
   opacity: 1;
 }
 
@@ -417,8 +430,6 @@ onUnmounted(() => {
 }
 
 .topstrip__rec-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
@@ -430,14 +441,14 @@ onUnmounted(() => {
 }
 
 .topstrip__rec-btn:hover {
-  border-color: #e55;
-  color: #e55;
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .topstrip__rec-btn--active {
-  border-color: #e55;
-  color: #e55;
-  background: color-mix(in srgb, #e55 15%, transparent);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
   animation: rec-pulse 1.2s ease-in-out infinite;
 }
 
@@ -452,8 +463,6 @@ onUnmounted(() => {
 }
 
 .topstrip__deck-count-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
@@ -470,8 +479,6 @@ onUnmounted(() => {
 }
 
 .topstrip__refresh {
-  background: transparent;
-  border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 12px;
@@ -489,7 +496,7 @@ onUnmounted(() => {
 }
 
 .topstrip__error {
-  color: #e55;
+  color: var(--color-danger);
   font-size: 10px;
 }
 </style>

@@ -238,7 +238,7 @@ pub(crate) async fn load_track(
     );
 
     {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         deck_state.samples = Arc::clone(&samples);
         deck_state.channels = channels;
         deck_state.device_sample_rate = device_sample_rate;
@@ -279,7 +279,7 @@ pub(crate) async fn load_track(
         let high_scale = band_normalization_scale(&high_band);
 
         {
-            let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             deck_state.bass_band = Arc::new(bass_band);
             deck_state.mid_band = Arc::new(mid_band);
             deck_state.high_band = Arc::new(high_band);
@@ -317,7 +317,7 @@ pub(crate) fn play(
     from_sec: Option<f64>,
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
-    let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+    let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(sec) = from_sec {
         let pos = sec_to_frame(sec, deck_state.device_sample_rate, deck_state.total_frames);
         deck_state.main_pos = pos;
@@ -339,7 +339,7 @@ pub(crate) fn play(
 pub(crate) fn stop(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
     get_deck(&state, &deck)?
         .lock()
-        .expect("deck mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .is_playing = false;
     Ok(())
 }
@@ -351,7 +351,7 @@ pub(crate) fn press_cue(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (outcome, payload) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         if deck_state.quantize {
             if let Some(bpm) = deck_state.bpm {
                 let sr = deck_state.device_sample_rate as f64;
@@ -388,7 +388,7 @@ pub(crate) fn release_cue(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (was_cueing, payload) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let was = deck_state.is_cueing;
         deck_state.release_cue();
         (was, DeckSyncPayload::from_deck(&deck_state, false))
@@ -409,7 +409,7 @@ pub(crate) fn toggle_play(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let payload = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         deck_state.toggle_play();
         DeckSyncPayload::from_deck(&deck_state, false)
     };
@@ -427,7 +427,7 @@ pub(crate) fn set_cue_and_stop(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let was = deck_state.is_playing;
         deck_state.set_cue_and_stop();
         (was, DeckSyncPayload::from_deck(&deck_state, false))
@@ -448,7 +448,7 @@ pub(crate) fn stop_at_cue(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let was = deck_state.is_playing;
         deck_state.stop_at_cue();
         (was, DeckSyncPayload::from_deck(&deck_state, false))
@@ -466,7 +466,7 @@ pub(crate) fn stop_at_cue(
 pub(crate) fn eject_track(state: tauri::State<'_, AppState>, deck: String) -> Result<(), String> {
     get_deck(&state, &deck)?
         .lock()
-        .expect("deck mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .eject();
     state.log("eject_track", serde_json::json!({ "deck": deck }));
     Ok(())
@@ -480,7 +480,7 @@ pub(crate) fn seek(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let payload = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let pos = sec_to_frame(sec, deck_state.device_sample_rate, deck_state.total_frames);
         log::info!("seek [{}]: {:.3}s -> frame {:.0}", deck, sec, pos);
         deck_state.main_pos = pos;
@@ -502,7 +502,7 @@ pub(crate) fn set_loop_region(
     end_sec: f64,
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
-    let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+    let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
     let sr = deck_state.device_sample_rate as f64;
     deck_state.cue_point = start_sec * sr;
     deck_state.loop_end = end_sec * sr;
@@ -517,7 +517,7 @@ pub(crate) fn set_loop_active(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let payload = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         deck_state.loop_active = active;
         DeckSyncPayload::from_deck(&deck_state, false)
     };
@@ -536,7 +536,7 @@ pub(crate) fn set_beat_grid(
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
     {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         deck_state.bpm = Some(bpm);
         deck_state.beat_offset_frames = beat_offset_sec * deck_state.device_sample_rate as f64;
     }
@@ -554,7 +554,7 @@ pub(crate) fn set_loop_in(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (payload, cue_sec, quantize) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let sec = loop_in_core(&mut deck_state)?;
         let payload = DeckSyncPayload::from_deck(&deck_state, true);
         (payload, sec, deck_state.quantize)
@@ -573,7 +573,7 @@ pub(crate) fn set_loop_out(
 ) -> Result<Option<LoopOutResult>, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (result, quantize) = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let quantize = deck_state.quantize;
         (loop_out_core(&mut deck_state)?, quantize)
     };
@@ -598,7 +598,7 @@ pub(crate) fn clear_loop_region(
     deck: String,
 ) -> Result<(), String> {
     let deck_arc = get_deck(&state, &deck)?;
-    let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+    let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
     deck_state.loop_active = false;
     deck_state.loop_end = 0.0;
     Ok(())
@@ -612,7 +612,7 @@ pub(crate) fn set_volume(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .set_gain(gain);
     state.log(
         "set_volume",
@@ -631,7 +631,7 @@ pub(crate) fn set_deck_muted(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .set_muted(muted);
     Ok(())
 }
@@ -644,7 +644,7 @@ pub(crate) fn set_playback_rate(
 ) -> Result<(), String> {
     get_deck(&state, &deck)?
         .lock()
-        .expect("deck mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .playback_rate = rate.max(0.1);
     state.log(
         "set_playback_rate",
@@ -661,7 +661,7 @@ pub(crate) fn set_nudge(
 ) -> Result<NudgeResult, String> {
     let result = {
         let deck_arc = get_deck(&state, &deck)?;
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         deck_state.nudge_factor = 1.0 + percent / 100.0;
         NudgeResult {
             position_sec: deck_state.position_sec(),
@@ -683,7 +683,7 @@ pub(crate) fn set_quantize(
 ) -> Result<(), String> {
     get_deck(&state, &deck)?
         .lock()
-        .expect("deck mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .quantize = quantize;
     Ok(())
 }
@@ -697,7 +697,7 @@ pub(crate) fn set_eq(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .set_eq_band(&band, db);
     state.log(
         "set_eq",
@@ -714,7 +714,7 @@ pub(crate) fn set_filter(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .set_filter(value);
     state.log(
         "set_filter",
@@ -731,7 +731,7 @@ pub(crate) fn set_filter_active(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .set_filter_active(active);
     state.log(
         "set_filter_active",
@@ -753,7 +753,7 @@ pub(crate) async fn get_spectral_waveform_region(
 ) -> Result<tauri::ipc::Response, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let (samples, channels, bass, mid, high, bass_scale, mid_scale, high_scale, device_sr) = {
-        let deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         (
             Arc::clone(&deck_state.samples),
             deck_state.channels,
@@ -774,10 +774,7 @@ pub(crate) async fn get_spectral_waveform_region(
     })
     .await
     .map_err(|e| e.to_string())?;
-    // Reinterpret the f32 slice as bytes without an extra allocation.
-    let bytes = unsafe {
-        std::slice::from_raw_parts(floats.as_ptr() as *const u8, floats.len() * 4).to_vec()
-    };
+    let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -788,7 +785,7 @@ pub(crate) fn set_reloop(
 ) -> Result<DeckSyncPayload, String> {
     let deck_arc = get_deck(&state, &deck)?;
     let payload = {
-        let mut deck_state = deck_arc.lock().expect("deck mutex poisoned");
+        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         if deck_state.loop_end > deck_state.cue_point {
             deck_state.main_pos = deck_state.cue_point;
             deck_state.cue_pos = deck_state.cue_point;
@@ -810,7 +807,7 @@ pub(crate) fn set_cue_active(
 ) -> Result<(), String> {
     get_strip(&state, &deck)?
         .lock()
-        .expect("strip mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .cue_active = active;
     state.log(
         "set_cue_active",
@@ -877,7 +874,7 @@ pub(crate) fn start_recording(
     record_session: bool,
 ) -> Result<(), String> {
     {
-        let mut session = state.session.lock().expect("session mutex poisoned");
+        let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
         *session = if record_session {
             Some(crate::SessionLogger::new())
         } else {
@@ -897,7 +894,7 @@ pub(crate) fn start_recording(
                 let Some(arc) = state.audio.deck(deck_id) else {
                     continue;
                 };
-                let deck_state = arc.lock().expect("deck mutex poisoned");
+                let deck_state = arc.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(ref path) = deck_state.loaded_path else {
                     continue;
                 };
@@ -924,7 +921,7 @@ pub(crate) fn start_recording(
 #[tauri::command]
 pub(crate) async fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
     {
-        let mut session = state.session.lock().expect("session mutex poisoned");
+        let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(logger) = session.as_mut() {
             logger.log("recording_stop", serde_json::json!({}));
             logger.stop();
@@ -955,12 +952,14 @@ pub(crate) fn save_recording(
     if std::fs::rename(&src, &dest).is_err() {
         // rename fails across filesystems; fall back to copy then delete
         std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
-        std::fs::remove_file(&src).ok();
+        if let Err(e) = std::fs::remove_file(&src) {
+            eprintln!("save_recording: failed to remove source file {src}: {e}");
+        }
     }
     if let Some(log) = state
         .session
         .lock()
-        .expect("session mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .as_mut()
         .and_then(|l| l.take_pending())
     {
@@ -971,7 +970,9 @@ pub(crate) fn save_recording(
             .or_else(|| dest.strip_suffix(".FLAC"))
             .unwrap_or(&dest);
         let log_dest = format!("{}.bms", stem);
-        std::fs::write(&log_dest, log.as_bytes()).ok();
+        if let Err(e) = std::fs::write(&log_dest, log.as_bytes()) {
+            eprintln!("save_recording: failed to write session log {log_dest}: {e}");
+        }
     }
     Ok(())
 }
@@ -984,7 +985,7 @@ pub(crate) fn discard_recording(
     state
         .session
         .lock()
-        .expect("session mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .as_mut()
         .and_then(|l| l.take_pending());
     std::fs::remove_file(&path).map_err(|e| e.to_string())
@@ -996,11 +997,13 @@ pub(crate) fn save_bms_only(
     src: String,
     dest: String,
 ) -> Result<(), String> {
-    std::fs::remove_file(&src).ok();
+    if let Err(e) = std::fs::remove_file(&src) {
+        eprintln!("save_bms_only: failed to remove source file {src}: {e}");
+    }
     if let Some(log) = state
         .session
         .lock()
-        .expect("session mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .as_mut()
         .and_then(|l| l.take_pending())
     {
@@ -1020,7 +1023,7 @@ pub(crate) async fn render_session_to_file(
     let cached = state
         .session_files
         .lock()
-        .expect("session files mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&session_path)
         .cloned();
     tokio::task::spawn_blocking(move || {
@@ -1189,7 +1192,7 @@ pub(crate) async fn get_track_amplitude_waveform(
         let cache = state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         cache
             .get(&path)
             .map(|(samples, channels)| (samples.clone(), *channels))
@@ -1235,7 +1238,7 @@ pub(crate) async fn get_track_amplitude_region(
         let cache = state
             .session_track_cache
             .lock()
-            .expect("track cache mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         cache
             .get(&path)
             .map(|(samples, channels)| (samples.clone(), *channels))
