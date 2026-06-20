@@ -5,11 +5,63 @@ on:
     branches: [main]
 
 jobs:
-  build-mac:
+  # One job creates the GitHub release up front so the platform builds only ever
+  # upload to it. Previously every platform job let tauri-action create the
+  # release, which raced: whichever finished first while no release existed tried
+  # to create one, and the non-mac jobs had no releaseName so creation failed.
+  create-release:
     if: "startsWith(github.event.head_commit.message, 'chore: release')"
     permissions:
       contents: write
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version
+        run: echo "PACKAGE_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      - name: Create release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = process.env.PACKAGE_VERSION;
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `v${version}`,
+              body: [
+                '## Install',
+                '',
+                '| Platform | Download |',
+                '|----------|----------|',
+                '| macOS | `.dmg` below |',
+                '| Windows | `.exe` below |',
+                '| Linux (experimental) | `.AppImage` or `.deb` below |',
+                '',
+                '### macOS first launch',
+                'The app is not code-signed. After dragging it to Applications, run once in Terminal:',
+                '```bash',
+                'xattr -cr /Applications/Beatmatcher.app',
+                '```',
+              ].join('\n'),
+              draft: false,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
 
@@ -22,53 +74,14 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libasound2-dev libdbus-1-dev
 
-      - run: yarn install --frozen-lockfile
-
-      - run: yarn build:wasm
-
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: v__VERSION__
-          releaseBody: |
-            ## Install
-
-            | Platform | Download |
-            |----------|----------|
-            | macOS | `.dmg` below |
-            | Windows | `.exe` below |
-            | Linux (experimental) | `.AppImage` or `.deb` below |
-
-            ### macOS first launch
-            The app is not code-signed. After dragging it to Applications, run once in Terminal:
-            ```bash
-            xattr -cr /Applications/Beatmatcher.app
-            ```
-          releaseDraft: false
-          prerelease: false
-
-  build-win:
-    if: "startsWith(github.event.head_commit.message, 'chore: release')"
-    permissions:
-      contents: write
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: yarn
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
         shell: bash
 
       - run: yarn install --frozen-lockfile
@@ -79,37 +92,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-
-  build-linux:
-    if: "startsWith(github.event.head_commit.message, 'chore: release')"
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: yarn
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libasound2-dev libdbus-1-dev
-
-      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - run: yarn install --frozen-lockfile
-
-      - run: yarn build:wasm
-
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
+          releaseId: ${{ needs.create-release.outputs.release_id }}

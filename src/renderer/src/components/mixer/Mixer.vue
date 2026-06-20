@@ -91,6 +91,7 @@
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
           :disabled="mixer.swarmMode"
+          :title="$t('mixer.cueHint')"
           tabindex="-1"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
@@ -348,45 +349,40 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 }
 
 .mixer__channel--swarm-selected {
-  background: color-mix(in srgb, #fbbf24 8%, transparent);
-  border-color: transparent;
   position: relative;
   z-index: 1;
 }
 
+/* The whole highlight (fill + outline) lives on ::before, sitting behind the
+   channel's controls (z-index: -1) so a right-connected channel can stretch it
+   across the inter-channel gap to its neighbor without tinting the sliders. */
 .mixer__channel--swarm-selected::before {
   content: '';
   position: absolute;
   inset: 0;
+  z-index: -1;
+  background: color-mix(in srgb, #fbbf24 8%, transparent);
   border: 1px solid color-mix(in srgb, #fbbf24 40%, transparent);
   border-radius: 4px;
   pointer-events: none;
 }
 
-.mixer__channel--swarm-no-left {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-}
-
-.mixer__channel--swarm-no-left::before {
-  border-left: none;
-  border-radius: 0 4px 4px 0;
-}
-
-.mixer__channel--swarm-no-right {
+/* Adjacent selected channels read as one rounded group. The channel whose
+   right neighbor is also selected stretches its highlight across the column gap
+   (0.4em, see .mixer__channels) to meet that neighbor and drops the touching
+   border + corners; the left neighbor only drops its touching border + corners,
+   so the two halves join seamlessly with rounded ends. */
+.mixer__channel--swarm-no-right::before {
+  right: -0.4em;
+  border-right: none;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
-.mixer__channel--swarm-no-right::before {
-  border-right: none;
-  border-radius: 4px 0 0 4px;
-}
-
-.mixer__channel--swarm-no-left.mixer__channel--swarm-no-right::before {
+.mixer__channel--swarm-no-left::before {
   border-left: none;
-  border-right: none;
-  border-radius: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .mixer__channel-label {

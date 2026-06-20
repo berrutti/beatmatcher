@@ -15,6 +15,8 @@ import {
   moveFilterActiveSpan,
   paintNudgeRange,
   deleteNudgeRange,
+  setRateAt,
+  setRateSpan,
   relocateEventPaths,
   type EditableLaneKey
 } from '@renderer/utils/sessionEditOps';
@@ -188,6 +190,32 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
   }
 
+  // Right-click "Set BPM from here": insert one rate change at `atMs`. The
+  // caller converts the entered BPM to rate (target / clip track bpm); the new
+  // value holds until the next existing change, splitting the clip into a new
+  // wave segment (the timeline already stretches the waveform per segment).
+  async function commitSetBpm(deck: string, atMs: number, rate: number): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(setRateAt(session.events, deck, atMs, rate));
+  }
+
+  // Right-click "Set BPM (whole clip)": one uniform rate over [startMs, endMs],
+  // dropping any rate changes inside the clip and restoring the prior rate after,
+  // so the clip plays at one tempo without adding a new region.
+  async function commitSetClipBpm(
+    deck: string,
+    startMs: number,
+    endMs: number,
+    rate: number
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(setRateSpan(session.events, deck, startMs, endMs, rate));
+  }
+
   async function deleteNudge(deck: string, t0: number, t1: number): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;
@@ -322,6 +350,8 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     commitFilterActiveToggle,
     commitGesture,
     commitNudgePaint,
+    commitSetBpm,
+    commitSetClipBpm,
     deleteFilterSpan,
     deleteNudge,
     dirty,

@@ -82,6 +82,9 @@ const BEAT_LINE_W = 1;
 // Vertical breathing room above and below clip bands, loaded spans, and clip
 // selection boxes within the waveform strip.
 const CLIP_BAND_INSET_Y = 4;
+// A region narrower than this can't fit a "138.0" BPM label legibly, so it's
+// skipped until the user zooms in enough to widen it.
+const BPM_LABEL_MIN_PX = 30;
 const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
 const NUDGE_LINE_W = 2;
@@ -285,6 +288,41 @@ export function drawClipBeatGrid(
     }
   }
 
+  ctx.restore();
+}
+
+// A BPM number at the start of each constant-rate region (wave segment), drawn
+// like the track-name label. The shown BPM is the track grid bpm scaled by the
+// segment's effective rate (track-sec per wall-sec), so each region the user
+// pitched/nudged reads its actual tempo. Regions too narrow to fit the text are
+// skipped, so rapid changes only reveal their numbers once zoomed in.
+export function drawClipBpmLabels(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  rowY: number,
+  rowH: number,
+  msToX: (ms: number) => number
+): void {
+  if (!clip.bpm || clip.bpm <= 0) return;
+  const clipY = rowY + CLIP_BAND_INSET_Y;
+  const clipHeight = rowH - 2 * CLIP_BAND_INSET_Y;
+  const clipX0 = msToX(clip.sessionStartMs);
+  const clipX1 = msToX(clip.sessionEndMs);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(clipX0, clipY, clipX1 - clipX0, clipHeight);
+  ctx.clip();
+  for (const seg of clipWaveSegments(clip)) {
+    const segX0 = msToX(seg.wallStartMs);
+    const segWidth = msToX(seg.wallEndMs) - segX0;
+    if (segWidth < BPM_LABEL_MIN_PX) continue;
+    const segWallSec = (seg.wallEndMs - seg.wallStartMs) / 1000;
+    const trackSpan = seg.trackEndSec - seg.trackStartSec;
+    if (segWallSec <= 0 || trackSpan <= 0) continue;
+    const bpm = clip.bpm * (trackSpan / segWallSec);
+    const labelX = Math.max(LABEL_W + 3, segX0 + 3);
+    drawOutlinedLabel(ctx, bpm.toFixed(1), labelX, clipY + 10);
+  }
   ctx.restore();
 }
 

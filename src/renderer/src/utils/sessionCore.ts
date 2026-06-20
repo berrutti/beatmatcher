@@ -25,6 +25,8 @@ import init, {
   nudgeValueAt as wasmNudgeValueAt,
   paintNudgeRange as wasmPaintNudge,
   deleteNudgeRange as wasmDeleteNudge,
+  setRateAt as wasmSetRateAt,
+  setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
@@ -284,6 +286,25 @@ export function deleteNudgeRange(
   t1: number
 ): SessionEvent[] {
   return parse(wasmDeleteNudge(JSON.stringify(events), deck, t0, t1));
+}
+
+export function setRateAt(
+  events: SessionEvent[],
+  deck: string,
+  ms: number,
+  rate: number
+): SessionEvent[] {
+  return parse(wasmSetRateAt(JSON.stringify(events), deck, ms, rate));
+}
+
+export function setRateSpan(
+  events: SessionEvent[],
+  deck: string,
+  startMs: number,
+  endMs: number,
+  rate: number
+): SessionEvent[] {
+  return parse(wasmSetRateSpan(JSON.stringify(events), deck, startMs, endMs, rate));
 }
 
 export function relocateEventPaths(

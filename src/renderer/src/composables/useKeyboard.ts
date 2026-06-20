@@ -18,6 +18,9 @@ const DIGIT_DECK: Record<string, DeckId> = {
   Digit4: 'D'
 };
 
+// While in swarm mode, swiping up/down moves the selected faders.
+const SWARM_SWIPE_SENSITIVITY = 0.005;
+
 export function useKeyboard() {
   const store = useDecksStore();
   const mixer = useMixerStore();
@@ -25,6 +28,13 @@ export function useKeyboard() {
   const settings = useSettingsStore();
   const appMode = useAppModeStore();
   const sessionEdit = useSessionEditStore();
+
+  // Space acts as a held modifier (Space+deck key = CUE) rather than arming swarm.
+  const spaceHeld = ref(false);
+
+  function anySwarmSelected(): boolean {
+    return (Object.keys(mixer.swarmSelected) as DeckId[]).some((k) => mixer.swarmSelected[k]);
+  }
 
   function getDeckCommandFromKey(key: string): DeckCommand {
     for (const [deckId, bindings] of Object.entries(settings.keybindings) as [
@@ -121,20 +131,23 @@ export function useKeyboard() {
 
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
+    // Space is now just a modifier: while it's held, a deck key toggles that
+    // channel's CUE; on its own a deck key selects it into the swarm.
     if (e.code === 'Space') {
       e.preventDefault();
-      mixer.setSwarmMode(true);
+      spaceHeld.value = true;
       return;
     }
 
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
-      if (mixer.swarmMode) {
-        mixer.setSwarmChannel(digitDeck, true);
+      if (spaceHeld.value) {
+        mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
       } else if (e.shiftKey) {
         mixer.toggleFilter(digitDeck);
       } else {
-        mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
+        mixer.setSwarmMode(true);
+        mixer.setSwarmChannel(digitDeck, true);
       }
       return;
     }
@@ -156,23 +169,25 @@ export function useKeyboard() {
       return;
     }
 
-    // Releasing Space always clears swarm mode, even if the app mode changed
-    // or focus moved to a text input while Space was held, so swarmMode never
-    // gets stuck on.
     if (e.code === 'Space') {
-      mixer.setSwarmMode(false);
+      spaceHeld.value = false;
+      return;
+    }
+
+    // Releasing a deck key always deselects it from the swarm, even if the app
+    // mode changed or focus moved to a text input while it was held, so swarm
+    // selection never gets stuck on. (A key that toggled CUE leaves swarmSelected
+    // untouched, so this is a no-op for it.)
+    const swarmDeck = DIGIT_DECK[e.code];
+    if (swarmDeck) {
+      if (mixer.swarmSelected[swarmDeck]) {
+        mixer.setSwarmChannel(swarmDeck, false);
+        if (!anySwarmSelected()) mixer.setSwarmMode(false);
+      }
       return;
     }
 
     if (appMode.mode !== 'performance' || isTyping(e)) return;
-
-    if (mixer.swarmMode) {
-      const digitDeck = DIGIT_DECK[e.code];
-      if (digitDeck) {
-        mixer.setSwarmChannel(digitDeck, false);
-        return;
-      }
-    }
 
     const deckCommand = getDeckCommandFromKey(resolveKey(e));
     if (!deckCommand) return;
@@ -192,13 +207,24 @@ export function useKeyboard() {
     }
   }
 
+  function onWheel(e: WheelEvent) {
+    if (!mixer.swarmMode) return;
+    e.preventDefault();
+    const delta = e.deltaY * SWARM_SWIPE_SENSITIVITY;
+    for (const deckId of Object.keys(mixer.swarmSelected) as DeckId[]) {
+      if (mixer.swarmSelected[deckId]) mixer.setVolume(deckId, mixer.volume[deckId] + delta);
+    }
+  }
+
   onMounted(() => {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('wheel', onWheel, { passive: false });
   });
 
   onUnmounted(() => {
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('wheel', onWheel);
   });
 }

@@ -21,7 +21,7 @@
     "rec": "REC",
     "fourDecks": "4 DECKS",
     "twoDecks": "2 DECKS",
-    "swarmHint": "Hold Spacebar",
+    "swarmHint": "Hold number keys",
     "swarm": "SWARM",
     "vol": "VOL",
     "master": "MASTER",
@@ -181,7 +181,8 @@
     "noTrackLoaded": "No track loaded"
   },
   "mixer": {
-    "cue": "CUE"
+    "cue": "CUE",
+    "cueHint": "Toggle CUE: Space + number key"
   },
   "performance": {
     "collection": "COLLECTION"
@@ -210,6 +211,8 @@
     "locate": "CHOOSE FOLDER",
     "deleteNudge": "Delete nudge",
     "deleteFilterRegion": "Delete filter region",
+    "setClipBpm": "Set BPM (whole clip)…",
+    "setBpmFromHere": "Set BPM from here…",
     "mute": "Mute",
     "solo": "Solo",
     "lanesMenu": "Lanes"

@@ -13,7 +13,6 @@ import type { Hit } from '@renderer/utils/timelineEngine';
 
 export const HIT_PRECEDENCE: readonly string[] = [
   // Always-on-top chrome.
-  'scrollbar',
   'overview',
   // Label-column control.
   'laneDropdown',

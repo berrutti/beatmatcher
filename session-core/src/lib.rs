@@ -17,8 +17,8 @@ pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
-    paint_nudge_range, relocate_event_paths, resize_filter_active_span, splice_lane_events,
-    toggle_filter_active_range,
+    paint_nudge_range, relocate_event_paths, resize_filter_active_span, set_rate_at, set_rate_span,
+    splice_lane_events, toggle_filter_active_range,
     EditableLane, LaneSpec, MIN_GESTURE_MS,
 };
 pub use sim::{
@@ -217,6 +217,33 @@ mod wasm {
         events_to_json(crate::splice_lane_events(
             &events, &spec, deck, t0, t1, &points,
         ))
+    }
+
+    /// Insert (or replace) a single set_playback_rate point for `deck` at `ms`.
+    /// The new rate holds until the next existing change. Returns events JSON.
+    #[wasm_bindgen(js_name = setRateAt)]
+    pub fn set_rate_at(
+        events_json: &str,
+        deck: &str,
+        ms: f64,
+        rate: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::set_rate_at(&events, deck, ms, rate))
+    }
+
+    /// Set one uniform rate over [start_ms, end_ms], restoring the pre-edit rate
+    /// after. Backs "Set BPM (whole clip)". Returns events JSON.
+    #[wasm_bindgen(js_name = setRateSpan)]
+    pub fn set_rate_span(
+        events_json: &str,
+        deck: &str,
+        start_ms: f64,
+        end_ms: f64,
+        rate: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        events_to_json(crate::set_rate_span(&events, deck, start_ms, end_ms, rate))
     }
 
     /// Filter on/off state for `deck` at `ms`.

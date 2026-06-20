@@ -1,7 +1,7 @@
 // The semantic vocabulary the timeline emits. Items + gestures never touch the
 // stores; they produce one of these intents and the controller reacts (calls an
 // edit op, moves the camera, updates a selection). This is the seam between "what
-// the user did" and "what the app does about it" — the parent-reacts model.
+// the user did" and "what the app does about it". The parent-reacts model.
 
 import type { ViewWindow } from '@renderer/utils/timelineView';
 import type {
@@ -12,11 +12,21 @@ import type {
 import type { EditableLaneKey } from '@renderer/utils/sessionEditOps';
 import type { TransportBlock } from '@renderer/utils/types';
 
+// Context for the "Set BPM" menu items: the clicked point, the clip span it
+// falls in, the track's grid bpm (to convert an entered BPM to a rate), and the
+// tempo currently playing there (to prefill the dialog).
+export type BpmContext = {
+  atMs: number;
+  clipStartMs: number;
+  clipEndMs: number;
+  trackBpm: number;
+  currentBpm: number;
+};
+
 export type Intent =
   // transport / camera
   | { type: 'seek'; ms: number }
   | { type: 'view.set'; view: ViewWindow }
-  | { type: 'scroll.set'; scrollY: number }
   // lane chrome
   | { type: 'lane.openDropdown'; deck: string; clientX: number; clientY: number }
   | { type: 'lane.resize'; height: number }
@@ -56,7 +66,14 @@ export type Intent =
   | { type: 'filterRegion.delete'; deck: string; span: FilterActiveSpan }
   | { type: 'filterRegion.move'; deck: string; span: FilterActiveSpan; deltaMs: number }
   // context menu
-  | { type: 'menu.deck'; deck: string; clientX: number; clientY: number; nudge: NudgeSpan | null }
+  | {
+      type: 'menu.deck';
+      deck: string;
+      clientX: number;
+      clientY: number;
+      nudge: NudgeSpan | null;
+      bpm: BpmContext | null;
+    }
   | {
       type: 'menu.filterRegion';
       deck: string;

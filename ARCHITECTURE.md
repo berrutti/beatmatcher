@@ -217,7 +217,7 @@ flowchart TD
 
 ## Shared session-core crate (Rust + WASM)
 
-The session event model, replay simulation, timeline (clips/lanes), and edit operations (clip move/trim, lane automation) live in `session-core`, a dependency-free Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This removes the previous split where the frontend's TypeScript reimplemented the same simulation/edit logic as the Rust engine and could silently drift out of sync.
+The session event model, replay simulation, timeline (clips/lanes), and edit operations (clip move/trim/delete, lane automation, filter-region and nudge range edits) live in `session-core`, a dependency-free Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This removes the previous split where the frontend's TypeScript reimplemented the same simulation/edit logic as the Rust engine and could silently drift out of sync.
 
 ```mermaid
 graph TD
@@ -250,12 +250,12 @@ Position simulation rule: any event that changes playback speed or position (`pl
 
 ## Session editing
 
-Sessions are edited in memory. The frontend's parsed event array is the source of truth; every edit produces a new array (reference equality drives the dirty flag and undo/redo) and is pushed to Rust via `update_session_events`, which rebuilds the snapshot state machine. Saving serializes from the frontend's raw JSON so unknown fields survive a round-trip; the .bms on disk is untouched until SAVE.
+Sessions are edited in memory. The frontend's parsed event array is the source of truth; every edit produces a new array (reference equality drives the dirty flag and undo/redo) and is pushed to Rust via `update_session_events`, which rebuilds the snapshot state machine. Saving serializes from the frontend's raw JSON so unknown fields survive a round-trip; the .bms on disk is untouched until the changes are saved.
 
-Two kinds of edits exist, both implemented as pure functions over the event array in `session-core` (Rust, compiled to WASM) and called from the frontend via `sessionEditOps.ts`/`clipEditOps.ts`, which are now thin shims over `sessionCore.ts`:
+Two kinds of edits exist, both implemented as pure functions over the event array in `session-core` (Rust, compiled to WASM) and called from the frontend via `sessionEditOps.ts`/`clipEditOps.ts`.
 
-- **Automation lane edits** (`lane_edit.rs`): drawing on a lane splices new `set_*` events into the drawn range and restores the original value at the range end.
-- **Clip edits** (`clip_edit.rs`): moving or trimming a play segment rewrites deck-transport events. A moved block is deleted from its old position and re-synthesized as a self-contained `play {sec}` … `stop` pair (loops get `loop_out`/`exit_loop` around it). Every synthesized value comes from `buildClips` output — the rendered truth of what the listener heard — so rewriting one block's boundaries can never change a neighboring clip's audio. Automation events stay at wall time.
+- **Automation lane edits** (`lane_edit.rs`): drawing on a lane splices new `set_*` events into the drawn range and restores the original value at the range end. The same range-paint primitive backs filter-region edits (toggle/resize/move/delete an active span) and nudge painting/deletion: each paint replaces its span with one value, then restores whatever the value was at the release point. Right-clicking a clip's waveform also sets its tempo by writing `set_playback_rate` directly: `set_rate_at` inserts one rate change at the click (held until the next change) and `set_rate_span` makes a whole clip one tempo and restores the prior rate after it, both converting the entered BPM via the clip's recorded grid bpm.
+- **Clip edits** (`clip_edit.rs`): moving, trimming, or deleting a play segment rewrites deck-transport events. A moved block is deleted from its old position and re-synthesized as a self-contained `play {sec}` … `stop` pair (loops get `loop_out`/`exit_loop` around it); deleting a block drops its transport events and, when nothing else played from its `load_track`, it drops that orphaned load too. Every synthesized value comes from `buildClips` output, so rewriting one block's boundaries can never change a neighboring clip's audio. Automation events stay at wall time.
 
 On the Rust side, `session-core/src/event.rs` parses each raw event into the closed `SessionCommand` enum. The three interpreters (scrub simulation, live scheduler, offline renderer) match on it exhaustively with no catch-all, so adding an event type fails compilation until each interpreter decides its behavior.
 

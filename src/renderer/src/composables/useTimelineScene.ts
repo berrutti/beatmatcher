@@ -29,7 +29,6 @@ import {
   masterItem,
   rowDividersItem,
   playheadItem,
-  scrollbarItem,
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
@@ -63,8 +62,6 @@ export type SceneInput = {
   mutedFor: (deck: string) => boolean;
   clipSelection: ClipSelectionRef | null;
   filterSelection: { deck: string; startMs: number; endMs: number } | null;
-  scrollY: number;
-  maxScrollY: number;
   // Active gesture/selection previews, drawn on top of the rows.
   overlays?: SceneItem[];
 };
@@ -140,9 +137,6 @@ export function buildScene(input: SceneInput): SceneResult {
   if (input.overlays) items.push(...input.overlays);
 
   items.push(rowDividersItem(rows));
-
-  const scrollbar = scrollbarItem(input.scrollY, input.maxScrollY);
-  if (scrollbar) items.push(scrollbar);
 
   items.push(
     overviewItem(

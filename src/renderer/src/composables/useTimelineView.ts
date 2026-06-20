@@ -113,15 +113,6 @@ export function useTimelineView(durationMs: () => number) {
     scrollY.value = Math.min(maxScrollY, Math.max(0, scrollY.value));
   }
 
-  function scrollByPixels(dy: number): void {
-    if (maxScrollY <= 0) return;
-    scrollY.value = Math.min(maxScrollY, Math.max(0, scrollY.value + dy));
-  }
-
-  function scrollToFraction(frac: number): void {
-    scrollY.value = Math.min(maxScrollY, Math.max(0, frac * maxScrollY));
-  }
-
   return {
     viewStartMs,
     viewDurationMs,
@@ -135,8 +126,6 @@ export function useTimelineView(durationMs: () => number) {
     panByMsDelta,
     followPlayhead,
     setContentMetrics,
-    scrollByPixels,
-    scrollToFraction,
     maxScrollY: () => maxScrollY
   };
 }
