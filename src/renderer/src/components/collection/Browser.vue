@@ -740,6 +740,11 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
       active = true;
       store.startDrag(path);
       document.body.style.cursor = 'grabbing';
+      // The search input can be left focused from an earlier click; without
+      // blurring it here, keyboard shortcuts typed during/after the drag go
+      // into the search box instead of controlling decks.
+      const focused = document.activeElement;
+      if (focused instanceof HTMLInputElement) focused.blur();
     }
   }
 
@@ -1013,7 +1018,7 @@ async function openFolderDialog() {
 }
 
 .collection__item-tag--error {
-  color: #ef4444;
+  color: var(--color-danger);
   opacity: 1;
 }
 

@@ -181,6 +181,7 @@ function ensureCachedFromDense(): boolean {
 let isFetching = false;
 let pendingFetch = false;
 let fetchDebounceTimer = 0;
+let isUnmounted = false;
 
 async function doFetchOnDemand() {
   if (!props.trackData) return;
@@ -220,6 +221,7 @@ async function doFetchOnDemand() {
 }
 
 function ensurePeaks() {
+  if (isUnmounted) return;
   if (ensureCachedFromDense()) return;
   if (cacheCoversView()) return;
   if (props.denseSpectralRate <= 0) return;
@@ -576,6 +578,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  isUnmounted = true;
   resizeObserver?.disconnect();
   cancelAnimationFrame(rafId);
   clearTimeout(fetchDebounceTimer);

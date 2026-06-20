@@ -1,4 +1,4 @@
-import type { Clip } from '@renderer/composables/useSessionTimeline';
+import type { Clip } from '@renderer/utils/types';
 import type { DeckId } from '@renderer/stores/decks';
 import { ROW_H, type LaneKey, type RowLayout, type SublaneLayout } from './timelineDraw';
 

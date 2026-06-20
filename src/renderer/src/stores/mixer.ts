@@ -228,7 +228,9 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function stopRecording(): Promise<string> {
-    return invoke<string>('stop_recording');
+    const tempPath = await invoke<string>('stop_recording');
+    isRecording.value = false;
+    return tempPath;
   }
 
   async function pickSavePath(): Promise<string | null> {

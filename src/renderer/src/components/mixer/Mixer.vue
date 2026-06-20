@@ -361,8 +361,8 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: color-mix(in srgb, #fbbf24 8%, transparent);
-  border: 1px solid color-mix(in srgb, #fbbf24 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent-amber) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent-amber) 40%, transparent);
   border-radius: 4px;
   pointer-events: none;
 }
@@ -566,8 +566,8 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
     #22c55e 0%,
     #22c55e 65%,
     #facc15 80%,
-    #ef4444 92%,
-    #ef4444 100%
+    var(--color-danger) 92%,
+    var(--color-danger) 100%
   );
   border-radius: 2px;
   position: relative;

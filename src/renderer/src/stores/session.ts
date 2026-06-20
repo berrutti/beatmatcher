@@ -99,8 +99,8 @@ export const useSessionStore = defineStore('session', () => {
       // as the detail too so the track renders before any zoom-in fetch.
       map.set(path, prev ? { ...prev, base } : { ...base, base });
       waveforms.value = map;
-    } catch {
-      // ignore fetch failures
+    } catch (err) {
+      console.error('[session] failed to fetch base waveform region:', err);
     } finally {
       pendingBasePaths.delete(path);
     }
@@ -127,8 +127,8 @@ export const useSessionStore = defineStore('session', () => {
       // Replace the detail region but keep the coarse base for fallback.
       map.set(path, { ...region, base: prev?.base });
       waveforms.value = map;
-    } catch {
-      // ignore fetch failures
+    } catch (err) {
+      console.error('[session] failed to fetch waveform region:', err);
     } finally {
       pendingWaveformPaths.delete(path);
     }

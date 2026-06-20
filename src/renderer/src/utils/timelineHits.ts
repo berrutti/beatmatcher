@@ -11,7 +11,7 @@
 
 import type { Hit } from '@renderer/utils/timelineEngine';
 
-export const HIT_PRECEDENCE: readonly string[] = [
+const HIT_PRECEDENCE: readonly string[] = [
   // Always-on-top chrome.
   'overview',
   // Label-column control.

@@ -25,23 +25,21 @@ import {
   resizeRightEdge
 } from '@renderer/utils/timelineView';
 import { ghostSpan, clipGestureDeltaSec } from '@renderer/utils/timelineLayout';
-import {
-  laneSpecFor,
-  formatLaneValue,
-  filterActiveAt,
-  type EditableLaneKey
-} from '@renderer/utils/sessionEditOps';
-import { blockBounds, MIN_BLOCK_MS } from '@renderer/utils/clipEditOps';
-import type { TransportBlock } from '@renderer/utils/types';
+import { laneSpecFor, formatLaneValue } from '@renderer/utils/sessionEditOps';
+import { blockBounds, filterActiveAt } from '@renderer/utils/sessionCore';
 import type {
+  EditableLaneKey,
+  TransportBlock,
   Clip,
   LanePoint,
   DeckLanes,
   FilterActiveSpan,
   NudgeSpan
-} from '@renderer/composables/useSessionTimeline';
+} from '@renderer/utils/types';
 import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
+
+const MIN_BLOCK_MS = 100;
 import type { SessionEvent } from '@renderer/stores/session';
 
 const MIN_VIEW_MS = 200;

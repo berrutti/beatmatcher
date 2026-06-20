@@ -5,7 +5,7 @@ import type { LoadableTrack } from '@renderer/stores/decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { indexByBasename } from '@renderer/utils/path';
 
-export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
+type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
 export type SavedTrack = {
   path: string;
@@ -111,8 +111,8 @@ export const useCollectionStore = defineStore('collection', () => {
         entry.status = hasSaved ? 'ready' : 'idle';
         queueTagRead(entry.id);
       });
-    } catch {
-      // ignore, tracks stay in 'missing' state
+    } catch (err) {
+      console.error('[collection] failed to check initial file sizes:', err);
     }
   }
 

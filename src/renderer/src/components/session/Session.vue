@@ -278,8 +278,8 @@ onUnmounted(() => {
 .session__missing {
   padding: 8px 16px;
   font-size: 0.8em;
-  background: color-mix(in srgb, #ef4444 8%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent);
 }
 
 .session__missing-header {
@@ -291,7 +291,7 @@ onUnmounted(() => {
 }
 
 .session__missing-title {
-  color: #ef4444;
+  color: var(--color-danger);
   letter-spacing: 0.05em;
 }
 
@@ -315,15 +315,15 @@ onUnmounted(() => {
   letter-spacing: 0.1em;
   padding: 0.2em 0.8em;
   border-radius: 4px;
-  border: 1px solid color-mix(in srgb, #ef4444 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent);
   background: var(--color-surface);
-  color: #ef4444;
+  color: var(--color-danger);
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .session__missing-btn:hover {
-  background: color-mix(in srgb, #ef4444 15%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
 }
 
 .session__drop-zone {
@@ -342,7 +342,7 @@ onUnmounted(() => {
 }
 
 .session__drop-zone--hover {
-  border-color: #06b6d4;
+  border-color: var(--color-accent-cyan);
 }
 
 .session__drop-hint {
@@ -386,9 +386,9 @@ onUnmounted(() => {
 
 .session__btn--transport:hover,
 .session__btn--active {
-  background: color-mix(in srgb, #06b6d4 15%, transparent);
-  border-color: #06b6d4;
-  color: #06b6d4;
+  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
 }
 
 .session__duration {
@@ -420,9 +420,9 @@ onUnmounted(() => {
 }
 
 .session__btn--render:hover:not(:disabled) {
-  background: color-mix(in srgb, #06b6d4 15%, transparent);
-  border-color: #06b6d4;
-  color: #06b6d4;
+  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
 }
 
 .session__btn--render:disabled {

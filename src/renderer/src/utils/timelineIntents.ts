@@ -7,10 +7,10 @@ import type { ViewWindow } from '@renderer/utils/timelineView';
 import type {
   LanePoint,
   FilterActiveSpan,
-  NudgeSpan
-} from '@renderer/composables/useSessionTimeline';
-import type { EditableLaneKey } from '@renderer/utils/sessionEditOps';
-import type { TransportBlock } from '@renderer/utils/types';
+  NudgeSpan,
+  EditableLaneKey,
+  TransportBlock
+} from '@renderer/utils/types';
 
 // Context for the "Set BPM" menu items: the clicked point, the clip span it
 // falls in, the track's grid bpm (to convert an entered BPM to a rate), and the

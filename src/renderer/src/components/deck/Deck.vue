@@ -204,9 +204,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
+import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
 import type { Deck, LoadableTrack } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { Keybindings } from '@renderer/keybindings';
@@ -295,29 +296,9 @@ function onTogglePlay() {
 const pendingLoad = ref<LoadableTrack | null>(null);
 
 const collectionStore = useCollectionStore();
-const isDragOverCollection = ref(false);
-
-function onWindowPointerMove(e: PointerEvent) {
-  if (!deckEl.value) return;
-  const rect = deckEl.value.getBoundingClientRect();
-  const over =
-    e.clientX >= rect.left &&
-    e.clientX <= rect.right &&
-    e.clientY >= rect.top &&
-    e.clientY <= rect.bottom;
-  isDragOverCollection.value = over && collectionStore.draggingPath !== props.deck.loadedPath;
-}
-
-watch(
-  () => collectionStore.draggingPath,
-  (path) => {
-    if (path) {
-      window.addEventListener('pointermove', onWindowPointerMove);
-    } else {
-      window.removeEventListener('pointermove', onWindowPointerMove);
-      isDragOverCollection.value = false;
-    }
-  }
+const { isDragOver: isDragOverCollection } = useCollectionDragOver(
+  deckEl,
+  () => props.deck.loadedPath
 );
 
 function onCollectionDrop(e: Event) {
@@ -334,10 +315,7 @@ function onCollectionDrop(e: Event) {
 }
 
 onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => {
-  window.removeEventListener('bm:collection-drop', onCollectionDrop);
-  window.removeEventListener('pointermove', onWindowPointerMove);
-});
+onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionDrop));
 
 function onConfirmLoad() {
   const loadable = pendingLoad.value;
@@ -668,8 +646,8 @@ function onConfirmLoad() {
 }
 .deck__btn--loop-active {
   border-color: #ca8a04;
-  color: #fbbf24;
-  background: color-mix(in srgb, #fbbf24 18%, transparent);
+  color: var(--color-accent-amber);
+  background: color-mix(in srgb, var(--color-accent-amber) 18%, transparent);
 }
 .deck__pitch-wrapper {
   display: flex;

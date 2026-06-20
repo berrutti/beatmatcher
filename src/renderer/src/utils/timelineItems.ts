@@ -29,16 +29,16 @@ import {
   type DeckRowChrome
 } from '@renderer/utils/timelineDraw';
 import { overlapsRange, hitTestOverview } from '@renderer/utils/timelineView';
-import { blocksForDeck } from '@renderer/utils/clipEditOps';
-import type { TransportBlock } from '@renderer/utils/types';
+import { blocksForDeck } from '@renderer/utils/sessionCore';
 import type {
+  TransportBlock,
   Clip,
   LoadedSpan,
   DeckLanes,
   MasterLanes,
   NudgeSpan,
   FilterActiveSpan
-} from '@renderer/composables/useSessionTimeline';
+} from '@renderer/utils/types';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 // Thin grab tolerance for edges/separators, in pixels.

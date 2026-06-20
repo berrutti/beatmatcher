@@ -12,7 +12,7 @@
           <button
             v-for="lang in LANGUAGES"
             :key="lang.code"
-            class="settings-chip"
+            class="btn-secondary settings-chip"
             :class="{ 'settings-chip--active': locale === lang.code }"
             @click="locale = lang.code"
           >
@@ -64,7 +64,7 @@
           <button
             v-for="opt in PITCH_RANGE_OPTIONS"
             :key="opt"
-            class="settings-chip"
+            class="btn-secondary settings-chip"
             :class="{ 'settings-chip--active': settings.pitchRange === opt }"
             @click="settings.setPitchRange(opt)"
           >
@@ -80,7 +80,7 @@
           <button
             v-for="opt in BUFFER_SIZE_OPTIONS"
             :key="opt"
-            class="settings-chip"
+            class="btn-secondary settings-chip"
             :class="{ 'settings-chip--active': settings.bufferSize === opt }"
             @click="settings.setBufferSize(opt)"
           >
@@ -132,7 +132,7 @@
           <button
             v-for="opt in RECORDING_FORMAT_OPTIONS"
             :key="opt"
-            class="settings-chip"
+            class="btn-secondary settings-chip"
             :class="{ 'settings-chip--active': settings.recordingFormat === opt }"
             @click="settings.setRecordingFormat(opt)"
           >
@@ -163,7 +163,7 @@
           <button
             v-for="count in [2, 4] as const"
             :key="count"
-            class="settings-chip"
+            class="btn-secondary settings-chip"
             :class="{ 'settings-chip--active': mixer.deckCount === count }"
             @click="mixer.setDeckCount(count)"
           >
@@ -196,7 +196,7 @@
         </div>
         <div class="settings-footer" style="margin-top: 4px">
           <span />
-          <button class="settings-reset-btn" @click="decks.resetDeckAccents()">
+          <button class="btn-secondary settings-reset-btn" @click="decks.resetDeckAccents()">
             {{ $t('settings.deckColors.reset') }}
           </button>
         </div>
@@ -249,7 +249,7 @@
             $t('settings.keyboard.pressKey')
           }}</span>
           <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true">·</span>
-          <button class="settings-reset-btn" @click="settings.resetToDefaults()">
+          <button class="btn-secondary settings-reset-btn" @click="settings.resetToDefaults()">
             {{ $t('settings.keyboard.reset') }}
           </button>
         </div>
@@ -695,8 +695,6 @@ onUnmounted(() => {
 }
 
 .settings-chip {
-  background: transparent;
-  border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
@@ -805,9 +803,9 @@ onUnmounted(() => {
 }
 
 .settings-btn--conflict {
-  border-color: #e55;
-  color: #e55;
-  background: color-mix(in srgb, #e55 10%, transparent);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
 }
 
 @keyframes btn-pulse {
@@ -850,7 +848,7 @@ onUnmounted(() => {
 
 .settings-error {
   font-size: 10px;
-  color: #e55;
+  color: var(--color-danger);
   flex: 1;
 }
 
@@ -862,8 +860,6 @@ onUnmounted(() => {
 }
 
 .settings-reset-btn {
-  background: transparent;
-  border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;

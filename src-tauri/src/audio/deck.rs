@@ -340,6 +340,9 @@ impl DeckState {
     }
 
     fn read_at(&self, pos: f64) -> (f32, f32) {
+        if self.channels == 0 {
+            return (0.0, 0.0);
+        }
         let frame_index = pos as usize;
         let interp_factor = (pos - frame_index as f64) as f32;
 

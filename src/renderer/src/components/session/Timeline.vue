@@ -133,13 +133,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
-import type {
-  Clip,
-  LoadedSpan,
-  DeckLanes,
-  MasterLanes,
-  NudgeSpan
-} from '@renderer/composables/useSessionTimeline';
+import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
 import {
   DECK_ORDER,
   LANE_KEYS,
@@ -667,8 +661,8 @@ watch(
 .lane-menu {
   position: fixed;
   z-index: 1000;
-  background: #1a1a1a;
-  border: 1px solid #333;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 4px 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
@@ -692,7 +686,7 @@ watch(
 }
 
 .lane-menu__item:hover {
-  background: #2a2a2a;
+  background: var(--color-border);
   color: #fff;
 }
 
@@ -703,7 +697,7 @@ watch(
   margin-left: auto;
   width: 1em;
   text-align: center;
-  color: #06b6d4;
+  color: var(--color-accent-cyan);
 }
 
 .lane-menu__item--sub {
@@ -721,8 +715,8 @@ watch(
   position: absolute;
   left: 100%;
   top: -5px;
-  background: #1a1a1a;
-  border: 1px solid #333;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 4px 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);

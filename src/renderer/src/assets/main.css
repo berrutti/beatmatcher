@@ -18,6 +18,9 @@
   --color-play: #22c55e;
   --color-cue: #eab308;
   --color-nudge: #a855f7;
+  --color-accent-cyan: #06b6d4;
+  --color-accent-amber: #fbbf24;
+  --color-danger: #ef4444;
   --radius: 6px;
   --font: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 }
@@ -55,4 +58,9 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text);
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--color-border);
 }

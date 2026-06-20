@@ -8,10 +8,10 @@ export const commands = {
 } as const;
 
 export type Command = (typeof commands)[keyof typeof commands];
-export type DeckBindings = Record<Command, string>;
+type DeckBindings = Record<Command, string>;
 export type Keybindings = Record<'A' | 'B' | 'C' | 'D', DeckBindings>;
 
-export const CODE_TO_CHAR: Record<string, string> = {
+const CODE_TO_CHAR: Record<string, string> = {
   Period: '.',
   Comma: ',',
   Slash: '/',

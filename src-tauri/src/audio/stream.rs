@@ -21,7 +21,6 @@ use std::sync::{atomic::Ordering, Arc, Mutex};
 // set_buffer_size commands -- are synchronous Tauri commands, which Tauri dispatches on
 // the main thread. Making any of those commands `async` would move stream drops onto
 // async worker threads and reintroduce the !Send hazard as silent UB. Keep them sync.
-#[allow(dead_code)]
 pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
@@ -411,8 +410,8 @@ fn fill_output(
     };
 
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
-        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
+        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         for i in 0..frames {
@@ -477,8 +476,8 @@ fn fill_cue_with_master_tap(
     cue_buf.fill(0.0);
 
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
-        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
+        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         for i in 0..frames {
@@ -560,8 +559,8 @@ fn fill_output_combined(
     ctx.cue_buf.fill(0.0);
 
     for (deck_arc, strip_arc) in ctx.channels {
-        let mut deck = deck_arc.lock().expect("deck mutex poisoned");
-        let mut strip = strip_arc.lock().expect("channel strip mutex poisoned");
+        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
