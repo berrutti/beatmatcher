@@ -145,7 +145,7 @@ export function useKeyboard() {
         mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
       } else if (e.shiftKey) {
         mixer.toggleFilter(digitDeck);
-      } else {
+      } else if (mixer.activeDecks.includes(digitDeck)) {
         mixer.setSwarmMode(true);
         mixer.setSwarmChannel(digitDeck, true);
       }

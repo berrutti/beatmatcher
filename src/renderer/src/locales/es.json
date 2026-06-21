@@ -86,7 +86,7 @@
     },
     "deckColors": {
       "title": "COLORES DEL DECK",
-      "reset": "Restaurar valores predeterminados"
+      "reset": "Restablecer valores por defecto"
     },
     "keyboard": {
       "title": "ASIGNACIÓN DE TECLADO",
@@ -139,6 +139,7 @@
     "remove": "Quitar",
     "recalcBpm": "Recalcular BPM",
     "addToPlaylist": "Añadir a lista",
+    "noPlaylistsShort": "Sin listas",
     "locate": "Localizar"
   },
   "search": {

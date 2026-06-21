@@ -26,10 +26,13 @@
       >
         {{ $t('topStrip.swarm') }}
         <span
-          v-for="deck in activeDecks"
+          v-for="deck in DECKS_DISPOSITION"
           :key="deck"
           class="topstrip__swarm-deck"
-          :class="{ 'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck] }"
+          :class="{
+            'topstrip__swarm-deck--on': mixer.swarmMode && mixer.swarmSelected[deck],
+            'topstrip__swarm-deck--inactive': !mixer.activeDecks.includes(deck)
+          }"
           >{{ deck }}</span
         >
       </div>
@@ -153,7 +156,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { DECKS_DISPOSITION, useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { DECKS_DISPOSITION, useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
@@ -171,10 +174,6 @@ const stopMarkPlayedWatch = watch(
 );
 
 onUnmounted(stopMarkPlayedWatch);
-
-const activeDecks = computed<DeckId[]>(() =>
-  mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
-);
 
 const mainDevice = computed(
   () => mixer.outputDevices.find((d) => d.id === mixer.mainDeviceId) ?? null
@@ -326,16 +325,37 @@ onUnmounted(() => {
 }
 
 .topstrip__swarm-deck {
+  display: inline-block;
+  width: 9px;
+  overflow: hidden;
+  text-align: center;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.1em;
   color: var(--color-muted);
   opacity: 0.5;
+  transition:
+    color 0.25s ease,
+    opacity 0.25s ease,
+    width 0.25s ease,
+    margin 0.25s ease;
 }
 
 .topstrip__swarm-deck--on {
   color: var(--color-accent-amber);
   opacity: 1;
+}
+
+.topstrip__swarm-deck--inactive {
+  width: 0;
+  margin-left: -4px;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.25s ease,
+    width 0.25s ease,
+    margin 0.25s ease,
+    visibility 0s linear 0.25s;
 }
 
 .topstrip__spacer {
@@ -471,6 +491,10 @@ onUnmounted(() => {
   padding: 0 8px;
   border-radius: 3px;
   cursor: pointer;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .topstrip__deck-count-btn:hover {

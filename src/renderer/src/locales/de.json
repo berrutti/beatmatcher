@@ -35,14 +35,14 @@
     "title": "EINSTELLUNGEN",
     "close": "Schließen",
     "limiter": {
-      "title": "MASTER-BEGRENZER",
+      "title": "MASTER-LIMITER",
       "on": "AN",
       "off": "AUS",
       "hint": "Verhindert digitales Clipping am Master-Ausgang. Nur deaktivieren, wenn ein externer Begrenzer verwendet wird."
     },
     "nudge": {
       "title": "NUDGE-EMPFINDLICHKEIT",
-      "hint": "Geschwindigkeitsversatz beim Halten einer Nudge-Taste oder -Schaltfläche."
+      "hint": "Tempoabweichung beim Halten einer Nudge-Taste oder -Schaltfläche."
     },
     "pitch": {
       "title": "PITCH-BEREICH",
@@ -51,7 +51,7 @@
     "buffer": {
       "title": "AUDIO-PUFFERGRÖSSE",
       "default": "Standard",
-      "hint": "Frames pro Audio-Callback. Kleinere Werte reduzieren die Latenz, erhöhen aber die CPU-Last. Eine Änderung verursacht eine kurze Audiopause."
+      "hint": "Samples pro Audio-Callback. Kleinere Werte reduzieren die Latenz, erhöhen aber die CPU-Last. Eine Änderung verursacht eine kurze Audiopause."
     },
     "bpmRange": {
       "title": "BPM-ERKENNUNGSBEREICH",
@@ -86,7 +86,7 @@
     },
     "deckColors": {
       "title": "DECK-FARBEN",
-      "reset": "Standard wiederherstellen"
+      "reset": "Auf Standard zurücksetzen"
     },
     "keyboard": {
       "title": "TASTATURBELEGUNG",
@@ -120,7 +120,7 @@
     "colTitle": "TITEL",
     "colBpm": "BPM",
     "colAdded": "HINZUGEFÜGT",
-    "detecting": "wird erkannt...",
+    "detecting": "wird analysiert...",
     "statusError": "Fehler",
     "statusMissing": "fehlt",
     "analyze": "ANALYSIEREN",
@@ -139,6 +139,7 @@
     "remove": "Entfernen",
     "recalcBpm": "BPM neu berechnen",
     "addToPlaylist": "Zur Playlist hinzufügen",
+    "noPlaylistsShort": "Keine Playlists",
     "locate": "Suchen"
   },
   "search": {
@@ -149,7 +150,7 @@
     "confirm": "Bestätigen"
   },
   "bpmModal": {
-    "title": "Track-BPM festlegen",
+    "title": "BPM des Tracks festlegen",
     "confirmLabel": "BPM setzen",
     "placeholder": "z.B. 128"
   },
@@ -191,7 +192,7 @@
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",
     "noTrackInfo": "Keine Track-Info. Bitte zuerst Tracks im Performance-Modus laden, dann aufnehmen.",
     "lanes": {
-      "gain": "Lautstärke",
+      "gain": "Gain",
       "filter": "Filter",
       "rate": "Pitch",
       "eqLow": "EQ Bass",
@@ -201,21 +202,21 @@
     "rendering": "WIRD GERENDERT...",
     "renderWav": "ALS WAV RENDERN",
     "renderFlac": "ALS FLAC RENDERN",
-    "edit": "Session bearbeiten",
+    "edit": "Session editieren",
     "save": "SPEICHERN",
     "saveAs": "SPEICHERN UNTER",
     "discardTitle": "Ungespeicherte Änderungen verwerfen?",
     "discardBody": "Die Session hat ungespeicherte Änderungen. Beim Auswerfen gehen sie verloren.",
     "discardConfirm": "Verwerfen",
     "missingFiles": "Diese Audiodateien fehlen. Wähle den Ordner, der sie enthält, um die Wiedergabe wiederherzustellen:",
-    "locate": "ORDNER WÄHLEN",
+    "locate": "ORDNER AUSWÄHLEN",
     "deleteNudge": "Nudge löschen",
     "deleteFilterRegion": "Filterbereich löschen",
     "setClipBpm": "BPM festlegen (ganzer Clip)…",
     "setBpmFromHere": "BPM ab hier festlegen…",
-    "mute": "Stumm",
+    "mute": "Mute",
     "solo": "Solo",
-    "lanesMenu": "Spuren"
+    "lanesMenu": "Parameter"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",
