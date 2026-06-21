@@ -485,6 +485,7 @@ function onConfirmLoad() {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0 1em;
   pointer-events: none;
 }
 
@@ -499,6 +500,7 @@ function onConfirmLoad() {
   font-style: italic;
   font-size: 1.2em;
   opacity: 0.6;
+  text-align: center;
 }
 
 .deck__overview {

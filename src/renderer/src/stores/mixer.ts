@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { DeckId } from './decks';
+import { DECKS_DISPOSITION, type DeckId } from './decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore } from '@renderer/stores/settings';
 
@@ -66,6 +66,10 @@ export const useMixerStore = defineStore('mixer', () => {
     deckCount.value = count;
     storageSet(STORAGE_KEYS.deckCount, count);
   }
+
+  const activeDecks = computed<DeckId[]>(() =>
+    deckCount.value === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
+  );
 
   const masterGain = ref(DEFAULT_MASTER_GAIN);
 
@@ -304,6 +308,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   return {
+    activeDecks,
     cueActive,
     cueChannelOffset,
     cueDeviceId,

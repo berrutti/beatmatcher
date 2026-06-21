@@ -82,8 +82,10 @@
 
     <div
       v-if="tab === 'all'"
+      :ref="setAllTracksScrollEl"
       class="collection__body"
       :style="store.draggingPath ? { overflowY: 'hidden' } : {}"
+      @scroll.passive="onAllTracksScroll"
     >
       <div v-if="store.tracks.length === 0" class="collection__empty">
         {{ $t('browser.dropHint') }}
@@ -92,7 +94,7 @@
         {{ $t('browser.noResults') }}
       </div>
       <div v-else class="collection__list">
-        <div class="collection__sort-bar">
+        <div :ref="setSortBarEl" class="collection__sort-bar">
           <button
             tabindex="-1"
             class="collection__sort-btn collection__sort-btn--title"
@@ -111,7 +113,11 @@
           </button>
         </div>
         <div
-          v-for="track in sortedFilteredTracks"
+          v-if="trackRowRange.topSpacerHeight > 0"
+          :style="{ height: `${trackRowRange.topSpacerHeight}px` }"
+        />
+        <div
+          v-for="track in visibleTracks"
           :key="track.id"
           class="collection__item"
           :class="[
@@ -174,6 +180,10 @@
             ✕
           </button>
         </div>
+        <div
+          v-if="trackRowRange.bottomSpacerHeight > 0"
+          :style="{ height: `${trackRowRange.bottomSpacerHeight}px` }"
+        />
       </div>
     </div>
 
@@ -204,46 +214,45 @@
     </div>
 
     <div v-else class="collection__body collection__body--playlist">
-      <div
-        ref="playlistListEl"
-        class="collection__list"
-        :style="playlistDragFromIdx !== null ? { overflowY: 'hidden' } : {}"
-      >
+      <div ref="playlistListEl" class="collection__list">
         <div v-if="playlistItems.length === 0" class="collection__empty" style="height: 60px">
           {{ $t('browser.emptyPlaylist') }}
         </div>
-        <template v-for="(item, idx) in playlistItems" :key="item.path">
-          <div v-if="showDropBefore(idx)" class="collection__drop-line" />
-          <div
-            class="collection__item collection__playlist-track"
-            :class="{
-              'collection__playlist-track--dragging': playlistDragFromIdx === idx,
-              'collection__item--played': mixerStore.playedPaths.has(item.path)
-            }"
-            @pointerdown="onPlaylistTrackPointerDown($event, idx)"
-            @dblclick="onTrackDblClickByPath(item.path)"
-            @contextmenu.prevent="item.entry && openContextMenu($event, item.entry.id)"
+        <div
+          v-for="(item, idx) in playlistItems"
+          :key="item.path"
+          class="collection__item collection__playlist-track"
+          :class="{
+            'collection__playlist-track--dragging': playlistDragFromIdx === idx,
+            'collection__item--played': mixerStore.playedPaths.has(item.path)
+          }"
+          @pointerdown="onPlaylistTrackPointerDown($event, idx)"
+          @dblclick="onTrackDblClickByPath(item.path)"
+          @contextmenu.prevent="item.entry && openContextMenu($event, item.entry.id)"
+        >
+          <span class="collection__playlist-num">{{ idx + 1 }}</span>
+          <span class="collection__playlist-grip">⠿</span>
+          <span class="collection__item-name" :title="item.label">{{ item.label }}</span>
+          <span v-if="item.bpm !== null" class="collection__item-bpm"
+            >{{ item.bpm.toFixed(1) }} BPM</span
           >
-            <span class="collection__playlist-num">{{ idx + 1 }}</span>
-            <span class="collection__playlist-grip">⠿</span>
-            <span class="collection__item-name" :title="item.label">{{ item.label }}</span>
-            <span v-if="item.bpm !== null" class="collection__item-bpm"
-              >{{ item.bpm.toFixed(1) }} BPM</span
-            >
-            <Buttons
-              :path="item.path"
-              :disabled="item.entry === null || item.entry.status !== 'ready'"
-            />
-            <button
-              class="collection__item-remove"
-              tabindex="-1"
-              @click.stop="removeFromActivePlaylist(item.path)"
-            >
-              ✕
-            </button>
-          </div>
-        </template>
-        <div v-if="showDropAfter" class="collection__drop-line" />
+          <Buttons
+            :path="item.path"
+            :disabled="item.entry === null || item.entry.status !== 'ready'"
+          />
+          <button
+            class="collection__item-remove"
+            tabindex="-1"
+            @click.stop="removeFromActivePlaylist(item.path)"
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          v-if="showDropLine"
+          class="collection__drop-line"
+          :style="{ top: `${playlistDropY - 1}px` }"
+        />
       </div>
 
       <div class="collection__add-section">
@@ -331,26 +340,29 @@
         <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">
           {{ $t('browser.recalcBpm') }}
         </button>
-        <template v-if="store.playlists.length > 0">
-          <div class="context-menu__item context-menu__item--sub" @mouseenter="onSubEnter">
-            <span>{{ $t('browser.addToPlaylist') }}</span>
-            <span class="context-menu__arrow">▶</span>
-            <div
-              class="context-menu__submenu"
-              :class="{ 'context-menu__submenu--flip': subFlipped }"
+        <div
+          v-if="store.playlists.length > 0"
+          class="context-menu__item context-menu__item--sub"
+          @mouseenter="onSubEnter"
+        >
+          <span>{{ $t('browser.addToPlaylist') }}</span>
+          <span class="context-menu__arrow">▶</span>
+          <div class="context-menu__submenu" :class="{ 'context-menu__submenu--flip': subFlipped }">
+            <button
+              tabindex="-1"
+              v-for="playlist in store.playlists"
+              :key="playlist.id"
+              class="context-menu__item"
+              @click="onContextMenuAddToPlaylist(playlist.id)"
             >
-              <button
-                tabindex="-1"
-                v-for="playlist in store.playlists"
-                :key="playlist.id"
-                class="context-menu__item"
-                @click="onContextMenuAddToPlaylist(playlist.id)"
-              >
-                {{ playlist.name }}
-              </button>
-            </div>
+              {{ playlist.name }}
+            </button>
           </div>
-        </template>
+        </div>
+        <div v-else class="context-menu__item context-menu__item--disabled">
+          <span>{{ $t('browser.addToPlaylist') }}</span>
+          <span class="context-menu__item-hint">{{ $t('browser.noPlaylistsShort') }}</span>
+        </div>
       </div>
       <div
         v-if="contextMenu"
@@ -363,7 +375,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useCollectionStore } from '@renderer/stores/collection';
@@ -397,6 +409,7 @@ const addSectionSearch = ref('');
 const playlistListEl = ref<HTMLElement | null>(null);
 const playlistDragFromIdx = ref<number | null>(null);
 const playlistDropIdx = ref<number | null>(null);
+const playlistDropY = ref(0);
 
 type SortField = 'title' | 'bpm' | 'added';
 const sortField = ref<SortField>('added');
@@ -485,6 +498,64 @@ const sortedFilteredTracks = computed(() => {
   });
 });
 
+// Large collections (hundreds of tracks) made every row a permanent DOM node,
+// so resizing the window forced a full flex/text-ellipsis layout pass over
+// all of them every frame, even the ones scrolled out of view. Only rows
+// within (or near) the visible scroll area are mounted; the rest are
+// represented by two spacer divs sized to the height they'd otherwise take up.
+const TRACK_ROW_HEIGHT = 32; // must match .collection__item height in <style>
+const TRACK_ROW_BUFFER = 6;
+
+type TemplateRefEl = Element | ComponentPublicInstance | null;
+
+const allTracksScrollEl = ref<HTMLElement | null>(null);
+const allTracksScrollTop = ref(0);
+const allTracksViewportHeight = ref(0);
+const sortBarHeight = ref(0);
+let allTracksResizeObserver: ResizeObserver | null = null;
+
+function setAllTracksScrollEl(el: TemplateRefEl) {
+  allTracksResizeObserver?.disconnect();
+  allTracksResizeObserver = null;
+  const scrollEl = el instanceof HTMLElement ? el : null;
+  allTracksScrollEl.value = scrollEl;
+  if (!scrollEl) return;
+  allTracksViewportHeight.value = scrollEl.clientHeight;
+  allTracksResizeObserver = new ResizeObserver(() => {
+    allTracksViewportHeight.value = scrollEl.clientHeight;
+  });
+  allTracksResizeObserver.observe(scrollEl);
+}
+
+function setSortBarEl(el: TemplateRefEl) {
+  sortBarHeight.value = el instanceof HTMLElement ? el.offsetHeight : 0;
+}
+
+function onAllTracksScroll() {
+  if (allTracksScrollEl.value) allTracksScrollTop.value = allTracksScrollEl.value.scrollTop;
+}
+
+onUnmounted(() => allTracksResizeObserver?.disconnect());
+
+const trackRowRange = computed(() => {
+  const total = sortedFilteredTracks.value.length;
+  const scrollWithinRows = Math.max(0, allTracksScrollTop.value - sortBarHeight.value);
+  const firstVisible = Math.floor(scrollWithinRows / TRACK_ROW_HEIGHT);
+  const visibleRowCount = Math.ceil(allTracksViewportHeight.value / TRACK_ROW_HEIGHT);
+  const start = Math.max(0, firstVisible - TRACK_ROW_BUFFER);
+  const end = Math.min(total, firstVisible + visibleRowCount + TRACK_ROW_BUFFER);
+  return {
+    start,
+    end,
+    topSpacerHeight: start * TRACK_ROW_HEIGHT,
+    bottomSpacerHeight: (total - end) * TRACK_ROW_HEIGHT
+  };
+});
+
+const visibleTracks = computed(() =>
+  sortedFilteredTracks.value.slice(trackRowRange.value.start, trackRowRange.value.end)
+);
+
 const activePlaylist = computed(
   () => store.playlists.find((p) => p.id === activePlaylistId.value) ?? null
 );
@@ -522,17 +593,10 @@ const addableTracks = computed(() => {
   });
 });
 
-function showDropBefore(idx: number): boolean {
-  if (playlistDragFromIdx.value === null || playlistDropIdx.value !== idx) return false;
+const showDropLine = computed((): boolean => {
+  if (playlistDragFromIdx.value === null || playlistDropIdx.value === null) return false;
   if (playlistDropIdx.value === playlistDragFromIdx.value) return false;
   if (playlistDropIdx.value === playlistDragFromIdx.value + 1) return false;
-  return true;
-}
-
-const showDropAfter = computed((): boolean => {
-  if (playlistDragFromIdx.value === null) return false;
-  if (playlistDropIdx.value !== playlistItems.value.length) return false;
-  if (playlistDragFromIdx.value === playlistItems.value.length - 1) return false;
   return true;
 });
 
@@ -644,11 +708,16 @@ function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
   function computeDropIdx(clientY: number): number {
     const el = playlistListEl.value;
     if (!el) return fromIdx;
-    const items = el.querySelectorAll('.collection__playlist-track');
+    const items = el.querySelectorAll<HTMLElement>('.collection__playlist-track');
     for (let i = 0; i < items.length; i++) {
       const rect = items[i].getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) return i;
+      if (clientY < rect.top + rect.height / 2) {
+        playlistDropY.value = items[i].offsetTop;
+        return i;
+      }
     }
+    const last = items[items.length - 1];
+    playlistDropY.value = last ? last.offsetTop + last.offsetHeight : 0;
     return items.length;
   }
 
@@ -656,12 +725,18 @@ function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
     playlistDropIdx.value = computeDropIdx(ev.clientY);
   }
 
-  function onUp(ev: PointerEvent) {
-    cleanup();
-    const from = playlistDragFromIdx.value;
-    const dropIdx = computeDropIdx(ev.clientY);
+  function resetDrag() {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
     playlistDragFromIdx.value = null;
     playlistDropIdx.value = null;
+  }
+
+  function onUp(ev: PointerEvent) {
+    const from = playlistDragFromIdx.value;
+    const dropIdx = computeDropIdx(ev.clientY);
+    resetDrag();
     if (from === null) return;
     if (dropIdx === from || dropIdx === from + 1) return;
     const to = dropIdx > from ? dropIdx - 1 : dropIdx;
@@ -669,15 +744,7 @@ function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
   }
 
   function onCancel() {
-    cleanup();
-    playlistDragFromIdx.value = null;
-    playlistDropIdx.value = null;
-  }
-
-  function cleanup() {
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onCancel);
+    resetDrag();
   }
 
   window.addEventListener('pointermove', onMove);
@@ -721,14 +788,68 @@ onUnmounted(() => unlistenDrop?.());
 // Movement below this threshold is treated as a click, not a drag start.
 const DRAG_THRESHOLD = 5;
 
-function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
-  if (e.button !== 0 || track.status !== 'ready' || !track.path) return;
-  if ((e.target as HTMLElement).closest('button')) return;
+const DRAG_GHOST_SCALE = 0.6;
 
-  const startX = e.clientX;
-  const startY = e.clientY;
+type DragGhost = { element: HTMLElement; halfWidth: number; halfHeight: number };
+
+// Tracked at module level so a ghost orphaned by an earlier drag (e.g. the
+// pointerup was lost because the window lost focus) can never pile up: each
+// new drag removes any leftover ghost before creating its own.
+let currentDragGhost: DragGhost | null = null;
+
+function clearDragGhost() {
+  currentDragGhost?.element.remove();
+  currentDragGhost = null;
+}
+
+// transform-origin defaults to the element's own center, so scaling never
+// shifts that center: left/top only need the unscaled half-size offset, and
+// that offset never changes again for the rest of the drag.
+function createDragGhost(source: HTMLElement, clientX: number, clientY: number): DragGhost {
+  clearDragGhost();
+  const rect = source.getBoundingClientRect();
+  const element = source.cloneNode(true) as HTMLElement;
+  element.classList.add('collection__drag-ghost');
+  element.querySelectorAll('button').forEach((button) => button.remove());
+  element.style.width = `${rect.width}px`;
+  element.style.height = `${rect.height}px`;
+  const halfWidth = rect.width / 2;
+  const halfHeight = rect.height / 2;
+  element.style.left = `${clientX - halfWidth}px`;
+  element.style.top = `${clientY - halfHeight}px`;
+  document.body.appendChild(element);
+  // Only `transform` animates here, never left/top, so the brief shrink-in
+  // never delays cursor tracking.
+  requestAnimationFrame(() => {
+    element.style.transition = 'transform 100ms ease';
+    element.style.transform = `scale(${DRAG_GHOST_SCALE})`;
+  });
+  const ghost: DragGhost = { element, halfWidth, halfHeight };
+  currentDragGhost = ghost;
+  return ghost;
+}
+
+function moveDragGhost(ghost: DragGhost, clientX: number, clientY: number) {
+  ghost.element.style.left = `${clientX - ghost.halfWidth}px`;
+  ghost.element.style.top = `${clientY - ghost.halfHeight}px`;
+}
+
+function resolveDeckIdAtPoint(clientX: number, clientY: number): string | undefined {
+  const el = document.elementFromPoint(clientX, clientY);
+  const deckEl = el?.closest('[data-deck-id]') as HTMLElement | null;
+  return deckEl?.dataset.deckId;
+}
+
+function onItemPointerDown(event: PointerEvent, track: CollectionEntry) {
+  if (event.button !== 0 || track.status !== 'ready' || !track.path) return;
+  if ((event.target as HTMLElement).closest('button')) return;
+
+  const startX = event.clientX;
+  const startY = event.clientY;
   const path = track.path;
+  const itemEl = event.currentTarget as HTMLElement;
   let active = false;
+  let dragGhost: DragGhost | null = null;
 
   function onMove(ev: PointerEvent) {
     if (!active) {
@@ -745,38 +866,45 @@ function onItemPointerDown(e: PointerEvent, track: CollectionEntry) {
       // into the search box instead of controlling decks.
       const focused = document.activeElement;
       if (focused instanceof HTMLInputElement) focused.blur();
+      dragGhost = createDragGhost(itemEl, ev.clientX, ev.clientY);
+      return;
     }
+    if (dragGhost) moveDragGhost(dragGhost, ev.clientX, ev.clientY);
   }
 
-  function cleanup() {
+  function finishDrag(): boolean {
+    const wasActive = active;
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('blur', onCancel);
+    clearDragGhost();
+    dragGhost = null;
+    if (wasActive) {
+      document.body.style.cursor = '';
+      store.endDrag();
+    }
+    return wasActive;
   }
 
   function onUp(ev: PointerEvent) {
-    cleanup();
-    if (!active) return;
-    document.body.style.cursor = '';
-    const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    const deckEl = el?.closest('[data-deck-id]') as HTMLElement | null;
-    const deckId = deckEl?.dataset.deckId;
+    if (!finishDrag()) return;
+    const deckId = resolveDeckIdAtPoint(ev.clientX, ev.clientY);
     if (deckId) {
       window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path } }));
     }
-    store.endDrag();
   }
 
   function onCancel() {
-    cleanup();
-    if (!active) return;
-    document.body.style.cursor = '';
-    store.endDrag();
+    finishDrag();
   }
 
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onCancel);
+  // If the window loses focus mid-drag (alt-tab, native dialog), no further
+  // pointer events arrive at all, so this is the only way to clean up.
+  window.addEventListener('blur', onCancel);
 }
 
 async function openFileDialog() {
@@ -851,7 +979,7 @@ async function openFolderDialog() {
 
 .collection__tab:last-child {
   border-radius: 0 3px 3px 0;
-  border-left: none;
+  margin-left: -1px;
 }
 
 .collection__tab:hover {
@@ -859,6 +987,7 @@ async function openFolderDialog() {
 }
 
 .collection__tab--active {
+  z-index: 1;
   border-color: #555;
   color: var(--color-text);
   background: var(--color-surface);
@@ -946,9 +1075,11 @@ async function openFolderDialog() {
 }
 
 .collection__body--playlist .collection__list {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .collection__empty {
@@ -1143,10 +1274,13 @@ async function openFolderDialog() {
 }
 
 .collection__drop-line {
+  position: absolute;
+  left: 0;
+  right: 0;
   height: 2px;
   background: var(--color-text);
   opacity: 0.6;
-  flex-shrink: 0;
+  pointer-events: none;
 }
 
 .collection__add-section {
@@ -1180,6 +1314,13 @@ async function openFolderDialog() {
 </style>
 
 <style>
+.collection__drag-ghost {
+  position: fixed;
+  z-index: 2000;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
 .context-menu__backdrop {
   position: fixed;
   inset: 0;
@@ -1229,6 +1370,25 @@ async function openFolderDialog() {
   align-items: center;
   justify-content: space-between;
   cursor: default;
+}
+
+.context-menu__item--disabled {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: default;
+  opacity: 0.45;
+}
+
+.context-menu__item--disabled:hover {
+  background: none;
+  color: var(--color-text);
+}
+
+.context-menu__item-hint {
+  font-size: 0.85em;
+  margin-left: 12px;
+  white-space: nowrap;
 }
 
 .context-menu__arrow {

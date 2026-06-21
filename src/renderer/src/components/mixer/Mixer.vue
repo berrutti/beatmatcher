@@ -2,10 +2,13 @@
   <div class="mixer">
     <div class="mixer__channels">
       <div
-        v-for="deckId in activeDecks"
+        v-for="deckId in DECKS_DISPOSITION"
         :key="deckId"
         class="mixer__channel"
-        :class="swarmChannelClass(deckId)"
+        :class="[
+          swarmChannelClass(deckId),
+          { 'mixer__channel--inactive': !mixer.activeDecks.includes(deckId) }
+        ]"
       >
         <span class="mixer__channel-label" :style="{ color: decks.decks[deckId].accent }">{{
           deckId
@@ -168,7 +171,7 @@ import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
 import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 import type { DeckId } from '@renderer/stores/decks';
-import { reactive, computed, watch, onUnmounted } from 'vue';
+import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
@@ -195,10 +198,6 @@ function onScrubEnd(sourceIndex: number) {
   mixer.setVolume(deckId, scrubSavedVolume);
   scrubSavedVolume = null;
 }
-
-const activeDecks = computed<DeckId[]>(() =>
-  mixer.deckCount === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
-);
 
 const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
 const deckPeaks = reactive<Record<DeckId, PeakState>>({
@@ -246,7 +245,7 @@ onUnmounted(stopLevelPoll);
 
 function swarmChannelClass(deckId: DeckId) {
   if (!mixer.swarmMode || !mixer.swarmSelected[deckId]) return {};
-  const decklist = activeDecks.value;
+  const decklist = mixer.activeDecks;
   const idx = decklist.indexOf(deckId);
   return {
     'mixer__channel--swarm-selected': true,
@@ -257,7 +256,7 @@ function swarmChannelClass(deckId: DeckId) {
 }
 
 function swarmAffected(deckId: DeckId): DeckId[] {
-  const selected = activeDecks.value.filter((ch) => mixer.swarmSelected[ch]);
+  const selected = mixer.activeDecks.filter((ch) => mixer.swarmSelected[ch]);
   if (!selected.includes(deckId)) selected.push(deckId);
   return selected;
 }
@@ -343,9 +342,22 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   gap: 0.25em;
   border-radius: 4px;
   border: 1px solid transparent;
+  opacity: 1;
   transition:
     background 0.1s,
-    border-color 0.1s;
+    border-color 0.1s,
+    opacity 0.25s ease;
+}
+
+.mixer__channel--inactive {
+  /* Visibility flips only after the fade-out finishes; becoming active again
+     flips it immediately (no delay declared here) so the fade-in is visible
+     from the start. */
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.25s ease,
+    visibility 0s linear 0.25s;
 }
 
 .mixer__channel--swarm-selected {

@@ -86,7 +86,7 @@
     },
     "deckColors": {
       "title": "DECK COLORS",
-      "reset": "Restore defaults"
+      "reset": "Reset to defaults"
     },
     "keyboard": {
       "title": "KEYBOARD MAPPING",
@@ -139,6 +139,7 @@
     "remove": "Remove",
     "recalcBpm": "Recalculate BPM",
     "addToPlaylist": "Add to playlist",
+    "noPlaylistsShort": "No playlists",
     "locate": "Locate"
   },
   "search": {
