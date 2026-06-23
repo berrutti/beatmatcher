@@ -224,5 +224,15 @@
     "bodySession": "Die Session wird gerade abgespielt. Trotzdem beenden?",
     "bodyDirty": "Die Session hat ungespeicherte Änderungen. Trotzdem beenden?",
     "confirm": "Beenden"
+  },
+  "update": {
+    "title": "Update verfügbar",
+    "available": "Beatmatcher {version} ist verfügbar. Jetzt herunterladen und installieren?",
+    "downloading": "Update wird heruntergeladen... {pct}%",
+    "downloadingNoSize": "Update wird heruntergeladen...",
+    "installing": "Wird installiert...",
+    "install": "Jetzt aktualisieren",
+    "error": "Das Update konnte nicht installiert werden. Erneut versuchen?",
+    "retry": "Erneut versuchen"
   }
 }

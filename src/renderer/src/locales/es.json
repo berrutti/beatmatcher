@@ -224,5 +224,15 @@
     "bodySession": "La sesion se esta reproduciendo. Salir de todas formas?",
     "bodyDirty": "La sesión tiene cambios sin guardar. Salir de todas formas?",
     "confirm": "Salir"
+  },
+  "update": {
+    "title": "Actualización disponible",
+    "available": "Beatmatcher {version} está disponible. Descargar e instalar ahora?",
+    "downloading": "Descargando actualización... {pct}%",
+    "downloadingNoSize": "Descargando actualización...",
+    "installing": "Instalando...",
+    "install": "Actualizar ahora",
+    "error": "No se pudo instalar la actualización. Intentar de nuevo?",
+    "retry": "Reintentar"
   }
 }

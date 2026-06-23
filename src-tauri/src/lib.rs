@@ -167,6 +167,8 @@ pub fn run() {
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let icon = app.default_window_icon().cloned();
             let about = AboutMetadataBuilder::new()

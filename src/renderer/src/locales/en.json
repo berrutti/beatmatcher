@@ -224,5 +224,15 @@
     "bodySession": "The session is currently playing. Quit anyway?",
     "bodyDirty": "The session has unsaved edits. Quit anyway?",
     "confirm": "Quit"
+  },
+  "update": {
+    "title": "Update available",
+    "available": "Beatmatcher {version} is available. Download and install now?",
+    "downloading": "Downloading update... {pct}%",
+    "downloadingNoSize": "Downloading update...",
+    "installing": "Installing...",
+    "install": "Update now",
+    "error": "The update could not be installed. Try again?",
+    "retry": "Retry"
   }
 }

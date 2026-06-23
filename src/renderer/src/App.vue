@@ -3,6 +3,7 @@
     <AppBar />
     <TopStrip />
     <SettingsModal v-if="settingsStore.isOpen" />
+    <UpdatePrompt />
     <ConfirmModal
       :open="quitModalOpen"
       :title="t('quitModal.title')"
@@ -24,6 +25,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { useUpdaterStore } from '@renderer/stores/updater';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
@@ -35,10 +37,12 @@ import Performance from '@renderer/components/performance/Performance.vue';
 import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import UpdatePrompt from '@renderer/components/modals/UpdatePrompt.vue';
 
 const { t } = useI18n();
 const decksStore = useDecksStore();
 const settingsStore = useSettingsStore();
+const updaterStore = useUpdaterStore();
 const appMode = useAppModeStore();
 const sessionStore = useSessionStore();
 const sessionEditStore = useSessionEditStore();
@@ -86,6 +90,9 @@ let unlistenQuit: (() => void) | null = null;
 
 onMounted(async () => {
   settingsStore.init();
+  // The updater endpoint and signing key only exist for packaged release
+  // builds, so checking during dev would always fail and is skipped.
+  if (import.meta.env.PROD) updaterStore.checkForUpdate();
   // Closing the window must quit the app, same as Cmd+Q. Letting the default
   // close happen would leave the app running without a window on macOS.
   unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
