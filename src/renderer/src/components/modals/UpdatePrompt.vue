@@ -1,5 +1,11 @@
 <template>
-  <Modal :open="open" :title="t('update.title')" :confirm-label="confirmLabel" @confirm="onConfirm" @cancel="updater.dismiss()">
+  <Modal
+    :open="open"
+    :title="t('update.title')"
+    :confirm-label="confirmLabel"
+    @confirm="onConfirm"
+    @cancel="updater.dismiss()"
+  >
     <p class="update__body">{{ bodyText }}</p>
   </Modal>
 </template>
@@ -15,9 +21,7 @@ const updater = useUpdaterStore();
 
 const open = computed(
   () =>
-    updater.status === 'available' ||
-    updater.status === 'downloading' ||
-    updater.status === 'error'
+    updater.status === 'available' || updater.status === 'downloading' || updater.status === 'error'
 );
 
 const bodyText = computed(() => {
