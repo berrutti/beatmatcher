@@ -110,10 +110,7 @@
           getPosition: () => decks.deckC.getPlayheadPosition(),
           getBpm: () => decks.deckC.trackBpm,
           getBeatOffset: () => decks.deckC.beatOffset,
-          getRate: () =>
-            decks.deckC.trackBpm && decks.deckC.targetBpm
-              ? decks.deckC.targetBpm / decks.deckC.trackBpm
-              : 1,
+          getRate: () => decks.deckC.rate,
           getDenseData: () => decks.deckC.denseSpectralData,
           getDenseRate: () => decks.deckC.denseSpectralRate,
           isWaveformLoading: () => decks.deckC.waveformLoading,
@@ -123,10 +120,7 @@
           getPosition: () => decks.deckA.getPlayheadPosition(),
           getBpm: () => decks.deckA.trackBpm,
           getBeatOffset: () => decks.deckA.beatOffset,
-          getRate: () =>
-            decks.deckA.trackBpm && decks.deckA.targetBpm
-              ? decks.deckA.targetBpm / decks.deckA.trackBpm
-              : 1,
+          getRate: () => decks.deckA.rate,
           getDenseData: () => decks.deckA.denseSpectralData,
           getDenseRate: () => decks.deckA.denseSpectralRate,
           isWaveformLoading: () => decks.deckA.waveformLoading,
@@ -136,10 +130,7 @@
           getPosition: () => decks.deckB.getPlayheadPosition(),
           getBpm: () => decks.deckB.trackBpm,
           getBeatOffset: () => decks.deckB.beatOffset,
-          getRate: () =>
-            decks.deckB.trackBpm && decks.deckB.targetBpm
-              ? decks.deckB.targetBpm / decks.deckB.trackBpm
-              : 1,
+          getRate: () => decks.deckB.rate,
           getDenseData: () => decks.deckB.denseSpectralData,
           getDenseRate: () => decks.deckB.denseSpectralRate,
           isWaveformLoading: () => decks.deckB.waveformLoading,
@@ -149,10 +140,7 @@
           getPosition: () => decks.deckD.getPlayheadPosition(),
           getBpm: () => decks.deckD.trackBpm,
           getBeatOffset: () => decks.deckD.beatOffset,
-          getRate: () =>
-            decks.deckD.trackBpm && decks.deckD.targetBpm
-              ? decks.deckD.targetBpm / decks.deckD.trackBpm
-              : 1,
+          getRate: () => decks.deckD.rate,
           getDenseData: () => decks.deckD.denseSpectralData,
           getDenseRate: () => decks.deckD.denseSpectralRate,
           isWaveformLoading: () => decks.deckD.waveformLoading,

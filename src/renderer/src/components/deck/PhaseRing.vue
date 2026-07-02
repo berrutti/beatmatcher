@@ -10,9 +10,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 
 const props = defineProps<{
   accent: string;
-  trackBpm: number | null;
-  beatOffset: number;
-  getTrackPosition: () => number | null;
+  getBeat: () => number | null;
   coverArt: string | null;
 }>();
 
@@ -46,10 +44,9 @@ function draw() {
 
   let phase4 = 0;
 
-  const positionSec = props.getTrackPosition();
-  if (positionSec !== null && props.trackBpm && props.trackBpm > 0) {
-    const currentBeat = ((positionSec - props.beatOffset) * props.trackBpm) / 60;
-    phase4 = (((currentBeat % 4) + 4) % 4) / 4;
+  const beat = props.getBeat();
+  if (beat !== null) {
+    phase4 = (((beat % 4) + 4) % 4) / 4;
   }
 
   const startAngle = -Math.PI / 2;

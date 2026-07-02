@@ -3,6 +3,7 @@ import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { currentBeat as coreCurrentBeat } from '@renderer/utils/sessionCore';
 
 export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
 
@@ -177,11 +178,27 @@ function createDeck(id: DeckId, accent: string, name: string) {
       return state.loopPlaying ? interpolatedPosition() : null;
     },
 
+    // Beat math lives in the engine (session-core), not in the view: this
+    // returns the continuous beat count under the playhead, or null when no
+    // track is loaded. It is NOT gated on playback, so a paused deck keeps the
+    // ring frozen where the playhead sits instead of clearing it; the phase
+    // ring maps this to its own cycle length.
+    get beat(): number | null {
+      if (state.trackBpm === null || !state.trackLoaded) return null;
+      return coreCurrentBeat(interpolatedPosition(), state.beatOffset, state.trackBpm);
+    },
+
     get phase(): number {
       if (state.trackBpm === null || !state.loopPlaying) return 0;
-      const pos = interpolatedPosition();
-      const beats = ((pos - state.beatOffset) * state.trackBpm) / 60;
+      const beats = coreCurrentBeat(interpolatedPosition(), state.beatOffset, state.trackBpm);
       return ((beats % 1) + 1) % 1;
+    },
+
+    // Playback rate from the pitch fader (targetBpm/trackBpm), 1 when no grid.
+    // Nudge is not included; it is a transient offset applied in the engine.
+    get rate(): number {
+      if (state.trackBpm === null || state.targetBpm === null) return 1;
+      return state.targetBpm / state.trackBpm;
     },
 
     setTargetBpm(value: number) {
