@@ -1,11 +1,5 @@
 export type EditableLaneKey =
-  | 'gain'
-  | 'eqLow'
-  | 'eqMid'
-  | 'eqHigh'
-  | 'filter'
-  | 'rate'
-  | 'masterGain';
+  'gain' | 'eqLow' | 'eqMid' | 'eqHigh' | 'filter' | 'rate' | 'masterGain';
 
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips
