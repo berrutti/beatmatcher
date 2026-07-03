@@ -93,7 +93,7 @@ export function clipBandItem(
   waveforms: Map<string, TrackWaveform>,
   accent: string,
   audible: boolean,
-  selectionSpan: { startMs: number; endMs: number } | null
+  selectionSpans: { startMs: number; endMs: number }[]
 ): SceneItem {
   return {
     bounds: (vc) => ({ x: LABEL_W, y: row.top, w: vc.trackW, h: row.waveformHeight }),
@@ -129,15 +129,10 @@ export function clipBandItem(
           drawClipBpmLabels(ctx, clip, row.top, waveformH, vc.msToX);
         }
       }
-      if (selectionSpan && visible(selectionSpan.startMs, selectionSpan.endMs)) {
-        drawClipSelection(
-          ctx,
-          selectionSpan.startMs,
-          selectionSpan.endMs,
-          row.top,
-          waveformH,
-          vc.msToX
-        );
+      for (const span of selectionSpans) {
+        if (visible(span.startMs, span.endMs)) {
+          drawClipSelection(ctx, span.startMs, span.endMs, row.top, waveformH, vc.msToX);
+        }
       }
     },
     hitTest: (pt, vc) => {
@@ -156,23 +151,36 @@ export function clipBandItem(
   };
 }
 
-// Replicates the component's blockAtPoint: a transport block under x, plus a
-// trim edge when within EDGE_GRAB_PX (loop blocks expose no edges, they move whole).
+// The transport block under x, plus a trim edge when near a boundary (loop
+// blocks expose no edges, they move whole). Body hits are resolved first and
+// the edge zone shrinks with the block, so a narrow block stays selectable
+// instead of every pixel landing in an edge zone (possibly a NEIGHBOUR's,
+// which turned attempted selections of tiny regions into trims of the block
+// next door).
 export function blockAtPoint(
   clips: Clip[],
   deck: string,
   x: number,
   vc: ViewContext
 ): { block: TransportBlock; edge: 'start' | 'end' | null } | null {
-  for (const block of blocksForDeck(clips, deck)) {
+  const blocks = blocksForDeck(clips, deck);
+  for (const block of blocks) {
     const x0 = vc.msToX(block.startMs);
     const x1 = vc.msToX(block.endMs);
-    if (x < x0 - EDGE_GRAB_PX || x > x1 + EDGE_GRAB_PX) continue;
+    if (x < x0 || x > x1) continue;
     if (!block.loop) {
-      if (Math.abs(x - x0) <= EDGE_GRAB_PX) return { block, edge: 'start' };
-      if (Math.abs(x - x1) <= EDGE_GRAB_PX) return { block, edge: 'end' };
+      const edgeGrab = Math.min(EDGE_GRAB_PX, (x1 - x0) / 4);
+      if (x - x0 <= edgeGrab) return { block, edge: 'start' };
+      if (x1 - x <= edgeGrab) return { block, edge: 'end' };
     }
-    if (x >= x0 && x <= x1) return { block, edge: null };
+    return { block, edge: null };
+  }
+  for (const block of blocks) {
+    if (block.loop) continue;
+    const x0 = vc.msToX(block.startMs);
+    const x1 = vc.msToX(block.endMs);
+    if (Math.abs(x - x0) <= EDGE_GRAB_PX) return { block, edge: 'start' };
+    if (Math.abs(x - x1) <= EDGE_GRAB_PX) return { block, edge: 'end' };
   }
   return null;
 }

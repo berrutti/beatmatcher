@@ -9,8 +9,11 @@ import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { DECK_ACCENTS, type DeckId, useDecksStore } from '@renderer/stores/decks';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
-import { type ClipSelectionRef } from '@renderer/utils/timelineLayout';
-import { blocksForDeck } from '@renderer/utils/sessionCore';
+import {
+  bpmRegionSpanAt,
+  mergeSelectionRanges,
+  type ClipSelectionRef
+} from '@renderer/utils/timelineLayout';
 import type { Clip, FilterActiveSpan, NudgeSpan, TransportBlock } from '@renderer/utils/types';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
@@ -45,7 +48,7 @@ export function useTimelineController(opts: {
   const storedW = storageGet<number>(STORAGE_KEYS.sessionWaveformHeight, ROW_H);
   const waveformHeight = ref(typeof storedW === 'number' ? storedW : ROW_H);
 
-  const clipSelection = ref<ClipSelectionRef | null>(null);
+  const clipSelection = ref<ClipSelectionRef[]>([]);
   const unlockedBlockIds = ref<Set<number>>(new Set());
   const filterSelection = ref<{ deck: string; startMs: number; endMs: number } | null>(null);
 
@@ -83,22 +86,55 @@ export function useTimelineController(opts: {
     return span ? { deck: sel.deck, span } : null;
   }
 
-  function selectBlock(block: TransportBlock, ms: number): void {
-    if (block.loop && unlockedBlockIds.value.has(block.blockId)) {
-      // Pick the iteration under the cursor.
-      const iterations = opts
-        .getClips()
-        .filter((clip) => clip.deck === block.deck && clip.blockId === block.blockId)
-        .sort((first, second) => first.sessionStartMs - second.sessionStartMs);
-      const iteration =
-        iterations.find((clip) => ms >= clip.sessionStartMs && ms <= clip.sessionEndMs) ??
-        iterations[0];
-      clipSelection.value = iteration
-        ? { deck: block.deck, blockId: block.blockId, iterationStartMs: iteration.sessionStartMs }
-        : { deck: block.deck, blockId: block.blockId, iterationStartMs: null };
-    } else {
-      clipSelection.value = { deck: block.deck, blockId: block.blockId, iterationStartMs: null };
+  // A click's selection span: the iteration of an unlocked loop block, the
+  // whole block for a locked loop, or the constant-BPM region under the cursor
+  // for a regular block (which is the whole block when it has one region).
+  function clickSelectionRef(block: TransportBlock, ms: number): ClipSelectionRef {
+    if (block.loop) {
+      if (unlockedBlockIds.value.has(block.blockId)) {
+        const iterations = opts
+          .getClips()
+          .filter((clip) => clip.deck === block.deck && clip.blockId === block.blockId)
+          .sort((first, second) => first.sessionStartMs - second.sessionStartMs);
+        const iteration =
+          iterations.find((clip) => ms >= clip.sessionStartMs && ms <= clip.sessionEndMs) ??
+          iterations[0];
+        if (iteration) {
+          return {
+            deck: block.deck,
+            startMs: iteration.sessionStartMs,
+            endMs: iteration.sessionEndMs
+          };
+        }
+      }
+      return { deck: block.deck, startMs: block.startMs, endMs: block.endMs };
     }
+    const clip = opts
+      .getClips()
+      .find((candidate) => candidate.deck === block.deck && candidate.blockId === block.blockId);
+    if (!clip) return { deck: block.deck, startMs: block.startMs, endMs: block.endMs };
+    return { deck: block.deck, ...bpmRegionSpanAt(clip, ms) };
+  }
+
+  function sameRef(first: ClipSelectionRef, second: ClipSelectionRef): boolean {
+    return (
+      first.deck === second.deck && first.startMs === second.startMs && first.endMs === second.endMs
+    );
+  }
+
+  function applySelection(refs: ClipSelectionRef[], additive: boolean): void {
+    if (!additive) {
+      clipSelection.value = refs;
+      return;
+    }
+    // Cmd/Ctrl toggles each span in and out of the selection.
+    const current = [...clipSelection.value];
+    for (const ref of refs) {
+      const at = current.findIndex((existing) => sameRef(existing, ref));
+      if (at >= 0) current.splice(at, 1);
+      else current.push(ref);
+    }
+    clipSelection.value = current;
   }
 
   async function handleIntent(intent: Intent): Promise<void> {
@@ -163,17 +199,22 @@ export function useTimelineController(opts: {
         await editStore.commitClipTrim(opts.getClips(), intent.block, intent.edge, intent.newMs);
         break;
       case 'clip.delete':
-        clipSelection.value = null;
+        clipSelection.value = [];
         opts.requestRender();
-        await editStore.commitClipDelete(opts.getClips(), intent.block);
+        await editStore.commitRangesDelete(opts.getClips(), intent.ranges);
         break;
       case 'clip.select':
-        selectBlock(intent.block, intent.ms);
+        applySelection([clickSelectionRef(intent.block, intent.ms)], intent.additive);
+        filterSelection.value = null;
+        opts.requestRender();
+        break;
+      case 'clip.selectRange':
+        applySelection(intent.targets, intent.additive);
         filterSelection.value = null;
         opts.requestRender();
         break;
       case 'clip.clearSelection':
-        clipSelection.value = null;
+        clipSelection.value = [];
         opts.requestRender();
         break;
       case 'loopBlock.toggleUnlock': {
@@ -181,7 +222,7 @@ export function useTimelineController(opts: {
         if (ids.has(intent.block.blockId)) ids.delete(intent.block.blockId);
         else ids.add(intent.block.blockId);
         unlockedBlockIds.value = ids;
-        selectBlock(intent.block, intent.ms);
+        applySelection([clickSelectionRef(intent.block, intent.ms)], false);
         opts.requestRender();
         break;
       }
@@ -191,7 +232,7 @@ export function useTimelineController(opts: {
           startMs: intent.span.startMs,
           endMs: intent.span.endMs
         };
-        clipSelection.value = null;
+        clipSelection.value = [];
         opts.requestRender();
         break;
       case 'filterRegion.clearSelection':
@@ -223,7 +264,7 @@ export function useTimelineController(opts: {
           startMs: intent.span.startMs + intent.deltaMs,
           endMs: intent.span.endMs + intent.deltaMs
         };
-        clipSelection.value = null;
+        clipSelection.value = [];
         await editStore.moveFilterSpan(
           intent.deck,
           intent.span.startMs,
@@ -261,15 +302,11 @@ export function useTimelineController(opts: {
     opts.requestRender();
   }
 
-  // Resolves the current clip selection back to a live block and deletes it
-  // through the intent path (which clears the selection and commits the edit).
-  function deleteSelectedClip(): void {
-    const sel = clipSelection.value;
-    if (!sel) return;
-    const block = blocksForDeck(opts.getClips(), sel.deck).find(
-      (candidate) => candidate.blockId === sel.blockId
-    );
-    if (block) handleIntent({ type: 'clip.delete', block });
+  // Deletes every selected span through the intent path (which clears the
+  // selection and commits one edit); overlapping spans merge per deck.
+  function deleteSelectedRanges(): void {
+    if (clipSelection.value.length === 0) return;
+    handleIntent({ type: 'clip.delete', ranges: mergeSelectionRanges(clipSelection.value) });
   }
 
   return {
@@ -289,7 +326,7 @@ export function useTimelineController(opts: {
     accentFor,
     selectedFilterSpan,
     deleteSelectedFilterSpan,
-    deleteSelectedClip,
+    deleteSelectedRanges,
     handleIntent
   };
 }

@@ -12,8 +12,9 @@ pub mod timeline;
 
 pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
-    block_bounds, blocks_for_deck, delete_transport_block, move_transport_block,
-    trim_transport_block, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
+    block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
+    delete_transport_ranges, move_transport_block, trim_transport_block, DeleteRange, Edge,
+    MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
@@ -155,6 +156,22 @@ mod wasm {
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
         events_to_json(crate::delete_transport_block(&events, &clips, &block))
+    }
+
+    /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range
+    /// covering a whole block deletes it, an edge range trims, an interior
+    /// range splits the block. Returns the events JSON.
+    #[wasm_bindgen(js_name = deleteTransportRanges)]
+    pub fn delete_transport_ranges(
+        events_json: &str,
+        clips_json: &str,
+        ranges_json: &str,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let clips = parse_clips(clips_json)?;
+        let ranges: Vec<crate::DeleteRange> =
+            serde_json::from_str(ranges_json).map_err(|e| JsError::new(&e.to_string()))?;
+        events_to_json(crate::delete_transport_ranges(&events, &clips, &ranges))
     }
 
     fn parse_points(points_json: &str) -> Result<Vec<crate::LanePoint>, JsError> {

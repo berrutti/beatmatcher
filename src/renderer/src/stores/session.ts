@@ -4,33 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
-
-export type SessionEvent = {
-  elapsed_ms: number;
-  type: string;
-  deck?: string;
-  path?: string;
-  sec?: number;
-  gain?: number;
-  band?: string;
-  db?: number;
-  value?: number;
-  active?: boolean;
-  rate?: number;
-  percent?: number;
-  quantized?: boolean;
-  beat_offset_sec?: number;
-  start_sec?: number;
-  end_sec?: number;
-  is_playing?: boolean;
-  position_sec?: number;
-  cue_point_sec?: number;
-  loop_active?: boolean;
-  loop_end_sec?: number;
-  bpm?: number;
-  playback_rate?: number;
-  duration?: number;
-};
+import type { SessionEvent } from '@renderer/utils/types';
 
 export type ParsedSession = {
   version: number;

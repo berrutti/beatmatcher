@@ -1,4 +1,4 @@
-import type { Clip } from '@renderer/utils/types';
+import type { Clip, TransportBlock, WaveSegment } from '@renderer/utils/types';
 import type { DeckId } from '@renderer/stores/decks';
 import { ROW_H, type LaneKey, type RowLayout, type SublaneLayout } from './timelineDraw';
 
@@ -56,27 +56,107 @@ export function clipGestureDeltaSec(
   return (targetMs - (kind === 'trim-start' ? blockStartMs : blockEndMs)) / 1000;
 }
 
+// A selected span on a deck's clip band: a whole block, a loop iteration, or a
+// constant-BPM region inside a block. Spans are wall-time and stay meaningful
+// only until the clips rebuild (selections are cleared on every rebuild).
 export type ClipSelectionRef = {
   deck: string;
-  blockId: number;
-  iterationStartMs: number | null;
+  startMs: number;
+  endMs: number;
 };
 
-export function selectionSpanFor(
-  selection: ClipSelectionRef | null,
-  clips: Clip[],
+export function selectionSpansFor(
+  selections: ClipSelectionRef[],
   deckId: string
-): { startMs: number; endMs: number } | null {
-  if (!selection || selection.deck !== deckId) return null;
-  let startMs = Infinity;
-  let endMs = -Infinity;
-  for (const clip of clips) {
-    if (clip.deck !== deckId || clip.blockId !== selection.blockId) continue;
-    if (selection.iterationStartMs !== null && clip.sessionStartMs !== selection.iterationStartMs) {
-      continue;
+): { startMs: number; endMs: number }[] {
+  return selections
+    .filter((selection) => selection.deck === deckId)
+    .map(({ startMs, endMs }) => ({ startMs, endMs }));
+}
+
+// The BPM labels round to 0.1 (drawClipBpmLabels), so segments whose displayed
+// tempo matches at that precision read as one region.
+const BPM_REGION_EPSILON = 0.05;
+
+function segmentBpm(clip: Clip, segment: WaveSegment): number | null {
+  if (clip.bpm === null || clip.bpm <= 0) return null;
+  const wallSec = (segment.wallEndMs - segment.wallStartMs) / 1000;
+  const trackSpan = segment.trackEndSec - segment.trackStartSec;
+  if (wallSec <= 0 || trackSpan <= 0) return null;
+  return clip.bpm * (trackSpan / wallSec);
+}
+
+// The constant-BPM region under `ms`: the run of adjacent wave segments whose
+// displayed tempo matches the clicked one. Whole clip when the track has no
+// grid or no segment contains ms.
+export function bpmRegionSpanAt(clip: Clip, ms: number): { startMs: number; endMs: number } {
+  const segments = clip.waveSegments;
+  const index = segments.findIndex(
+    (segment) => ms >= segment.wallStartMs && ms <= segment.wallEndMs
+  );
+  const target = index >= 0 ? segmentBpm(clip, segments[index]) : null;
+  if (target === null) return { startMs: clip.sessionStartMs, endMs: clip.sessionEndMs };
+  const matches = (segment: WaveSegment) => {
+    const bpm = segmentBpm(clip, segment);
+    return bpm !== null && Math.abs(bpm - target) < BPM_REGION_EPSILON;
+  };
+  let lo = index;
+  while (lo > 0 && matches(segments[lo - 1])) lo--;
+  let hi = index;
+  while (hi < segments.length - 1 && matches(segments[hi + 1])) hi++;
+  return { startMs: segments[lo].wallStartMs, endMs: segments[hi].wallEndMs };
+}
+
+// Selection targets for a marquee rectangle: for each deck whose waveform
+// strip crosses the rect vertically, the rect's time range clipped to each
+// block it touches, so a partial overlap selects (and deletes) just that part.
+export function marqueeTargets(
+  rows: { deckId: string; top: number; waveformHeight: number }[],
+  blocksFor: (deck: string) => TransportBlock[],
+  rect: { x0: number; x1: number; y0: number; y1: number },
+  xToMs: (x: number) => number
+): ClipSelectionRef[] {
+  const startMs = xToMs(Math.min(rect.x0, rect.x1));
+  const endMs = xToMs(Math.max(rect.x0, rect.x1));
+  const yTop = Math.min(rect.y0, rect.y1);
+  const yBottom = Math.max(rect.y0, rect.y1);
+  const targets: ClipSelectionRef[] = [];
+  for (const row of rows) {
+    if (row.top + row.waveformHeight < yTop || row.top > yBottom) continue;
+    for (const block of blocksFor(row.deckId)) {
+      if (block.endMs <= startMs || block.startMs >= endMs) continue;
+      targets.push({
+        deck: row.deckId,
+        startMs: Math.max(block.startMs, startMs),
+        endMs: Math.min(block.endMs, endMs)
+      });
     }
-    startMs = Math.min(startMs, clip.sessionStartMs);
-    endMs = Math.max(endMs, clip.sessionEndMs);
   }
-  return startMs <= endMs ? { startMs, endMs } : null;
+  return targets;
+}
+
+// Overlapping or touching spans on the same deck merge into one delete range,
+// so Delete issues a minimal set of edits.
+export function mergeSelectionRanges(selections: ClipSelectionRef[]): ClipSelectionRef[] {
+  const byDeck = new Map<string, ClipSelectionRef[]>();
+  for (const selection of selections) {
+    const list = byDeck.get(selection.deck);
+    if (list) list.push(selection);
+    else byDeck.set(selection.deck, [selection]);
+  }
+  const merged: ClipSelectionRef[] = [];
+  for (const list of byDeck.values()) {
+    list.sort((first, second) => first.startMs - second.startMs);
+    let current = { ...list[0] };
+    for (const selection of list.slice(1)) {
+      if (selection.startMs <= current.endMs) {
+        current.endMs = Math.max(current.endMs, selection.endMs);
+      } else {
+        merged.push(current);
+        current = { ...selection };
+      }
+    }
+    merged.push(current);
+  }
+  return merged;
 }

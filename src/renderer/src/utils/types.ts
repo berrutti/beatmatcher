@@ -1,11 +1,35 @@
+// One recorded .bms event, exactly as serialized (snake_case payload fields).
+// Lives here rather than in the session store so the pure edit/timeline utils
+// never import from a store (that made stores <-> utils circular).
+export type SessionEvent = {
+  elapsed_ms: number;
+  type: string;
+  deck?: string;
+  path?: string;
+  sec?: number;
+  gain?: number;
+  band?: string;
+  db?: number;
+  value?: number;
+  active?: boolean;
+  rate?: number;
+  percent?: number;
+  quantized?: boolean;
+  beat_offset_sec?: number;
+  start_sec?: number;
+  end_sec?: number;
+  is_playing?: boolean;
+  position_sec?: number;
+  cue_point_sec?: number;
+  loop_active?: boolean;
+  loop_end_sec?: number;
+  bpm?: number;
+  playback_rate?: number;
+  duration?: number;
+};
+
 export type EditableLaneKey =
-  | 'gain'
-  | 'eqLow'
-  | 'eqMid'
-  | 'eqHigh'
-  | 'filter'
-  | 'rate'
-  | 'masterGain';
+  'gain' | 'eqLow' | 'eqMid' | 'eqHigh' | 'filter' | 'rate' | 'masterGain';
 
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips
