@@ -15,6 +15,7 @@ function cursorFor(hit: Hit | null, editMode = true, shiftKey = false): string {
     camera: {} as GestureDeps['camera'],
     emit: () => {},
     getItems: () => (hit ? [fakeItem(hit)] : []),
+    getRows: () => [],
     getVc: () => ({}) as ViewContext,
     getClips: () => [],
     getEvents: () => [],

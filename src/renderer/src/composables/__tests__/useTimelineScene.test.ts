@@ -50,7 +50,7 @@ function input(overlays: SceneItem[]) {
     audibleFor: () => true,
     soloFor: () => false,
     mutedFor: () => false,
-    clipSelection: null,
+    clipSelection: [],
     filterSelection: null,
     scrollY: 0,
     maxScrollY: 0,

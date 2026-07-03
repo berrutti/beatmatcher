@@ -1,5 +1,4 @@
-import type { SessionEvent } from '@renderer/stores/session';
-import type { EditableLaneKey, LanePoint } from '@renderer/utils/types';
+import type { SessionEvent, EditableLaneKey, LanePoint } from '@renderer/utils/types';
 import {
   DEFAULT_GAIN,
   DEFAULT_EQ_DB,

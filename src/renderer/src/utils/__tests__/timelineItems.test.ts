@@ -65,7 +65,7 @@ describe('clip hit-test', () => {
     lanes: []
   } as unknown as RowLayout;
   const clips = [clipAt('A', 1000, 5000)];
-  const item = clipBandItem(row, clips, [], new Map(), '#fff', true, null);
+  const item = clipBandItem(row, clips, [], new Map(), '#fff', true, []);
 
   it('reports a trim edge only within the grab tolerance, body otherwise', () => {
     expect(item.hitTest({ x: 1000, y: 10 }, vc)?.part).toBe('start');

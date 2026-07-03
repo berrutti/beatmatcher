@@ -141,6 +141,7 @@ import {
   PADDING,
   makeMsToX,
   type LaneKey,
+  type RowLayout,
   type TrackWaveform
 } from '@renderer/utils/timelineDraw';
 import { overlapsRange } from '@renderer/utils/timelineView';
@@ -197,7 +198,9 @@ const { deckMenu, lanePicker, filterMenu } = controller;
 
 // The scene built on the last frame; pointer hit-testing runs against it with a
 // freshly computed ViewContext (same canvas size, so geometry stays consistent).
+// The rows ride along for the marquee's rect-to-deck mapping.
 let sceneItems: SceneItem[] = [];
+let sceneRows: RowLayout[] = [];
 
 function viewContext(): ViewContext {
   const el = scrollEl.value;
@@ -208,6 +211,7 @@ const gestures = useTimelineGestures({
   camera,
   emit: controller.handleIntent,
   getItems: () => sceneItems,
+  getRows: () => sceneRows,
   getVc: viewContext,
   getClips: () => props.clips,
   getEvents: () => sessionStore.session?.events ?? [],
@@ -287,6 +291,7 @@ function render(): void {
   if (sizerEl.value) sizerEl.value.style.height = `${camera.maxScrollY()}px`;
   if (scroll.scrollTop !== camera.scrollY.value) scroll.scrollTop = camera.scrollY.value;
   sceneItems = scene.items;
+  sceneRows = scene.rows;
   renderScene(ctx, scene.items, vc);
 }
 
@@ -533,9 +538,9 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (!editStore.editMode) return;
-  if (controller.clipSelection.value) {
+  if (controller.clipSelection.value.length > 0) {
     e.preventDefault();
-    controller.deleteSelectedClip();
+    controller.deleteSelectedRanges();
   } else if (controller.filterSelection.value) {
     e.preventDefault();
     controller.deleteSelectedFilterSpan(props.deckLanes);
@@ -551,7 +556,7 @@ function onKeyUp(e: KeyboardEvent): void {
 watch(
   () => props.clips,
   () => {
-    controller.clipSelection.value = null;
+    controller.clipSelection.value = [];
     controller.unlockedBlockIds.value = new Set();
   }
 );
@@ -559,7 +564,7 @@ watch(
   () => editStore.editMode,
   (on) => {
     if (!on) {
-      controller.clipSelection.value = null;
+      controller.clipSelection.value = [];
       controller.unlockedBlockIds.value = new Set();
     }
   }
