@@ -395,6 +395,10 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 deck.load_span_start_ms = Some(ev.elapsed_ms);
                 deck.load_span_path = deck.path.clone();
                 deck.track_pos_sec = 0.0;
+                // The engine fully resets the deck on load (playback_rate = 1.0 in
+                // load_track), and the sim mirrors it; recorded sessions re-seed the
+                // rate right after, but an edited stream may not.
+                deck.rate = 1.0;
                 deck.nudge_factor = 1.0;
                 // A freshly loaded track has no grid until set_beat_grid/analyze.
                 deck.bpm = None;
@@ -1395,6 +1399,35 @@ mod tests {
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - 3.04).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_track_resets_playback_rate_like_the_engine() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev("load_track", 0.0, Some("A"))
+            },
+            SessionEvent {
+                rate: Some(1.5),
+                ..ev("set_playback_rate", 100.0, Some("A"))
+            },
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 2000.0, Some("A")),
+            SessionEvent {
+                path: Some("/t/b.mp3".to_string()),
+                ..ev("load_track", 3000.0, Some("A"))
+            },
+            ev("play", 4000.0, Some("A")),
+            ev("stop", 6000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 2);
+        assert!((clips[1].playback_rate - 1.0).abs() < 1e-6);
+        // 2s of wall time advance 2s of track at the reset rate, not 3s at the
+        // stale 1.5.
+        let seg = &clips[1].wave_segments[0];
+        assert!((seg.track_end_sec - seg.track_start_sec - 2.0).abs() < 1e-6);
     }
 
     #[test]

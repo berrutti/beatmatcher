@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
-import { useSessionStore, type SessionEvent, type ParsedSession } from './session';
+import { useSessionStore, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
 import {
   laneSpecFor,
@@ -22,13 +22,14 @@ import {
   setRateSpan,
   moveTransportBlock,
   trimTransportBlock,
-  deleteTransportBlock
+  deleteTransportRanges
 } from '@renderer/utils/sessionCore';
 import {
   TransportBlock,
   type EditableLaneKey,
   type Clip,
-  type LanePoint
+  type LanePoint,
+  type SessionEvent
 } from '@renderer/utils/types';
 
 export type SelectedLane = { deck: string; lane: EditableLaneKey };
@@ -248,11 +249,14 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
   }
 
-  async function commitClipDelete(clips: Clip[], block: TransportBlock): Promise<void> {
+  async function commitRangesDelete(
+    clips: Clip[],
+    ranges: { deck: string; startMs: number; endMs: number }[]
+  ): Promise<void> {
     const session = sessionStore.session;
-    if (!session) return;
+    if (!session || ranges.length === 0) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
-    applyEdit(deleteTransportBlock(session.events, clips, block));
+    applyEdit(deleteTransportRanges(session.events, clips, ranges));
   }
 
   // Opens a folder picker and resolves every missing track found under it
@@ -346,7 +350,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   return {
     canRedo,
     canUndo,
-    commitClipDelete,
+    commitRangesDelete,
     commitClipMove,
     commitClipTrim,
     commitFilterActiveToggle,

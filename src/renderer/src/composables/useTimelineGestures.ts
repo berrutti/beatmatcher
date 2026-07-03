@@ -24,9 +24,10 @@ import {
   resizeLeftEdge,
   resizeRightEdge
 } from '@renderer/utils/timelineView';
-import { ghostSpan, clipGestureDeltaSec } from '@renderer/utils/timelineLayout';
+import { ghostSpan, clipGestureDeltaSec, marqueeTargets } from '@renderer/utils/timelineLayout';
 import { laneSpecFor, formatLaneValue } from '@renderer/utils/sessionEditOps';
-import { blockBounds, filterActiveAt } from '@renderer/utils/sessionCore';
+import { blockBounds, blocksForDeck, filterActiveAt } from '@renderer/utils/sessionCore';
+import type { RowLayout } from '@renderer/utils/timelineDraw';
 import type {
   EditableLaneKey,
   TransportBlock,
@@ -40,7 +41,7 @@ import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents'
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
 const MIN_BLOCK_MS = 100;
-import type { SessionEvent } from '@renderer/stores/session';
+import type { SessionEvent } from '@renderer/utils/types';
 
 const MIN_VIEW_MS = 200;
 
@@ -59,6 +60,7 @@ export type GestureDeps = {
   camera: Camera;
   emit: IntentHandler;
   getItems: () => SceneItem[];
+  getRows: () => RowLayout[];
   getVc: () => ViewContext;
   getClips: () => Clip[];
   getEvents: () => SessionEvent[];
@@ -137,7 +139,8 @@ type ActiveGesture =
       span: FilterActiveSpan;
       grabMs: number;
       deltaMs: number;
-    };
+    }
+  | { kind: 'marquee'; additive: boolean; start: Point; current: Point };
 
 export function useTimelineGestures(deps: GestureDeps) {
   let active: ActiveGesture | null = null;
@@ -249,6 +252,12 @@ export function useTimelineGestures(deps: GestureDeps) {
           armNudge(hit.deck!, rowTop, vc, pt);
           return;
         }
+        // Cmd/Ctrl+drag draws a marquee even over clips (a plain press would
+        // grab the block); without a drag the click toggles the block instead.
+        if (e.metaKey || e.ctrlKey) {
+          active = { kind: 'marquee', additive: true, start: pt, current: pt };
+          return;
+        }
         const edge = hit.part === 'start' || hit.part === 'end' ? hit.part : null;
         armClip(block, rowTop, edge, vc, pt);
         return;
@@ -292,6 +301,12 @@ export function useTimelineGestures(deps: GestureDeps) {
       case 'clipBand': {
         if (deps.isEditMode() && e.shiftKey) {
           armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, vc, pt);
+          return;
+        }
+        // Dragging empty band space in edit mode rubber-band selects; panning
+        // stays available via wheel, the overview, and outside edit mode.
+        if (deps.isEditMode()) {
+          active = { kind: 'marquee', additive: e.metaKey || e.ctrlKey, start: pt, current: pt };
           return;
         }
         break;
@@ -383,6 +398,10 @@ export function useTimelineGestures(deps: GestureDeps) {
         updateClip(active, clampMs(vc.xToMs(pt.x), deps.durationMs()));
         deps.requestRender();
         return;
+      case 'marquee':
+        active.current = pt;
+        deps.requestRender();
+        return;
     }
   }
 
@@ -469,6 +488,23 @@ export function useTimelineGestures(deps: GestureDeps) {
         else if (Math.abs(gesture.deltaMs) >= 1)
           deps.emit({ type: 'clip.move', block: gesture.block, deltaMs: gesture.deltaMs });
         break;
+      case 'marquee': {
+        if (!dragged) break; // a press without movement is a click (select/scrub)
+        const targets = marqueeTargets(
+          deps.getRows(),
+          (deck) => blocksForDeck(deps.getClips(), deck),
+          {
+            x0: gesture.start.x,
+            x1: gesture.current.x,
+            y0: gesture.start.y,
+            y1: gesture.current.y
+          },
+          deps.getVc().xToMs
+        );
+        deps.emit({ type: 'clip.selectRange', targets, additive: gesture.additive });
+        deps.emit({ type: 'filterRegion.clearSelection' });
+        break;
+      }
     }
     deps.setCursor('');
     deps.requestRender();
@@ -490,9 +526,12 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
     if (hit.target === 'clip') {
       const { block } = hit.data as { block: TransportBlock };
-      deps.emit({ type: 'clip.select', block, ms });
+      const additive = deps.isEditMode() && (e.metaKey || e.ctrlKey);
+      deps.emit({ type: 'clip.select', block, ms, additive });
       deps.emit({ type: 'filterRegion.clearSelection' });
-      deps.emit({ type: 'seek', ms });
+      // Cmd/Ctrl-click only edits the selection; moving the playhead too would
+      // make assembling a multi-selection jumpy.
+      if (!additive) deps.emit({ type: 'seek', ms });
       return;
     }
     if (hit.target === 'filterRegion') {
@@ -525,8 +564,17 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
     if (hit.target === 'clip' && deps.isEditMode()) {
       const { block } = hit.data as { block: TransportBlock };
-      if (block.loop)
+      if (block.loop) {
         deps.emit({ type: 'loopBlock.toggleUnlock', block, ms: deps.getVc().xToMs(pt.x) });
+        return;
+      }
+      // Double-click a regular block: whole block (a single click picks only
+      // the BPM region under the cursor).
+      deps.emit({
+        type: 'clip.selectRange',
+        targets: [{ deck: block.deck, startMs: block.startMs, endMs: block.endMs }],
+        additive: false
+      });
     }
   }
 
@@ -656,6 +704,22 @@ export function useTimelineGestures(deps: GestureDeps) {
         )
       ];
     }
+    if (active.kind === 'marquee' && dragged) {
+      const gesture = active;
+      return [
+        overlay((ctx) => {
+          const x = Math.min(gesture.start.x, gesture.current.x);
+          const y = Math.min(gesture.start.y, gesture.current.y);
+          const w = Math.abs(gesture.current.x - gesture.start.x);
+          const h = Math.abs(gesture.current.y - gesture.start.y);
+          ctx.fillStyle = '#ffffff14';
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = '#ffffffcc';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x, y, w, h);
+        })
+      ];
+    }
     if (active.kind === 'clip' && dragged) {
       const gesture = active;
       const kind = gesture.edge ? (gesture.edge === 'start' ? 'trim-start' : 'trim-end') : 'move';
@@ -700,7 +764,8 @@ export function useTimelineGestures(deps: GestureDeps) {
       if (shiftKey) return 'crosshair';
       if (hit.target === 'clip')
         return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
-      return '';
+      // Empty band space rubber-band selects in edit mode.
+      return 'crosshair';
     }
     if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
     if (hit.target === 'laneDropdown') return 'pointer';

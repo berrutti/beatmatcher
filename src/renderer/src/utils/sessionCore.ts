@@ -12,7 +12,7 @@ import init, {
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
   trimTransportBlock as wasmTrim,
-  deleteTransportBlock as wasmDeleteBlock,
+  deleteTransportRanges as wasmDeleteRanges,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   spliceLaneEvents as wasmSplice,
@@ -29,8 +29,8 @@ import init, {
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
-import type { SessionEvent } from '@renderer/stores/session';
 import type {
+  SessionEvent,
   Clip,
   LoadedSpan,
   DeckLanes,
@@ -44,7 +44,7 @@ import type {
 let initPromise: Promise<void> | null = null;
 
 async function loadWasm(): Promise<void> {
-  await init(wasmUrl);
+  await init({ module_or_path: wasmUrl });
 }
 
 export function initSessionCore(): Promise<void> {
@@ -158,13 +158,16 @@ export function trimTransportBlock(
   return result;
 }
 
-export function deleteTransportBlock(
+// A range covering a whole block deletes it, an edge range trims it, and an
+// interior range splits the block (the right part keeps playing exactly the
+// audio it played before).
+export function deleteTransportRanges(
   events: SessionEvent[],
   clips: Clip[],
-  block: TransportBlock
+  ranges: { deck: string; startMs: number; endMs: number }[]
 ): SessionEvent[] {
   return parse(
-    wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block))
+    wasmDeleteRanges(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(ranges))
   );
 }
 
