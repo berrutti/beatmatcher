@@ -58,8 +58,20 @@ const LANE_SHORT_LABELS: Record<LaneKey, string> = {
   eqHigh: 'HI'
 };
 
+const BAR_HALF_HEIGHT_FRACTION = 0.45;
 const BEAT_LINE_COLOR = '#ffffff1f';
+const BPM_LABEL_BASELINE_OFFSET_PX = 10;
+const BPM_LABEL_LEFT_PAD_PX = 3;
+const CANVAS_BG_COLOR = '#0a0a0a';
+const CLIP_FILL_ALPHA = '55';
+const CLIP_GHOST_FILL_ALPHA = '50';
+const CLIP_GHOST_LABEL_RIGHT_MARGIN_PX = 60;
+const CLIP_GHOST_LABEL_Y_OFFSET_PX = 12;
+const CLIP_STROKE_ALPHA = 'cc';
+const CLIP_WAVEFORM_BAR_ALPHA = 'aa';
 const DECK_LABEL_INACTIVE_COLOR = '#555';
+const DECK_ROW_ZEBRA_COLOR_EVEN = '#161616';
+const DECK_ROW_ZEBRA_COLOR_ODD = '#131313';
 const DOWNBEAT_LINE_COLOR = '#ffffff4d';
 const EQ_BAND_COLORS_HIGH = '#3b82f6';
 const EQ_BAND_COLORS_LOW = '#ef4444';
@@ -68,11 +80,38 @@ const FILTER_ACTIVE_FILL = '#ffffff10';
 const FILTER_HPF_COLOR = '#fb923c';
 const FILTER_LPF_COLOR = '#38bdf8';
 const FILTER_NEUTRAL_COLOR = '#666666';
+const FRAME_GUTTER_COLOR = '#2a2a2a';
 const GAIN_COLOR = '#e5e5e5';
 const GAIN_MIN = 0;
 const GAIN_MAX = 1;
+const GESTURE_LABEL_CURSOR_GAP_PX = 8;
+const GESTURE_PREVIEW_LINE_COLOR = '#ffffffcc';
+const GESTURE_PREVIEW_LINE_WIDTH = 1.5;
+const LABEL_FONT = '9px monospace';
+const BOLD_LABEL_FONT = 'bold 9px monospace';
+const SUB_LABEL_FONT = '7px monospace';
+const BOLD_SUB_LABEL_FONT = 'bold 7px monospace';
+const LABEL_OUTLINE_LINE_WIDTH = 3;
+const LANE_BORDER_COLOR_GROUP_CHANGE = '#2a2a2a';
+const LANE_BORDER_COLOR_SAME_GROUP = '#2e2e2e';
+const LANE_CARET_OFFSET_PX = 6;
+const LANE_CENTER_LINE_COLOR = '#4a4a4a';
+const LANE_CENTER_LINE_DASH: [number, number] = [4, 4];
+const LANE_GROUP_BG_COLOR_EVEN = '#1a1a1a';
+const LANE_GROUP_BG_COLOR_ODD = '#141414';
+const LANE_LABEL_OFFSET_PX = 5;
+const LANE_VALUE_PAD_FRACTION = 4;
+const LANE_VALUE_PAD_MAX_PX = 8;
+const LOADED_SPAN_FILL_ALPHA = '18';
+const LOADED_SPAN_STROKE_ALPHA = '40';
+const MIN_DRAWABLE_CLIP_WIDTH_PX = 2;
+const MIN_DRAWABLE_SEG_WIDTH_PX = 1;
+const NUDGE_PREVIEW_LABEL_NEGATIVE_Y_OFFSET_PX = 6;
+const NUDGE_PREVIEW_LABEL_POSITIVE_Y_OFFSET_PX = 12;
+const NUDGE_PREVIEW_LABEL_RIGHT_MARGIN_PX = 30;
 // Tighter inset than the deck lanes' laneValuePad, sized for the short master row.
 const MASTER_GAIN_INSET_Y = 2;
+const MASTER_ROW_BG_COLOR = '#101010';
 const LANE_DROPDOWN_COLOR = '#06b6d4';
 const MASTER_LABEL_COLOR = '#888';
 const MIN_BEAT_SPACING_PX = 8;
@@ -87,8 +126,35 @@ const BPM_LABEL_MIN_PX = 30;
 const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
 const NUDGE_LINE_W = 2;
+const OVERVIEW_BORDER_COLOR = '#222';
+const OVERVIEW_CLIP_ALPHA = 'aa';
+const OVERVIEW_PLAYHEAD_COLOR = '#ffffffcc';
+const OVERVIEW_VIEWPORT_FILL_COLOR = '#ffffff15';
+const OVERVIEW_VIEWPORT_STROKE_COLOR = '#ffffff80';
+const PAINT_PREVIEW_LABEL_RIGHT_MARGIN_PX = 30;
+const PAINT_PREVIEW_LABEL_Y_OFFSET_PX = 6;
+const PAINT_PREVIEW_OFF_COLOR = '#00000060';
+const PAINT_PREVIEW_ON_COLOR = '#ffffff30';
+const PLAYHEAD_ALPHA = 0.9;
+const PLAYHEAD_COLOR = '#ffffff';
+const PLAYHEAD_LINE_WIDTH = 1.5;
 const RATE_COLOR = '#a78bfa';
+// So an endFrac landing exactly on an integer index (float rounding) still
+// truncates to the previous index, keeping sampleRegion's range exclusive.
+const SAMPLE_END_INDEX_EPSILON = 1e-9;
+const SELECTION_FILL_COLOR = 'rgba(255, 255, 255, 0.14)';
+const SELECTION_STROKE_COLOR = 'rgba(255, 255, 255, 0.9)';
 const SOLO_COLOR = '#eab308';
+const SOLO_MUTE_LABEL_OFFSET_PX = 11;
+const SPAN_LABEL_INSET_PX = 3;
+const SPAN_LABEL_MIN_PX = 40;
+const TEXT_FILL_COLOR = '#ffffff';
+const TEXT_OUTLINE_COLOR = '#000000cc';
+const TICK_LABEL_COLOR = '#555';
+const TICK_MARK_COLOR = '#333';
+const TICK_ROW_BG_COLOR = '#161616';
+const VALUE_PREVIEW_LABEL_RIGHT_MARGIN_PX = 40;
+const VALUE_PREVIEW_LABEL_Y_OFFSET_PX = 6;
 
 // Row divider: a dark gap topped by a bright hairline, heavier than the 1px
 // sublane-group separators so deck/master boundaries stand out.
@@ -133,7 +199,7 @@ function valueToY(
 // Vertical breathing room between the lane frame and its value area. Shared by
 // the renderer and the draw gesture so what you draw lands where it's rendered.
 export function laneValuePad(height: number): number {
-  return Math.min(8, height / 4);
+  return Math.min(LANE_VALUE_PAD_MAX_PX, height / LANE_VALUE_PAD_FRACTION);
 }
 
 export function yToValue(
@@ -183,7 +249,10 @@ function sampleRegion(region: WaveformRegion, startSec: number, endSec: number):
   if (endFrac <= 0 || startFrac >= 1) return null;
   const sampleCount = region.amps.length;
   const startIdx = Math.min(sampleCount - 1, Math.max(0, (startFrac * sampleCount) | 0));
-  const endIdx = Math.min(sampleCount - 1, Math.max(startIdx, (endFrac * sampleCount - 1e-9) | 0));
+  const endIdx = Math.min(
+    sampleCount - 1,
+    Math.max(startIdx, (endFrac * sampleCount - SAMPLE_END_INDEX_EPSILON) | 0)
+  );
   let sum = 0;
   for (let idx = startIdx; idx <= endIdx; idx++) sum += region.amps[idx];
   return sum / (endIdx - startIdx + 1);
@@ -202,17 +271,17 @@ function drawClipWaveform(
 
   const clipX0 = msToX(clip.sessionStartMs);
   const clipX1 = msToX(clip.sessionEndMs);
-  if (clipX1 - clipX0 < 2) return;
+  if (clipX1 - clipX0 < MIN_DRAWABLE_CLIP_WIDTH_PX) return;
 
   const centerY = rectY + rectHeight / 2;
-  const maxBarHalf = rectHeight * 0.45;
+  const maxBarHalf = rectHeight * BAR_HALF_HEIGHT_FRACTION;
   const base = waveform.base;
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(clipX0, rectY, clipX1 - clipX0, rectHeight);
   ctx.clip();
-  ctx.fillStyle = accent + 'aa';
+  ctx.fillStyle = accent + CLIP_WAVEFORM_BAR_ALPHA;
 
   // Only draw columns inside the visible track area: when zoomed in a clip can
   // be tens of thousands of pixels wide and drawing offscreen columns froze the UI.
@@ -222,7 +291,7 @@ function drawClipWaveform(
   for (const seg of clipWaveSegments(clip)) {
     const segX0 = msToX(seg.wallStartMs);
     const segWidth = msToX(seg.wallEndMs) - segX0;
-    if (segWidth < 1) continue;
+    if (segWidth < MIN_DRAWABLE_SEG_WIDTH_PX) continue;
     const segTrackSpan = seg.trackEndSec - seg.trackStartSec;
 
     const columnStart = Math.max(0, Math.floor(Math.max(visibleLeft, segX0) - segX0));
@@ -321,8 +390,8 @@ export function drawClipBpmLabels(
     const trackSpan = seg.trackEndSec - seg.trackStartSec;
     if (segWallSec <= 0 || trackSpan <= 0) continue;
     const bpm = clip.bpm * (trackSpan / segWallSec);
-    const labelX = Math.max(LABEL_W + 3, segX0 + 3);
-    drawOutlinedLabel(ctx, bpm.toFixed(1), labelX, clipY + 10);
+    const labelX = Math.max(LABEL_W + BPM_LABEL_LEFT_PAD_PX, segX0 + BPM_LABEL_LEFT_PAD_PX);
+    drawOutlinedLabel(ctx, bpm.toFixed(1), labelX, clipY + BPM_LABEL_BASELINE_OFFSET_PX);
   }
   ctx.restore();
 }
@@ -416,8 +485,8 @@ function drawLaneCenterLine(
 ): void {
   const centerY = valueToY(laneY, laneH, minVal, maxVal, centerValue);
   ctx.save();
-  ctx.strokeStyle = '#4a4a4a';
-  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = LANE_CENTER_LINE_COLOR;
+  ctx.setLineDash(LANE_CENTER_LINE_DASH);
   ctx.beginPath();
   ctx.moveTo(LABEL_W, centerY + 0.5);
   ctx.lineTo(canvasWidth - PADDING, centerY + 0.5);
@@ -523,13 +592,16 @@ export function drawDeckLanes(
     const prevGroup = laneIdx > 0 ? LANE_GROUP[sublanes[laneIdx - 1].key] : -1;
     const trackW = canvasWidth - LABEL_W - PADDING;
 
-    ctx.fillStyle = group % 2 === 0 ? '#1a1a1a' : '#141414';
+    ctx.fillStyle = group % 2 === 0 ? LANE_GROUP_BG_COLOR_EVEN : LANE_GROUP_BG_COLOR_ODD;
     ctx.fillRect(LABEL_W, top, trackW, height);
 
     // Frame the lane with a top border so it reads as a bounded panel rather
     // than bleeding into the waveform above. Drawn regardless of data so the
     // separation is consistent whether or not the deck/lane has content.
-    ctx.fillStyle = laneIdx > 0 && group !== prevGroup ? '#2a2a2a' : '#2e2e2e';
+    ctx.fillStyle =
+      laneIdx > 0 && group !== prevGroup
+        ? LANE_BORDER_COLOR_GROUP_CHANGE
+        : LANE_BORDER_COLOR_SAME_GROUP;
     ctx.fillRect(LABEL_W, top, trackW, 1);
 
     // The value curve needs deck data; the frame above does not.
@@ -566,10 +638,10 @@ export function drawLoadedSpan(
   const spanY = rowY + CLIP_BAND_INSET_Y;
   const spanHeight = rowH - 2 * CLIP_BAND_INSET_Y;
 
-  ctx.fillStyle = accent + '18';
+  ctx.fillStyle = accent + LOADED_SPAN_FILL_ALPHA;
   ctx.fillRect(spanX, spanY, spanWidth, spanHeight);
 
-  ctx.strokeStyle = accent + '40';
+  ctx.strokeStyle = accent + LOADED_SPAN_STROKE_ALPHA;
   ctx.lineWidth = 1;
   ctx.strokeRect(spanX + 0.5, spanY + 0.5, spanWidth - 1, spanHeight - 1);
 }
@@ -583,23 +655,28 @@ export function drawLoadedSpanLabel(
 ): void {
   const spanX = msToX(span.startMs);
   const spanWidth = Math.max(2, msToX(span.endMs) - spanX);
-  if (spanWidth <= 40) return;
+  if (spanWidth <= SPAN_LABEL_MIN_PX) return;
   const spanY = rowY + CLIP_BAND_INSET_Y;
   const spanHeight = rowH - 2 * CLIP_BAND_INSET_Y;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(spanX + 3, spanY, spanWidth - 6, spanHeight);
+  ctx.rect(
+    spanX + SPAN_LABEL_INSET_PX,
+    spanY,
+    spanWidth - SPAN_LABEL_INSET_PX * 2,
+    spanHeight
+  );
   ctx.clip();
-  ctx.font = '9px monospace';
+  ctx.font = LABEL_FONT;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  const textX = Math.max(LABEL_W + 3, spanX + 3);
+  const textX = Math.max(LABEL_W + SPAN_LABEL_INSET_PX, spanX + SPAN_LABEL_INSET_PX);
   const textY = spanY + spanHeight / 2;
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = '#000000cc';
+  ctx.lineWidth = LABEL_OUTLINE_LINE_WIDTH;
+  ctx.strokeStyle = TEXT_OUTLINE_COLOR;
   ctx.lineJoin = 'round';
   ctx.strokeText(span.trackName, textX, textY);
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = TEXT_FILL_COLOR;
   ctx.fillText(span.trackName, textX, textY);
   ctx.restore();
 }
@@ -618,13 +695,13 @@ export function drawClip(
   const clipY = rowY + CLIP_BAND_INSET_Y;
   const clipHeight = rowH - 2 * CLIP_BAND_INSET_Y;
 
-  ctx.fillStyle = accent + '55';
+  ctx.fillStyle = accent + CLIP_FILL_ALPHA;
   ctx.fillRect(clipX, clipY, clipWidth, clipHeight);
 
   drawClipWaveform(ctx, clip, waveform, clipY, clipHeight, accent, msToX);
   drawClipBeatGrid(ctx, clip, clipY, clipHeight, msToX);
 
-  ctx.strokeStyle = accent + 'cc';
+  ctx.strokeStyle = accent + CLIP_STROKE_ALPHA;
   ctx.lineWidth = 1;
   ctx.strokeRect(clipX + 0.5, clipY + 0.5, clipWidth - 1, clipHeight - 1);
 }
@@ -642,9 +719,9 @@ export function drawClipSelection(
   const selectionWidth = Math.max(2, msToX(endMs) - selectionX);
   const selectionY = rowY + CLIP_BAND_INSET_Y;
   const selectionHeight = rowH - 2 * CLIP_BAND_INSET_Y;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.fillStyle = SELECTION_FILL_COLOR;
   ctx.fillRect(selectionX, selectionY, selectionWidth, selectionHeight);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.strokeStyle = SELECTION_STROKE_COLOR;
   ctx.lineWidth = 1;
   ctx.strokeRect(selectionX + 0.5, selectionY + 0.5, selectionWidth - 1, selectionHeight - 1);
 }
@@ -684,7 +761,7 @@ export function drawOverview(
     return LABEL_W + (ms / totalMs) * trackWidth;
   }
 
-  ctx.fillStyle = '#0a0a0a';
+  ctx.fillStyle = CANVAS_BG_COLOR;
   ctx.fillRect(0, stripY, canvasWidth, OVERVIEW_H);
 
   const laneHeight = (OVERVIEW_H - 4) / DECK_ORDER.length;
@@ -692,7 +769,7 @@ export function drawOverview(
     const deckId = DECK_ORDER[deckIdx];
     const accent = accents[deckId] ?? DECK_ACCENTS[deckId];
     const overviewLaneY = stripY + 2 + deckIdx * laneHeight;
-    ctx.fillStyle = accent + 'aa';
+    ctx.fillStyle = accent + OVERVIEW_CLIP_ALPHA;
     for (const clip of clips) {
       if (clip.deck !== deckId) continue;
       const clipX = fullMsToX(clip.sessionStartMs);
@@ -702,19 +779,19 @@ export function drawOverview(
   }
 
   if (playheadMs > 0) {
-    ctx.fillStyle = '#ffffffcc';
+    ctx.fillStyle = OVERVIEW_PLAYHEAD_COLOR;
     ctx.fillRect(fullMsToX(playheadMs) - 0.5, stripY, 1, OVERVIEW_H);
   }
 
   const viewportX = fullMsToX(viewStart);
   const viewportWidth = Math.max(2, fullMsToX(viewEnd) - viewportX);
-  ctx.fillStyle = '#ffffff15';
+  ctx.fillStyle = OVERVIEW_VIEWPORT_FILL_COLOR;
   ctx.fillRect(viewportX, stripY, viewportWidth, OVERVIEW_H);
-  ctx.strokeStyle = '#ffffff80';
+  ctx.strokeStyle = OVERVIEW_VIEWPORT_STROKE_COLOR;
   ctx.lineWidth = 1;
   ctx.strokeRect(viewportX + 0.5, stripY + 0.5, Math.max(1, viewportWidth - 1), OVERVIEW_H - 1);
 
-  ctx.fillStyle = '#222';
+  ctx.fillStyle = OVERVIEW_BORDER_COLOR;
   ctx.fillRect(0, stripY - 1, canvasWidth, 1);
 
   return { y: stripY, h: OVERVIEW_H };
@@ -761,14 +838,14 @@ function drawOutlinedLabel(
   x: number,
   y: number
 ): void {
-  ctx.font = '9px monospace';
+  ctx.font = LABEL_FONT;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = '#000000cc';
+  ctx.lineWidth = LABEL_OUTLINE_LINE_WIDTH;
+  ctx.strokeStyle = TEXT_OUTLINE_COLOR;
   ctx.lineJoin = 'round';
   ctx.strokeText(text, x, y);
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = TEXT_FILL_COLOR;
   ctx.fillText(text, x, y);
 }
 
@@ -779,10 +856,11 @@ export function drawTickRow(
   view: ViewWindow,
   msToX: (ms: number) => number
 ): void {
-  // Fill tick-row gutters so they match the surrounding row background color
-  ctx.fillStyle = '#161616';
-  ctx.fillRect(0, 0, LABEL_W, TICK_H);
-  ctx.fillRect(canvasW - PADDING, 0, PADDING, TICK_H);
+  // Opaque background across the whole row: drawn last (on top of scrolled
+  // content, see useTimelineScene.ts) so it must cover rather than rely on
+  // painting over an empty canvas.
+  ctx.fillStyle = TICK_ROW_BG_COLOR;
+  ctx.fillRect(0, 0, canvasW, TICK_H);
 
   // Tick marks + time labels, clipped to the track area so labels don't bleed
   // into either gutter
@@ -793,14 +871,14 @@ export function drawTickRow(
   ctx.beginPath();
   ctx.rect(LABEL_W, 0, trackW, TICK_H);
   ctx.clip();
-  ctx.font = `9px monospace`;
+  ctx.font = LABEL_FONT;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   for (let ms = firstTick; ms <= viewEnd; ms += tickIntervalMs) {
     const tickX = msToX(ms);
-    ctx.fillStyle = '#333';
+    ctx.fillStyle = TICK_MARK_COLOR;
     ctx.fillRect(tickX, 0, 1, TICK_H);
-    ctx.fillStyle = '#555';
+    ctx.fillStyle = TICK_LABEL_COLOR;
     ctx.fillText(formatTickLabel(ms, tickIntervalMs), tickX + 3, TICK_H - 3);
   }
   ctx.restore();
@@ -820,18 +898,22 @@ export function drawDeckRowChrome(
   canvasW: number,
   chrome: DeckRowChrome
 ): void {
-  ctx.fillStyle = chrome.zebraIndex % 2 === 0 ? '#161616' : '#131313';
+  ctx.fillStyle = chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
   ctx.fillRect(0, row.top, canvasW, row.height);
 
-  ctx.font = `bold 9px monospace`;
+  ctx.font = BOLD_LABEL_FONT;
   ctx.fillStyle = chrome.audible ? chrome.accent : DECK_LABEL_INACTIVE_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(row.deckId, LABEL_W / 2, row.top + row.waveformHeight / 2);
   if (chrome.solo || chrome.muted) {
-    ctx.font = `bold 7px monospace`;
+    ctx.font = BOLD_SUB_LABEL_FONT;
     ctx.fillStyle = chrome.solo ? SOLO_COLOR : MUTE_COLOR;
-    ctx.fillText(chrome.solo ? 'S' : 'M', LABEL_W / 2, row.top + row.waveformHeight / 2 + 11);
+    ctx.fillText(
+      chrome.solo ? 'S' : 'M',
+      LABEL_W / 2,
+      row.top + row.waveformHeight / 2 + SOLO_MUTE_LABEL_OFFSET_PX
+    );
   }
 
   // The single automation lane's label doubles as a dropdown: its code (e.g.
@@ -841,10 +923,10 @@ export function drawDeckRowChrome(
     const lane = row.lanes[0];
     const centerY = lane.top + lane.height / 2;
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
-    ctx.font = `bold 9px monospace`;
-    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, centerY - 5);
-    ctx.font = `7px monospace`;
-    ctx.fillText('▾', LABEL_W / 2, centerY + 6);
+    ctx.font = BOLD_LABEL_FONT;
+    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, centerY - LANE_LABEL_OFFSET_PX);
+    ctx.font = SUB_LABEL_FONT;
+    ctx.fillText('▾', LABEL_W / 2, centerY + LANE_CARET_OFFSET_PX);
   }
 }
 
@@ -854,9 +936,9 @@ export function drawMasterRowChrome(
   height: number,
   canvasW: number
 ): void {
-  ctx.fillStyle = '#101010';
+  ctx.fillStyle = MASTER_ROW_BG_COLOR;
   ctx.fillRect(0, top, canvasW, height);
-  ctx.font = `bold 9px monospace`;
+  ctx.font = BOLD_LABEL_FONT;
   ctx.fillStyle = MASTER_LABEL_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -877,8 +959,8 @@ export function drawValueGesturePreview(
   // The line is bounded to its lane (centered strokes would otherwise spill past
   // the dividers at extreme values); the label is drawn after, outside the clip.
   withLaneClip(ctx, preview.top, preview.height, canvasW, () => {
-    ctx.strokeStyle = '#ffffffcc';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = GESTURE_PREVIEW_LINE_COLOR;
+    ctx.lineWidth = GESTURE_PREVIEW_LINE_WIDTH;
     ctx.beginPath();
     let prevY = valueToY(preview.top, preview.height, preview.min, preview.max, points[0].value);
     ctx.moveTo(msToX(points[0].ms), prevY);
@@ -898,8 +980,11 @@ export function drawValueGesturePreview(
     ctx.stroke();
   });
 
-  const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 40);
-  drawOutlinedLabel(ctx, label, labelX, preview.top - 6);
+  const labelX = Math.min(
+    msToX(labelMs) + GESTURE_LABEL_CURSOR_GAP_PX,
+    canvasW - PADDING - VALUE_PREVIEW_LABEL_RIGHT_MARGIN_PX
+  );
+  drawOutlinedLabel(ctx, label, labelX, preview.top - VALUE_PREVIEW_LABEL_Y_OFFSET_PX);
 }
 
 export function drawNudgeGesturePreview(
@@ -915,8 +1000,14 @@ export function drawNudgeGesturePreview(
 ): void {
   drawNudgeSpans(ctx, [{ startMs, endMs, percent }], rowTop, rowH, msToX);
   const label = `${percent > 0 ? '+' : ''}${percent}%`;
-  const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
-  const labelY = percent > 0 ? rowTop + 12 : rowTop + rowH - 6;
+  const labelX = Math.min(
+    msToX(cursorMs) + GESTURE_LABEL_CURSOR_GAP_PX,
+    canvasW - PADDING - NUDGE_PREVIEW_LABEL_RIGHT_MARGIN_PX
+  );
+  const labelY =
+    percent > 0
+      ? rowTop + NUDGE_PREVIEW_LABEL_POSITIVE_Y_OFFSET_PX
+      : rowTop + rowH - NUDGE_PREVIEW_LABEL_NEGATIVE_Y_OFFSET_PX;
   drawOutlinedLabel(ctx, label, labelX, labelY);
 }
 
@@ -933,10 +1024,13 @@ export function drawPaintGesturePreview(
 ): void {
   const paintX = msToX(startMs);
   const paintW = Math.max(1, msToX(endMs) - paintX);
-  ctx.fillStyle = want ? '#ffffff30' : '#00000060';
+  ctx.fillStyle = want ? PAINT_PREVIEW_ON_COLOR : PAINT_PREVIEW_OFF_COLOR;
   ctx.fillRect(paintX, top, paintW, height);
-  const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
-  drawOutlinedLabel(ctx, want ? 'ON' : 'OFF', labelX, top - 6);
+  const labelX = Math.min(
+    msToX(cursorMs) + GESTURE_LABEL_CURSOR_GAP_PX,
+    canvasW - PADDING - PAINT_PREVIEW_LABEL_RIGHT_MARGIN_PX
+  );
+  drawOutlinedLabel(ctx, want ? 'ON' : 'OFF', labelX, top - PAINT_PREVIEW_LABEL_Y_OFFSET_PX);
 }
 
 export function drawClipGhosts(
@@ -950,7 +1044,7 @@ export function drawClipGhosts(
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  ctx.fillStyle = accent + '50';
+  ctx.fillStyle = accent + CLIP_GHOST_FILL_ALPHA;
   ctx.strokeStyle = accent;
   ctx.lineWidth = 1;
   for (const ghost of ghosts) {
@@ -959,8 +1053,11 @@ export function drawClipGhosts(
     ctx.fillRect(ghostX, rowTop, ghostW, rowH);
     ctx.strokeRect(ghostX + 0.5, rowTop + 0.5, ghostW - 1, rowH - 1);
   }
-  const labelX = Math.min(msToX(labelMs) + 8, canvasW - PADDING - 60);
-  drawOutlinedLabel(ctx, label, labelX, rowTop + 12);
+  const labelX = Math.min(
+    msToX(labelMs) + GESTURE_LABEL_CURSOR_GAP_PX,
+    canvasW - PADDING - CLIP_GHOST_LABEL_RIGHT_MARGIN_PX
+  );
+  drawOutlinedLabel(ctx, label, labelX, rowTop + CLIP_GHOST_LABEL_Y_OFFSET_PX);
 }
 
 // One row divider, drawn full-width (including the label column). Used below
@@ -983,9 +1080,9 @@ export function drawRowDividers(
 }
 
 export function drawPlayhead(ctx: CanvasRenderingContext2D, x: number, bottomY: number): void {
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1.5;
-  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = PLAYHEAD_COLOR;
+  ctx.lineWidth = PLAYHEAD_LINE_WIDTH;
+  ctx.globalAlpha = PLAYHEAD_ALPHA;
   ctx.beginPath();
   ctx.moveTo(x, 0);
   ctx.lineTo(x, bottomY);
@@ -998,7 +1095,7 @@ export function drawFrameGutters(
   canvasW: number,
   canvasH: number
 ): void {
-  ctx.fillStyle = '#2a2a2a';
+  ctx.fillStyle = FRAME_GUTTER_COLOR;
   ctx.fillRect(LABEL_W - 1, 0, 1, canvasH);
   ctx.fillRect(canvasW - PADDING, 0, 1, canvasH);
 }

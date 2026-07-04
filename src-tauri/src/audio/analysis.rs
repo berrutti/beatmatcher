@@ -185,16 +185,19 @@ pub fn compute_amplitude_region(
         return vec![0.0; num_points];
     }
     let total_frames = samples.len() / channels;
-    let start = start_frame.min(total_frames.saturating_sub(1));
-    let end = end_frame.clamp(start + 1, total_frames);
+    let start = start_frame.min(total_frames);
+    let end = end_frame.max(start + 1);
+    // frames_per_point is based on the requested (possibly past-track-end) span,
+    // not the real track length, so a bin's position stays proportional to what
+    // the caller asked for. Bins that fall beyond total_frames are left silent
+    // instead of stretching the real audio to fill every point.
     let frames_per_point = (end - start) as f64 / num_points as f64;
     let mut result = Vec::with_capacity(num_points);
     for i in 0..num_points {
-        let bin_start = start + (i as f64 * frames_per_point) as usize;
-        let bin_end = (start + ((i + 1) as f64 * frames_per_point) as usize)
-            .min(end)
-            .max(bin_start + 1)
-            .min(total_frames);
+        let bin_start = (start as f64 + i as f64 * frames_per_point) as usize;
+        let bin_end = (start as f64 + (i + 1) as f64 * frames_per_point) as usize;
+        let bin_start = bin_start.min(total_frames);
+        let bin_end = bin_end.min(total_frames).max(bin_start);
         if bin_start >= bin_end {
             result.push(0.0);
             continue;
@@ -429,6 +432,31 @@ mod tests {
         (0..n)
             .map(|i| (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate).sin())
             .collect()
+    }
+
+    // Requesting a region that extends past the track's actual length (as the
+    // zoom-LOD padding in Timeline.vue does near a clip's end) must not compress
+    // real audio to fill every bin. The signal should land at the bin matching
+    // its true proportional position within the *requested* (unclamped) span,
+    // not within the clamped-to-track-length span.
+    #[test]
+    fn compute_amplitude_region_does_not_compress_past_track_end() {
+        let total_frames = 100;
+        let mut samples = vec![0.0f32; total_frames];
+        // Loud content at frames [40, 50), the true track's back half.
+        for sample in samples.iter_mut().take(50).skip(40) {
+            *sample = 1.0;
+        }
+        // Request spans [0, 200) frames: double the real track length, as
+        // happens when zoom padding overshoots the end of the track.
+        let result = compute_amplitude_region(&samples, 1, 0, 200, 10);
+
+        // Correct proportional position: 40/200 = 0.20 -> bin 2, 50/200 = 0.25 -> bin 2.
+        assert!(result[2] > 0.5, "expected loud bin at index 2, got {:?}", result);
+        // Buggy (pre-fix) behavior compresses the real track into bins 4-5
+        // (40/100 -> bin 4, 50/100 -> bin 5); those must stay silent here.
+        assert!(result[4] < 0.1, "index 4 should be silent, got {:?}", result);
+        assert!(result[5] < 0.1, "index 5 should be silent, got {:?}", result);
     }
 
     // --- interval_to_bpm ---

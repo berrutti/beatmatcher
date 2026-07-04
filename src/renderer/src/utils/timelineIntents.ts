@@ -57,6 +57,7 @@ export type Intent =
   | { type: 'clip.selectRange'; targets: ClipSelectionRef[]; additive: boolean }
   | { type: 'clip.clearSelection' }
   | { type: 'clip.delete'; ranges: ClipSelectionRef[] }
+  | { type: 'clip.split'; block: TransportBlock; ms: number }
   | { type: 'loopBlock.toggleUnlock'; block: TransportBlock; ms: number }
   // filter-region edits
   | { type: 'filterRegion.select'; deck: string; span: FilterActiveSpan }
@@ -78,6 +79,7 @@ export type Intent =
       clientY: number;
       nudge: NudgeSpan | null;
       bpm: BpmContext | null;
+      split: { block: TransportBlock; ms: number } | null;
     }
   | {
       type: 'menu.filterRegion';

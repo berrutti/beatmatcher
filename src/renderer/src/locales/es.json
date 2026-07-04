@@ -216,6 +216,7 @@
     "deleteFilterRegion": "Eliminar región de filtro",
     "setClipBpm": "Ajustar BPM (todo el clip)…",
     "setBpmFromHere": "Ajustar BPM desde aquí…",
+    "splitClip": "Dividir clip aquí",
     "mute": "Silenciar",
     "solo": "Solo",
     "lanesMenu": "Carriles"

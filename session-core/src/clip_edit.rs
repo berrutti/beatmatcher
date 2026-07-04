@@ -832,6 +832,51 @@ pub fn delete_block_range(
     stable_sort_by_ms(kept)
 }
 
+// Split a block into two independent blocks at `split_ms`, with no gap: a stop
+// immediately followed by a play at the same instant, the right part resuming
+// exactly the audio it already played (same construction as delete_block_range's
+// interior branch, but with nothing removed). A loop block splits into two
+// separate glued engagements of the same loop, the second re-entering at the
+// deck's exact in-loop position, so both halves keep their original phase. A
+// split within MIN_BLOCK_MS of either edge is rejected: it would leave a
+// degenerate sliver on one side.
+pub fn split_transport_block(
+    events: &[SessionEvent],
+    clips: &[Clip],
+    block: &TransportBlock,
+    split_ms: f64,
+) -> Vec<SessionEvent> {
+    let t0 = block.start_ms;
+    let t1 = block.end_ms;
+    if split_ms - t0 < MIN_BLOCK_MS || t1 - split_ms < MIN_BLOCK_MS {
+        return events.to_vec();
+    }
+    let deck = block.deck.as_str();
+
+    if block.loop_region.is_some() {
+        let Some(resume_sec) = loop_position_at(clips, block, split_ms) else {
+            return events.to_vec();
+        };
+        let mut kept = events.to_vec();
+        kept.extend(end_events_for(block, split_ms));
+        let mut resumed = block.clone();
+        resumed.track_start_sec = resume_sec;
+        kept.extend(start_events_for(&resumed, split_ms));
+        return stable_sort_by_ms(kept);
+    }
+
+    let resume_sec = (block.track_start_sec
+        + audio_seconds_between(events, deck, t0, split_ms, block.playback_rate))
+    .max(0.0);
+    let mut kept = events.to_vec();
+    kept.push(SessionEvent::at(split_ms, "stop", deck));
+    kept.push(SessionEvent {
+        sec: Some(resume_sec),
+        ..SessionEvent::at(split_ms, "play", deck)
+    });
+    stable_sort_by_ms(kept)
+}
+
 // The deck's track position at wall time `ms` inside a looping block, read off
 // the iteration clips' segment mapping (each iteration is one constant-rate
 // segment), so loop wrapping is already accounted for.
@@ -1304,6 +1349,53 @@ mod tests {
         assert!((seg_after.track_end_sec - seg_before.track_end_sec).abs() < 1e-6);
     }
 
+    #[test]
+    fn split_gaplessly_divides_a_block_at_the_split_point() {
+        let r1 = 1.0583;
+        let r2 = 1.0667;
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            SessionEvent {
+                rate: Some(r1),
+                ..ev(1.0, "set_playback_rate", "A")
+            },
+            ev(10_000.0, "play", "A"),
+            SessionEvent {
+                rate: Some(r2),
+                ..ev(60_000.0, "set_playback_rate", "A")
+            },
+            ev(120_000.0, "stop", "A"),
+        ];
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let out = split_transport_block(&events, &clips, &block, 30_000.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
+        assert_eq!(rebuilt.len(), 2);
+        assert!((rebuilt[0].session_start_ms - 10_000.0).abs() < 1.0);
+        assert!((rebuilt[0].session_end_ms - 30_000.0).abs() < 1.0);
+        // No gap: the right part starts exactly at the split point.
+        assert!((rebuilt[1].session_start_ms - 30_000.0).abs() < 1.0);
+        assert!((rebuilt[1].session_end_ms - 120_000.0).abs() < 1.0);
+        // 20s of wall time at r1 past the original start.
+        assert!((rebuilt[1].track_start_sec - 20.0 * r1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_too_close_to_an_edge_is_rejected() {
+        let events = vec![ev(1000.0, "play", "A"), ev(5000.0, "stop", "A")];
+        let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let out = split_transport_block(&events, &clips, &block, 1050.0);
+        assert_eq!(out.len(), events.len());
+        let out = split_transport_block(&events, &clips, &block, 4950.0);
+        assert_eq!(out.len(), events.len());
+    }
+
     // A session with a loop run: play from 0, loop 0..2s engaged at 2000 (the
     // playhead is exactly at the loop end, so it wraps to 0), exit at 8000,
     // regular tail until 10000. Iterations: [2000,4000) [4000,6000) [6000,8000),
@@ -1358,6 +1450,36 @@ mod tests {
             .unwrap();
         assert!(tail.loop_region.is_none());
         assert!(tail.track_start_sec.abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_loop_block_divides_the_run_gaplessly_at_the_original_phase() {
+        let events = looped_session();
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let block = loop_block_of(&clips);
+
+        // Split at 6500: 0.5s into the last iteration, which started at 6000.
+        let out = split_transport_block(&events, &clips, &block, 6500.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
+        let left_end = rebuilt
+            .iter()
+            .filter(|c| c.loop_region.is_some() && c.session_end_ms <= 6500.0 + 1.0)
+            .map(|c| c.session_end_ms)
+            .fold(0.0_f64, f64::max);
+        assert!((left_end - 6500.0).abs() < 1.0);
+        let resumed = rebuilt
+            .iter()
+            .find(|c| (c.session_start_ms - 6500.0).abs() < 1.0)
+            .unwrap();
+        assert!(resumed.loop_region.is_some());
+        assert!((resumed.track_start_sec - 0.5).abs() < 1e-6);
+        assert!((resumed.session_end_ms - 8000.0).abs() < 1.0);
+        // The tail after the loop is untouched.
+        let tail = rebuilt
+            .iter()
+            .find(|c| (c.session_start_ms - 8000.0).abs() < 1.0)
+            .unwrap();
+        assert!(tail.loop_region.is_none());
     }
 
     #[test]

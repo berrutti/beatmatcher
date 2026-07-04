@@ -13,6 +13,7 @@ import init, {
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
   trimTransportBlock as wasmTrim,
+  splitTransportBlock as wasmSplit,
   deleteTransportRanges as wasmDeleteRanges,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
@@ -192,6 +193,22 @@ export function trimTransportBlock(
   // No-op: preserve the input reference, same reasoning as moveTransportBlock.
   if (result.appliedMs === unchangedMs) return { events, appliedMs: result.appliedMs };
   return result;
+}
+
+// Splits a block into two at splitMs, gaplessly (a stop immediately followed
+// by a play, the right part resuming exactly the audio it already played). A
+// no-op (returns the same events reference) if splitMs is within minBlockMs of
+// either edge.
+export function splitTransportBlock(
+  events: SessionEvent[],
+  clips: Clip[],
+  block: TransportBlock,
+  splitMs: number
+): SessionEvent[] {
+  const result = parse<SessionEvent[]>(
+    wasmSplit(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block), splitMs)
+  );
+  return result.length === events.length ? events : result;
 }
 
 // A range covering a whole block deletes it, an edge range trims it, and an

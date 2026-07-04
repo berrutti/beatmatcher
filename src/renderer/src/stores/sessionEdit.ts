@@ -19,6 +19,7 @@ import {
   setRateSpan,
   moveTransportBlock,
   trimTransportBlock,
+  splitTransportBlock,
   deleteTransportRanges
 } from '@renderer/utils/sessionCore';
 import {
@@ -246,6 +247,13 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
   }
 
+  async function commitClipSplit(clips: Clip[], block: TransportBlock, splitMs: number): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    applyEdit(splitTransportBlock(session.events, clips, block, splitMs));
+  }
+
   async function commitRangesDelete(
     clips: Clip[],
     ranges: { deck: string; startMs: number; endMs: number }[]
@@ -350,6 +358,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     commitRangesDelete,
     commitClipMove,
     commitClipTrim,
+    commitClipSplit,
     commitFilterActiveToggle,
     commitGesture,
     commitNudgePaint,
