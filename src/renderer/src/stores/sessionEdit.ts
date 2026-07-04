@@ -247,7 +247,11 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
   }
 
-  async function commitClipSplit(clips: Clip[], block: TransportBlock, splitMs: number): Promise<void> {
+  async function commitClipSplit(
+    clips: Clip[],
+    block: TransportBlock,
+    splitMs: number
+  ): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;
     if (sessionStore.isPlaying) await sessionStore.stop();

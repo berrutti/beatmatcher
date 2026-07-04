@@ -452,11 +452,23 @@ mod tests {
         let result = compute_amplitude_region(&samples, 1, 0, 200, 10);
 
         // Correct proportional position: 40/200 = 0.20 -> bin 2, 50/200 = 0.25 -> bin 2.
-        assert!(result[2] > 0.5, "expected loud bin at index 2, got {:?}", result);
+        assert!(
+            result[2] > 0.5,
+            "expected loud bin at index 2, got {:?}",
+            result
+        );
         // Buggy (pre-fix) behavior compresses the real track into bins 4-5
         // (40/100 -> bin 4, 50/100 -> bin 5); those must stay silent here.
-        assert!(result[4] < 0.1, "index 4 should be silent, got {:?}", result);
-        assert!(result[5] < 0.1, "index 5 should be silent, got {:?}", result);
+        assert!(
+            result[4] < 0.1,
+            "index 4 should be silent, got {:?}",
+            result
+        );
+        assert!(
+            result[5] < 0.1,
+            "index 5 should be silent, got {:?}",
+            result
+        );
     }
 
     // --- interval_to_bpm ---

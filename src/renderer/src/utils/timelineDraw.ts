@@ -660,12 +660,7 @@ export function drawLoadedSpanLabel(
   const spanHeight = rowH - 2 * CLIP_BAND_INSET_Y;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(
-    spanX + SPAN_LABEL_INSET_PX,
-    spanY,
-    spanWidth - SPAN_LABEL_INSET_PX * 2,
-    spanHeight
-  );
+  ctx.rect(spanX + SPAN_LABEL_INSET_PX, spanY, spanWidth - SPAN_LABEL_INSET_PX * 2, spanHeight);
   ctx.clip();
   ctx.font = LABEL_FONT;
   ctx.textAlign = 'left';
@@ -898,7 +893,8 @@ export function drawDeckRowChrome(
   canvasW: number,
   chrome: DeckRowChrome
 ): void {
-  ctx.fillStyle = chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
+  ctx.fillStyle =
+    chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
   ctx.fillRect(0, row.top, canvasW, row.height);
 
   ctx.font = BOLD_LABEL_FONT;
