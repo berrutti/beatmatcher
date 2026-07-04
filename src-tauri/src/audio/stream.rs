@@ -4,23 +4,9 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 
-// ── cpal stream (Send wrapper) ────────────────────────────────────────────────
-//
-// cpal::Stream is !Send on some platforms (CoreAudio on macOS holds raw pointers).
-// We wrap it to allow storage in Tauri managed state. The stream is never moved
-// to another thread after creation; it's only kept alive by being held in AppAudio.
-
-// cpal::Stream is !Send because some platform backends (CoreAudio, WASAPI) require
-// the stream to be dropped on the thread that created it. We uphold this invariant
-// manually: a stream is only ever created, replaced, or dropped inside
-// rebuild_streams() (the old stream is dropped when the Mutex<Option<SendStream>> is
-// overwritten), plus the initial creation in AppAudio::new().
-//
-// SAFETY rests on all of those running on the SAME (main) thread. They do because the
-// only callers -- AppAudio::new() (setup) and the set_main_device/set_cue_device/
-// set_buffer_size commands -- are synchronous Tauri commands, which Tauri dispatches on
-// the main thread. Making any of those commands `async` would move stream drops onto
-// async worker threads and reintroduce the !Send hazard as silent UB. Keep them sync.
+// SAFETY: cpal::Stream is !Send (it must drop on its creating thread); sound only
+// while all stream mutation stays on the main thread via synchronous Tauri
+// commands, enforced by stream_commands_must_stay_synchronous in commands.rs.
 pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
@@ -33,7 +19,6 @@ type ChannelPairs = Vec<ChannelPair>;
 
 pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
-// ── Master monitor (metering + recording tap) ─────────────────────────────────
 //
 // Shared between AppAudio and every master stream callback via Arc clones.
 // level_l/r are peak values from the last audio buffer, read by get_master_level.

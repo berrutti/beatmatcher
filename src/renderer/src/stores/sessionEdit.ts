@@ -1,18 +1,15 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
-import { useSessionStore, type SessionEvent, type ParsedSession } from './session';
+import { useSessionStore, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
-import {
-  laneSpecFor,
-  spliceLaneEvents,
-  deleteNudgeRange,
-  relocateEventPaths
-} from '@renderer/utils/sessionEditOps';
+import { laneSpecFor, spliceLaneEvents } from '@renderer/utils/sessionEditOps';
 import { basename, indexByBasename } from '@renderer/utils/path';
 import {
   normalizeGestureSamples,
   decimateSteps,
+  deleteNudgeRange,
+  relocateEventPaths,
   toggleFilterActiveRange,
   deleteFilterActiveSpan,
   resizeFilterActiveSpan,
@@ -22,13 +19,14 @@ import {
   setRateSpan,
   moveTransportBlock,
   trimTransportBlock,
-  deleteTransportBlock
+  deleteTransportRanges
 } from '@renderer/utils/sessionCore';
 import {
   TransportBlock,
   type EditableLaneKey,
   type Clip,
-  type LanePoint
+  type LanePoint,
+  type SessionEvent
 } from '@renderer/utils/types';
 
 export type SelectedLane = { deck: string; lane: EditableLaneKey };
@@ -192,15 +190,15 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
   }
 
-  // Right-click "Set BPM from here": insert one rate change at `atMs`. The
+  // Right-click "Set BPM from here": insert one rate change at `ms`. The
   // caller converts the entered BPM to rate (target / clip track bpm); the new
   // value holds until the next existing change, splitting the clip into a new
   // wave segment (the timeline already stretches the waveform per segment).
-  async function commitSetBpm(deck: string, atMs: number, rate: number): Promise<void> {
+  async function commitSetBpm(deck: string, ms: number, rate: number): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
-    applyEdit(setRateAt(session.events, deck, atMs, rate));
+    applyEdit(setRateAt(session.events, deck, ms, rate));
   }
 
   // Right-click "Set BPM (whole clip)": one uniform rate over [startMs, endMs],
@@ -248,11 +246,14 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(trimTransportBlock(session.events, clips, block, edge, newMs).events);
   }
 
-  async function commitClipDelete(clips: Clip[], block: TransportBlock): Promise<void> {
+  async function commitRangesDelete(
+    clips: Clip[],
+    ranges: { deck: string; startMs: number; endMs: number }[]
+  ): Promise<void> {
     const session = sessionStore.session;
-    if (!session) return;
+    if (!session || ranges.length === 0) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
-    applyEdit(deleteTransportBlock(session.events, clips, block));
+    applyEdit(deleteTransportRanges(session.events, clips, ranges));
   }
 
   // Opens a folder picker and resolves every missing track found under it
@@ -346,7 +347,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   return {
     canRedo,
     canUndo,
-    commitClipDelete,
+    commitRangesDelete,
     commitClipMove,
     commitClipTrim,
     commitFilterActiveToggle,

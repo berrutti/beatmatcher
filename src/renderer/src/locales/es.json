@@ -71,7 +71,9 @@
       "hintFlac": "Compresión sin pérdidas, codificada al detener la grabación. Misma calidad que WAV, archivos más pequeños.",
       "hintSession": "Solo registra el historial de eventos. No se guarda archivo de audio. Puedes renderizar a WAV o FLAC más tarde desde la vista de sesión.",
       "bmsCheckbox": "Grabar siempre un archivo .bms junto con el audio",
-      "bmsHint": "Guarda un archivo .bms con el historial completo de eventos del set. Necesario para renderizar o reproducir una sesión."
+      "bmsHint": "Guarda un archivo .bms con el historial completo de eventos del set. Necesario para renderizar o reproducir una sesión.",
+      "cueCheckbox": "Escribir un archivo .cue junto con el audio",
+      "cueHint": "Guarda un .cue con la lista de pistas marcando cuándo entró cada una a la mezcla, con títulos y artistas de los archivos originales."
     },
     "deckCount": {
       "title": "NÚMERO DE DECKS POR DEFECTO",

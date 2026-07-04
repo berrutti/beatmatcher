@@ -13,7 +13,7 @@ import {
 } from '@renderer/utils/timelineDraw';
 import {
   computeRowLayout,
-  selectionSpanFor,
+  selectionSpansFor,
   type ClipSelectionRef
 } from '@renderer/utils/timelineLayout';
 import {
@@ -54,7 +54,7 @@ export type SceneInput = {
   audibleFor: (deck: string) => boolean;
   soloFor: (deck: string) => boolean;
   mutedFor: (deck: string) => boolean;
-  clipSelection: ClipSelectionRef | null;
+  clipSelection: ClipSelectionRef[];
   filterSelection: { deck: string; startMs: number; endMs: number } | null;
   // Active gesture/selection previews, drawn on top of the rows.
   overlays?: SceneItem[];
@@ -100,7 +100,7 @@ export function buildScene(input: SceneInput): SceneResult {
         input.waveforms,
         input.accentFor(deck),
         input.audibleFor(deck),
-        input.editMode ? selectionSpanFor(input.clipSelection, input.clips, deck) : null
+        input.editMode ? selectionSpansFor(input.clipSelection, deck) : []
       )
     );
     for (const span of input.deckNudges[deck] ?? []) {

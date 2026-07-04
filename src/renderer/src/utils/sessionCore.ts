@@ -8,11 +8,12 @@
 
 import init, {
   buildTimeline as wasmBuildTimeline,
+  currentBeat as wasmCurrentBeat,
   blocksForDeck as wasmBlocksForDeck,
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
   trimTransportBlock as wasmTrim,
-  deleteTransportBlock as wasmDeleteBlock,
+  deleteTransportRanges as wasmDeleteRanges,
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   spliceLaneEvents as wasmSplice,
@@ -25,12 +26,13 @@ import init, {
   deleteNudgeRange as wasmDeleteNudge,
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
-  relocateEventPaths as wasmRelocate
+  relocateEventPaths as wasmRelocate,
+  editConstants as wasmEditConstants
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
-import type { SessionEvent } from '@renderer/stores/session';
 import type {
+  SessionEvent,
   Clip,
   LoadedSpan,
   DeckLanes,
@@ -44,7 +46,7 @@ import type {
 let initPromise: Promise<void> | null = null;
 
 async function loadWasm(): Promise<void> {
-  await init(wasmUrl);
+  await init({ module_or_path: wasmUrl });
 }
 
 export function initSessionCore(): Promise<void> {
@@ -109,22 +111,56 @@ export function buildTimeline(
   };
 }
 
+export function currentBeat(positionSec: number, beatOffsetSec: number, bpm: number): number {
+  return wasmCurrentBeat(positionSec, beatOffsetSec, bpm);
+}
+
 export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {
   return parse(wasmBlocksForDeck(JSON.stringify(clips), deck));
 }
+
+export type BlockBounds = {
+  minStartMs: number;
+  maxEndMs: number;
+  // Start-trim lower bound from the trim commit's own formula, so the drag
+  // preview can never clamp differently.
+  startTrimMinMs: number;
+  minBlockMs: number;
+};
 
 export function blockBounds(
   events: SessionEvent[],
   clips: Clip[],
   block: TransportBlock
-): { minStartMs: number; maxEndMs: number } | null {
+): BlockBounds | null {
   // The Rust side has no JSON form for an open-ended (Infinity) right bound, so
   // it sends null; restore Infinity here.
-  const raw = parse<{ minStartMs: number; maxEndMs: number | null } | null>(
-    wasmBlockBounds(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block))
-  );
+  const raw = parse<{
+    minStartMs: number;
+    maxEndMs: number | null;
+    startTrimMinMs: number;
+    minBlockMs: number;
+  } | null>(wasmBlockBounds(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block)));
   if (!raw) return null;
-  return { minStartMs: raw.minStartMs, maxEndMs: raw.maxEndMs ?? Infinity };
+  return {
+    minStartMs: raw.minStartMs,
+    maxEndMs: raw.maxEndMs ?? Infinity,
+    startTrimMinMs: raw.startTrimMinMs,
+    minBlockMs: raw.minBlockMs
+  };
+}
+
+export type EditConstants = {
+  eqMinDb: number;
+  eqMaxDb: number;
+  filterDeadZone: number;
+  defaultMasterGain: number;
+  minBlockMs: number;
+  minGestureMs: number;
+};
+
+export function editConstants(): EditConstants {
+  return parse(wasmEditConstants());
 }
 
 export function moveTransportBlock(
@@ -158,13 +194,16 @@ export function trimTransportBlock(
   return result;
 }
 
-export function deleteTransportBlock(
+// A range covering a whole block deletes it, an edge range trims it, and an
+// interior range splits the block (the right part keeps playing exactly the
+// audio it played before).
+export function deleteTransportRanges(
   events: SessionEvent[],
   clips: Clip[],
-  block: TransportBlock
+  ranges: { deck: string; startMs: number; endMs: number }[]
 ): SessionEvent[] {
   return parse(
-    wasmDeleteBlock(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(block))
+    wasmDeleteRanges(JSON.stringify(events), JSON.stringify(clips), JSON.stringify(ranges))
   );
 }
 
@@ -258,13 +297,17 @@ export function paintNudgeRange(
   return parse(wasmPaintNudge(JSON.stringify(events), deck, t0, t1, percent));
 }
 
+// No-op (Rust sends null) returns the input reference so callers can skip it.
 export function deleteNudgeRange(
   events: SessionEvent[],
   deck: string,
   t0: number,
   t1: number
 ): SessionEvent[] {
-  return parse(wasmDeleteNudge(JSON.stringify(events), deck, t0, t1));
+  const edited = parse<SessionEvent[] | null>(
+    wasmDeleteNudge(JSON.stringify(events), deck, t0, t1)
+  );
+  return edited ?? events;
 }
 
 export function setRateAt(
@@ -286,11 +329,15 @@ export function setRateSpan(
   return parse(wasmSetRateSpan(JSON.stringify(events), deck, startMs, endMs, rate));
 }
 
+// No-op (Rust sends null) returns the input reference so callers can skip it.
 export function relocateEventPaths(
   events: SessionEvent[],
   mapping: Record<string, string>
 ): SessionEvent[] {
-  return parse(wasmRelocate(JSON.stringify(events), JSON.stringify(mapping)));
+  const edited = parse<SessionEvent[] | null>(
+    wasmRelocate(JSON.stringify(events), JSON.stringify(mapping))
+  );
+  return edited ?? events;
 }
 
 export function normalizeGestureSamples(samples: LanePoint[]): LanePoint[] {

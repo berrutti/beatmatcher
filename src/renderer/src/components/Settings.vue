@@ -155,6 +155,21 @@
         <p class="settings-hint">
           {{ $t('settings.recording.bmsHint') }}
         </p>
+        <label
+          class="settings-checkbox-row"
+          :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+        >
+          <input
+            type="checkbox"
+            :checked="settings.recordingFormat !== 'session' && settings.recordCue"
+            :disabled="settings.recordingFormat === 'session'"
+            @change="settings.setRecordCue(($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ $t('settings.recording.cueCheckbox') }}</span>
+        </label>
+        <p class="settings-hint">
+          {{ $t('settings.recording.cueHint') }}
+        </p>
       </section>
 
       <section class="settings-section">
@@ -283,23 +298,19 @@ const LANGUAGES = [
   { code: 'es', label: () => t('settings.language.es') }
 ] as const;
 
-const RECORDING_FORMAT_LABELS = computed(
-  (): Record<RecordingFormatOption, string> => ({
-    'wav-16': t('settings.recording.wav16'),
-    'wav-32': t('settings.recording.wav32'),
-    flac: t('settings.recording.flac'),
-    session: t('settings.recording.sessionOnly')
-  })
-);
+const RECORDING_FORMAT_LABELS = computed((): Record<RecordingFormatOption, string> => ({
+  'wav-16': t('settings.recording.wav16'),
+  'wav-32': t('settings.recording.wav32'),
+  flac: t('settings.recording.flac'),
+  session: t('settings.recording.sessionOnly')
+}));
 
-const RECORDING_FORMAT_HINTS = computed(
-  (): Record<RecordingFormatOption, string> => ({
-    'wav-16': t('settings.recording.hintWav16'),
-    'wav-32': t('settings.recording.hintWav32'),
-    flac: t('settings.recording.hintFlac'),
-    session: t('settings.recording.hintSession')
-  })
-);
+const RECORDING_FORMAT_HINTS = computed((): Record<RecordingFormatOption, string> => ({
+  'wav-16': t('settings.recording.hintWav16'),
+  'wav-32': t('settings.recording.hintWav32'),
+  flac: t('settings.recording.hintFlac'),
+  session: t('settings.recording.hintSession')
+}));
 
 const settings = useSettingsStore();
 const decks = useDecksStore();
@@ -320,16 +331,14 @@ const COMMAND_DISPLAY: Record<Command, string> = {
   LOOP_OUT_EXIT: 'OUT'
 };
 
-const COMMAND_LABEL = computed(
-  (): Record<Command, string> => ({
-    NUDGE_BACK: t('settings.keyboard.nudgeLeft'),
-    NUDGE_FORWARD: t('settings.keyboard.nudgeRight'),
-    CUE: t('settings.keyboard.cue'),
-    PLAY: t('settings.keyboard.play'),
-    LOOP_IN: t('settings.keyboard.loopIn'),
-    LOOP_OUT_EXIT: t('settings.keyboard.loopOut')
-  })
-);
+const COMMAND_LABEL = computed((): Record<Command, string> => ({
+  NUDGE_BACK: t('settings.keyboard.nudgeLeft'),
+  NUDGE_FORWARD: t('settings.keyboard.nudgeRight'),
+  CUE: t('settings.keyboard.cue'),
+  PLAY: t('settings.keyboard.play'),
+  LOOP_IN: t('settings.keyboard.loopIn'),
+  LOOP_OUT_EXIT: t('settings.keyboard.loopOut')
+}));
 
 function accent(deckId: DeckId): string {
   return decks.decks[deckId]?.accent ?? '#ffffff';

@@ -1,4 +1,5 @@
 mod audio;
+mod broadcast;
 mod commands;
 pub mod offline_render;
 mod session_playback;
@@ -11,6 +12,7 @@ use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
 use tauri::Emitter;
+use tauri::Manager;
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
     const SECS_PER_DAY: i64 = 86400;
@@ -77,9 +79,9 @@ impl SessionLogger {
     }
 
     fn log(&mut self, event_type: &str, payload: serde_json::Value) {
-        let t = self.start.elapsed().as_secs_f64() * 1000.0;
+        let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
         let mut obj = serde_json::Map::new();
-        obj.insert("elapsed_ms".into(), serde_json::json!(t));
+        obj.insert("elapsed_ms".into(), serde_json::json!(elapsed_ms));
         obj.insert("type".into(), serde_json::json!(event_type));
         if let serde_json::Value::Object(extra) = payload {
             obj.extend(extra);
@@ -124,7 +126,7 @@ impl AppState {
         if let Some(logger) = self
             .session
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .as_mut()
         {
             logger.log(event_type, payload);
@@ -139,8 +141,8 @@ unsafe impl Sync for AppState {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let verbose =
-        std::env::args().any(|a| a == "--verbose") || std::env::var("BEATMATCHER_VERBOSE").is_ok();
+    let verbose = std::env::args().any(|arg| arg == "--verbose")
+        || std::env::var("BEATMATCHER_VERBOSE").is_ok();
     let app_level = if verbose {
         log::LevelFilter::Info
     } else {
@@ -151,7 +153,7 @@ pub fn run() {
     let ended_flags: Vec<(String, Arc<std::sync::atomic::AtomicBool>)> = audio
         .ended_flags
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(deck_id, flag)| (deck_id.clone(), flag.clone()))
         .collect();
     let app_state = AppState {
         audio: Arc::new(audio),
@@ -162,6 +164,10 @@ pub fn run() {
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
     };
+
+    // Cloned before `.manage()` consumes app_state, so the broadcaster thread
+    // can read every deck's live state (same reason ended_flags is cloned above).
+    let audio_for_broadcast = Arc::clone(&app_state.audio);
 
     tauri::Builder::default()
         .manage(app_state)
@@ -220,6 +226,11 @@ pub fn run() {
                     }
                 }
             });
+
+            match app.path().app_data_dir() {
+                Ok(data_dir) => broadcast::start(data_dir, audio_for_broadcast),
+                Err(error) => log::warn!("performer broadcast disabled: {error}"),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -364,18 +375,18 @@ mod tests {
     fn session_logger_merges_payload_fields() {
         let mut logger = SessionLogger::new();
         logger.log("play", serde_json::json!({ "deck": "A", "rate": 1.0 }));
-        let ev = &logger.events[0];
-        assert_eq!(ev["type"], "play");
-        assert_eq!(ev["deck"], "A");
-        assert_eq!(ev["rate"], 1.0);
+        let event = &logger.events[0];
+        assert_eq!(event["type"], "play");
+        assert_eq!(event["deck"], "A");
+        assert_eq!(event["rate"], 1.0);
     }
 
     #[test]
     fn session_logger_timestamps_are_non_negative() {
         let mut logger = SessionLogger::new();
         logger.log("e", serde_json::json!({}));
-        let t = logger.events[0]["elapsed_ms"].as_f64().unwrap();
-        assert!(t >= 0.0);
+        let elapsed_ms = logger.events[0]["elapsed_ms"].as_f64().unwrap();
+        assert!(elapsed_ms >= 0.0);
     }
 
     #[test]

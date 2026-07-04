@@ -4,33 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
-
-export type SessionEvent = {
-  elapsed_ms: number;
-  type: string;
-  deck?: string;
-  path?: string;
-  sec?: number;
-  gain?: number;
-  band?: string;
-  db?: number;
-  value?: number;
-  active?: boolean;
-  rate?: number;
-  percent?: number;
-  quantized?: boolean;
-  beat_offset_sec?: number;
-  start_sec?: number;
-  end_sec?: number;
-  is_playing?: boolean;
-  position_sec?: number;
-  cue_point_sec?: number;
-  loop_active?: boolean;
-  loop_end_sec?: number;
-  bpm?: number;
-  playback_rate?: number;
-  duration?: number;
-};
+import type { SessionEvent } from '@renderer/utils/types';
 
 export type ParsedSession = {
   version: number;
@@ -251,8 +225,11 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const events: SessionEvent[] = raw.events ?? [];
-    const lastEvent = events[events.length - 1];
-    const durationMs = lastEvent?.elapsed_ms ?? 0;
+    // Max, not last: a .bms with sub-ms ordering drift is not strictly sorted.
+    let durationMs = 0;
+    for (const event of events) {
+      durationMs = Math.max(durationMs, event.elapsed_ms);
+    }
     const parts = path.split('/');
     const filename = parts[parts.length - 1] ?? 'session.bms';
 

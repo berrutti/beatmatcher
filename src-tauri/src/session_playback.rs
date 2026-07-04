@@ -562,11 +562,8 @@ fn apply_event_live(
     }
 }
 
-// The deterministic simulation is unit-tested in the session-core crate. The
-// tests here drive the SAME shared sim against the REAL DeckState audio engine,
-// so they must stay in the binary that owns the engine: they guard that
-// sim_pos (used for scrub placement) lands where continuous frame-by-frame
-// playback would.
+// Parity tests driving the shared sim against the REAL DeckState engine, so
+// they live in the binary that owns the engine.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,21 +642,8 @@ mod tests {
         state.decks.get(deck).map(|d| sim_pos(d, from_ms, SR_F))
     }
 
-    // ── sim_pos vs the real DeckState audio engine ────────────────────────────
-    //
-    // Continuous playback advances the real DeckState frame by frame. Scrubbing
-    // instead drops the playhead at sim_pos(T). If sim_pos disagrees with where
-    // the real engine would be at T, scrubbing desyncs decks that continuous
-    // playback keeps tight. This drives the real engine once and checks every
-    // 100ms checkpoint against sim_pos.
-
-    // Drive an event through the REAL production applier (`apply_deck_command`),
-    // the same code path the live scheduler and offline renderer use. The test
-    // must never reimplement command semantics here: a private copy could pass
-    // the parity check while production diverges. `overshoot_frames` is 0.0
-    // (a no-op, matching the offline renderer), since the analytic sim models no
-    // sub-buffer start latency. Master-gain events carry no deck and are
-    // dispatched separately in production, so they're skipped here too.
+    // Must go through the production applier: a private reimplementation could
+    // pass the parity check while production diverges.
     fn apply_deck_event(
         d: &mut DeckState,
         s: &mut ChannelStrip,
@@ -855,16 +839,8 @@ mod tests {
         check_sim_vs_engine(&events, &cache, 20);
     }
 
-    // ── exhaustive variant coverage ───────────────────────────────────────────
-    //
-    // The analytic sim (`sim_apply_event`) and the real engine
-    // (`apply_deck_command`) are two models of the same command semantics. The
-    // type system forces both to HANDLE every variant, but not to AGREE. This
-    // match is the compile-time guard that every variant is also covered by the
-    // sim-vs-engine parity test: it maps each `SessionCommand` to its canonical
-    // .bms `type` string and whether it moves the playhead. Adding a variant
-    // fails to compile here until it's classified; if it moves the playhead it
-    // must then be exercised by `full_coverage_events` (asserted at runtime).
+    // Compile-time guard: a new SessionCommand variant fails here until it is
+    // classified; playhead movers must then appear in full_coverage_events.
     fn variant_catalog(cmd: &SessionCommand) -> (&'static str, bool) {
         match cmd {
             SessionCommand::DeckSnapshot { .. } => ("deck_snapshot", true),
@@ -891,10 +867,7 @@ mod tests {
         }
     }
 
-    // The playhead-moving variants that `full_coverage_events` must exercise.
-    // Keep in sync with the `true` arms of `variant_catalog` above; a new variant
-    // surfaces as a compile error there, and `coverage_list_matches_catalog`
-    // catches any tag typo or duplication between the two.
+    // The `true` arms of variant_catalog; coverage_list_matches_catalog binds them.
     const POSITION_AFFECTING_TAGS: [&str; 15] = [
         "deck_snapshot",
         "load_track",
@@ -1049,5 +1022,23 @@ mod tests {
         let cache = cached_track(path, 60);
         let events = full_coverage_events(path);
         check_sim_vs_engine(&events, &cache, 30);
+    }
+
+    // A loop engaged while the playhead is still below the loop start must play
+    // linearly to loop_end before wrapping, like the engine.
+    #[test]
+    fn sim_matches_engine_when_loop_engages_below_loop_start() {
+        let path = "/fake/a.wav";
+        let cache = cached_track(path, 60);
+        let events = vec![
+            playing_snapshot(path),
+            SessionEvent {
+                start_sec: Some(8.0),
+                end_sec: Some(10.0),
+                ..deck_ev("loop_out", 1000.0, "A")
+            },
+            deck_ev("exit_loop", 14_000.0, "A"),
+        ];
+        check_sim_vs_engine(&events, &cache, 16);
     }
 }

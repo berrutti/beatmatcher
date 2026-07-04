@@ -4,14 +4,17 @@
 // to WASM for the frontend, so the engine and the editor can never disagree.
 
 pub mod clip_edit;
+pub mod cue;
 pub mod event;
 pub mod lane_edit;
 pub mod sim;
 pub mod timeline;
 
+pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
-    block_bounds, blocks_for_deck, delete_transport_block, move_transport_block,
-    trim_transport_block, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
+    block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
+    delete_transport_ranges, move_transport_block, trim_transport_block, DeleteRange, Edge,
+    MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
@@ -19,11 +22,12 @@ pub use lane_edit::{
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
     paint_nudge_range, relocate_event_paths, resize_filter_active_span, set_rate_at, set_rate_span,
     splice_lane_events, toggle_filter_active_range,
-    EditableLane, LaneSpec, MIN_GESTURE_MS,
+    EditableLane, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use sim::{
-    build_snapshots, event_sim_order, sim_apply_event, sim_pos, sim_state_from_snapshot, DeckSim,
-    DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim, StripSnap, DEFAULT_MASTER_GAIN,
+    build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
+    sim_state_from_snapshot, DeckSim, DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim,
+    StripSnap, DEFAULT_MASTER_GAIN,
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
@@ -39,7 +43,7 @@ mod wasm {
     use wasm_bindgen::prelude::*;
 
     fn parse_events(events_json: &str) -> Result<Vec<crate::SessionEvent>, JsError> {
-        serde_json::from_str(events_json).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::from_str(events_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Derive clips, loaded spans, and automation lanes (gain/eq/filter/rate,
@@ -55,15 +59,23 @@ mod wasm {
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
         let result = crate::build_timeline(&events, duration_ms, pitch_options);
-        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Continuous beat count at a playback position given the track's beat grid.
+    /// Mirrors the engine math so the phase ring (and any consumer) never
+    /// reimplements it. Primitives in/out, no JSON.
+    #[wasm_bindgen(js_name = currentBeat)]
+    pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
+        crate::current_beat(position_sec, beat_offset_sec, bpm)
     }
 
     fn parse_clips(clips_json: &str) -> Result<Vec<crate::Clip>, JsError> {
-        serde_json::from_str(clips_json).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::from_str(clips_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
     fn parse_block(block_json: &str) -> Result<crate::TransportBlock, JsError> {
-        serde_json::from_str(block_json).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::from_str(block_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Group a deck's clips into draggable transport blocks. Returns a JSON
@@ -72,11 +84,12 @@ mod wasm {
     pub fn blocks_for_deck(clips_json: &str, deck: &str) -> Result<String, JsError> {
         let clips = parse_clips(clips_json)?;
         let blocks = crate::blocks_for_deck(&clips, deck);
-        serde_json::to_string(&blocks).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&blocks).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Drag-clamp range for a block. Returns `{ minStartMs, maxEndMs }`, with
-    /// `maxEndMs` = null meaning open-ended (Rust Infinity has no JSON form).
+    /// Drag-clamp range for a block: `{ minStartMs, maxEndMs, startTrimMinMs,
+    /// minBlockMs }`; `maxEndMs` null = open-ended. `startTrimMinMs` uses the
+    /// trim commit's own formula so preview and commit clamp identically.
     #[wasm_bindgen(js_name = blockBounds)]
     pub fn block_bounds(
         events_json: &str,
@@ -87,12 +100,33 @@ mod wasm {
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
         let out = crate::block_bounds(&events, &clips, &block).map(|(min_start, max_end)| {
+            let earliest_by_audio = if block.playback_rate > 0.0 {
+                block.start_ms - (block.track_start_sec / block.playback_rate) * 1000.0
+            } else {
+                min_start
+            };
             serde_json::json!({
                 "minStartMs": min_start,
                 "maxEndMs": if max_end.is_finite() { Some(max_end) } else { None },
+                "startTrimMinMs": min_start.max(earliest_by_audio),
+                "minBlockMs": crate::MIN_BLOCK_MS,
             })
         });
-        serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// The shared edit/mixer constants, from the one place they are defined.
+    #[wasm_bindgen(js_name = editConstants)]
+    pub fn edit_constants() -> String {
+        serde_json::json!({
+            "eqMinDb": crate::EQ_MIN_DB,
+            "eqMaxDb": crate::EQ_MAX_DB,
+            "filterDeadZone": crate::FILTER_DEAD_ZONE,
+            "defaultMasterGain": crate::DEFAULT_MASTER_GAIN,
+            "minBlockMs": crate::MIN_BLOCK_MS,
+            "minGestureMs": crate::MIN_GESTURE_MS,
+        })
+        .to_string()
     }
 
     /// Move a block by `delta_ms` (clamped to its neighborhood). Returns
@@ -108,7 +142,7 @@ mod wasm {
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
         let result = crate::move_transport_block(&events, &clips, &block, delta_ms);
-        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Trim a block's `"start"` or `"end"` edge to `new_ms`. Returns
@@ -130,7 +164,7 @@ mod wasm {
             other => return Err(JsError::new(&format!("invalid edge: {other}"))),
         };
         let result = crate::trim_transport_block(&events, &clips, &block, edge, new_ms);
-        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Delete a transport block (drop its play/stop). Returns the events JSON.
@@ -146,8 +180,24 @@ mod wasm {
         events_to_json(crate::delete_transport_block(&events, &clips, &block))
     }
 
+    /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range
+    /// covering a whole block deletes it, an edge range trims, an interior
+    /// range splits the block. Returns the events JSON.
+    #[wasm_bindgen(js_name = deleteTransportRanges)]
+    pub fn delete_transport_ranges(
+        events_json: &str,
+        clips_json: &str,
+        ranges_json: &str,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let clips = parse_clips(clips_json)?;
+        let ranges: Vec<crate::DeleteRange> =
+            serde_json::from_str(ranges_json).map_err(|error| JsError::new(&error.to_string()))?;
+        events_to_json(crate::delete_transport_ranges(&events, &clips, &ranges))
+    }
+
     fn parse_points(points_json: &str) -> Result<Vec<crate::LanePoint>, JsError> {
-        serde_json::from_str(points_json).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::from_str(points_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
     fn parse_lane(lane_key: &str) -> Result<crate::EditableLane, JsError> {
@@ -164,7 +214,7 @@ mod wasm {
     }
 
     fn events_to_json(events: Vec<crate::SessionEvent>) -> Result<String, JsError> {
-        serde_json::to_string(&events).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&events).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Dedupe gesture samples by ms (last wins) and sort. JSON `LanePoint[]`.
@@ -172,7 +222,7 @@ mod wasm {
     pub fn normalize_gesture_samples(points_json: &str) -> Result<String, JsError> {
         let points = parse_points(points_json)?;
         let out = crate::normalize_gesture_samples(&points);
-        serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Drop points whose value-step from the last kept point is below `epsilon`.
@@ -180,7 +230,7 @@ mod wasm {
     pub fn decimate_steps(points_json: &str, epsilon: f64) -> Result<String, JsError> {
         let points = parse_points(points_json)?;
         let out = crate::decimate_steps(&points, epsilon);
-        serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+        serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// The lane's effective value at `ms` (the last point at/before it, else default).
@@ -198,15 +248,15 @@ mod wasm {
         Ok(crate::original_value_at(&events, &spec, deck, ms))
     }
 
-    /// Replace lane events in [t0, t1] with the drawn points; restore at t1.
+    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points; restore at range_end_ms.
     #[wasm_bindgen(js_name = spliceLaneEvents)]
     #[allow(clippy::too_many_arguments)]
     pub fn splice_lane_events(
         events_json: &str,
         lane_key: &str,
         deck: &str,
-        t0: f64,
-        t1: f64,
+        range_start_ms: f64,
+        range_end_ms: f64,
         points_json: &str,
         rate_min: f64,
         rate_max: f64,
@@ -215,7 +265,12 @@ mod wasm {
         let spec = lane_spec(lane_key, rate_min, rate_max)?;
         let points = parse_points(points_json)?;
         events_to_json(crate::splice_lane_events(
-            &events, &spec, deck, t0, t1, &points,
+            &events,
+            &spec,
+            deck,
+            range_start_ms,
+            range_end_ms,
+            &points,
         ))
     }
 
@@ -258,16 +313,22 @@ mod wasm {
         Ok(crate::filter_active_at(&events, deck, ms, inclusive))
     }
 
-    /// Toggle the filter on/off over [t0, t1], restoring the original state at t1.
+    /// Toggle the filter on/off over [range_start_ms, range_end_ms], restoring the
+    /// original state at range_end_ms.
     #[wasm_bindgen(js_name = toggleFilterActiveRange)]
     pub fn toggle_filter_active_range(
         events_json: &str,
         deck: &str,
-        t0: f64,
-        t1: f64,
+        range_start_ms: f64,
+        range_end_ms: f64,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        events_to_json(crate::toggle_filter_active_range(&events, deck, t0, t1))
+        events_to_json(crate::toggle_filter_active_range(
+            &events,
+            deck,
+            range_start_ms,
+            range_end_ms,
+        ))
     }
 
     /// Delete the filter-active span [start_ms, end_ms] (its on/off event pair).
@@ -342,37 +403,53 @@ mod wasm {
         Ok(crate::nudge_value_at(&events, deck, ms, inclusive))
     }
 
-    /// Paint a nudge `percent` over [t0, t1], restoring the recorded value at t1.
+    /// Paint a nudge `percent` over [range_start_ms, range_end_ms], restoring the
+    /// recorded value at range_end_ms.
     #[wasm_bindgen(js_name = paintNudgeRange)]
     pub fn paint_nudge_range(
         events_json: &str,
         deck: &str,
-        t0: f64,
-        t1: f64,
+        range_start_ms: f64,
+        range_end_ms: f64,
         percent: f64,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        events_to_json(crate::paint_nudge_range(&events, deck, t0, t1, percent))
+        events_to_json(crate::paint_nudge_range(
+            &events,
+            deck,
+            range_start_ms,
+            range_end_ms,
+            percent,
+        ))
     }
 
-    /// Remove the nudge span for `deck` in [t0, t1] (keeps an adjacent opener at t1).
+    /// Remove the nudge span for `deck` in [range_start_ms, range_end_ms] (keeps
+    /// an adjacent opener at range_end_ms). JSON `null` = nothing matched, keep
+    /// the input reference.
     #[wasm_bindgen(js_name = deleteNudgeRange)]
     pub fn delete_nudge_range(
         events_json: &str,
         deck: &str,
-        t0: f64,
-        t1: f64,
+        range_start_ms: f64,
+        range_end_ms: f64,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        events_to_json(crate::delete_nudge_range(&events, deck, t0, t1))
+        match crate::delete_nudge_range(&events, deck, range_start_ms, range_end_ms) {
+            Some(edited) => events_to_json(edited),
+            None => Ok("null".to_string()),
+        }
     }
 
     /// Rewrite event track paths per `mapping` (JSON object old->new path).
+    /// JSON `null` = no event carries a mapped path.
     #[wasm_bindgen(js_name = relocateEventPaths)]
     pub fn relocate_event_paths(events_json: &str, mapping_json: &str) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
         let mapping: std::collections::HashMap<String, String> =
-            serde_json::from_str(mapping_json).map_err(|e| JsError::new(&e.to_string()))?;
-        events_to_json(crate::relocate_event_paths(&events, &mapping))
+            serde_json::from_str(mapping_json).map_err(|error| JsError::new(&error.to_string()))?;
+        match crate::relocate_event_paths(&events, &mapping) {
+            Some(edited) => events_to_json(edited),
+            None => Ok("null".to_string()),
+        }
     }
 }

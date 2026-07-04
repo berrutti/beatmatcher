@@ -4,6 +4,7 @@
 // the user did" and "what the app does about it". The parent-reacts model.
 
 import type { ViewWindow } from '@renderer/utils/timelineView';
+import type { ClipSelectionRef } from '@renderer/utils/timelineLayout';
 import type {
   LanePoint,
   FilterActiveSpan,
@@ -16,7 +17,7 @@ import type {
 // falls in, the track's grid bpm (to convert an entered BPM to a rate), and the
 // tempo currently playing there (to prefill the dialog).
 export type BpmContext = {
-  atMs: number;
+  ms: number;
   clipStartMs: number;
   clipEndMs: number;
   trackBpm: number;
@@ -49,9 +50,13 @@ export type Intent =
   // clip block edits
   | { type: 'clip.move'; block: TransportBlock; deltaMs: number }
   | { type: 'clip.trim'; block: TransportBlock; edge: 'start' | 'end'; newMs: number }
-  | { type: 'clip.select'; block: TransportBlock; ms: number }
+  // A click: the controller resolves it to a span (the BPM region under ms,
+  // the iteration of an unlocked loop block, or the whole block).
+  | { type: 'clip.select'; block: TransportBlock; ms: number; additive: boolean }
+  // Explicit spans (marquee, whole-block double-click).
+  | { type: 'clip.selectRange'; targets: ClipSelectionRef[]; additive: boolean }
   | { type: 'clip.clearSelection' }
-  | { type: 'clip.delete'; block: TransportBlock }
+  | { type: 'clip.delete'; ranges: ClipSelectionRef[] }
   | { type: 'loopBlock.toggleUnlock'; block: TransportBlock; ms: number }
   // filter-region edits
   | { type: 'filterRegion.select'; deck: string; span: FilterActiveSpan }

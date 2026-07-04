@@ -15,8 +15,6 @@ use crate::audio::{self, ChannelStrip, DeckState, LimiterState};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ── WAV I/O ─────────────────────────────────────────────────────────────────
-
 pub fn read_wav_f32(path: &str) -> Result<(Vec<f32>, u32, u16), String> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -227,12 +225,8 @@ impl flacenc::source::Source for SliceSource {
     }
 }
 
-// ── Session JSON ─────────────────────────────────────────────────────────────
-
 use session_core::event::SessionCommand;
 pub use session_core::event::{SessionEvent, SessionFile};
-
-// ── Comparison result ────────────────────────────────────────────────────────
 
 pub struct CompareResult {
     pub total_frames: usize,
@@ -242,8 +236,6 @@ pub struct CompareResult {
     pub first_divergence_frame: Option<usize>,
     pub sample_rate: u32,
 }
-
-// ── Entry point ──────────────────────────────────────────────────────────────
 
 pub fn render_and_compare(
     session_path: &str,
@@ -326,8 +318,6 @@ fn diff_signals(a: &[f32], b: &[f32]) -> CompareResult {
         sample_rate: 0, // filled in by caller
     }
 }
-
-// ── Offline renderer ─────────────────────────────────────────────────────────
 
 const DECK_IDS: &[&str] = &["A", "B", "C", "D"];
 const CHUNK: usize = 512;

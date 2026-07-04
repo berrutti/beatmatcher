@@ -4,10 +4,13 @@ import {
   computeRowLayout,
   ghostSpan,
   clipGestureDeltaSec,
-  selectionSpanFor
+  selectionSpansFor,
+  bpmRegionSpanAt,
+  marqueeTargets,
+  mergeSelectionRanges
 } from '../timelineLayout';
 import { ROW_H } from '../timelineDraw';
-import type { Clip } from '@renderer/utils/types';
+import type { Clip, TransportBlock } from '@renderer/utils/types';
 
 function clip(overrides: Partial<Clip>): Clip {
   return {
@@ -100,33 +103,121 @@ describe('clipGestureDeltaSec', () => {
   });
 });
 
-describe('selectionSpanFor', () => {
-  const clips = [
-    clip({ blockId: 1, sessionStartMs: 1000, sessionEndMs: 2000 }),
-    clip({ blockId: 1, sessionStartMs: 2000, sessionEndMs: 3000 }),
-    clip({ blockId: 2, sessionStartMs: 5000, sessionEndMs: 6000 }),
-    clip({ deck: 'B', blockId: 1, sessionStartMs: 0, sessionEndMs: 9000 })
+describe('selectionSpansFor', () => {
+  it('returns only the spans on the requested deck', () => {
+    expect(
+      selectionSpansFor(
+        [
+          { deck: 'A', startMs: 1000, endMs: 3000 },
+          { deck: 'B', startMs: 0, endMs: 9000 },
+          { deck: 'A', startMs: 5000, endMs: 6000 }
+        ],
+        'A'
+      )
+    ).toEqual([
+      { startMs: 1000, endMs: 3000 },
+      { startMs: 5000, endMs: 6000 }
+    ]);
+  });
+});
+
+describe('bpmRegionSpanAt', () => {
+  // 128 bpm grid; segments at rate 1.0 (128.0), 1.0002 (128.0 displayed),
+  // then 1.05 (134.4): the first two read as one region at 0.1 precision.
+  const seg = (wallStartMs: number, wallEndMs: number, rate: number) => ({
+    wallStartMs,
+    wallEndMs,
+    trackStartSec: 0,
+    trackEndSec: ((wallEndMs - wallStartMs) / 1000) * rate
+  });
+  const regionClip = clip({
+    sessionStartMs: 0,
+    sessionEndMs: 30000,
+    bpm: 128,
+    waveSegments: [seg(0, 10000, 1.0), seg(10000, 20000, 1.0002), seg(20000, 30000, 1.05)]
+  });
+
+  it('merges adjacent segments whose displayed bpm matches at 0.1 precision', () => {
+    expect(bpmRegionSpanAt(regionClip, 5000)).toEqual({ startMs: 0, endMs: 20000 });
+    expect(bpmRegionSpanAt(regionClip, 15000)).toEqual({ startMs: 0, endMs: 20000 });
+  });
+
+  it('picks the differently pitched region on its own', () => {
+    expect(bpmRegionSpanAt(regionClip, 25000)).toEqual({ startMs: 20000, endMs: 30000 });
+  });
+
+  it('falls back to the whole clip without a grid', () => {
+    const noGrid = clip({ sessionStartMs: 0, sessionEndMs: 30000, bpm: null });
+    expect(bpmRegionSpanAt(noGrid, 5000)).toEqual({ startMs: 0, endMs: 30000 });
+  });
+});
+
+describe('marqueeTargets', () => {
+  // 1px per 100ms in both directions.
+  const xToMs = (x: number) => x * 100;
+
+  function block(overrides: Partial<TransportBlock>): TransportBlock {
+    return {
+      deck: 'A',
+      blockId: 0,
+      startMs: 0,
+      endMs: 1000,
+      trackPath: '/t/a.mp3',
+      trackStartSec: 0,
+      playbackRate: 1,
+      loop: null,
+      ...overrides
+    };
+  }
+
+  const rows = [
+    { deckId: 'A', top: 0, waveformHeight: 80 },
+    { deckId: 'B', top: 100, waveformHeight: 80 }
   ];
+  const byDeck: Record<string, TransportBlock[]> = {
+    A: [
+      block({ blockId: 0, startMs: 0, endMs: 1000 }),
+      block({ blockId: 1, startMs: 5000, endMs: 6000 }),
+      block({ blockId: 2, startMs: 6000, endMs: 10000 })
+    ],
+    B: [block({ deck: 'B', blockId: 3, startMs: 5500, endMs: 9000 })]
+  };
+  const blocksFor = (deck: string) => byDeck[deck] ?? [];
 
-  it('spans the whole block when no iteration is pinned', () => {
-    expect(selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: null }, clips, 'A')).toEqual(
-      { startMs: 1000, endMs: 3000 }
-    );
+  it('clips the rect time range to each touched block on crossed decks', () => {
+    // x 45..65 = ms 4500..6500 over deck A only: block 1 whole, block 2 partial.
+    expect(marqueeTargets(rows, blocksFor, { x0: 45, x1: 65, y0: 10, y1: 60 }, xToMs)).toEqual([
+      { deck: 'A', startMs: 5000, endMs: 6000 },
+      { deck: 'A', startMs: 6000, endMs: 6500 }
+    ]);
   });
 
-  it('spans a single iteration when pinned', () => {
-    expect(selectionSpanFor({ deck: 'A', blockId: 1, iterationStartMs: 2000 }, clips, 'A')).toEqual(
-      { startMs: 2000, endMs: 3000 }
-    );
+  it('spans multiple decks and normalizes an inverted drag', () => {
+    expect(marqueeTargets(rows, blocksFor, { x0: 65, x1: 45, y0: 150, y1: 10 }, xToMs)).toEqual([
+      { deck: 'A', startMs: 5000, endMs: 6000 },
+      { deck: 'A', startMs: 6000, endMs: 6500 },
+      { deck: 'B', startMs: 5500, endMs: 6500 }
+    ]);
   });
 
-  it('returns null when the selection targets another deck or nothing matches', () => {
-    expect(selectionSpanFor({ deck: 'B', blockId: 1, iterationStartMs: null }, clips, 'A')).toBe(
-      null
-    );
-    expect(selectionSpanFor(null, clips, 'A')).toBe(null);
-    expect(selectionSpanFor({ deck: 'A', blockId: 9, iterationStartMs: null }, clips, 'A')).toBe(
-      null
-    );
+  it('selects nothing when the rect misses every block', () => {
+    expect(marqueeTargets(rows, blocksFor, { x0: 20, x1: 40, y0: 10, y1: 60 }, xToMs)).toEqual([]);
+  });
+});
+
+describe('mergeSelectionRanges', () => {
+  it('merges overlapping and touching spans per deck, keeping decks apart', () => {
+    expect(
+      mergeSelectionRanges([
+        { deck: 'A', startMs: 2000, endMs: 3000 },
+        { deck: 'A', startMs: 1000, endMs: 2000 },
+        { deck: 'A', startMs: 5000, endMs: 6000 },
+        { deck: 'B', startMs: 1500, endMs: 2500 }
+      ])
+    ).toEqual([
+      { deck: 'A', startMs: 1000, endMs: 3000 },
+      { deck: 'A', startMs: 5000, endMs: 6000 },
+      { deck: 'B', startMs: 1500, endMs: 2500 }
+    ]);
   });
 });

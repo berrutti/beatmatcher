@@ -395,6 +395,10 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 deck.load_span_start_ms = Some(ev.elapsed_ms);
                 deck.load_span_path = deck.path.clone();
                 deck.track_pos_sec = 0.0;
+                // The engine fully resets the deck on load (playback_rate = 1.0 in
+                // load_track), and the sim mirrors it; recorded sessions re-seed the
+                // rate right after, but an edited stream may not.
+                deck.rate = 1.0;
                 deck.nudge_factor = 1.0;
                 // A freshly loaded track has no grid until set_beat_grid/analyze.
                 deck.bpm = None;
@@ -416,11 +420,16 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             }
 
             "play" => {
-                // play may carry an explicit position (Rust play(deck, fromSec));
-                // recorded plays from toggle_play never do, but edited sessions
-                // (clip move/trim) synthesize them.
+                // Edits synthesize play-with-sec; the engine teleports on it
+                // even while playing, so an open clip splits like a seek.
                 if let Some(sec) = ev.sec {
-                    deck.track_pos_sec = sec;
+                    if deck.clip_start_ms.is_some() && !deck.loop_active {
+                        finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                        deck.track_pos_sec = sec;
+                        start_clip(deck, ev.elapsed_ms);
+                    } else {
+                        deck.track_pos_sec = sec;
+                    }
                 }
                 if deck.clip_start_ms.is_none() && !deck.loop_active {
                     start_clip(deck, ev.elapsed_ms);
@@ -481,7 +490,8 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
             "set_playback_rate" => {
                 if let Some(rate) = ev.rate {
-                    deck.rate = rate;
+                    // Same floor as the sim and the engine.
+                    deck.rate = rate.max(0.1);
                     record_eff_rate(deck, ev.elapsed_ms);
                 }
             }
@@ -566,8 +576,6 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
         loaded_spans,
     }
 }
-
-// ── Lanes ─────────────────────────────────────────────────────────────────────
 
 pub const DEFAULT_GAIN: f64 = 1.0;
 pub const DEFAULT_EQ_DB: f64 = 0.0;
@@ -670,8 +678,11 @@ pub fn build_timeline(
     duration_ms: f64,
     pitch_options: &[f64],
 ) -> TimelineBuild {
-    let clips = build_clips(events);
-    let lanes = build_lanes(events, duration_ms, pitch_options);
+    // build_clips assumes ordered input; playback sorts the same way.
+    let mut sorted: Vec<SessionEvent> = events.to_vec();
+    sorted.sort_by(crate::sim::event_sim_order);
+    let clips = build_clips(&sorted);
+    let lanes = build_lanes(&sorted, duration_ms, pitch_options);
     TimelineBuild {
         clips: clips.clips,
         loaded_spans: clips.loaded_spans,
@@ -972,8 +983,6 @@ mod tests {
         }
     }
 
-    // ── build_clips ───────────────────────────────────────────────────────────
-
     // The WASM boundary is JSON-in/JSON-out; the TS wrapper expects camelCase
     // keys, including the top-level `loadedSpans` field.
     #[test]
@@ -1084,6 +1093,30 @@ mod tests {
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
         assert_eq!(clips[0].session_end_ms, 3000.0);
+    }
+
+    #[test]
+    fn play_with_sec_mid_clip_splits_like_seek() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev("load_track", 0.0, Some("A"))
+            },
+            ev("play", 1000.0, Some("A")),
+            SessionEvent {
+                sec: Some(30.0),
+                ..ev("play", 3000.0, Some("A"))
+            },
+            ev("stop", 5000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].session_start_ms, 1000.0);
+        assert_eq!(clips[0].session_end_ms, 3000.0);
+        assert_eq!(clips[0].track_start_sec, 0.0);
+        assert_eq!(clips[1].session_start_ms, 3000.0);
+        assert_eq!(clips[1].session_end_ms, 5000.0);
+        assert_eq!(clips[1].track_start_sec, 30.0);
     }
 
     #[test]
@@ -1398,6 +1431,35 @@ mod tests {
     }
 
     #[test]
+    fn load_track_resets_playback_rate_like_the_engine() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev("load_track", 0.0, Some("A"))
+            },
+            SessionEvent {
+                rate: Some(1.5),
+                ..ev("set_playback_rate", 100.0, Some("A"))
+            },
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 2000.0, Some("A")),
+            SessionEvent {
+                path: Some("/t/b.mp3".to_string()),
+                ..ev("load_track", 3000.0, Some("A"))
+            },
+            ev("play", 4000.0, Some("A")),
+            ev("stop", 6000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 2);
+        assert!((clips[1].playback_rate - 1.0).abs() < 1e-6);
+        // 2s of wall time advance 2s of track at the reset rate, not 3s at the
+        // stale 1.5.
+        let seg = &clips[1].wave_segments[0];
+        assert!((seg.track_end_sec - seg.track_start_sec - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn rate_changes_while_stopped_do_not_move_position() {
         let events = vec![
             SessionEvent {
@@ -1582,8 +1644,6 @@ mod tests {
         assert_eq!(deck_a[0].session_end_ms, 3000.0);
         assert_eq!(deck_b[0].session_end_ms, 5000.0);
     }
-
-    // ── build_lanes ───────────────────────────────────────────────────────────
 
     #[test]
     fn seeds_a_deck_with_default_lane_values() {
