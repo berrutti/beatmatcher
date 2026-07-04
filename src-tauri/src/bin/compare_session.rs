@@ -66,14 +66,14 @@ fn dump_events_near(session_path: &str, center_ms: f64) {
     let window_end_ms = center_ms + 3000.0;
     let mut found = 0;
     for event in events {
-        let at_ms = event["elapsed_ms"].as_f64().unwrap_or(0.0);
-        if at_ms >= window_start_ms && at_ms <= window_end_ms {
-            let marker = if (at_ms - center_ms).abs() < 100.0 {
+        let ms = event["elapsed_ms"].as_f64().unwrap_or(0.0);
+        if ms >= window_start_ms && ms <= window_end_ms {
+            let marker = if (ms - center_ms).abs() < 100.0 {
                 " <-- near divergence"
             } else {
                 ""
             };
-            println!("  {:>10.1} ms  {}{}", at_ms, event, marker);
+            println!("  {:>10.1} ms  {}{}", ms, event, marker);
             found += 1;
         }
     }

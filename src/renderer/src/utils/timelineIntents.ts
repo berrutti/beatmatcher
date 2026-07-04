@@ -17,7 +17,7 @@ import type {
 // falls in, the track's grid bpm (to convert an entered BPM to a rate), and the
 // tempo currently playing there (to prefill the dialog).
 export type BpmContext = {
-  atMs: number;
+  ms: number;
   clipStartMs: number;
   clipEndMs: number;
   trackBpm: number;

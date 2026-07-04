@@ -300,7 +300,7 @@ impl SessionEvent {
 mod tests {
     use super::*;
 
-    fn ev(event_type: &str) -> SessionEvent {
+    fn make_event(event_type: &str) -> SessionEvent {
         SessionEvent {
             event_type: event_type.to_string(),
             deck: Some("A".to_string()),
@@ -326,9 +326,9 @@ mod tests {
             cue_point_sec: Some(1.5),
             bpm: Some(128.0),
             cue_sec: Some(2.0),
-            ..ev("")
+            ..make_event("")
         };
-        for ty in [
+        for event_type in [
             "deck_snapshot",
             "load_track",
             "eject_track",
@@ -353,16 +353,16 @@ mod tests {
             "cue_preview_end",
         ] {
             let event = SessionEvent {
-                event_type: ty.to_string(),
+                event_type: event_type.to_string(),
                 ..full.clone()
             };
-            assert!(event.command().is_some(), "{ty} did not convert");
+            assert!(event.command().is_some(), "{event_type} did not convert");
         }
     }
 
     #[test]
     fn non_replayable_types_convert_to_none() {
-        for ty in [
+        for event_type in [
             "recording_start",
             "recording_stop",
             "cue_move",
@@ -370,29 +370,32 @@ mod tests {
             "set_cue_mix",
             "some_future_event",
         ] {
-            assert!(ev(ty).command().is_none(), "{ty} should not convert");
+            assert!(
+                make_event(event_type).command().is_none(),
+                "{event_type} should not convert"
+            );
         }
     }
 
     #[test]
     fn stop_at_cue_aliases_map_to_same_command() {
-        let a = SessionEvent {
+        let stopped_alias = SessionEvent {
             cue_point_sec: Some(1.5),
-            ..ev("stopped_at_cue")
+            ..make_event("stopped_at_cue")
         };
-        let b = SessionEvent {
+        let stop_alias = SessionEvent {
             cue_point_sec: Some(1.5),
-            ..ev("stop_at_cue")
+            ..make_event("stop_at_cue")
         };
-        assert_eq!(a.command(), b.command());
+        assert_eq!(stopped_alias.command(), stop_alias.command());
     }
 
     #[test]
     fn missing_required_fields_convert_to_none() {
-        assert!(ev("seek").command().is_none(), "seek without sec");
-        assert!(ev("set_volume").command().is_none(), "set_volume w/o gain");
-        assert!(ev("deck_snapshot").command().is_none(), "snapshot w/o path");
-        assert!(ev("load_track").command().is_none(), "load_track w/o path");
+        assert!(make_event("seek").command().is_none(), "seek without sec");
+        assert!(make_event("set_volume").command().is_none(), "set_volume w/o gain");
+        assert!(make_event("deck_snapshot").command().is_none(), "snapshot w/o path");
+        assert!(make_event("load_track").command().is_none(), "load_track w/o path");
         let no_deck = SessionEvent {
             deck: None,
             ..Default::default()
@@ -410,14 +413,14 @@ mod tests {
 
     #[test]
     fn optional_fields_stay_optional() {
-        match ev("play").command() {
+        match make_event("play").command() {
             Some(SessionCommand::Play { deck, sec }) => {
                 assert_eq!(deck, "A");
                 assert_eq!(sec, None);
             }
             other => panic!("unexpected: {other:?}"),
         }
-        match ev("loop_in").command() {
+        match make_event("loop_in").command() {
             Some(SessionCommand::LoopIn { cue_sec: None, .. }) => {}
             other => panic!("unexpected: {other:?}"),
         }
@@ -427,7 +430,7 @@ mod tests {
     fn deck_snapshot_is_playing_requires_explicit_true() {
         let base = SessionEvent {
             path: Some("/a.wav".to_string()),
-            ..ev("deck_snapshot")
+            ..make_event("deck_snapshot")
         };
         for (input, expected) in [(None, false), (Some(false), false), (Some(true), true)] {
             let event = SessionEvent {

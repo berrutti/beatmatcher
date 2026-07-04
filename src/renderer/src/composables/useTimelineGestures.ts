@@ -601,12 +601,14 @@ export function useTimelineGestures(deps: GestureDeps) {
       if (clip.deck !== deck || clip.loop) continue;
       if (ms < clip.sessionStartMs || ms > clip.sessionEndMs) continue;
       if (!clip.bpm || clip.bpm <= 0) return null;
-      const seg = clip.waveSegments.find((s) => ms >= s.wallStartMs && ms <= s.wallEndMs);
+      const seg = clip.waveSegments.find(
+        (segment) => ms >= segment.wallStartMs && ms <= segment.wallEndMs
+      );
       const wallSec = seg ? (seg.wallEndMs - seg.wallStartMs) / 1000 : 0;
       const trackSpan = seg ? seg.trackEndSec - seg.trackStartSec : 0;
       const effRate = seg && wallSec > 0 && trackSpan > 0 ? trackSpan / wallSec : clip.playbackRate;
       return {
-        atMs: ms,
+        ms,
         clipStartMs: clip.sessionStartMs,
         clipEndMs: clip.sessionEndMs,
         trackBpm: clip.bpm,
@@ -726,13 +728,13 @@ export function useTimelineGestures(deps: GestureDeps) {
         overlay((ctx) => {
           const x = Math.min(gesture.start.x, gesture.current.x);
           const y = Math.min(gesture.start.y, gesture.current.y);
-          const w = Math.abs(gesture.current.x - gesture.start.x);
-          const h = Math.abs(gesture.current.y - gesture.start.y);
+          const width = Math.abs(gesture.current.x - gesture.start.x);
+          const height = Math.abs(gesture.current.y - gesture.start.y);
           ctx.fillStyle = '#ffffff14';
-          ctx.fillRect(x, y, w, h);
+          ctx.fillRect(x, y, width, height);
           ctx.strokeStyle = '#ffffffcc';
           ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, w, h);
+          ctx.strokeRect(x, y, width, height);
         })
       ];
     }
@@ -838,28 +840,37 @@ export function useTimelineGestures(deps: GestureDeps) {
   // neighbour boundary or the block's own original position, so placing a clip
   // "touching" or "back where it was" by eye is sample-exact. Mirrors the old
   // component's updateClipGesture.
-  function updateClip(g: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
-    const { block, snapMs } = g;
-    if (!g.edge) {
-      let delta = pointerMs - g.grabMs;
+  function updateClip(gesture: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
+    const { block, snapMs } = gesture;
+    if (!gesture.edge) {
+      let delta = pointerMs - gesture.grabMs;
       const rawStart = block.startMs + delta;
-      const snappedStart = snapToEdges(rawStart, [block.startMs, g.minStartMs], snapMs);
+      const snappedStart = snapToEdges(rawStart, [block.startMs, gesture.minStartMs], snapMs);
       if (snappedStart !== rawStart) {
         delta = snappedStart - block.startMs;
       } else {
         const rawEnd = block.endMs + delta;
-        const snappedEnd = snapToEdges(rawEnd, [g.maxEndMs], snapMs);
+        const snappedEnd = snapToEdges(rawEnd, [gesture.maxEndMs], snapMs);
         if (snappedEnd !== rawEnd) delta = snappedEnd - block.endMs;
       }
-      g.deltaMs = Math.max(g.minStartMs - block.startMs, Math.min(g.maxEndMs - block.endMs, delta));
+      gesture.deltaMs = Math.max(
+        gesture.minStartMs - block.startMs,
+        Math.min(gesture.maxEndMs - block.endMs, delta)
+      );
       return;
     }
-    if (g.edge === 'start') {
-      const target = snapToEdges(pointerMs, [block.startMs, g.minStartMs], snapMs);
-      g.targetMs = Math.max(g.startTrimMinMs, Math.min(block.endMs - g.minBlockMs, target));
+    if (gesture.edge === 'start') {
+      const target = snapToEdges(pointerMs, [block.startMs, gesture.minStartMs], snapMs);
+      gesture.targetMs = Math.max(
+        gesture.startTrimMinMs,
+        Math.min(block.endMs - gesture.minBlockMs, target)
+      );
     } else {
-      const target = snapToEdges(pointerMs, [block.endMs, g.maxEndMs], snapMs);
-      g.targetMs = Math.max(block.startMs + g.minBlockMs, Math.min(g.maxEndMs, target));
+      const target = snapToEdges(pointerMs, [block.endMs, gesture.maxEndMs], snapMs);
+      gesture.targetMs = Math.max(
+        block.startMs + gesture.minBlockMs,
+        Math.min(gesture.maxEndMs, target)
+      );
     }
   }
 
@@ -913,12 +924,14 @@ function clampWaveformHeight(height: number): number {
 }
 
 function overviewDrag(
-  g: Extract<ActiveGesture, { kind: 'overview' }>,
+  gesture: Extract<ActiveGesture, { kind: 'overview' }>,
   frac: number,
   total: number
 ): { start: number; duration: number } {
   const ms = frac * (total || 1);
-  if (g.mode === 'resize-left') return resizeLeftEdge(g.startView, ms, total || 1, MIN_VIEW_MS);
-  if (g.mode === 'resize-right') return resizeRightEdge(g.startView, ms, total || 1, MIN_VIEW_MS);
-  return recenterOn(g.startView, ms, total || 1, MIN_VIEW_MS);
+  if (gesture.mode === 'resize-left')
+    return resizeLeftEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
+  if (gesture.mode === 'resize-right')
+    return resizeRightEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
+  return recenterOn(gesture.startView, ms, total || 1, MIN_VIEW_MS);
 }

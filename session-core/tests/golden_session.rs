@@ -13,8 +13,8 @@ const SAMPLE_RATE: u32 = 44_100;
 const SAMPLE_RATE_F64: f64 = 44_100.0;
 const PITCH_OPTS: [f64; 6] = [6.0, 8.0, 10.0, 16.0, 50.0, 100.0];
 
-fn make_event(at_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
-    SessionEvent::at(at_ms, event_type, deck)
+fn make_event(ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+    SessionEvent::at(ms, event_type, deck)
 }
 
 // Deck A: straight play with a mid-clip rate change. Deck B: play into a

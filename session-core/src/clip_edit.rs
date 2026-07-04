@@ -122,39 +122,39 @@ pub fn blocks_for_deck(clips: &[Clip], deck: &str) -> Vec<TransportBlock> {
 }
 
 // Events that start a block from silence at an explicit position.
-fn start_events_for(block: &TransportBlock, at_ms: f64) -> Vec<SessionEvent> {
+fn start_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     if let Some(region) = &block.loop_region {
         // track_start_sec is the wrapped entry position, which may sit inside the
         // region; playing from the loop start instead would shift the block.
         vec![
             SessionEvent {
                 sec: Some(block.track_start_sec),
-                ..SessionEvent::at(at_ms, "play", &block.deck)
+                ..SessionEvent::at(ms, "play", &block.deck)
             },
             SessionEvent {
                 start_sec: Some(region.start_sec),
                 end_sec: Some(region.end_sec),
-                ..SessionEvent::at(at_ms, "loop_out", &block.deck)
+                ..SessionEvent::at(ms, "loop_out", &block.deck)
             },
         ]
     } else {
         vec![SessionEvent {
             sec: Some(block.track_start_sec),
-            ..SessionEvent::at(at_ms, "play", &block.deck)
+            ..SessionEvent::at(ms, "play", &block.deck)
         }]
     }
 }
 
-fn end_events_for(block: &TransportBlock, at_ms: f64) -> Vec<SessionEvent> {
+fn end_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     if block.loop_region.is_some() {
         // exit_loop, not a bare stop: a glued loop block must be disarmed, else
         // the relocated clip would wrap at the stale loop boundary.
         vec![
-            SessionEvent::at(at_ms, "exit_loop", &block.deck),
-            SessionEvent::at(at_ms, "stop", &block.deck),
+            SessionEvent::at(ms, "exit_loop", &block.deck),
+            SessionEvent::at(ms, "stop", &block.deck),
         ]
     } else {
-        vec![SessionEvent::at(at_ms, "stop", &block.deck)]
+        vec![SessionEvent::at(ms, "stop", &block.deck)]
     }
 }
 

@@ -31,41 +31,41 @@ impl Rng {
     }
 }
 
-fn make_event(at_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
-    SessionEvent::at(at_ms, event_type, deck)
+fn make_event(ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+    SessionEvent::at(ms, event_type, deck)
 }
 
 fn random_session(rng: &mut Rng) -> Vec<SessionEvent> {
     let mut events: Vec<SessionEvent> = Vec::new();
     for deck in ["A", "B"] {
-        let mut at_ms = rng.range(0.0, 500.0);
+        let mut ms = rng.range(0.0, 500.0);
         events.push(SessionEvent {
             path: Some(format!("/t/{deck}.mp3")),
-            ..make_event(at_ms, "load_track", deck)
+            ..make_event(ms, "load_track", deck)
         });
         let mut playing = false;
-        while at_ms < 60_000.0 {
-            at_ms += rng.range(300.0, 8000.0);
+        while ms < 60_000.0 {
+            ms += rng.range(300.0, 8000.0);
             match rng.pick(6) {
                 0 | 1 => {
                     if playing {
-                        events.push(make_event(at_ms, "stop", deck));
+                        events.push(make_event(ms, "stop", deck));
                     } else {
-                        events.push(make_event(at_ms, "play", deck));
+                        events.push(make_event(ms, "play", deck));
                     }
                     playing = !playing;
                 }
                 2 => events.push(SessionEvent {
                     sec: Some(rng.range(0.0, 120.0)),
-                    ..make_event(at_ms, "seek", deck)
+                    ..make_event(ms, "seek", deck)
                 }),
                 3 => events.push(SessionEvent {
                     rate: Some(rng.range(0.92, 1.08)),
-                    ..make_event(at_ms, "set_playback_rate", deck)
+                    ..make_event(ms, "set_playback_rate", deck)
                 }),
                 4 => events.push(SessionEvent {
                     gain: Some(rng.range(0.0, 1.0) as f32),
-                    ..make_event(at_ms, "set_volume", deck)
+                    ..make_event(ms, "set_volume", deck)
                 }),
                 _ => {
                     if playing {
@@ -73,17 +73,17 @@ fn random_session(rng: &mut Rng) -> Vec<SessionEvent> {
                         events.push(SessionEvent {
                             start_sec: Some(start_sec),
                             end_sec: Some(start_sec + rng.range(0.5, 4.0)),
-                            ..make_event(at_ms, "loop_out", deck)
+                            ..make_event(ms, "loop_out", deck)
                         });
-                        at_ms += rng.range(1000.0, 6000.0);
-                        events.push(make_event(at_ms, "exit_loop", deck));
+                        ms += rng.range(1000.0, 6000.0);
+                        events.push(make_event(ms, "exit_loop", deck));
                     }
                 }
             }
         }
         if playing {
-            at_ms += rng.range(300.0, 3000.0);
-            events.push(make_event(at_ms, "stop", deck));
+            ms += rng.range(300.0, 3000.0);
+            events.push(make_event(ms, "stop", deck));
         }
     }
     events.sort_by(event_sim_order);

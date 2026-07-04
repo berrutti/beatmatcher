@@ -1,33 +1,52 @@
 // Fails the lint gate when a section-divider comment (// ── ...) exists in any
-// source file, across TypeScript, Vue, and Rust
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+// tracked source file. Scans `git ls-files`, so ignored and generated files are
+// excluded automatically and only what would be committed is checked.
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 
-const ROOTS = ['src/renderer/src', 'src-tauri/src', 'session-core/src', 'session-core/tests'];
-const EXTENSIONS = ['.ts', '.vue', '.rs'];
-const DIVIDER = /^\s*(\/\/|<!--)\s*─/;
+const BINARY_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.icns',
+  '.svg',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.eot',
+  '.pdf',
+  '.zip',
+  '.gz',
+  '.tar',
+  '.7z',
+  '.mp3',
+  '.mp4',
+  '.mov',
+  '.wav',
+  '.flac',
+  '.wasm',
+  '.lock'
+]);
 
-const offenders = [];
+const DIVIDER = /^\s*(\/\/|<!--|#)\s*─/;
 
-function walk(dir) {
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) {
-      walk(path);
-      continue;
-    }
-    if (!EXTENSIONS.some((extension) => path.endsWith(extension))) continue;
-    const lines = readFileSync(path, 'utf8').split('\n');
-    lines.forEach((line, index) => {
-      if (DIVIDER.test(line)) offenders.push(`${path}:${index + 1}`);
-    });
-  }
-}
+const trackedFiles = execSync('git ls-files', { encoding: 'utf8' })
+  .split('\n')
+  .filter((path) => path.length > 0 && !BINARY_EXTENSIONS.has(extname(path)));
 
-for (const root of ROOTS) walk(root);
+const offenders = trackedFiles.flatMap((path) =>
+  readFileSync(path, 'utf8')
+    .split('\n')
+    .flatMap((line, index) => (DIVIDER.test(line) ? [`${path}:${index + 1}`] : []))
+);
 
-if (offenders.length > 0) {
+if (offenders.length) {
   console.error('Section-divider comments are banned:');
-  for (const offender of offenders) console.error(`  ${offender}`);
+  console.error(offenders.map((offender) => `  ${offender}`).join('\n'));
   process.exit(1);
 }
