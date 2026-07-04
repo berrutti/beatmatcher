@@ -4,11 +4,13 @@
 // to WASM for the frontend, so the engine and the editor can never disagree.
 
 pub mod clip_edit;
+pub mod cue;
 pub mod event;
 pub mod lane_edit;
 pub mod sim;
 pub mod timeline;
 
+pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
     block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
     delete_transport_ranges, move_transport_block, trim_transport_block, DeleteRange, Edge,
@@ -23,8 +25,9 @@ pub use lane_edit::{
     EditableLane, LaneSpec, MIN_GESTURE_MS,
 };
 pub use sim::{
-    build_snapshots, event_sim_order, sim_apply_event, sim_pos, sim_state_from_snapshot, DeckSim,
-    DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim, StripSnap, DEFAULT_MASTER_GAIN,
+    build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
+    sim_state_from_snapshot, DeckSim, DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim,
+    StripSnap, DEFAULT_MASTER_GAIN,
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
@@ -57,6 +60,14 @@ mod wasm {
         let events = parse_events(events_json)?;
         let result = crate::build_timeline(&events, duration_ms, pitch_options);
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Continuous beat count at a playback position given the track's beat grid.
+    /// Mirrors the engine math so the phase ring (and any consumer) never
+    /// reimplements it. Primitives in/out, no JSON.
+    #[wasm_bindgen(js_name = currentBeat)]
+    pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
+        crate::current_beat(position_sec, beat_offset_sec, bpm)
     }
 
     fn parse_clips(clips_json: &str) -> Result<Vec<crate::Clip>, JsError> {

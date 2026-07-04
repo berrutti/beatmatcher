@@ -1,4 +1,5 @@
 mod audio;
+mod broadcast;
 mod commands;
 pub mod offline_render;
 mod session_playback;
@@ -11,6 +12,7 @@ use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
 use tauri::Emitter;
+use tauri::Manager;
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
     const SECS_PER_DAY: i64 = 86400;
@@ -163,6 +165,10 @@ pub fn run() {
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
     };
 
+    // Cloned before `.manage()` consumes app_state, so the broadcaster thread
+    // can read every deck's live state (same reason ended_flags is cloned above).
+    let audio_for_broadcast = Arc::clone(&app_state.audio);
+
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
@@ -218,6 +224,11 @@ pub fn run() {
                     }
                 }
             });
+
+            match app.path().app_data_dir() {
+                Ok(data_dir) => broadcast::start(data_dir, audio_for_broadcast),
+                Err(error) => log::warn!("performer broadcast disabled: {error}"),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -894,6 +894,18 @@ pub(crate) fn start_recording(
                 let Some(arc) = state.audio.deck(deck_id) else {
                     continue;
                 };
+                // Read the strip gain before locking the deck so the cue sheet
+                // knows whether a deck already playing at record start is audible.
+                let gain = state
+                    .audio
+                    .strip(deck_id)
+                    .map(|strip| {
+                        strip
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .target_gain()
+                    })
+                    .unwrap_or(1.0);
                 let deck_state = arc.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(ref path) = deck_state.loaded_path else {
                     continue;
@@ -906,6 +918,7 @@ pub(crate) fn start_recording(
                         "position_sec": deck_state.main_pos / deck_state.device_sample_rate as f64,
                         "cue_point_sec": deck_state.cue_point / deck_state.device_sample_rate as f64,
                         "is_playing": deck_state.is_playing,
+                        "gain": gain,
                         "bpm": deck_state.bpm,
                         "playback_rate": deck_state.playback_rate,
                         "loop_active": deck_state.loop_active,
@@ -971,11 +984,85 @@ fn unique_path(path: &str) -> String {
     }
 }
 
+const CUE_SET_TITLE_FALLBACK: &str = "Mix";
+const CUE_TRACK_TITLE_FALLBACK: &str = "Track";
+
+fn cue_escape(value: &str) -> String {
+    value.replace('"', "'")
+}
+
+// CUE timestamps are MM:SS:FF where FF is frames at 75 per second (CD-DA).
+fn cue_timecode(elapsed_ms: f64) -> String {
+    let total_frames = (elapsed_ms.max(0.0) / 1000.0 * 75.0).round() as u64;
+    let minutes = total_frames / (75 * 60);
+    let seconds = (total_frames / 75) % 60;
+    let frames = total_frames % 75;
+    format!("{minutes:02}:{seconds:02}:{frames:02}")
+}
+
+// Writes a CUE sheet next to `audio_path` (same stem, .cue extension) listing
+// when each track entered the mix. FILE references the audio by name only, so
+// the .cue must sit beside it; name collisions go through unique_path like the
+// .bms sidecar. Track titles/artists come from the source files' tags.
+fn write_cue_sheet(audio_path: &str, events: &[session_core::SessionEvent]) {
+    let points = session_core::build_cue_points(events);
+    if points.is_empty() {
+        log::warn!(
+            "cue sheet not written: no audible tracks found in the recording ({} events)",
+            events.len()
+        );
+        return;
+    }
+    let audio_file = std::path::Path::new(audio_path);
+    // Without a filename there is nothing valid to put in the FILE line, so skip
+    // writing a broken sheet entirely.
+    let Some(file_name) = audio_file.file_name().and_then(|s| s.to_str()) else {
+        log::warn!("cue sheet not written: no filename in {audio_path}");
+        return;
+    };
+    let set_title = audio_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(CUE_SET_TITLE_FALLBACK);
+
+    let mut sheet = String::new();
+    sheet.push_str(&format!("TITLE \"{}\"\n", cue_escape(set_title)));
+    sheet.push_str(&format!("FILE \"{}\" WAVE\n", cue_escape(file_name)));
+    for (index, point) in points.iter().enumerate() {
+        let tags = audio::read_tags(&point.track_path);
+        let fallback = std::path::Path::new(&point.track_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(CUE_TRACK_TITLE_FALLBACK)
+            .to_string();
+        sheet.push_str(&format!("  TRACK {:02} AUDIO\n", index + 1));
+        sheet.push_str(&format!(
+            "    TITLE \"{}\"\n",
+            cue_escape(&tags.title.unwrap_or(fallback))
+        ));
+        if let Some(artist) = tags.artist {
+            sheet.push_str(&format!("    PERFORMER \"{}\"\n", cue_escape(&artist)));
+        }
+        sheet.push_str(&format!(
+            "    INDEX 01 {}\n",
+            cue_timecode(point.elapsed_ms)
+        ));
+    }
+
+    let cue_path = unique_path(&audio_file.with_extension("cue").to_string_lossy());
+    match std::fs::write(&cue_path, sheet.as_bytes()) {
+        Ok(()) => log::info!("wrote cue sheet {cue_path} ({} tracks)", points.len()),
+        Err(error) => log::warn!("cue sheet write failed for {cue_path}: {error}"),
+    }
+}
+
 #[tauri::command]
 pub(crate) fn save_recording(
     state: tauri::State<'_, AppState>,
     src: String,
     dest: String,
+    write_bms: bool,
+    write_cue: bool,
 ) -> Result<(), String> {
     if std::fs::rename(&src, &dest).is_err() {
         // rename fails across filesystems; fall back to copy then delete
@@ -984,13 +1071,19 @@ pub(crate) fn save_recording(
             eprintln!("save_recording: failed to remove source file {src}: {e}");
         }
     }
-    if let Some(log) = state
+    if !write_bms && !write_cue {
+        return Ok(());
+    }
+    let Some(log) = state
         .session
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_mut()
         .and_then(|l| l.take_pending())
-    {
+    else {
+        return Ok(());
+    };
+    if write_bms {
         let stem = dest
             .strip_suffix(".wav")
             .or_else(|| dest.strip_suffix(".WAV"))
@@ -1000,6 +1093,12 @@ pub(crate) fn save_recording(
         let log_dest = unique_path(&format!("{}.bms", stem));
         if let Err(e) = std::fs::write(&log_dest, log.as_bytes()) {
             eprintln!("save_recording: failed to write session log {log_dest}: {e}");
+        }
+    }
+    if write_cue {
+        match serde_json::from_str::<crate::offline_render::SessionFile>(&log) {
+            Ok(session) => write_cue_sheet(&dest, &session.events),
+            Err(error) => log::warn!("save_recording: cannot parse log for cue sheet: {error}"),
         }
     }
     Ok(())
@@ -1046,6 +1145,7 @@ pub(crate) async fn render_session_to_file(
     session_path: String,
     output_path: String,
     use_flac: bool,
+    write_cue: bool,
 ) -> Result<(), String> {
     // Prefer the in-memory session so unsaved edits are rendered too.
     let cached = state
@@ -1068,11 +1168,15 @@ pub(crate) async fn render_session_to_file(
         };
         let sample_rate = 44100u32;
         let rendered = crate::offline_render::render_session(&session, sample_rate, 0)?;
-        if use_flac {
+        let write_result = if use_flac {
             crate::offline_render::write_flac_f32(&output_path, &rendered, sample_rate)
         } else {
             crate::offline_render::write_wav_f32(&output_path, &rendered, sample_rate, 2)
+        };
+        if write_result.is_ok() && write_cue {
+            write_cue_sheet(&output_path, &session.events);
         }
+        write_result
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1322,6 +1426,32 @@ mod tests {
         deck_state.bpm = Some(BPM);
         deck_state.beat_offset_frames = 0.0;
         deck_state
+    }
+
+    // --- cue_timecode (CUE MM:SS:FF, 75 frames per second) ---
+
+    #[test]
+    fn cue_timecode_is_zero_at_start() {
+        assert_eq!(cue_timecode(0.0), "00:00:00");
+        assert_eq!(cue_timecode(-100.0), "00:00:00");
+    }
+
+    #[test]
+    fn cue_timecode_counts_75_frames_per_second() {
+        assert_eq!(cue_timecode(1000.0), "00:01:00");
+        // Two frames in: 2/75 of a second.
+        assert_eq!(cue_timecode(2.0 / 75.0 * 1000.0), "00:00:02");
+    }
+
+    #[test]
+    fn cue_timecode_rolls_minutes_and_seconds() {
+        assert_eq!(cue_timecode(61_000.0), "01:01:00");
+        assert_eq!(cue_timecode(3_600_000.0), "60:00:00");
+    }
+
+    #[test]
+    fn cue_escape_neutralizes_quotes() {
+        assert_eq!(cue_escape(r#"A "quoted" title"#), "A 'quoted' title");
     }
 
     // --- sec_to_frame ---

@@ -71,7 +71,9 @@
       "hintFlac": "Verlustfreie Komprimierung, kodiert nach dem Stoppen. Gleiche Qualität wie WAV, kleinere Dateien.",
       "hintSession": "Zeichnet nur das Ereignisprotokoll auf. Es wird keine Audiodatei gespeichert. Sie können später in der Session-Ansicht als WAV oder FLAC rendern.",
       "bmsCheckbox": "Immer eine .bms-Datei zusammen mit dem Audio aufnehmen",
-      "bmsHint": "Speichert eine .bms-Datei mit einem vollständigen Ereignisprotokoll aller Aktionen während des Sets. Erforderlich zum Rendern oder Wiedergeben einer Session."
+      "bmsHint": "Speichert eine .bms-Datei mit einem vollständigen Ereignisprotokoll aller Aktionen während des Sets. Erforderlich zum Rendern oder Wiedergeben einer Session.",
+      "cueCheckbox": "Eine .cue-Datei zusammen mit dem Audio schreiben",
+      "cueHint": "Speichert eine .cue-Trackliste, die markiert, wann jeder Track in den Mix kam, mit Titeln und Interpreten aus den Quelldateien."
     },
     "deckCount": {
       "title": "STANDARD-DECK-ANZAHL",

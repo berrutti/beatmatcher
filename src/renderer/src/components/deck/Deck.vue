@@ -98,9 +98,7 @@
         <div class="deck__phase-ring">
           <PhaseRing
             :accent="props.deck.accent"
-            :track-bpm="props.deck.trackBpm"
-            :beat-offset="props.deck.beatOffset"
-            :get-track-position="() => props.deck.trackPosition"
+            :get-beat="() => props.deck.beat"
             :cover-art="props.deck.coverArt"
           />
         </div>

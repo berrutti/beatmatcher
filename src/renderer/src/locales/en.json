@@ -71,7 +71,9 @@
       "hintFlac": "Lossless compression, encoded after you stop. Same quality as WAV, smaller files.",
       "hintSession": "Records only the event log. No audio file is saved. You can render to WAV or FLAC later from the session view.",
       "bmsCheckbox": "Always record a .bms alongside audio",
-      "bmsHint": "Saves a .bms file with a full event log of every action taken during the set. Required for rendering or replaying a session."
+      "bmsHint": "Saves a .bms file with a full event log of every action taken during the set. Required for rendering or replaying a session.",
+      "cueCheckbox": "Write a .cue sheet alongside audio",
+      "cueHint": "Saves a .cue tracklist marking when each track entered the mix, with titles and artists from the source files."
     },
     "deckCount": {
       "title": "DEFAULT DECK COUNT",
