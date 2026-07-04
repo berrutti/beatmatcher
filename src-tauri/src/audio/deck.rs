@@ -52,6 +52,10 @@ impl ChannelStrip {
         ]
     }
 
+    pub(crate) fn target_gain(&self) -> f32 {
+        self.target_gain
+    }
+
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
         match band {
             "low" => {

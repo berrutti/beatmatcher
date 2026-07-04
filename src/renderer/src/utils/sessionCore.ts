@@ -8,6 +8,7 @@
 
 import init, {
   buildTimeline as wasmBuildTimeline,
+  currentBeat as wasmCurrentBeat,
   blocksForDeck as wasmBlocksForDeck,
   blockBounds as wasmBlockBounds,
   moveTransportBlock as wasmMove,
@@ -108,6 +109,10 @@ export function buildTimeline(
     masterLanes: raw.masterLanes,
     deckNudges: raw.deckNudges
   };
+}
+
+export function currentBeat(positionSec: number, beatOffsetSec: number, bpm: number): number {
+  return wasmCurrentBeat(positionSec, beatOffsetSec, bpm);
 }
 
 export function blocksForDeck(clips: Clip[], deck: string): TransportBlock[] {

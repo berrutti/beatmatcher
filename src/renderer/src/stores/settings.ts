@@ -23,6 +23,7 @@ type Stored = {
   bpmMax?: number;
   recordingFormat?: RecordingFormatOption;
   recordBms?: boolean;
+  recordCue?: boolean;
   deckAccents?: Record<string, string>;
 };
 
@@ -38,6 +39,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const bpmMax = ref<number>(180);
   const recordingFormat = ref<RecordingFormatOption>('wav-32');
   const recordBms = ref<boolean>(false);
+  const recordCue = ref<boolean>(false);
   const deckAccents = ref<Record<string, string>>({});
   const isOpen = ref(false);
 
@@ -53,6 +55,7 @@ export const useSettingsStore = defineStore('settings', () => {
     bpmMax.value = stored.bpmMax ?? bpmMax.value;
     recordingFormat.value = stored.recordingFormat ?? recordingFormat.value;
     recordBms.value = stored.recordBms ?? recordBms.value;
+    recordCue.value = stored.recordCue ?? recordCue.value;
     deckAccents.value = stored.deckAccents ?? deckAccents.value;
   }
 
@@ -78,6 +81,7 @@ export const useSettingsStore = defineStore('settings', () => {
       bpmMax: bpmMax.value,
       recordingFormat: recordingFormat.value,
       recordBms: recordBms.value,
+      recordCue: recordCue.value,
       deckAccents: Object.keys(deckAccents.value).length > 0 ? deckAccents.value : undefined
     } satisfies Stored);
     await store.save();
@@ -161,6 +165,11 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
+  function setRecordCue(value: boolean): void {
+    recordCue.value = value;
+    trySave();
+  }
+
   function setDeckAccents(accents: Record<string, string>): void {
     deckAccents.value = accents;
     trySave();
@@ -178,6 +187,7 @@ export const useSettingsStore = defineStore('settings', () => {
     pitchRange,
     recordingFormat,
     recordBms,
+    recordCue,
     init,
     resetToDefaults,
     setBpmRange,
@@ -188,6 +198,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setPitchRange,
     setRecordingFormat,
     setRecordBms,
+    setRecordCue,
     setDeckAccents
   };
 });

@@ -155,6 +155,21 @@
         <p class="settings-hint">
           {{ $t('settings.recording.bmsHint') }}
         </p>
+        <label
+          class="settings-checkbox-row"
+          :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+        >
+          <input
+            type="checkbox"
+            :checked="settings.recordingFormat !== 'session' && settings.recordCue"
+            :disabled="settings.recordingFormat === 'session'"
+            @change="settings.setRecordCue(($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ $t('settings.recording.cueCheckbox') }}</span>
+        </label>
+        <p class="settings-hint">
+          {{ $t('settings.recording.cueHint') }}
+        </p>
       </section>
 
       <section class="settings-section">

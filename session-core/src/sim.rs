@@ -141,6 +141,16 @@ pub struct SessionSnapshot {
     pub master_gain: f32,
 }
 
+// Continuous beat count at a playback position, given the track's beat grid.
+// Consumers pick their own cycle length (4-beat phase ring, 16-beat phrase, ...)
+// by taking this value modulo that length. Returns 0.0 for an unknown grid.
+pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
+    if bpm <= 0.0 {
+        return 0.0;
+    }
+    (position_sec - beat_offset_sec) * bpm / 60.0
+}
+
 pub fn sim_pos(sim: &DeckSim, at_ms: f64, sr_f: f64) -> f64 {
     if !sim.is_playing {
         return sim.play_start_frame;
@@ -546,6 +556,13 @@ mod tests {
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;
+
+    #[test]
+    fn current_beat_counts_beats_from_offset() {
+        assert!((current_beat(1.0, 0.0, 120.0) - 2.0).abs() < 1e-9);
+        assert!((current_beat(2.5, 0.5, 120.0) - 4.0).abs() < 1e-9);
+        assert_eq!(current_beat(10.0, 0.0, 0.0), 0.0);
+    }
 
     fn deck_ev(event_type: &str, elapsed_ms: f64, deck: &str) -> SessionEvent {
         SessionEvent {

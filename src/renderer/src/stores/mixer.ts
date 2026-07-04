@@ -224,7 +224,9 @@ export const useMixerStore = defineStore('mixer', () => {
     await invoke('start_recording', {
       bitDepth: fmt === 'wav-16' ? 16 : 32,
       useFlac: fmt === 'flac',
-      recordSession: fmt === 'session' || settings.recordBms
+      // The cue sheet is derived from the event log, so writing one requires
+      // capturing the session even when no .bms is kept.
+      recordSession: fmt === 'session' || settings.recordBms || settings.recordCue
     });
   }
 
@@ -246,7 +248,12 @@ export const useMixerStore = defineStore('mixer', () => {
     if (settings.recordingFormat === 'session') {
       await invoke('save_bms_only', { src, dest });
     } else {
-      await invoke('save_recording', { src, dest });
+      await invoke('save_recording', {
+        src,
+        dest,
+        writeBms: settings.recordBms,
+        writeCue: settings.recordCue
+      });
     }
   }
 
@@ -259,7 +266,12 @@ export const useMixerStore = defineStore('mixer', () => {
     outputPath: string,
     useFlac: boolean
   ): Promise<void> {
-    await invoke('render_session_to_file', { sessionPath, outputPath, useFlac });
+    await invoke('render_session_to_file', {
+      sessionPath,
+      outputPath,
+      useFlac,
+      writeCue: useSettingsStore().recordCue
+    });
   }
 
   async function pickRenderOutputPath(useFlac: boolean): Promise<string | null> {
