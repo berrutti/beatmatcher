@@ -112,7 +112,7 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
 mod tests {
     use super::*;
 
-    fn ev(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+    fn make_event(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
         SessionEvent::at(elapsed_ms, event_type, deck)
     }
 
@@ -121,14 +121,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/a.wav".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..make_event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
+            make_event(1000.0, "play", "A"),
             SessionEvent {
                 path: Some("/b.wav".to_string()),
-                ..ev(2000.0, "load_track", "B")
+                ..make_event(2000.0, "load_track", "B")
             },
-            ev(3000.0, "play", "B"),
+            make_event(3000.0, "play", "B"),
         ];
         let points = build_cue_points(&events);
         assert_eq!(
@@ -151,16 +151,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 gain: Some(0.0),
-                ..ev(0.0, "set_volume", "A")
+                ..make_event(0.0, "set_volume", "A")
             },
             SessionEvent {
                 path: Some("/a.wav".to_string()),
-                ..ev(100.0, "load_track", "A")
+                ..make_event(100.0, "load_track", "A")
             },
-            ev(200.0, "play", "A"),
+            make_event(200.0, "play", "A"),
             SessionEvent {
                 gain: Some(0.8),
-                ..ev(5000.0, "set_volume", "A")
+                ..make_event(5000.0, "set_volume", "A")
             },
         ];
         let points = build_cue_points(&events);
@@ -177,11 +177,11 @@ mod tests {
                 path: Some("/a.wav".to_string()),
                 is_playing: Some(true),
                 gain: Some(0.0),
-                ..ev(0.0, "deck_snapshot", "A")
+                ..make_event(0.0, "deck_snapshot", "A")
             },
             SessionEvent {
                 gain: Some(1.0),
-                ..ev(8000.0, "set_volume", "A")
+                ..make_event(8000.0, "set_volume", "A")
             },
         ];
         let points = build_cue_points(&events);
@@ -195,7 +195,7 @@ mod tests {
             path: Some("/a.wav".to_string()),
             is_playing: Some(true),
             gain: Some(1.0),
-            ..ev(0.0, "deck_snapshot", "A")
+            ..make_event(0.0, "deck_snapshot", "A")
         }];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
@@ -207,16 +207,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/a.wav".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..make_event(0.0, "load_track", "A")
             },
-            ev(100.0, "play", "A"),
+            make_event(100.0, "play", "A"),
             SessionEvent {
                 gain: Some(0.0),
-                ..ev(2000.0, "set_volume", "A")
+                ..make_event(2000.0, "set_volume", "A")
             },
             SessionEvent {
                 gain: Some(1.0),
-                ..ev(4000.0, "set_volume", "A")
+                ..make_event(4000.0, "set_volume", "A")
             },
         ];
         let points = build_cue_points(&events);
