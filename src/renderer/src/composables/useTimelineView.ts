@@ -73,7 +73,6 @@ export function useTimelineView(durationMs: () => number) {
     };
   }
 
-  // ── horizontal ────────────────────────────────────────────────────────────
   function zoomAt(frac: number, deltaY: number): void {
     setView(
       zoomAroundCursor(currentView(), frac, deltaY, ZOOM_SENSITIVITY, durationMs(), MIN_VIEW_MS)
@@ -106,7 +105,6 @@ export function useTimelineView(durationMs: () => number) {
     if (next) setView(next);
   }
 
-  // ── vertical scroll ─────────────────────────────────────────────────────��─
   // The renderer reports how tall the content is each frame so scroll can clamp.
   function setContentMetrics(contentHeight: number, viewportHeight: number): void {
     maxScrollY = Math.max(0, contentHeight - viewportHeight);

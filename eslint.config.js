@@ -34,6 +34,14 @@ export default [
     }
   },
   {
+    files: ['**/*.{mjs,cjs}'],
+    languageOptions: {
+      globals: {
+        ...globals.node
+      }
+    }
+  },
+  {
     files: ['**/*.ts', '**/*.vue'],
     ignores: ['**/stores/**'],
     rules: {

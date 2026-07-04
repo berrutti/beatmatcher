@@ -3,21 +3,16 @@ pub(crate) struct RecordingState {
     pub(crate) temp_path: String,
 }
 
-// ── WAV writer thread ─────────────────────────────────────────────────────────
-//
-// Runs on a dedicated thread. Receives interleaved stereo f32 chunks and writes
-// them as IEEE-float WAV. When the channel closes (sender dropped on stop),
-// seeks back to fix the RIFF/data size fields and closes the file.
-
+// Dedicated writer thread; on channel close it back-patches the RIFF/data sizes.
 pub(crate) fn wav_writer_thread(
     path: String,
     sample_rate: u32,
     bit_depth: u16,
-    rx: std::sync::mpsc::Receiver<Vec<f32>>,
+    receiver: std::sync::mpsc::Receiver<Vec<f32>>,
 ) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write};
 
-    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
     let mut buf = std::io::BufWriter::new(file);
 
     let channels: u16 = 2;
@@ -26,55 +21,58 @@ pub(crate) fn wav_writer_thread(
     let block_align = (channels as u32 * bytes_per_sample) as u16;
     let format_tag: u16 = if bit_depth == 32 { 3 } else { 1 }; // 3=IEEE float, 1=PCM
 
-    buf.write_all(b"RIFF").map_err(|e| e.to_string())?;
+    buf.write_all(b"RIFF").map_err(|error| error.to_string())?;
     buf.write_all(&0u32.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    buf.write_all(b"WAVE").map_err(|e| e.to_string())?;
-    buf.write_all(b"fmt ").map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
+    buf.write_all(b"WAVE").map_err(|error| error.to_string())?;
+    buf.write_all(b"fmt ").map_err(|error| error.to_string())?;
     buf.write_all(&16u32.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&format_tag.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&channels.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&sample_rate.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&byte_rate.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&block_align.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     buf.write_all(&bit_depth.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    buf.write_all(b"data").map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
+    buf.write_all(b"data").map_err(|error| error.to_string())?;
     buf.write_all(&0u32.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
 
     let mut data_bytes = 0u32;
 
-    while let Ok(chunk) = rx.recv() {
-        for &s in &chunk {
+    while let Ok(chunk) = receiver.recv() {
+        for &sample in &chunk {
             if bit_depth == 16 {
-                let sample = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                buf.write_all(&sample.to_le_bytes())
-                    .map_err(|e| e.to_string())?;
+                let quantized = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+                buf.write_all(&quantized.to_le_bytes())
+                    .map_err(|error| error.to_string())?;
                 data_bytes = data_bytes.saturating_add(2);
             } else {
-                buf.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
+                buf.write_all(&sample.to_le_bytes())
+                    .map_err(|error| error.to_string())?;
                 data_bytes = data_bytes.saturating_add(4);
             }
         }
     }
 
-    buf.flush().map_err(|e| e.to_string())?;
+    buf.flush().map_err(|error| error.to_string())?;
 
     let riff_size = data_bytes.saturating_add(36);
-    let mut file = buf.into_inner().map_err(|e| e.to_string())?;
-    file.seek(SeekFrom::Start(4)).map_err(|e| e.to_string())?;
+    let mut file = buf.into_inner().map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(4))
+        .map_err(|error| error.to_string())?;
     file.write_all(&riff_size.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    file.seek(SeekFrom::Start(40)).map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(40))
+        .map_err(|error| error.to_string())?;
     file.write_all(&data_bytes.to_le_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
 
     Ok(())
 }
@@ -87,7 +85,7 @@ pub(crate) fn flac_writer_thread(
     path: String,
     sample_rate: u32,
     bit_depth: u16,
-    rx: std::sync::mpsc::Receiver<Vec<f32>>,
+    receiver: std::sync::mpsc::Receiver<Vec<f32>>,
 ) -> Result<(), String> {
     use std::io::Write;
 
@@ -102,16 +100,17 @@ pub(crate) fn flac_writer_thread(
 
     let mut total_samples_per_channel: usize = 0;
     {
-        let file = std::fs::File::create(&pcm_path).map_err(|e| e.to_string())?;
+        let file = std::fs::File::create(&pcm_path).map_err(|error| error.to_string())?;
         let mut buf = std::io::BufWriter::new(file);
-        while let Ok(chunk) = rx.recv() {
-            for &s in &chunk {
-                let v = (s.clamp(-1.0, 1.0) * scale) as i32;
-                buf.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
+        while let Ok(chunk) = receiver.recv() {
+            for &sample in &chunk {
+                let quantized = (sample.clamp(-1.0, 1.0) * scale) as i32;
+                buf.write_all(&quantized.to_le_bytes())
+                    .map_err(|error| error.to_string())?;
             }
             total_samples_per_channel += chunk.len() / 2;
         }
-        buf.flush().map_err(|e| e.to_string())?;
+        buf.flush().map_err(|error| error.to_string())?;
     }
 
     let source = PcmFileSource::open(
@@ -121,7 +120,7 @@ pub(crate) fn flac_writer_thread(
         sample_rate as usize,
         total_samples_per_channel,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|error| error.to_string())?;
 
     use flacenc::bitsink::ByteSink;
     use flacenc::component::BitRepr;
@@ -129,18 +128,19 @@ pub(crate) fn flac_writer_thread(
 
     let config = flacenc::config::Encoder::default()
         .into_verified()
-        .map_err(|e| format!("FLAC config error: {:?}", e))?;
+        .map_err(|error| format!("FLAC config error: {:?}", error))?;
     let block_size = config.block_size;
     let stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
-        .map_err(|e| format!("FLAC encode error: {:?}", e))?;
+        .map_err(|error| format!("FLAC encode error: {:?}", error))?;
 
     let mut sink = ByteSink::with_capacity(stream.count_bits());
     stream
         .write(&mut sink)
-        .map_err(|e| format!("FLAC write error: {:?}", e))?;
+        .map_err(|error| format!("FLAC write error: {:?}", error))?;
 
-    let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-    out.write_all(sink.as_slice()).map_err(|e| e.to_string())?;
+    let mut out = std::fs::File::create(&path).map_err(|error| error.to_string())?;
+    out.write_all(sink.as_slice())
+        .map_err(|error| error.to_string())?;
 
     std::fs::remove_file(&pcm_path).ok();
     Ok(())
@@ -202,7 +202,7 @@ impl flacenc::source::Source for PcmFileSource {
         while total < bytes.len() {
             match self.reader.read(&mut bytes[total..]) {
                 Ok(0) => break,
-                Ok(n) => total += n,
+                Ok(read_bytes) => total += read_bytes,
                 Err(_) => break,
             }
         }
@@ -215,7 +215,14 @@ impl flacenc::source::Source for PcmFileSource {
 
         let samples: Vec<i32> = bytes[..complete]
             .chunks_exact(4)
-            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .map(|sample_bytes| {
+                i32::from_le_bytes([
+                    sample_bytes[0],
+                    sample_bytes[1],
+                    sample_bytes[2],
+                    sample_bytes[3],
+                ])
+            })
             .collect();
 
         dest.fill_interleaved(&samples)?;

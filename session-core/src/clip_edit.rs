@@ -122,39 +122,39 @@ pub fn blocks_for_deck(clips: &[Clip], deck: &str) -> Vec<TransportBlock> {
 }
 
 // Events that start a block from silence at an explicit position.
-fn start_events_for(block: &TransportBlock, at_ms: f64) -> Vec<SessionEvent> {
+fn start_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     if let Some(region) = &block.loop_region {
         // track_start_sec is the wrapped entry position, which may sit inside the
         // region; playing from the loop start instead would shift the block.
         vec![
             SessionEvent {
                 sec: Some(block.track_start_sec),
-                ..SessionEvent::at(at_ms, "play", &block.deck)
+                ..SessionEvent::at(ms, "play", &block.deck)
             },
             SessionEvent {
                 start_sec: Some(region.start_sec),
                 end_sec: Some(region.end_sec),
-                ..SessionEvent::at(at_ms, "loop_out", &block.deck)
+                ..SessionEvent::at(ms, "loop_out", &block.deck)
             },
         ]
     } else {
         vec![SessionEvent {
             sec: Some(block.track_start_sec),
-            ..SessionEvent::at(at_ms, "play", &block.deck)
+            ..SessionEvent::at(ms, "play", &block.deck)
         }]
     }
 }
 
-fn end_events_for(block: &TransportBlock, at_ms: f64) -> Vec<SessionEvent> {
+fn end_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     if block.loop_region.is_some() {
         // exit_loop, not a bare stop: a glued loop block must be disarmed, else
         // the relocated clip would wrap at the stale loop boundary.
         vec![
-            SessionEvent::at(at_ms, "exit_loop", &block.deck),
-            SessionEvent::at(at_ms, "stop", &block.deck),
+            SessionEvent::at(ms, "exit_loop", &block.deck),
+            SessionEvent::at(ms, "stop", &block.deck),
         ]
     } else {
-        vec![SessionEvent::at(at_ms, "stop", &block.deck)]
+        vec![SessionEvent::at(ms, "stop", &block.deck)]
     }
 }
 
@@ -465,6 +465,16 @@ pub fn move_transport_block(
         }
         let ms = event.elapsed_ms;
         if ms < t0 - EPS_MS || ms > t1 + EPS_MS {
+            // A stranded transport event (paused-scrub seek) under the moved
+            // block would split it; consume it. normalize_resume_play below
+            // re-anchors the next block, so nothing downstream depends on it.
+            let swept = ms > new_start + EPS_MS
+                && ms < new_end - EPS_MS
+                && event.event_type != "load_track"
+                && event.event_type != "eject_track";
+            if swept {
+                continue;
+            }
             kept.push(normalize_resume_play(event, next.as_ref()));
             continue;
         }
@@ -568,6 +578,14 @@ pub fn trim_transport_block(
                 }
                 continue;
             }
+            // A stranded transport event inside the extension would split it.
+            let swept = event.elapsed_ms > applied + EPS_MS
+                && event.elapsed_ms < t0 - EPS_MS
+                && event.event_type != "load_track"
+                && event.event_type != "eject_track";
+            if swept {
+                continue;
+            }
             kept.push(event.clone());
         }
         kept.push(SessionEvent {
@@ -604,6 +622,14 @@ pub fn trim_transport_block(
             && event.event_type != "load_track"
             && event.event_type != "eject_track"
         {
+            continue;
+        }
+        // Same sweep as the start edge.
+        let swept = event.elapsed_ms > t1 + EPS_MS
+            && event.elapsed_ms < applied - EPS_MS
+            && event.event_type != "load_track"
+            && event.event_type != "eject_track";
+        if swept {
             continue;
         }
         kept.push(normalize_resume_play(event, next.as_ref()));
@@ -1501,6 +1527,140 @@ mod tests {
         assert_eq!(deck_b.len(), 1);
         assert!((deck_b[0].session_end_ms - 60_000.0).abs() < 1.0);
         assert!((deck_b[0].track_start_sec - 20.0).abs() < 1e-6);
+    }
+
+    // The gesture clamp allows dragging an end edge exactly onto next.start_ms.
+    #[test]
+    fn trim_end_flush_against_next_block_keeps_it() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(5000.0, "stop", "A"),
+            ev(7000.0, "play", "A"),
+            ev(9000.0, "stop", "A"),
+        ];
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let blocks = blocks_for_deck(&clips, "A");
+        assert_eq!(blocks.len(), 2);
+
+        let result = trim_transport_block(&events, &clips, &blocks[0], Edge::End, 7000.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } =
+            crate::timeline::build_clips(&result.events);
+        let rebuilt_blocks = blocks_for_deck(&rebuilt, "A");
+        assert_eq!(
+            rebuilt_blocks.len(),
+            2,
+            "extending block 1 flush against block 2 swallowed block 2: {rebuilt_blocks:?}"
+        );
+        let second = &rebuilt_blocks[1];
+        assert!((second.start_ms - 7000.0).abs() < 1.0);
+        assert!((second.end_ms - 9000.0).abs() < 1.0);
+        assert!((second.track_start_sec - 4.0).abs() < 1e-6);
+    }
+
+    // Paused-scrub seeks are logged, so silent gaps contain transport events.
+    #[test]
+    fn trim_end_over_stray_seek_keeps_audio_continuous() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(5000.0, "stop", "A"),
+            SessionEvent {
+                sec: Some(30.0),
+                ..ev(6000.0, "seek", "A")
+            },
+        ];
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let result = trim_transport_block(&events, &clips, &block, Edge::End, 8000.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } =
+            crate::timeline::build_clips(&result.events);
+        assert_eq!(
+            rebuilt.len(),
+            1,
+            "stray seek inside the extension split the clip: {rebuilt:?}"
+        );
+        assert!((rebuilt[0].session_end_ms - 8000.0).abs() < 1.0);
+        assert!(rebuilt[0].track_start_sec.abs() < 1e-6);
+    }
+
+    #[test]
+    fn move_over_stray_seek_keeps_audio_continuous() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(3000.0, "stop", "A"),
+            SessionEvent {
+                sec: Some(30.0),
+                ..ev(6000.0, "seek", "A")
+            },
+        ];
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let result = move_transport_block(&events, &clips, &block, 4000.0);
+        assert_eq!(result.applied_delta_ms, 4000.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } =
+            crate::timeline::build_clips(&result.events);
+        assert_eq!(
+            rebuilt.len(),
+            1,
+            "stray seek under the moved block split the clip: {rebuilt:?}"
+        );
+        assert!((rebuilt[0].session_start_ms - 5000.0).abs() < 1.0);
+        assert!((rebuilt[0].session_end_ms - 7000.0).abs() < 1.0);
+        assert!(rebuilt[0].track_start_sec.abs() < 1e-6);
+    }
+
+    #[test]
+    fn move_sweep_keeps_downstream_resume_anchored() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            ev(3000.0, "stop", "A"),
+            SessionEvent {
+                sec: Some(30.0),
+                ..ev(4000.0, "seek", "A")
+            },
+            ev(6000.0, "play", "A"),
+            ev(8000.0, "stop", "A"),
+        ];
+        let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
+        let blocks = blocks_for_deck(&clips, "A");
+        assert_eq!(blocks.len(), 2);
+        assert!((blocks[1].track_start_sec - 30.0).abs() < 1e-6);
+
+        // +1500 lands block 1 on [2500, 4500], sweeping the seek at 4000.
+        let result = move_transport_block(&events, &clips, &blocks[0], 1500.0);
+        assert_eq!(result.applied_delta_ms, 1500.0);
+        let crate::timeline::ClipsBuild { clips: rebuilt, .. } =
+            crate::timeline::build_clips(&result.events);
+        let rebuilt_blocks = blocks_for_deck(&rebuilt, "A");
+        assert_eq!(rebuilt_blocks.len(), 2, "blocks: {rebuilt_blocks:?}");
+        assert!((rebuilt_blocks[0].start_ms - 2500.0).abs() < 1.0);
+        assert!((rebuilt_blocks[0].end_ms - 4500.0).abs() < 1.0);
+        assert!(rebuilt_blocks[0].track_start_sec.abs() < 1e-6);
+        let moved_clips: Vec<&Clip> = rebuilt
+            .iter()
+            .filter(|c| c.session_start_ms < 4500.0)
+            .collect();
+        assert_eq!(moved_clips.len(), 1, "swept seek split the moved block");
+        assert!((rebuilt_blocks[1].start_ms - 6000.0).abs() < 1.0);
+        assert!((rebuilt_blocks[1].end_ms - 8000.0).abs() < 1.0);
+        assert!((rebuilt_blocks[1].track_start_sec - 30.0).abs() < 1e-6);
     }
 
     #[test]

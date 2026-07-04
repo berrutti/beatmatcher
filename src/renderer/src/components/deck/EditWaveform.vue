@@ -97,9 +97,9 @@ function viewDurationSec(): number {
 
 function clampView(start: number, duration: number): [number, number] {
   const dur = Math.min(duration, trackDuration);
-  let s = Math.max(0, start);
-  if (s + dur > trackDuration) s = Math.max(0, trackDuration - dur);
-  return [s, s + dur];
+  let clampedStart = Math.max(0, start);
+  if (clampedStart + dur > trackDuration) clampedStart = Math.max(0, trackDuration - dur);
+  return [clampedStart, clampedStart + dur];
 }
 
 function setZoomCentered(idx: number, anchorSec?: number) {
@@ -108,9 +108,9 @@ function setZoomCentered(idx: number, anchorSec?: number) {
   zoomIdx.value = newZoom;
   const dur = viewDurationSec();
   const center = anchorSec ?? (viewStartSec + viewEndSec) / 2;
-  const [s, e] = clampView(center - dur / 2, dur);
-  viewStartSec = s;
-  viewEndSec = e;
+  const [clampedStart, clampedEnd] = clampView(center - dur / 2, dur);
+  viewStartSec = clampedStart;
+  viewEndSec = clampedEnd;
   ensurePeaks();
 }
 
@@ -274,10 +274,10 @@ function ensureBitmap(canvasW: number, canvasH: number) {
   buildBitmap(peaksSnapshot, bitmapW, canvasH);
 }
 
-function pxToSec(px: number): number {
+function pxToSec(localX: number): number {
   const canvas = canvasEl.value;
   if (!canvas) return 0;
-  return viewStartSec + (px / canvas.clientWidth) * (viewEndSec - viewStartSec);
+  return viewStartSec + (localX / canvas.clientWidth) * (viewEndSec - viewStartSec);
 }
 
 function secToPx(sec: number): number {
@@ -294,65 +294,65 @@ function drawWaveform() {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (width === 0 || height === 0) return;
 
-  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
+  if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
   }
 
   ensureBitmap(canvas.width, canvas.height);
 
   ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(0, 0, width, height);
   if (waveImgBitmap && !isNaN(cachedStartSec)) {
     const bitmapLeftPx = secToPx(cachedStartSec);
     const bitmapRightPx = secToPx(cachedEndSec);
     const bitmapWidthPx = bitmapRightPx - bitmapLeftPx;
     if (bitmapWidthPx > 0) {
-      ctx.drawImage(waveImgBitmap, bitmapLeftPx, 0, bitmapWidthPx, h);
+      ctx.drawImage(waveImgBitmap, bitmapLeftPx, 0, bitmapWidthPx, height);
     }
   }
 
-  drawLoopRegion(ctx, w, h);
-  drawRuler(ctx, w, h);
-  drawDownbeatMarker(ctx, w, h);
-  drawCueMarker(ctx, w, h);
-  drawPlayhead(ctx, w, h);
+  drawLoopRegion(ctx, width, height);
+  drawRuler(ctx, width, height);
+  drawDownbeatMarker(ctx, width, height);
+  drawCueMarker(ctx, width, height);
+  drawPlayhead(ctx, width, height);
 }
 
-function drawLoopRegion(ctx: CanvasRenderingContext2D, w: number, h: number) {
+function drawLoopRegion(ctx: CanvasRenderingContext2D, width: number, height: number) {
   const region = props.loopRegion;
   if (!region) return;
-  const x1 = Math.max(0, secToPx(region.startSec));
-  const x2 = Math.min(w, secToPx(region.endSec));
-  if (x2 <= x1) return;
+  const startX = Math.max(0, secToPx(region.startSec));
+  const endX = Math.min(width, secToPx(region.endSec));
+  if (endX <= startX) return;
   ctx.save();
   ctx.fillStyle = props.loopActive ? '#ca8a04' : '#78716c';
   ctx.globalAlpha = 0.25;
-  ctx.fillRect(x1, 0, x2 - x1, h);
+  ctx.fillRect(startX, 0, endX - startX, height);
   ctx.globalAlpha = props.loopActive ? 0.7 : 0.35;
   ctx.strokeStyle = props.loopActive ? '#ca8a04' : '#78716c';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(x1, 0);
-  ctx.lineTo(x1, h);
-  ctx.moveTo(x2, 0);
-  ctx.lineTo(x2, h);
+  ctx.moveTo(startX, 0);
+  ctx.lineTo(startX, height);
+  ctx.moveTo(endX, 0);
+  ctx.lineTo(endX, height);
   ctx.stroke();
   ctx.restore();
 }
 
 const MIN_LINE_SPACING_PX = 6;
 
-function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
+function drawRuler(ctx: CanvasRenderingContext2D, width: number, height: number) {
   if (!props.trackBpm || props.trackBpm <= 0) return;
   const beatDurSec = 60 / props.trackBpm;
   const viewSpan = viewEndSec - viewStartSec;
-  const pxPerBeat = (beatDurSec / viewSpan) * w;
+  const pxPerBeat = (beatDurSec / viewSpan) * width;
 
   // Find the coarsest subdivision that puts lines at least MIN_LINE_SPACING_PX apart.
   // Steps: 1 beat → 4 beats (bar) → 16 beats (phrase) → 64 → ...
@@ -366,14 +366,14 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const firstBeat = Math.ceil((viewStartSec - beatOffset) / beatDurSec);
   const lastBeat = Math.floor((viewEndSec - beatOffset) / beatDurSec);
 
-  for (let b = firstBeat; b <= lastBeat; b++) {
-    if (b % step !== 0) continue;
-    const t = beatOffset + b * beatDurSec;
-    const x = secToPx(t);
-    if (x < 0 || x > w) continue;
+  for (let beat = firstBeat; beat <= lastBeat; beat++) {
+    if (beat % step !== 0) continue;
+    const beatSec = beatOffset + beat * beatDurSec;
+    const beatX = secToPx(beatSec);
+    if (beatX < 0 || beatX > width) continue;
 
-    const isPhrase = b % 16 === 0;
-    const isBar = b % 4 === 0;
+    const isPhrase = beat % 16 === 0;
+    const isBar = beat % 4 === 0;
 
     if (isPhrase) {
       ctx.strokeStyle = props.accent;
@@ -390,8 +390,8 @@ function drawRuler(ctx: CanvasRenderingContext2D, w: number, h: number) {
     }
 
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, h);
+    ctx.moveTo(beatX, 0);
+    ctx.lineTo(beatX, height);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
@@ -401,10 +401,10 @@ let rafId = 0;
 let lastZoomTime = 0;
 const ZOOM_COOLDOWN_MS = 150;
 
-function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
+function drawPlayhead(ctx: CanvasRenderingContext2D, width: number, height: number) {
   const sec = props.getPlayheadPosition();
-  const x = secToPx(sec);
-  if (x < 0 || x > w) return;
+  const playheadX = secToPx(sec);
+  if (playheadX < 0 || playheadX > width) return;
   const isPlaying = props.getTrackPosition() !== null;
   const color = isPlaying ? '#ffffff' : '#ef4444';
   ctx.save();
@@ -412,14 +412,14 @@ function drawPlayhead(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.lineWidth = PLAYHEAD_LINE_WIDTH;
   ctx.globalAlpha = PLAYHEAD_ALPHA;
   ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, h);
+  ctx.moveTo(playheadX, 0);
+  ctx.lineTo(playheadX, height);
   ctx.stroke();
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.moveTo(x - PLAYHEAD_ARROW_HALF, 0);
-  ctx.lineTo(x + PLAYHEAD_ARROW_HALF, 0);
-  ctx.lineTo(x, PLAYHEAD_ARROW_HEIGHT);
+  ctx.moveTo(playheadX - PLAYHEAD_ARROW_HALF, 0);
+  ctx.lineTo(playheadX + PLAYHEAD_ARROW_HALF, 0);
+  ctx.lineTo(playheadX, PLAYHEAD_ARROW_HEIGHT);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -429,37 +429,37 @@ const MARKER_TRI_W = 7;
 const MARKER_TRI_H = 11;
 const MARKER_LINE_WIDTH = 1.5;
 
-function drawDownbeatMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const x = secToPx(props.beatOffset);
-  if (x < -MARKER_TRI_W || x > w + MARKER_TRI_W) return;
+function drawDownbeatMarker(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const markerX = secToPx(props.beatOffset);
+  if (markerX < -MARKER_TRI_W || markerX > width + MARKER_TRI_W) return;
   ctx.save();
   ctx.strokeStyle = '#ffffff';
   ctx.fillStyle = '#ffffff';
   ctx.globalAlpha = 0.85;
   ctx.lineWidth = MARKER_LINE_WIDTH;
   ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, h);
+  ctx.moveTo(markerX, 0);
+  ctx.lineTo(markerX, height);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(x - MARKER_TRI_W, 0);
-  ctx.lineTo(x + MARKER_TRI_W, 0);
-  ctx.lineTo(x, MARKER_TRI_H);
+  ctx.moveTo(markerX - MARKER_TRI_W, 0);
+  ctx.lineTo(markerX + MARKER_TRI_W, 0);
+  ctx.lineTo(markerX, MARKER_TRI_H);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
 }
 
-function drawCueMarker(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const x = secToPx(props.cuePoint);
-  if (x < -MARKER_TRI_W || x > w + MARKER_TRI_W) return;
+function drawCueMarker(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const markerX = secToPx(props.cuePoint);
+  if (markerX < -MARKER_TRI_W || markerX > width + MARKER_TRI_W) return;
   ctx.save();
   ctx.fillStyle = '#eab308';
   ctx.globalAlpha = 0.9;
   ctx.beginPath();
-  ctx.moveTo(x - MARKER_TRI_W, h);
-  ctx.lineTo(x + MARKER_TRI_W, h);
-  ctx.lineTo(x, h - MARKER_TRI_H);
+  ctx.moveTo(markerX - MARKER_TRI_W, height);
+  ctx.lineTo(markerX + MARKER_TRI_W, height);
+  ctx.lineTo(markerX, height - MARKER_TRI_H);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -483,21 +483,21 @@ let panStartViewSec = 0;
 let dragRectLeft = 0;
 let dragRectWidth = 0;
 let pendingDragX: number | null = null;
-function onMouseDown(e: MouseEvent) {
+function onMouseDown(event: MouseEvent) {
   const canvas = canvasEl.value;
   if (!canvas) return;
   const rect = canvas.getBoundingClientRect();
   dragRectLeft = rect.left;
   dragRectWidth = rect.width;
-  const px = e.clientX - dragRectLeft;
+  const localX = event.clientX - dragRectLeft;
 
-  if (e.button === 2) {
+  if (event.button === 2) {
     dragging = 'pan';
-    panStartX = px;
+    panStartX = localX;
     panStartViewSec = viewStartSec;
   } else {
     dragging = 'seek';
-    pendingDragX = e.clientX;
+    pendingDragX = event.clientX;
   }
 
   window.addEventListener('mousemove', onMouseMoveWindow);
@@ -506,45 +506,45 @@ function onMouseDown(e: MouseEvent) {
 
 function applyPendingDrag() {
   if (pendingDragX === null) return;
-  const px = pendingDragX - dragRectLeft;
+  const localX = pendingDragX - dragRectLeft;
 
   if (dragging === 'pan' && dragRectWidth > 0) {
     const viewSpan = viewEndSec - viewStartSec;
-    const deltaSec = -((px - panStartX) / dragRectWidth) * viewSpan;
-    const [s, e] = clampView(panStartViewSec + deltaSec, viewSpan);
-    viewStartSec = s;
-    viewEndSec = e;
+    const deltaSec = -((localX - panStartX) / dragRectWidth) * viewSpan;
+    const [clampedStart, clampedEnd] = clampView(panStartViewSec + deltaSec, viewSpan);
+    viewStartSec = clampedStart;
+    viewEndSec = clampedEnd;
   } else if (dragging === 'seek') {
-    emit('seek', Math.max(0, Math.min(pxToSec(px), trackDuration)));
+    emit('seek', Math.max(0, Math.min(pxToSec(localX), trackDuration)));
   }
 
   pendingDragX = null;
 }
 
-function onMouseMoveWindow(e: MouseEvent) {
+function onMouseMoveWindow(event: MouseEvent) {
   if (!dragging) return;
-  pendingDragX = e.clientX;
+  pendingDragX = event.clientX;
 }
 
-function onWheel(e: WheelEvent) {
+function onWheel(event: WheelEvent) {
   const canvas = canvasEl.value;
   if (!canvas) return;
 
   const rect = canvas.getBoundingClientRect();
-  const frac = (e.clientX - rect.left) / rect.width;
+  const frac = (event.clientX - rect.left) / rect.width;
   const anchorSec = viewStartSec + frac * (viewEndSec - viewStartSec);
 
-  if (Math.abs(e.deltaX) > 2 && Math.abs(e.deltaX) >= Math.abs(e.deltaY)) {
+  if (Math.abs(event.deltaX) > 2 && Math.abs(event.deltaX) >= Math.abs(event.deltaY)) {
     const viewSpan = viewEndSec - viewStartSec;
-    const deltaSec = (e.deltaX / rect.width) * viewSpan;
-    const [s, end] = clampView(viewStartSec + deltaSec, viewSpan);
-    viewStartSec = s;
-    viewEndSec = end;
+    const deltaSec = (event.deltaX / rect.width) * viewSpan;
+    const [clampedStart, clampedEnd] = clampView(viewStartSec + deltaSec, viewSpan);
+    viewStartSec = clampedStart;
+    viewEndSec = clampedEnd;
     ensurePeaks();
-  } else if (e.deltaY !== 0) {
+  } else if (event.deltaY !== 0) {
     const now = Date.now();
     if (now - lastZoomTime > ZOOM_COOLDOWN_MS) {
-      if (e.deltaY < 0) zoomIn(anchorSec);
+      if (event.deltaY < 0) zoomIn(anchorSec);
       else zoomOut(anchorSec);
       lastZoomTime = now;
     }
@@ -564,12 +564,12 @@ function onMouseUp() {
 
 let resizeObserver: ResizeObserver | null = null;
 
-watch(canvasEl, (el) => {
-  if (el && !resizeObserver && el.parentElement) {
+watch(canvasEl, (element) => {
+  if (element && !resizeObserver && element.parentElement) {
     resizeObserver = new ResizeObserver(() => {
       ensurePeaks();
     });
-    resizeObserver.observe(el.parentElement);
+    resizeObserver.observe(element.parentElement);
   }
 });
 

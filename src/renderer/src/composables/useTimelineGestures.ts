@@ -26,7 +26,12 @@ import {
 } from '@renderer/utils/timelineView';
 import { ghostSpan, clipGestureDeltaSec, marqueeTargets } from '@renderer/utils/timelineLayout';
 import { laneSpecFor, formatLaneValue } from '@renderer/utils/sessionEditOps';
-import { blockBounds, blocksForDeck, filterActiveAt } from '@renderer/utils/sessionCore';
+import {
+  blockBounds,
+  blocksForDeck,
+  filterActiveAt,
+  normalizeGestureSamples
+} from '@renderer/utils/sessionCore';
 import type { RowLayout } from '@renderer/utils/timelineDraw';
 import type {
   EditableLaneKey,
@@ -40,7 +45,6 @@ import type {
 import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
-const MIN_BLOCK_MS = 100;
 import type { SessionEvent } from '@renderer/utils/types';
 
 const MIN_VIEW_MS = 200;
@@ -95,6 +99,8 @@ type ActiveGesture =
       min: number;
       max: number;
       samples: LanePoint[];
+      // Refreshed per mousemove so the per-frame overlay draw stays WASM-free.
+      normalized: LanePoint[];
       pending: { ms: number; y: number } | null;
     }
   | {
@@ -124,6 +130,8 @@ type ActiveGesture =
       targetMs: number;
       minStartMs: number;
       maxEndMs: number;
+      startTrimMinMs: number;
+      minBlockMs: number;
       snapMs: number;
     }
   | {
@@ -147,15 +155,15 @@ export function useTimelineGestures(deps: GestureDeps) {
   let startClientX = 0;
   let dragged = false;
 
-  const fracAtClientLocalX = (x: number, vc: ViewContext) =>
-    clampFrac((x - LABEL_W) / (vc.trackW || 1));
+  const fracAtClientLocalX = (x: number, viewContext: ViewContext) =>
+    clampFrac((x - LABEL_W) / (viewContext.trackW || 1));
 
-  function pointFrom(e: MouseEvent, rect: DOMRect): Point {
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  function pointFrom(event: MouseEvent, rect: DOMRect): Point {
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  function hitAt(pt: Point): Hit | null {
-    return hitScene(deps.getItems(), pt, deps.getVc(), hitPriority);
+  function hitAt(point: Point): Hit | null {
+    return hitScene(deps.getItems(), point, deps.getVc(), hitPriority);
   }
 
   function laneRange(lane: EditableLaneKey, deck: string): { min: number; max: number } {
@@ -164,13 +172,12 @@ export function useTimelineGestures(deps: GestureDeps) {
     return { min: spec.min, max: spec.max };
   }
 
-  // ── pointer down: choose and arm a gesture, or emit a click-time intent ────
-  function onMouseDown(e: MouseEvent, rect: DOMRect): void {
-    const vc = deps.getVc();
-    if (vc.trackW <= 0) return;
-    const pt = pointFrom(e, rect);
-    const hit = hitAt(pt);
-    startClientX = e.clientX;
+  function onMouseDown(event: MouseEvent, rect: DOMRect): void {
+    const viewContext = deps.getVc();
+    if (viewContext.trackW <= 0) return;
+    const point = pointFrom(event, rect);
+    const hit = hitAt(point);
+    startClientX = event.clientX;
     dragged = false;
     active = null;
     if (!hit) return;
@@ -196,7 +203,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         const laneHeight = deps.laneHeight();
         active = {
           kind: 'lane-resize',
-          startY: pt.y,
+          startY: point.y,
           startHeight: laneHeight,
           height: laneHeight
         };
@@ -206,7 +213,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         const waveformHeight = deps.waveformHeight();
         active = {
           kind: 'waveform-resize',
-          startY: pt.y,
+          startY: point.y,
           startHeight: waveformHeight,
           height: waveformHeight
         };
@@ -216,8 +223,8 @@ export function useTimelineGestures(deps: GestureDeps) {
         deps.emit({
           type: 'lane.openDropdown',
           deck: hit.deck!,
-          clientX: e.clientX,
-          clientY: e.clientY
+          clientX: event.clientX,
+          clientY: event.clientY
         });
         return;
       case 'filterRegion': {
@@ -229,14 +236,14 @@ export function useTimelineGestures(deps: GestureDeps) {
             deck: hit.deck!,
             span,
             edge: hit.part,
-            currentMs: vc.xToMs(pt.x)
+            currentMs: viewContext.xToMs(point.x)
           };
         } else {
           active = {
             kind: 'filter-move',
             deck: hit.deck!,
             span,
-            grabMs: vc.xToMs(pt.x),
+            grabMs: viewContext.xToMs(point.x),
             deltaMs: 0
           };
         }
@@ -248,23 +255,23 @@ export function useTimelineGestures(deps: GestureDeps) {
         const { block, rowTop } = hit.data as { block: TransportBlock; rowTop: number };
         // Shift+drag paints a nudge over the deck row, even on top of a clip
         // (otherwise a loaded waveform would block the gesture entirely).
-        if (e.shiftKey) {
-          armNudge(hit.deck!, rowTop, vc, pt);
+        if (event.shiftKey) {
+          armNudge(hit.deck!, rowTop, viewContext, point);
           return;
         }
         // Cmd/Ctrl+drag draws a marquee even over clips (a plain press would
         // grab the block); without a drag the click toggles the block instead.
-        if (e.metaKey || e.ctrlKey) {
-          active = { kind: 'marquee', additive: true, start: pt, current: pt };
+        if (event.metaKey || event.ctrlKey) {
+          active = { kind: 'marquee', additive: true, start: point, current: point };
           return;
         }
         const edge = hit.part === 'start' || hit.part === 'end' ? hit.part : null;
-        armClip(block, rowTop, edge, vc, pt);
+        armClip(block, rowTop, edge, viewContext, point);
         return;
       }
       case 'lane': {
         if (!deps.isEditMode()) break;
-        const ms = vc.xToMs(pt.x);
+        const ms = viewContext.xToMs(point.x);
         const laneKey = hit.part as EditableLaneKey;
         const laneRect = hit.data as { top: number; height: number };
         // Match the renderer's inset value area so drawn points and the painted
@@ -272,7 +279,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         const pad = laneValuePad(laneRect.height);
         const valueTop = laneRect.top + pad;
         const valueH = laneRect.height - 2 * pad;
-        if (e.shiftKey && laneKey === 'filter') {
+        if (event.shiftKey && laneKey === 'filter') {
           active = {
             kind: 'filter-paint',
             deck: hit.deck!,
@@ -294,19 +301,25 @@ export function useTimelineGestures(deps: GestureDeps) {
           min,
           max,
           samples: [],
-          pending: { ms, y: pt.y }
+          normalized: [],
+          pending: { ms, y: point.y }
         };
         return;
       }
       case 'clipBand': {
-        if (deps.isEditMode() && e.shiftKey) {
-          armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, vc, pt);
+        if (deps.isEditMode() && event.shiftKey) {
+          armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, viewContext, point);
           return;
         }
         // Dragging empty band space in edit mode rubber-band selects; panning
         // stays available via wheel, the overview, and outside edit mode.
         if (deps.isEditMode()) {
-          active = { kind: 'marquee', additive: e.metaKey || e.ctrlKey, start: pt, current: pt };
+          active = {
+            kind: 'marquee',
+            additive: event.metaKey || event.ctrlKey,
+            start: point,
+            current: point
+          };
           return;
         }
         break;
@@ -316,28 +329,28 @@ export function useTimelineGestures(deps: GestureDeps) {
     active = { kind: 'track-pan', startView: deps.camera.currentView() };
   }
 
-  function onMouseMove(e: MouseEvent, rect: DOMRect): void {
+  function onMouseMove(event: MouseEvent, rect: DOMRect): void {
     if (!active) return;
-    const vc = deps.getVc();
-    const pt = pointFrom(e, rect);
-    if (Math.abs(e.clientX - startClientX) > DRAG_THRESHOLD_PX) dragged = true;
+    const viewContext = deps.getVc();
+    const point = pointFrom(event, rect);
+    if (Math.abs(event.clientX - startClientX) > DRAG_THRESHOLD_PX) dragged = true;
 
     switch (active.kind) {
       case 'track-pan':
-        deps.camera.panByPixels(e.clientX - startClientX, vc.trackW);
+        deps.camera.panByPixels(event.clientX - startClientX, viewContext.trackW);
         return;
       case 'lane-resize': {
-        active.height = clampLaneHeight(active.startHeight + (pt.y - active.startY));
+        active.height = clampLaneHeight(active.startHeight + (point.y - active.startY));
         deps.emit({ type: 'lane.resize', height: active.height });
         return;
       }
       case 'waveform-resize': {
-        active.height = clampWaveformHeight(active.startHeight + (pt.y - active.startY));
+        active.height = clampWaveformHeight(active.startHeight + (point.y - active.startY));
         deps.emit({ type: 'waveform.resize', height: active.height });
         return;
       }
       case 'overview': {
-        const frac = fracAtClientLocalX(pt.x, vc);
+        const frac = fracAtClientLocalX(point.x, viewContext);
         deps.emit({ type: 'view.set', view: overviewDrag(active, frac, deps.durationMs()) });
         return;
       }
@@ -350,26 +363,27 @@ export function useTimelineGestures(deps: GestureDeps) {
           active.pending = null;
         }
         if (active.pending) return;
-        const ms = clampMs(vc.xToMs(pt.x), deps.durationMs());
+        const ms = clampMs(viewContext.xToMs(point.x), deps.durationMs());
         const last = active.samples[active.samples.length - 1];
         const value =
-          e.shiftKey && last
+          event.shiftKey && last
             ? last.value
-            : yToValue(active.top, active.height, active.min, active.max, pt.y);
+            : yToValue(active.top, active.height, active.min, active.max, point.y);
         active.samples.push({ ms, value });
+        active.normalized = normalizeGestureSamples(active.samples);
         deps.requestRender();
         return;
       }
       case 'nudge-paint':
-        active.currentMs = clampMs(vc.xToMs(pt.x), deps.durationMs());
+        active.currentMs = clampMs(viewContext.xToMs(point.x), deps.durationMs());
         deps.requestRender();
         return;
       case 'filter-paint':
-        active.currentMs = clampMs(vc.xToMs(pt.x), deps.durationMs());
+        active.currentMs = clampMs(viewContext.xToMs(point.x), deps.durationMs());
         deps.requestRender();
         return;
       case 'filter-resize': {
-        active.currentMs = clampMs(vc.xToMs(pt.x), deps.durationMs());
+        active.currentMs = clampMs(viewContext.xToMs(point.x), deps.durationMs());
         deps.emit({
           type: 'filterRegion.select',
           deck: active.deck,
@@ -382,7 +396,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'filter-move': {
-        active.deltaMs = vc.xToMs(pt.x) - active.grabMs;
+        active.deltaMs = viewContext.xToMs(point.x) - active.grabMs;
         deps.emit({
           type: 'filterRegion.select',
           deck: active.deck,
@@ -395,11 +409,11 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'clip':
-        updateClip(active, clampMs(vc.xToMs(pt.x), deps.durationMs()));
+        updateClip(active, clampMs(viewContext.xToMs(point.x), deps.durationMs()));
         deps.requestRender();
         return;
       case 'marquee':
-        active.current = pt;
+        active.current = point;
         deps.requestRender();
         return;
     }
@@ -510,15 +524,15 @@ export function useTimelineGestures(deps: GestureDeps) {
     deps.requestRender();
   }
 
-  function onClick(e: MouseEvent, rect: DOMRect): void {
+  function onClick(event: MouseEvent, rect: DOMRect): void {
     if (dragged) {
       dragged = false;
       return;
     }
-    const vc = deps.getVc();
-    const pt = pointFrom(e, rect);
-    const hit = hitAt(pt);
-    const ms = vc.xToMs(pt.x);
+    const viewContext = deps.getVc();
+    const point = pointFrom(event, rect);
+    const hit = hitAt(point);
+    const ms = viewContext.xToMs(point.x);
     if (!hit) {
       deps.emit({ type: 'clip.clearSelection' });
       deps.emit({ type: 'filterRegion.clearSelection' });
@@ -526,7 +540,7 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
     if (hit.target === 'clip') {
       const { block } = hit.data as { block: TransportBlock };
-      const additive = deps.isEditMode() && (e.metaKey || e.ctrlKey);
+      const additive = deps.isEditMode() && (event.metaKey || event.ctrlKey);
       deps.emit({ type: 'clip.select', block, ms, additive });
       deps.emit({ type: 'filterRegion.clearSelection' });
       // Cmd/Ctrl-click only edits the selection; moving the playhead too would
@@ -550,9 +564,9 @@ export function useTimelineGestures(deps: GestureDeps) {
     deps.emit({ type: 'seek', ms });
   }
 
-  function onDblClick(e: MouseEvent, rect: DOMRect): void {
-    const pt = pointFrom(e, rect);
-    const hit = hitAt(pt);
+  function onDblClick(event: MouseEvent, rect: DOMRect): void {
+    const point = pointFrom(event, rect);
+    const hit = hitAt(point);
     if (!hit) return;
     if (hit.target === 'laneSeparator') {
       deps.emit({ type: 'lane.resizeReset' });
@@ -565,7 +579,7 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (hit.target === 'clip' && deps.isEditMode()) {
       const { block } = hit.data as { block: TransportBlock };
       if (block.loop) {
-        deps.emit({ type: 'loopBlock.toggleUnlock', block, ms: deps.getVc().xToMs(pt.x) });
+        deps.emit({ type: 'loopBlock.toggleUnlock', block, ms: deps.getVc().xToMs(point.x) });
         return;
       }
       // Double-click a regular block: whole block (a single click picks only
@@ -587,12 +601,14 @@ export function useTimelineGestures(deps: GestureDeps) {
       if (clip.deck !== deck || clip.loop) continue;
       if (ms < clip.sessionStartMs || ms > clip.sessionEndMs) continue;
       if (!clip.bpm || clip.bpm <= 0) return null;
-      const seg = clip.waveSegments.find((s) => ms >= s.wallStartMs && ms <= s.wallEndMs);
+      const seg = clip.waveSegments.find(
+        (segment) => ms >= segment.wallStartMs && ms <= segment.wallEndMs
+      );
       const wallSec = seg ? (seg.wallEndMs - seg.wallStartMs) / 1000 : 0;
       const trackSpan = seg ? seg.trackEndSec - seg.trackStartSec : 0;
       const effRate = seg && wallSec > 0 && trackSpan > 0 ? trackSpan / wallSec : clip.playbackRate;
       return {
-        atMs: ms,
+        ms,
         clipStartMs: clip.sessionStartMs,
         clipEndMs: clip.sessionEndMs,
         trackBpm: clip.bpm,
@@ -602,17 +618,17 @@ export function useTimelineGestures(deps: GestureDeps) {
     return null;
   }
 
-  function onContextMenu(e: MouseEvent, rect: DOMRect): void {
-    const pt = pointFrom(e, rect);
-    const hit = hitAt(pt);
+  function onContextMenu(event: MouseEvent, rect: DOMRect): void {
+    const point = pointFrom(event, rect);
+    const hit = hitAt(point);
     if (!hit) return;
     if (hit.target === 'filterRegion' && deps.isEditMode()) {
       deps.emit({
         type: 'menu.filterRegion',
         deck: hit.deck!,
         span: hit.data as FilterActiveSpan,
-        clientX: e.clientX,
-        clientY: e.clientY
+        clientX: event.clientX,
+        clientY: event.clientY
       });
       return;
     }
@@ -620,35 +636,37 @@ export function useTimelineGestures(deps: GestureDeps) {
       deps.emit({
         type: 'menu.deck',
         deck: hit.deck,
-        clientX: e.clientX,
-        clientY: e.clientY,
+        clientX: event.clientX,
+        clientY: event.clientY,
         nudge: hit.target === 'nudgeSpan' ? (hit.data as NudgeSpan) : null,
-        bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(pt.x)) : null
+        bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(point.x)) : null
       });
     }
   }
 
-  function onWheel(e: WheelEvent, rect: DOMRect): void {
-    const vc = deps.getVc();
-    if (vc.trackW <= 0) return;
-    const pt = pointFrom(e, rect);
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      deps.camera.zoomAt(fracAtClientLocalX(pt.x, vc), e.deltaY);
-    } else if (deps.camera.maxScrollY() > 0 && Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+  function onWheel(event: WheelEvent, rect: DOMRect): void {
+    const viewContext = deps.getVc();
+    if (viewContext.trackW <= 0) return;
+    const point = pointFrom(event, rect);
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      deps.camera.zoomAt(fracAtClientLocalX(point.x, viewContext), event.deltaY);
+    } else if (deps.camera.maxScrollY() > 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
       // Vertical scroll is owned by the native scroll container; don't
       // preventDefault so the browser scrolls it and fires its scroll event.
     } else {
-      e.preventDefault();
-      deps.camera.panByMsDelta((e.deltaX || e.deltaY) * (vc.view.duration / vc.trackW));
+      event.preventDefault();
+      deps.camera.panByMsDelta(
+        (event.deltaX || event.deltaY) * (viewContext.view.duration / viewContext.trackW)
+      );
     }
   }
 
   // Overlay items for the active gesture's preview, appended to the scene.
   function overlays(): SceneItem[] {
     if (!active) return [];
-    const vc = deps.getVc();
-    const msToX = makeMsToX(vc.view, vc.trackW);
+    const viewContext = deps.getVc();
+    const msToX = makeMsToX(viewContext.view, viewContext.trackW);
     if (active.kind === 'lane-draw' && active.samples.length > 0) {
       const gesture = active;
       const cursor = gesture.samples[gesture.samples.length - 1];
@@ -657,11 +675,11 @@ export function useTimelineGestures(deps: GestureDeps) {
           drawValueGesturePreview(
             ctx,
             gesture,
-            normalize(gesture.samples),
+            gesture.normalized,
             formatLaneValue(gesture.lane, cursor.value),
             cursor.ms,
             msToX,
-            vc.canvasW
+            viewContext.canvasW
           )
         )
       ];
@@ -679,7 +697,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             deps.waveformHeight(),
             gesture.currentMs,
             msToX,
-            vc.canvasW
+            viewContext.canvasW
           )
         )
       ];
@@ -699,7 +717,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             gesture.height,
             gesture.currentMs,
             msToX,
-            vc.canvasW
+            viewContext.canvasW
           )
         )
       ];
@@ -710,13 +728,13 @@ export function useTimelineGestures(deps: GestureDeps) {
         overlay((ctx) => {
           const x = Math.min(gesture.start.x, gesture.current.x);
           const y = Math.min(gesture.start.y, gesture.current.y);
-          const w = Math.abs(gesture.current.x - gesture.start.x);
-          const h = Math.abs(gesture.current.y - gesture.start.y);
+          const width = Math.abs(gesture.current.x - gesture.start.x);
+          const height = Math.abs(gesture.current.y - gesture.start.y);
           ctx.fillStyle = '#ffffff14';
-          ctx.fillRect(x, y, w, h);
+          ctx.fillRect(x, y, width, height);
           ctx.strokeStyle = '#ffffffcc';
           ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, w, h);
+          ctx.strokeRect(x, y, width, height);
         })
       ];
     }
@@ -743,7 +761,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             `${deltaSec > 0 ? '+' : ''}${deltaSec.toFixed(2)}s`,
             gesture.block.startMs + (kind === 'move' ? gesture.deltaMs : 0),
             msToX,
-            vc.canvasW
+            viewContext.canvasW
           )
         )
       ];
@@ -751,8 +769,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     return [];
   }
 
-  function cursorFor(pt: Point, shiftKey = false): string {
-    const hit = hitAt(pt);
+  function cursorFor(point: Point, shiftKey = false): string {
+    const hit = hitAt(point);
     if (!hit) return '';
     if (hit.target === 'laneSeparator' || hit.target === 'waveformSeparator') return 'row-resize';
     if (hit.target === 'overview')
@@ -773,14 +791,13 @@ export function useTimelineGestures(deps: GestureDeps) {
     return '';
   }
 
-  // ── small helpers ──────────────────────────────────────────────────────────
-  function armNudge(deck: string, rowTop: number, vc: ViewContext, pt: Point): void {
-    const ms = vc.xToMs(pt.x);
+  function armNudge(deck: string, rowTop: number, viewContext: ViewContext, point: Point): void {
+    const ms = viewContext.xToMs(point.x);
     active = {
       kind: 'nudge-paint',
       deck,
       rowTop,
-      direction: deps.nudgeDirectionAt(deck, pt.y, rowTop),
+      direction: deps.nudgeDirectionAt(deck, point.y, rowTop),
       startMs: ms,
       currentMs: ms
     };
@@ -790,12 +807,12 @@ export function useTimelineGestures(deps: GestureDeps) {
     block: TransportBlock,
     rowTop: number,
     edge: 'start' | 'end' | null,
-    vc: ViewContext,
-    pt: Point
+    viewContext: ViewContext,
+    point: Point
   ): void {
     const allClips = deps.getClips();
     const bounds = blockBounds(deps.getEvents(), allClips, block);
-    const grabMs = vc.xToMs(pt.x);
+    const grabMs = viewContext.xToMs(point.x);
     const blockClips = allClips.filter(
       (clip) =>
         clip.deck === block.deck &&
@@ -813,7 +830,9 @@ export function useTimelineGestures(deps: GestureDeps) {
       targetMs: edge === 'start' ? block.startMs : block.endMs,
       minStartMs: bounds?.minStartMs ?? 0,
       maxEndMs: bounds?.maxEndMs ?? Infinity,
-      snapMs: (vc.view.duration / vc.trackW) * EDGE_SNAP_PX
+      startTrimMinMs: bounds?.startTrimMinMs ?? 0,
+      minBlockMs: bounds?.minBlockMs ?? 0,
+      snapMs: (viewContext.view.duration / viewContext.trackW) * EDGE_SNAP_PX
     };
   }
 
@@ -821,32 +840,37 @@ export function useTimelineGestures(deps: GestureDeps) {
   // neighbour boundary or the block's own original position, so placing a clip
   // "touching" or "back where it was" by eye is sample-exact. Mirrors the old
   // component's updateClipGesture.
-  function updateClip(g: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
-    const { block, snapMs } = g;
-    if (!g.edge) {
-      let delta = pointerMs - g.grabMs;
+  function updateClip(gesture: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
+    const { block, snapMs } = gesture;
+    if (!gesture.edge) {
+      let delta = pointerMs - gesture.grabMs;
       const rawStart = block.startMs + delta;
-      const snappedStart = snapToEdges(rawStart, [block.startMs, g.minStartMs], snapMs);
+      const snappedStart = snapToEdges(rawStart, [block.startMs, gesture.minStartMs], snapMs);
       if (snappedStart !== rawStart) {
         delta = snappedStart - block.startMs;
       } else {
         const rawEnd = block.endMs + delta;
-        const snappedEnd = snapToEdges(rawEnd, [g.maxEndMs], snapMs);
+        const snappedEnd = snapToEdges(rawEnd, [gesture.maxEndMs], snapMs);
         if (snappedEnd !== rawEnd) delta = snappedEnd - block.endMs;
       }
-      g.deltaMs = Math.max(g.minStartMs - block.startMs, Math.min(g.maxEndMs - block.endMs, delta));
+      gesture.deltaMs = Math.max(
+        gesture.minStartMs - block.startMs,
+        Math.min(gesture.maxEndMs - block.endMs, delta)
+      );
       return;
     }
-    if (g.edge === 'start') {
-      const target = snapToEdges(pointerMs, [block.startMs, g.minStartMs], snapMs);
-      const earliestByAudio = block.startMs - (block.trackStartSec / block.playbackRate) * 1000;
-      g.targetMs = Math.max(
-        Math.max(g.minStartMs, earliestByAudio),
-        Math.min(block.endMs - MIN_BLOCK_MS, target)
+    if (gesture.edge === 'start') {
+      const target = snapToEdges(pointerMs, [block.startMs, gesture.minStartMs], snapMs);
+      gesture.targetMs = Math.max(
+        gesture.startTrimMinMs,
+        Math.min(block.endMs - gesture.minBlockMs, target)
       );
     } else {
-      const target = snapToEdges(pointerMs, [block.endMs, g.maxEndMs], snapMs);
-      g.targetMs = Math.max(block.startMs + MIN_BLOCK_MS, Math.min(g.maxEndMs, target));
+      const target = snapToEdges(pointerMs, [block.endMs, gesture.maxEndMs], snapMs);
+      gesture.targetMs = Math.max(
+        block.startMs + gesture.minBlockMs,
+        Math.min(gesture.maxEndMs, target)
+      );
     }
   }
 
@@ -867,7 +891,7 @@ export function useTimelineGestures(deps: GestureDeps) {
 
 function overlay(draw: (ctx: CanvasRenderingContext2D) => void): SceneItem {
   return {
-    bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: vc.canvasH }),
+    bounds: (viewContext) => ({ x: 0, y: 0, w: viewContext.canvasW, h: viewContext.canvasH }),
     draw: (ctx) => draw(ctx),
     hitTest: () => null
   };
@@ -900,20 +924,14 @@ function clampWaveformHeight(height: number): number {
 }
 
 function overviewDrag(
-  g: Extract<ActiveGesture, { kind: 'overview' }>,
+  gesture: Extract<ActiveGesture, { kind: 'overview' }>,
   frac: number,
   total: number
 ): { start: number; duration: number } {
   const ms = frac * (total || 1);
-  if (g.mode === 'resize-left') return resizeLeftEdge(g.startView, ms, total || 1, MIN_VIEW_MS);
-  if (g.mode === 'resize-right') return resizeRightEdge(g.startView, ms, total || 1, MIN_VIEW_MS);
-  return recenterOn(g.startView, ms, total || 1, MIN_VIEW_MS);
-}
-
-function normalize(samples: LanePoint[]): LanePoint[] {
-  const valueByMs = new Map<number, number>();
-  for (const sample of samples) valueByMs.set(sample.ms, sample.value);
-  return [...valueByMs.entries()]
-    .map(([ms, value]) => ({ ms, value }))
-    .sort((first, second) => first.ms - second.ms);
+  if (gesture.mode === 'resize-left')
+    return resizeLeftEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
+  if (gesture.mode === 'resize-right')
+    return resizeRightEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
+  return recenterOn(gesture.startView, ms, total || 1, MIN_VIEW_MS);
 }

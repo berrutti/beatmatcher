@@ -230,9 +230,11 @@ function drawClipWaveform(
     for (let column = columnStart; column < columnEnd; column++) {
       // The track-time window this column covers, then sample the high-detail
       // region first and fall back to the coarse base while detail is loading.
-      const t0 = seg.trackStartSec + (column / segWidth) * segTrackSpan;
-      const t1 = seg.trackStartSec + ((column + 1) / segWidth) * segTrackSpan;
-      const amp = sampleRegion(waveform, t0, t1) ?? (base ? sampleRegion(base, t0, t1) : null);
+      const columnStartSec = seg.trackStartSec + (column / segWidth) * segTrackSpan;
+      const columnEndSec = seg.trackStartSec + ((column + 1) / segWidth) * segTrackSpan;
+      const amp =
+        sampleRegion(waveform, columnStartSec, columnEndSec) ??
+        (base ? sampleRegion(base, columnStartSec, columnEndSec) : null);
       if (amp === null) continue;
       const barHeight = Math.max(1, Math.sqrt(amp) * maxBarHalf);
       ctx.fillRect(segX0 + column, centerY - barHeight, 1, barHeight * 2);
@@ -475,15 +477,15 @@ type LaneDrawer = (
 ) => void;
 
 const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+  gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
     drawLaneSteps(ctx, deckData.gain, laneY, laneH, 0, 1, GAIN_COLOR, msToX, viewStart, viewEnd),
   filter: drawFilterLane,
   rate: drawRateLane,
-  eqLow: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+  eqLow: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
     drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS_LOW, laneY, laneH, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+  eqMid: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
     drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS_MID, laneY, laneH, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _w, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
+  eqHigh: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
     drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS_HIGH, laneY, laneH, msToX, viewStart, viewEnd)
 };
 
@@ -750,7 +752,6 @@ export function makeMsToX(view: ViewWindow, trackWidth: number): (ms: number) =>
   return (ms: number) => LABEL_W + msToFrac(ms, view) * trackWidth;
 }
 
-// ── draw() orchestration pieces ──────────────────────────────────────────────
 // Renderers extracted from Timeline.vue's draw(): each takes the context plus
 // explicit data, no component state, so draw() stays a short orchestrator.
 
@@ -838,12 +839,12 @@ export function drawDeckRowChrome(
   // Timeline.vue hit-tests this region to open the lane picker.
   if (row.lanes.length > 0) {
     const lane = row.lanes[0];
-    const cy = lane.top + lane.height / 2;
+    const centerY = lane.top + lane.height / 2;
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
     ctx.font = `bold 9px monospace`;
-    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, cy - 5);
+    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, centerY - 5);
     ctx.font = `7px monospace`;
-    ctx.fillText('▾', LABEL_W / 2, cy + 6);
+    ctx.fillText('▾', LABEL_W / 2, centerY + 6);
   }
 }
 
@@ -903,8 +904,8 @@ export function drawValueGesturePreview(
 
 export function drawNudgeGesturePreview(
   ctx: CanvasRenderingContext2D,
-  t0: number,
-  t1: number,
+  startMs: number,
+  endMs: number,
   percent: number,
   rowTop: number,
   rowH: number,
@@ -912,7 +913,7 @@ export function drawNudgeGesturePreview(
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  drawNudgeSpans(ctx, [{ startMs: t0, endMs: t1, percent }], rowTop, rowH, msToX);
+  drawNudgeSpans(ctx, [{ startMs, endMs, percent }], rowTop, rowH, msToX);
   const label = `${percent > 0 ? '+' : ''}${percent}%`;
   const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
   const labelY = percent > 0 ? rowTop + 12 : rowTop + rowH - 6;
@@ -921,8 +922,8 @@ export function drawNudgeGesturePreview(
 
 export function drawPaintGesturePreview(
   ctx: CanvasRenderingContext2D,
-  t0: number,
-  t1: number,
+  startMs: number,
+  endMs: number,
   want: boolean,
   top: number,
   height: number,
@@ -930,10 +931,10 @@ export function drawPaintGesturePreview(
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  const x0 = msToX(t0);
-  const paintW = Math.max(1, msToX(t1) - x0);
+  const paintX = msToX(startMs);
+  const paintW = Math.max(1, msToX(endMs) - paintX);
   ctx.fillStyle = want ? '#ffffff30' : '#00000060';
-  ctx.fillRect(x0, top, paintW, height);
+  ctx.fillRect(paintX, top, paintW, height);
   const labelX = Math.min(msToX(cursorMs) + 8, canvasW - PADDING - 30);
   drawOutlinedLabel(ctx, want ? 'ON' : 'OFF', labelX, top - 6);
 }

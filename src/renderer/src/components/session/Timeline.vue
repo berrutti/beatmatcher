@@ -417,7 +417,7 @@ function onSetBpm(bpm: number): void {
       .commitSetClipBpm(dialog.deck, dialog.clipStartMs, dialog.clipEndMs, rate)
       .catch(() => {});
   } else {
-    editStore.commitSetBpm(dialog.deck, dialog.atMs, rate).catch(() => {});
+    editStore.commitSetBpm(dialog.deck, dialog.ms, rate).catch(() => {});
   }
 }
 

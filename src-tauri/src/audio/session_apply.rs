@@ -18,16 +18,16 @@ pub(crate) fn apply_deck_command(
     cmd: &SessionCommand<'_>,
     deck: &mut DeckState,
     strip: &mut ChannelStrip,
-    sr: u32,
+    sample_rate: u32,
     overshoot_frames: f64,
     load_samples: &mut LoadSamples<'_>,
 ) -> Result<(), String> {
-    let sr_f = sr as f64;
+    let sample_rate_f64 = sample_rate as f64;
     let overshoot_f = overshoot_frames;
 
     macro_rules! to_frames {
         ($sec:expr) => {
-            ($sec * sr_f).clamp(0.0, deck.total_frames as f64)
+            ($sec * sample_rate_f64).clamp(0.0, deck.total_frames as f64)
         };
     }
 
@@ -43,14 +43,14 @@ pub(crate) fn apply_deck_command(
             is_playing,
             ..
         } => {
-            load_into(deck, path, sr, load_samples)?;
+            load_into(deck, path, sample_rate, load_samples)?;
             if let Some(pos) = position_sec {
-                let f = to_frames!(pos);
-                deck.main_pos = f;
-                deck.cue_pos = f;
+                let frames = to_frames!(pos);
+                deck.main_pos = frames;
+                deck.cue_pos = frames;
             }
-            if let Some(cp) = cue_point_sec {
-                deck.cue_point = to_frames!(cp);
+            if let Some(cue_point_sec) = cue_point_sec {
+                deck.cue_point = to_frames!(cue_point_sec);
             }
             if let Some(bpm) = bpm {
                 deck.bpm = Some(bpm);
@@ -58,11 +58,11 @@ pub(crate) fn apply_deck_command(
             if let Some(rate) = playback_rate {
                 deck.playback_rate = rate.max(0.1);
             }
-            if let Some(la) = loop_active {
-                deck.loop_active = la;
+            if let Some(loop_active) = loop_active {
+                deck.loop_active = loop_active;
             }
-            if let Some(le) = loop_end_sec {
-                deck.loop_end = to_frames!(le);
+            if let Some(loop_end_sec) = loop_end_sec {
+                deck.loop_end = to_frames!(loop_end_sec);
             }
             if is_playing {
                 deck.is_playing = true;
@@ -74,12 +74,12 @@ pub(crate) fn apply_deck_command(
             beat_offset_sec,
             ..
         } => {
-            load_into(deck, path, sr, load_samples)?;
+            load_into(deck, path, sample_rate, load_samples)?;
             if let Some(offset) = beat_offset_sec {
-                let f = to_frames!(offset);
-                deck.main_pos = f;
-                deck.cue_pos = f;
-                deck.cue_point = f;
+                let frames = to_frames!(offset);
+                deck.main_pos = frames;
+                deck.cue_pos = frames;
+                deck.cue_point = frames;
             }
         }
 
@@ -90,9 +90,9 @@ pub(crate) fn apply_deck_command(
         SessionCommand::Play { sec, .. } => {
             let was_playing = deck.is_playing;
             if let Some(sec) = sec {
-                let f = to_frames!(sec);
-                deck.main_pos = f;
-                deck.cue_pos = f;
+                let frames = to_frames!(sec);
+                deck.main_pos = frames;
+                deck.cue_pos = frames;
             } else {
                 deck.cue_pos = deck.main_pos;
             }
@@ -113,18 +113,18 @@ pub(crate) fn apply_deck_command(
 
         SessionCommand::StopAtCue { cue_point_sec, .. } => {
             deck.is_playing = false;
-            if let Some(cp) = cue_point_sec {
-                let f = to_frames!(cp);
-                deck.main_pos = f;
-                deck.cue_pos = f;
+            if let Some(cue_point_sec) = cue_point_sec {
+                let frames = to_frames!(cue_point_sec);
+                deck.main_pos = frames;
+                deck.cue_pos = frames;
             }
         }
 
         SessionCommand::Seek { sec, .. } => {
-            let f = to_frames!(sec);
-            deck.main_pos = f;
-            deck.cue_pos = f;
-            if deck.loop_active && (f < deck.cue_point || f >= deck.loop_end) {
+            let frames = to_frames!(sec);
+            deck.main_pos = frames;
+            deck.cue_pos = frames;
+            if deck.loop_active && (frames < deck.cue_point || frames >= deck.loop_end) {
                 deck.loop_active = false;
             }
             deck.compensate_late_start(overshoot_f);
@@ -167,13 +167,13 @@ pub(crate) fn apply_deck_command(
                 deck.bpm = Some(bpm);
             }
             if let Some(off) = beat_offset_sec {
-                deck.beat_offset_frames = off * sr_f;
+                deck.beat_offset_frames = off * sample_rate_f64;
             }
         }
 
         SessionCommand::LoopIn { cue_sec, .. } => {
-            if let Some(cs) = cue_sec {
-                deck.cue_point = to_frames!(cs);
+            if let Some(cue_sec) = cue_sec {
+                deck.cue_point = to_frames!(cue_sec);
             }
             deck.loop_active = false;
             deck.loop_end = 0.0;
@@ -182,11 +182,11 @@ pub(crate) fn apply_deck_command(
         SessionCommand::LoopOut {
             start_sec, end_sec, ..
         } => {
-            if let Some(ss) = start_sec {
-                deck.cue_point = to_frames!(ss);
+            if let Some(start_sec) = start_sec {
+                deck.cue_point = to_frames!(start_sec);
             }
-            if let Some(es) = end_sec {
-                deck.loop_end = to_frames!(es);
+            if let Some(end_sec) = end_sec {
+                deck.loop_end = to_frames!(end_sec);
             }
             deck.loop_active = true;
         }
@@ -208,11 +208,11 @@ pub(crate) fn apply_deck_command(
 
         // Holding CUE plays from the cue point through the main path. Audible in the recording.
         SessionCommand::CuePreviewStart { cue_point_sec, .. } => {
-            let cp = cue_point_sec.unwrap_or(deck.cue_point / sr_f);
-            let f = to_frames!(cp);
-            deck.cue_point = f;
-            deck.main_pos = f;
-            deck.cue_pos = f;
+            let cue_point_sec = cue_point_sec.unwrap_or(deck.cue_point / sample_rate_f64);
+            let frames = to_frames!(cue_point_sec);
+            deck.cue_point = frames;
+            deck.main_pos = frames;
+            deck.cue_pos = frames;
             deck.is_playing = true;
             deck.is_cueing = true;
             deck.compensate_late_start(overshoot_f);
@@ -220,12 +220,12 @@ pub(crate) fn apply_deck_command(
 
         // Releasing CUE stops playback and returns to cue point.
         SessionCommand::CuePreviewEnd { cue_point_sec, .. } => {
-            let cp = cue_point_sec.unwrap_or(deck.cue_point / sr_f);
-            let f = to_frames!(cp);
+            let cue_point_sec = cue_point_sec.unwrap_or(deck.cue_point / sample_rate_f64);
+            let frames = to_frames!(cue_point_sec);
             deck.is_playing = false;
             deck.is_cueing = false;
-            deck.main_pos = f;
-            deck.cue_pos = f;
+            deck.main_pos = frames;
+            deck.cue_pos = frames;
         }
     }
 
@@ -237,7 +237,7 @@ pub(crate) fn apply_deck_command(
 fn load_into(
     deck: &mut DeckState,
     path: &str,
-    sr: u32,
+    sample_rate: u32,
     load_samples: &mut LoadSamples<'_>,
 ) -> Result<(), String> {
     let (samples, channels) = load_samples(path)?;
@@ -245,9 +245,9 @@ fn load_into(
     deck.reset();
     deck.samples = samples;
     deck.channels = channels;
-    deck.device_sample_rate = sr;
+    deck.device_sample_rate = sample_rate;
     deck.total_frames = total_frames;
-    deck.duration = total_frames as f64 / sr as f64;
+    deck.duration = total_frames as f64 / sample_rate as f64;
     deck.loaded_path = Some(path.to_string());
     Ok(())
 }

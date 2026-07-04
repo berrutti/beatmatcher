@@ -133,14 +133,8 @@ impl ChannelStrip {
     }
 }
 
-// ── Deck state ─────────────────────────────────────────────────────────────────
-//
-// Two positions are tracked independently:
-//   main_pos: advanced by the master output stream callback (source of truth)
-//   cue_pos:  advanced by the cue output stream callback
-//
-// Both start from the same point on play() and advance at the same rate, so
-// they stay in sync. Minor drift (sub-ms) is imperceptible for monitoring.
+// main_pos (master callback, source of truth) and cue_pos (cue callback) advance
+// independently from the same start, staying in sync within sub-ms drift.
 
 // Outcome returned by press_cue so the Tauri command layer can relay the
 // relevant position data back to the frontend for display sync.
@@ -593,8 +587,6 @@ mod cue_state_machine {
         d
     }
 
-    // ── toggle_play ──────────────────────────────────────────────────────────
-
     #[test]
     fn toggle_play_on_empty_deck_does_nothing() {
         let mut d = DeckState::empty(SR);
@@ -630,8 +622,6 @@ mod cue_state_machine {
         // position stays wherever playback was, not snapped back to cue
         assert!(d.main_pos > beat_frames() * 2.0);
     }
-
-    // ── press_cue ────────────────────────────────────────────────────────────
 
     #[test]
     fn press_cue_on_empty_deck_does_nothing() {
@@ -719,8 +709,6 @@ mod cue_state_machine {
         assert!((d.main_pos - pos_before).abs() < 1.0);
     }
 
-    // ── release_cue ──────────────────────────────────────────────────────────
-
     #[test]
     fn release_cue_during_preview_stops_and_returns_to_cue() {
         let mut d = cueing(10.0);
@@ -764,8 +752,6 @@ mod cue_state_machine {
         d.release_cue(); // must not panic
         assert!(!d.is_playing);
     }
-
-    // ── set_cue_and_stop ─────────────────────────────────────────────────────
 
     #[test]
     fn set_cue_and_stop_while_playing_freezes_cue_at_playhead() {
@@ -816,8 +802,6 @@ mod cue_state_machine {
         );
     }
 
-    // ── stop_at_cue ──────────────────────────────────────────────────────────
-
     #[test]
     fn stop_at_cue_while_playing_stops_and_returns_to_cue() {
         let mut d = playing(10.0);
@@ -861,8 +845,6 @@ mod cue_state_machine {
         assert!(!d.is_playing);
     }
 
-    // ── cue point persistence across state changes ────────────────────────────
-
     // Cue point set during preview (press_cue moves it) must survive a
     // press → release cycle and be the correct return target.
     #[test]
@@ -886,8 +868,6 @@ mod cue_state_machine {
         assert!((d.main_pos - beat_frames() * 3.0).abs() < 1.0);
     }
 }
-
-// ── Loop behaviour ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod loop_behavior {

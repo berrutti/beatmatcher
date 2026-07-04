@@ -1413,6 +1413,17 @@ mod tests {
     use super::*;
     use audio::DeckState;
 
+    // Compile-time guard for the SendStream SAFETY contract (audio/stream.rs):
+    // making any stream-mutating command async moves cpal::Stream drops onto
+    // worker threads, which is UB. An async fn no longer coerces to these.
+    #[test]
+    fn stream_commands_must_stay_synchronous() {
+        let _: fn(tauri::State<'_, AppState>, String, usize) -> Result<(), String> =
+            set_main_device;
+        let _: fn(tauri::State<'_, AppState>, String, usize) -> Result<(), String> = set_cue_device;
+        let _: fn(tauri::State<'_, AppState>, u32) -> Result<(), String> = set_buffer_size;
+    }
+
     const SR: u32 = 44100;
     const SR_F: f64 = SR as f64;
     const BPM: f64 = 120.0;

@@ -30,7 +30,7 @@ Beatmatcher is software in active development and can fail in unexpected ways: s
 
 Import audio files into your collection. You can load those tracks into one of the four decks, and from there you can play, equalize and mix them.
 
-The BPM will be auto-detected. If auto-detection fails, you can manually set te BPM in the "Edit" view.  
+The BPM will be auto-detected. If auto-detection fails, you can manually set the BPM in the "Edit" view.  
 Having the correct BPM of each track is essential for proper mixing.
 
 Each deck has EQ, a filter, looping and CUE routing, so you can practice full mixes, not just beatmatching in isolation.

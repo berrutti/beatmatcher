@@ -14,9 +14,10 @@ use std::collections::HashMap;
 // restore almost instantly, inaudible and rendering as a bare vertical line.
 pub const MIN_GESTURE_MS: f64 = 50.0;
 
-const EQ_MIN_DB: f64 = -26.0;
-const EQ_MAX_DB: f64 = 6.0;
-const FILTER_DEAD_ZONE: f64 = 0.05;
+// Public: the native DSP and the frontend mixer read these from here.
+pub const EQ_MIN_DB: f64 = -26.0;
+pub const EQ_MAX_DB: f64 = 6.0;
+pub const FILTER_DEAD_ZONE: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditableLane {
@@ -117,14 +118,14 @@ impl LaneSpec {
         let deck_ok = event.deck.as_deref() == Some(deck);
         match self.lane {
             EditableLane::Gain => (event.event_type == "set_volume" && deck_ok)
-                .then(|| event.gain.map(|g| g as f64))?,
+                .then(|| event.gain.map(|gain| gain as f64))?,
             EditableLane::EqLow | EditableLane::EqMid | EditableLane::EqHigh => (event.event_type
                 == "set_eq"
                 && deck_ok
                 && event.band.as_deref() == self.lane.eq_band())
-            .then(|| event.db.map(|d| d as f64))?,
+            .then(|| event.db.map(|band_db| band_db as f64))?,
             EditableLane::Filter => (event.event_type == "set_filter" && deck_ok)
-                .then(|| event.value.map(|v| v as f64))?,
+                .then(|| event.value.map(|value| value as f64))?,
             EditableLane::Rate => {
                 if event.event_type == "set_playback_rate" && deck_ok {
                     return event.rate;
@@ -135,7 +136,7 @@ impl LaneSpec {
                 None
             }
             EditableLane::MasterGain => {
-                (event.event_type == "set_master_gain").then(|| event.gain.map(|g| g as f64))?
+                (event.event_type == "set_master_gain").then(|| event.gain.map(|gain| gain as f64))?
             }
         }
     }
@@ -188,7 +189,7 @@ pub fn normalize_gesture_samples(samples: &[LanePoint]) -> Vec<LanePoint> {
             value,
         })
         .collect();
-    out.sort_by(|a, b| a.ms.partial_cmp(&b.ms).unwrap_or(Ordering::Equal));
+    out.sort_by(|first, second| first.ms.partial_cmp(&second.ms).unwrap_or(Ordering::Equal));
     out
 }
 
@@ -209,7 +210,12 @@ pub fn decimate_steps(points: &[LanePoint], epsilon: f64) -> Vec<LanePoint> {
     out
 }
 
-pub fn original_value_at(events: &[SessionEvent], spec: &LaneSpec, deck: &str, ms: f64) -> f64 {
+pub fn original_value_at(
+    events: &[SessionEvent],
+    spec: &LaneSpec,
+    deck: &str,
+    ms: f64,
+) -> f64 {
     for event in events.iter().rev() {
         if event.elapsed_ms > ms {
             continue;
@@ -221,35 +227,40 @@ pub fn original_value_at(events: &[SessionEvent], spec: &LaneSpec, deck: &str, m
     spec.default_value
 }
 
-// Replaces this lane's events inside [t0, t1] with the drawn points and restores
-// the original value at t1, so everything after the gesture sounds unchanged.
+// Replaces this lane's events inside [range_start_ms, range_end_ms] with the
+// drawn points and restores the original value at range_end_ms, so everything
+// after the gesture sounds unchanged.
 pub fn splice_lane_events(
     events: &[SessionEvent],
     spec: &LaneSpec,
     deck: &str,
-    t0: f64,
-    t1: f64,
+    range_start_ms: f64,
+    range_end_ms: f64,
     points: &[LanePoint],
 ) -> Vec<SessionEvent> {
-    if points.is_empty() || t1 - t0 < MIN_GESTURE_MS {
+    if points.is_empty() || range_end_ms - range_start_ms < MIN_GESTURE_MS {
         return events.to_vec();
     }
 
     let mut kept: Vec<SessionEvent> = events
         .iter()
-        .filter(|e| !(e.elapsed_ms >= t0 && e.elapsed_ms <= t1 && spec.matches(e, deck)))
+        .filter(|event| {
+            !(event.elapsed_ms >= range_start_ms
+                && event.elapsed_ms <= range_end_ms
+                && spec.matches(event, deck))
+        })
         .cloned()
         .collect();
 
     let mut inserted: Vec<SessionEvent> = points
         .iter()
-        .map(|p| spec.make_event(p.ms, spec.clamp_value(p.value), deck))
+        .map(|point| spec.make_event(point.ms, spec.clamp_value(point.value), deck))
         .collect();
 
-    let restore_value = original_value_at(events, spec, deck, t1);
+    let restore_value = original_value_at(events, spec, deck, range_end_ms);
     let last_drawn = spec.value_at(inserted.last().unwrap(), deck);
     if last_drawn != Some(restore_value) {
-        inserted.push(spec.make_event(t1, restore_value, deck));
+        inserted.push(spec.make_event(range_end_ms, restore_value, deck));
     }
 
     kept.append(&mut inserted);
@@ -260,13 +271,18 @@ pub fn splice_lane_events(
 // rate lane is a step function, so one inserted point holds until the next
 // existing change. Backs the editor's "Set BPM" (right-click a clip), which
 // converts a target BPM to rate = target_bpm / track_bpm before calling here.
-pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> Vec<SessionEvent> {
+pub fn set_rate_at(
+    events: &[SessionEvent],
+    deck: &str,
+    ms: f64,
+    rate: f64,
+) -> Vec<SessionEvent> {
     let mut kept: Vec<SessionEvent> = events
         .iter()
-        .filter(|e| {
-            !(e.event_type == "set_playback_rate"
-                && e.deck.as_deref() == Some(deck)
-                && (e.elapsed_ms - ms).abs() < f64::EPSILON)
+        .filter(|event| {
+            !(event.event_type == "set_playback_rate"
+                && event.deck.as_deref() == Some(deck)
+                && (event.elapsed_ms - ms).abs() < f64::EPSILON)
         })
         .cloned()
         .collect();
@@ -296,11 +312,11 @@ pub fn set_rate_span(
     let restore = original_value_at(events, &spec, deck, end_ms);
     let mut kept: Vec<SessionEvent> = events
         .iter()
-        .filter(|e| {
-            !(e.event_type == "set_playback_rate"
-                && e.deck.as_deref() == Some(deck)
-                && e.elapsed_ms >= start_ms
-                && e.elapsed_ms <= end_ms)
+        .filter(|event| {
+            !(event.event_type == "set_playback_rate"
+                && event.deck.as_deref() == Some(deck)
+                && event.elapsed_ms >= start_ms
+                && event.elapsed_ms <= end_ms)
         })
         .cloned()
         .collect();
@@ -347,48 +363,70 @@ fn last_value_at<T: Copy>(
     default
 }
 
-pub fn filter_active_at(events: &[SessionEvent], deck: &str, ms: f64, inclusive: bool) -> bool {
+pub fn filter_active_at(
+    events: &[SessionEvent],
+    deck: &str,
+    ms: f64,
+    inclusive: bool,
+) -> bool {
     last_value_at(
         events,
         deck,
         ms,
         inclusive,
         "set_filter_active",
-        |e| e.active,
+        |event| event.active,
         false,
     )
 }
 
-pub fn nudge_value_at(events: &[SessionEvent], deck: &str, ms: f64, inclusive: bool) -> f64 {
-    last_value_at(events, deck, ms, inclusive, "set_nudge", |e| e.percent, 0.0)
+pub fn nudge_value_at(
+    events: &[SessionEvent],
+    deck: &str,
+    ms: f64,
+    inclusive: bool,
+) -> f64 {
+    last_value_at(
+        events,
+        deck,
+        ms,
+        inclusive,
+        "set_nudge",
+        |event| event.percent,
+        0.0,
+    )
 }
 
-// Replaces every `event_type` event for `deck` in [t0, t1] with an opener at t0
-// carrying `new_value`, and (if it differs) a restorer at t1 carrying
+// Replaces every `event_type` event for `deck` in [range_start_ms,
+// range_end_ms] with an opener at range_start_ms
+// carrying `new_value`, and (if it differs) a restorer at range_end_ms carrying
 // `restore_value`. Shared by toggle_filter_active_range and paint_nudge_range.
 fn replace_range_with_opener_and_restore<T: PartialEq + Copy>(
     events: &[SessionEvent],
     event_type: &str,
     deck: &str,
-    (t0, t1): (f64, f64),
+    (range_start_ms, range_end_ms): (f64, f64),
     (new_value, restore_value): (T, T),
     set_field: impl Fn(SessionEvent, T) -> SessionEvent,
 ) -> Vec<SessionEvent> {
     let mut kept: Vec<SessionEvent> = events
         .iter()
-        .filter(|e| {
-            !(e.event_type == event_type
-                && e.deck.as_deref() == Some(deck)
-                && e.elapsed_ms >= t0
-                && e.elapsed_ms <= t1)
+        .filter(|event| {
+            !(event.event_type == event_type
+                && event.deck.as_deref() == Some(deck)
+                && event.elapsed_ms >= range_start_ms
+                && event.elapsed_ms <= range_end_ms)
         })
         .cloned()
         .collect();
 
-    let mut inserted = vec![set_field(SessionEvent::at(t0, event_type, deck), new_value)];
+    let mut inserted = vec![set_field(
+        SessionEvent::at(range_start_ms, event_type, deck),
+        new_value,
+    )];
     if restore_value != new_value {
         inserted.push(set_field(
-            SessionEvent::at(t1, event_type, deck),
+            SessionEvent::at(range_end_ms, event_type, deck),
             restore_value,
         ));
     }
@@ -397,83 +435,85 @@ fn replace_range_with_opener_and_restore<T: PartialEq + Copy>(
     sort_by_ms(kept)
 }
 
-// Shift+drag on the filter lane: toggles filter on/off over [t0, t1], restoring
-// the original state at t1.
+// Shift+drag on the filter lane: toggles filter on/off over [range_start_ms,
+// range_end_ms], restoring
+// the original state at range_end_ms.
 pub fn toggle_filter_active_range(
     events: &[SessionEvent],
     deck: &str,
-    t0: f64,
-    t1: f64,
+    range_start_ms: f64,
+    range_end_ms: f64,
 ) -> Vec<SessionEvent> {
-    if t1 - t0 < MIN_GESTURE_MS {
+    if range_end_ms - range_start_ms < MIN_GESTURE_MS {
         return events.to_vec();
     }
-    let want = !filter_active_at(events, deck, t0, false);
-    let restore = filter_active_at(events, deck, t1, true);
+    let want = !filter_active_at(events, deck, range_start_ms, false);
+    let restore = filter_active_at(events, deck, range_end_ms, true);
     replace_range_with_opener_and_restore(
         events,
         "set_filter_active",
         deck,
-        (t0, t1),
+        (range_start_ms, range_end_ms),
         (want, restore),
-        |e, v| SessionEvent {
-            active: Some(v),
-            ..e
+        |event, value| SessionEvent {
+            active: Some(value),
+            ..event
         },
     )
 }
 
-// Shift+drag paints a nudge over [t0, t1]; the recorded value at t1 is restored.
+// Shift+drag paints a nudge over [range_start_ms, range_end_ms]; the recorded
+// value at range_end_ms is restored.
 pub fn paint_nudge_range(
     events: &[SessionEvent],
     deck: &str,
-    t0: f64,
-    t1: f64,
+    range_start_ms: f64,
+    range_end_ms: f64,
     percent: f64,
 ) -> Vec<SessionEvent> {
-    if t1 - t0 < MIN_GESTURE_MS {
+    if range_end_ms - range_start_ms < MIN_GESTURE_MS {
         return events.to_vec();
     }
-    let restore = nudge_value_at(events, deck, t1, true);
+    let restore = nudge_value_at(events, deck, range_end_ms, true);
     replace_range_with_opener_and_restore(
         events,
         "set_nudge",
         deck,
-        (t0, t1),
+        (range_start_ms, range_end_ms),
         (percent, restore),
-        |e, v| SessionEvent {
-            percent: Some(v),
-            ..e
+        |event, value| SessionEvent {
+            percent: Some(value),
+            ..event
         },
     )
 }
 
-// Removes a nudge span: every set_nudge for the deck in [t0, t1], including the
-// closing zero. A non-zero event exactly at t1 is the opener of an adjacent span
-// and is kept.
+// Removes every set_nudge for the deck in [range_start_ms, range_end_ms] except a non-zero opener at
+// range_end_ms (the adjacent span's start). None = nothing matched (no-op for callers).
 pub fn delete_nudge_range(
     events: &[SessionEvent],
     deck: &str,
-    t0: f64,
-    t1: f64,
-) -> Vec<SessionEvent> {
-    let in_range = |e: &SessionEvent| {
-        e.event_type == "set_nudge"
-            && e.deck.as_deref() == Some(deck)
-            && e.elapsed_ms >= t0
-            && e.elapsed_ms <= t1
-            && !(e.elapsed_ms == t1 && e.percent != Some(0.0))
+    range_start_ms: f64,
+    range_end_ms: f64,
+) -> Option<Vec<SessionEvent>> {
+    let in_range = |event: &SessionEvent| {
+        event.event_type == "set_nudge"
+            && event.deck.as_deref() == Some(deck)
+            && event.elapsed_ms >= range_start_ms
+            && event.elapsed_ms <= range_end_ms
+            && !((event.elapsed_ms - range_end_ms).abs() <= FILTER_SPAN_EPS_MS
+                && event.percent != Some(0.0))
     };
     if !events.iter().any(in_range) {
-        return events.to_vec();
+        return None;
     }
-    events.iter().filter(|e| !in_range(e)).cloned().collect()
+    Some(events.iter().filter(|event| !in_range(event)).cloned().collect())
 }
 
 const FILTER_SPAN_EPS_MS: f64 = 1.0;
 
-fn is_set_filter_active_event(e: &SessionEvent, deck: &str) -> bool {
-    e.event_type == "set_filter_active" && e.deck.as_deref() == Some(deck)
+fn is_set_filter_active_event(event: &SessionEvent, deck: &str) -> bool {
+    event.event_type == "set_filter_active" && event.deck.as_deref() == Some(deck)
 }
 
 // Delete a filter-active span: drop its opening (active=true at start_ms) and,
@@ -487,12 +527,14 @@ pub fn delete_filter_active_span(
 ) -> Vec<SessionEvent> {
     events
         .iter()
-        .filter(|e| {
-            if !is_set_filter_active_event(e, deck) {
+        .filter(|event| {
+            if !is_set_filter_active_event(event, deck) {
                 return true;
             }
-            let opener = e.active == Some(true) && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
-            let closer = e.active == Some(false) && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+            let opener = event.active == Some(true)
+                && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
+            let closer = event.active == Some(false)
+                && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
             !(opener || closer)
         })
         .cloned()
@@ -514,35 +556,35 @@ pub fn resize_filter_active_span(
 ) -> Vec<SessionEvent> {
     let mut fa_ms: Vec<f64> = events
         .iter()
-        .filter(|e| is_set_filter_active_event(e, deck))
-        .map(|e| e.elapsed_ms)
+        .filter(|event| is_set_filter_active_event(event, deck))
+        .map(|event| event.elapsed_ms)
         .collect();
-    fa_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    fa_ms.sort_by(|first, second| first.partial_cmp(second).unwrap_or(Ordering::Equal));
 
     if edge == "start" {
         let prev = fa_ms
             .iter()
             .copied()
-            .rfind(|&m| m < start_ms - FILTER_SPAN_EPS_MS)
+            .rfind(|&event_ms| event_ms < start_ms - FILTER_SPAN_EPS_MS)
             .unwrap_or(0.0);
-        let hi = end_ms - MIN_GESTURE_MS;
-        if prev > hi {
+        let max_start_ms = end_ms - MIN_GESTURE_MS;
+        if prev > max_start_ms {
             return events.to_vec();
         }
-        let clamped = new_ms.clamp(prev, hi);
+        let clamped = new_ms.clamp(prev, max_start_ms);
         let out: Vec<SessionEvent> = events
             .iter()
-            .map(|e| {
-                if is_set_filter_active_event(e, deck)
-                    && e.active == Some(true)
-                    && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS
+            .map(|event| {
+                if is_set_filter_active_event(event, deck)
+                    && event.active == Some(true)
+                    && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS
                 {
                     SessionEvent {
                         elapsed_ms: clamped,
-                        ..e.clone()
+                        ..event.clone()
                     }
                 } else {
-                    e.clone()
+                    event.clone()
                 }
             })
             .collect();
@@ -553,32 +595,32 @@ pub fn resize_filter_active_span(
     let next = fa_ms
         .iter()
         .copied()
-        .find(|&m| m > end_ms + FILTER_SPAN_EPS_MS)
+        .find(|&event_ms| event_ms > end_ms + FILTER_SPAN_EPS_MS)
         .unwrap_or(duration_ms);
-    let lo = start_ms + MIN_GESTURE_MS;
-    if lo > next {
+    let min_end_ms = start_ms + MIN_GESTURE_MS;
+    if min_end_ms > next {
         return events.to_vec();
     }
-    let clamped = new_ms.clamp(lo, next);
-    let has_closer = events.iter().any(|e| {
-        is_set_filter_active_event(e, deck)
-            && e.active == Some(false)
-            && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
+    let clamped = new_ms.clamp(min_end_ms, next);
+    let has_closer = events.iter().any(|event| {
+        is_set_filter_active_event(event, deck)
+            && event.active == Some(false)
+            && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
     });
     if has_closer {
         let out: Vec<SessionEvent> = events
             .iter()
-            .map(|e| {
-                if is_set_filter_active_event(e, deck)
-                    && e.active == Some(false)
-                    && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
+            .map(|event| {
+                if is_set_filter_active_event(event, deck)
+                    && event.active == Some(false)
+                    && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS
                 {
                     SessionEvent {
                         elapsed_ms: clamped,
-                        ..e.clone()
+                        ..event.clone()
                     }
                 } else {
-                    e.clone()
+                    event.clone()
                 }
             })
             .collect();
@@ -608,21 +650,21 @@ pub fn move_filter_active_span(
 ) -> Vec<SessionEvent> {
     let mut fa_ms: Vec<f64> = events
         .iter()
-        .filter(|e| is_set_filter_active_event(e, deck))
-        .map(|e| e.elapsed_ms)
+        .filter(|event| is_set_filter_active_event(event, deck))
+        .map(|event| event.elapsed_ms)
         .collect();
-    fa_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    fa_ms.sort_by(|first, second| first.partial_cmp(second).unwrap_or(Ordering::Equal));
 
     let prev = fa_ms
         .iter()
         .copied()
-        .rfind(|&m| m < start_ms - FILTER_SPAN_EPS_MS)
+        .rfind(|&event_ms| event_ms < start_ms - FILTER_SPAN_EPS_MS)
         .unwrap_or(0.0)
         .max(0.0);
     let next = fa_ms
         .iter()
         .copied()
-        .find(|&m| m > end_ms + FILTER_SPAN_EPS_MS)
+        .find(|&event_ms| event_ms > end_ms + FILTER_SPAN_EPS_MS)
         .unwrap_or(duration_ms)
         .min(duration_ms);
 
@@ -638,55 +680,67 @@ pub fn move_filter_active_span(
 
     let out: Vec<SessionEvent> = events
         .iter()
-        .map(|e| {
-            if is_set_filter_active_event(e, deck) {
+        .map(|event| {
+            if is_set_filter_active_event(event, deck) {
                 let opener =
-                    e.active == Some(true) && (e.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
+                    event.active == Some(true) && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
                 let closer =
-                    e.active == Some(false) && (e.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+                    event.active == Some(false) && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
                 if opener || closer {
                     return SessionEvent {
-                        elapsed_ms: e.elapsed_ms + delta,
-                        ..e.clone()
+                        elapsed_ms: event.elapsed_ms + delta,
+                        ..event.clone()
                     };
                 }
             }
-            e.clone()
+            event.clone()
         })
         .collect();
     sort_by_ms(out)
 }
 
 // Rewrites event track paths after the user relocates missing files.
+// None = no event carries a mapped path (no-op for callers).
 pub fn relocate_event_paths(
     events: &[SessionEvent],
     mapping: &HashMap<String, String>,
-) -> Vec<SessionEvent> {
-    events
-        .iter()
-        .map(|event| {
-            if let Some(path) = &event.path {
-                if let Some(new_path) = mapping.get(path) {
-                    let mut out = event.clone();
-                    out.path = Some(new_path.clone());
-                    return out;
+) -> Option<Vec<SessionEvent>> {
+    let touches_mapped_path = events.iter().any(|event| {
+        event
+            .path
+            .as_ref()
+            .is_some_and(|path| mapping.contains_key(path))
+    });
+    if !touches_mapped_path {
+        return None;
+    }
+    Some(
+        events
+            .iter()
+            .map(|event| {
+                if let Some(path) = &event.path {
+                    if let Some(new_path) = mapping.get(path) {
+                        let mut out = event.clone();
+                        out.path = Some(new_path.clone());
+                        return out;
+                    }
                 }
-            }
-            event.clone()
-        })
-        .collect()
+                event.clone()
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ev(ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+    fn make_event(ms: f64, event_type: &str, deck: &str) -> SessionEvent {
         SessionEvent::at(ms, event_type, deck)
     }
 
-    fn lp(ms: f64, value: f64) -> LanePoint {
-        LanePoint { ms, value }
+    fn lane_point(ms: f64, value: f64) -> LanePoint {
+        LanePoint { ms: ms, value }
     }
 
     fn gain_at(events: &[SessionEvent], ms: f64) -> f64 {
@@ -699,11 +753,11 @@ mod tests {
         let events = vec![
             SessionEvent {
                 rate: Some(1.0),
-                ..ev(0.0, "set_playback_rate", "A")
+                ..make_event(0.0, "set_playback_rate", "A")
             },
             SessionEvent {
                 rate: Some(1.05),
-                ..ev(8000.0, "set_playback_rate", "A")
+                ..make_event(8000.0, "set_playback_rate", "A")
             },
         ];
         let out = set_rate_at(&events, "A", 3000.0, 0.98);
@@ -722,12 +776,12 @@ mod tests {
         let events = vec![
             SessionEvent {
                 rate: Some(1.0),
-                ..ev(0.0, "set_playback_rate", "A")
+                ..make_event(0.0, "set_playback_rate", "A")
             },
             // A mid-clip change that "Set BPM (whole clip)" should flatten away.
             SessionEvent {
                 rate: Some(1.04),
-                ..ev(5000.0, "set_playback_rate", "A")
+                ..make_event(5000.0, "set_playback_rate", "A")
             },
         ];
         // Clip span [2000, 8000]; set whole clip to rate 0.97.
@@ -747,12 +801,12 @@ mod tests {
     fn set_rate_at_replaces_an_exact_duplicate() {
         let events = vec![SessionEvent {
             rate: Some(0.95),
-            ..ev(3000.0, "set_playback_rate", "A")
+            ..make_event(3000.0, "set_playback_rate", "A")
         }];
         let out = set_rate_at(&events, "A", 3000.0, 0.99);
         let rate_events: Vec<_> = out
             .iter()
-            .filter(|e| e.event_type == "set_playback_rate")
+            .filter(|event| event.event_type == "set_playback_rate")
             .collect();
         assert_eq!(rate_events.len(), 1);
         assert_eq!(rate_events[0].rate, Some(0.99));
@@ -763,23 +817,23 @@ mod tests {
         let spec = lane_spec_for(EditableLane::Gain, None, None);
         let events = vec![SessionEvent {
             gain: Some(0.8),
-            ..ev(1000.0, "set_volume", "A")
+            ..make_event(1000.0, "set_volume", "A")
         }];
-        let points = vec![lp(5000.0, 0.4), lp(6000.0, 0.4)];
+        let points = vec![lane_point(5000.0, 0.4), lane_point(6000.0, 0.4)];
         let out = splice_lane_events(&events, &spec, "A", 5000.0, 8000.0, &points);
         // before the gesture: original 0.8
         assert!((gain_at(&out, 3000.0) - 0.8).abs() < 1e-6);
         // inside: 0.4
         assert!((gain_at(&out, 5500.0) - 0.4).abs() < 1e-6);
-        // restored to 0.8 at t1
+        // restored to 0.8 at range_end_ms
         assert!((gain_at(&out, 9000.0) - 0.8).abs() < 1e-6);
     }
 
     #[test]
     fn splice_rejects_too_short_gesture() {
         let spec = lane_spec_for(EditableLane::Gain, None, None);
-        let events = vec![ev(0.0, "set_volume", "A")];
-        let out = splice_lane_events(&events, &spec, "A", 1000.0, 1020.0, &[lp(1000.0, 0.5)]);
+        let events = vec![make_event(0.0, "set_volume", "A")];
+        let out = splice_lane_events(&events, &spec, "A", 1000.0, 1020.0, &[lane_point(1000.0, 0.5)]);
         assert_eq!(out.len(), events.len());
     }
 
@@ -794,7 +848,7 @@ mod tests {
     #[test]
     fn toggle_filter_active_pairs_into_span() {
         let out = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // was off -> turns on at t0, restores to off at t1
+        // was off -> turns on at range_start_ms, restores to off at range_end_ms
         assert!(filter_active_at(&out, "A", 2000.0, true));
         assert!(!filter_active_at(&out, "A", 5000.0, true));
     }
@@ -821,11 +875,11 @@ mod tests {
         let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
         // Dragging the start past the end is clamped to keep at least MIN_GESTURE_MS.
         let out = resize_filter_active_span(&events, "A", 1000.0, 4000.0, "start", 9000.0, 10_000.0);
-        let on = out
+        let opener = out
             .iter()
-            .find(|e| e.event_type == "set_filter_active" && e.active == Some(true))
+            .find(|event| event.event_type == "set_filter_active" && event.active == Some(true))
             .unwrap();
-        assert!(on.elapsed_ms <= 4000.0 - MIN_GESTURE_MS + 1e-6);
+        assert!(opener.elapsed_ms <= 4000.0 - MIN_GESTURE_MS + 1e-6);
     }
 
     #[test]
@@ -834,7 +888,7 @@ mod tests {
         // end edge is dragged in.
         let events = vec![SessionEvent {
             active: Some(true),
-            ..ev(1000.0, "set_filter_active", "A")
+            ..make_event(1000.0, "set_filter_active", "A")
         }];
         let out = resize_filter_active_span(&events, "A", 1000.0, 10_000.0, "end", 5000.0, 10_000.0);
         assert!(filter_active_at(&out, "A", 3000.0, true));
@@ -845,14 +899,14 @@ mod tests {
     fn move_filter_active_span_slides_both_edges() {
         let mut events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
         // The drawn cutoff curve (set_filter) must NOT move with the span.
-        events.push(ev(2000.0, "set_filter", "A"));
+        events.push(make_event(2000.0, "set_filter", "A"));
         let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 2000.0, 10_000.0);
         assert!(!filter_active_at(&out, "A", 2000.0, true)); // old start now off
         assert!(filter_active_at(&out, "A", 5000.0, true)); // shifted +2000
         assert!(!filter_active_at(&out, "A", 6500.0, true)); // new end at 6000
         let cutoff = out
             .iter()
-            .find(|e| e.event_type == "set_filter")
+            .find(|event| event.event_type == "set_filter")
             .unwrap();
         assert!((cutoff.elapsed_ms - 2000.0).abs() < 1e-6); // value point stayed put
     }
@@ -864,7 +918,7 @@ mod tests {
         let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 100_000.0, 10_000.0);
         let close = out
             .iter()
-            .find(|e| e.event_type == "set_filter_active" && e.active == Some(false))
+            .find(|event| event.event_type == "set_filter_active" && event.active == Some(false))
             .unwrap();
         assert!(close.elapsed_ms <= 10_000.0 + 1e-6);
     }
@@ -881,33 +935,32 @@ mod tests {
         let events = vec![
             SessionEvent {
                 percent: Some(5.0),
-                ..ev(1000.0, "set_nudge", "A")
+                ..make_event(1000.0, "set_nudge", "A")
             },
             SessionEvent {
                 percent: Some(0.0),
-                ..ev(2000.0, "set_nudge", "A")
+                ..make_event(2000.0, "set_nudge", "A")
             },
             SessionEvent {
                 percent: Some(-5.0),
-                ..ev(2000.0, "set_nudge", "A")
+                ..make_event(2000.0, "set_nudge", "A")
             },
         ];
         // Delete [1000, 2000]: removes the opener at 1000 and the closing zero at
         // 2000, but keeps the non-zero opener at 2000.
-        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0);
+        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0).unwrap();
         let remaining: Vec<f64> = out
             .iter()
-            .filter(|e| e.event_type == "set_nudge")
-            .map(|e| e.percent.unwrap())
+            .filter(|event| event.event_type == "set_nudge")
+            .map(|event| event.percent.unwrap())
             .collect();
         assert_eq!(remaining, vec![-5.0]);
     }
 
     #[test]
     fn delete_nudge_range_noop_when_nothing_matches() {
-        let events = vec![ev(0.0, "set_volume", "A")];
-        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0);
-        assert_eq!(out.len(), 1);
+        let events = vec![make_event(0.0, "set_volume", "A")];
+        assert!(delete_nudge_range(&events, "A", 1000.0, 2000.0).is_none());
     }
 
     #[test]
@@ -915,23 +968,27 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/old/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..make_event(0.0, "load_track", "A")
             },
             SessionEvent {
                 path: Some("/keep/b.mp3".to_string()),
-                ..ev(1.0, "load_track", "B")
+                ..make_event(1.0, "load_track", "B")
             },
         ];
         let mut mapping = HashMap::new();
         mapping.insert("/old/a.mp3".to_string(), "/new/a.mp3".to_string());
-        let out = relocate_event_paths(&events, &mapping);
+        let out = relocate_event_paths(&events, &mapping).unwrap();
         assert_eq!(out[0].path.as_deref(), Some("/new/a.mp3"));
         assert_eq!(out[1].path.as_deref(), Some("/keep/b.mp3"));
+
+        let mut unrelated = HashMap::new();
+        unrelated.insert("/never/there.mp3".to_string(), "/new/c.mp3".to_string());
+        assert!(relocate_event_paths(&events, &unrelated).is_none());
     }
 
     #[test]
     fn normalize_gesture_keeps_last_value_per_ms_and_sorts() {
-        let samples = vec![lp(200.0, 0.1), lp(100.0, 0.9), lp(200.0, 0.5)];
+        let samples = vec![lane_point(200.0, 0.1), lane_point(100.0, 0.9), lane_point(200.0, 0.5)];
         let out = normalize_gesture_samples(&samples);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].ms, 100.0);
@@ -941,7 +998,7 @@ mod tests {
 
     #[test]
     fn decimate_drops_steps_below_epsilon() {
-        let points = vec![lp(0.0, 0.0), lp(1.0, 0.005), lp(2.0, 0.5)];
+        let points = vec![lane_point(0.0, 0.0), lane_point(1.0, 0.005), lane_point(2.0, 0.5)];
         let out = decimate_steps(&points, 0.01);
         // middle point (delta 0.005 < eps) dropped; first + last kept.
         assert_eq!(out.len(), 2);
@@ -956,7 +1013,7 @@ mod tests {
         assert_eq!(spec.max, 1.1);
         let events = vec![SessionEvent {
             playback_rate: Some(0.97),
-            ..ev(0.0, "deck_snapshot", "A")
+            ..make_event(0.0, "deck_snapshot", "A")
         }];
         assert!((original_value_at(&events, &spec, "A", 1000.0) - 0.97).abs() < 1e-6);
     }

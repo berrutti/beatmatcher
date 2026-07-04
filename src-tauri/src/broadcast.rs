@@ -47,11 +47,15 @@ fn deck_broadcast(audio: &AppAudio, id: &str) -> DeckBroadcast {
             current_beat: None,
         };
     };
-    let deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-    let sr = deck.device_sample_rate as f64;
-    let position_sec = if sr > 0.0 { deck.main_pos / sr } else { 0.0 };
-    let beat_offset_sec = if sr > 0.0 {
-        deck.beat_offset_frames / sr
+    let deck = deck_arc.lock().unwrap_or_else(|error| error.into_inner());
+    let sample_rate = deck.device_sample_rate as f64;
+    let position_sec = if sample_rate > 0.0 {
+        deck.main_pos / sample_rate
+    } else {
+        0.0
+    };
+    let beat_offset_sec = if sample_rate > 0.0 {
+        deck.beat_offset_frames / sample_rate
     } else {
         0.0
     };
@@ -123,7 +127,10 @@ impl Sinks {
     fn publish_socket(&self, json: &str) {
         use std::io::{ErrorKind, Write};
         let frame = format!("{json}\n");
-        let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         clients.retain_mut(|stream| match stream.write_all(frame.as_bytes()) {
             Ok(()) => true,
             // A slow reader's buffer is full: keep the client, drop this frame only.
@@ -150,7 +157,7 @@ fn spawn_socket_listener(
                     let _ = stream.set_nonblocking(true);
                     accepted
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(|error| error.into_inner())
                         .push(stream);
                 }
                 Err(_) => break,
