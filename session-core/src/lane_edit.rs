@@ -14,9 +14,10 @@ use std::collections::HashMap;
 // restore almost instantly, inaudible and rendering as a bare vertical line.
 pub const MIN_GESTURE_MS: f64 = 50.0;
 
-const EQ_MIN_DB: f64 = -26.0;
-const EQ_MAX_DB: f64 = 6.0;
-const FILTER_DEAD_ZONE: f64 = 0.05;
+// Public: the native DSP and the frontend mixer read these from here.
+pub const EQ_MIN_DB: f64 = -26.0;
+pub const EQ_MAX_DB: f64 = 6.0;
+pub const FILTER_DEAD_ZONE: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditableLane {
@@ -448,26 +449,25 @@ pub fn paint_nudge_range(
     )
 }
 
-// Removes a nudge span: every set_nudge for the deck in [t0, t1], including the
-// closing zero. A non-zero event exactly at t1 is the opener of an adjacent span
-// and is kept.
+// Removes every set_nudge for the deck in [t0, t1] except a non-zero opener at
+// t1 (the adjacent span's start). None = nothing matched (no-op for callers).
 pub fn delete_nudge_range(
     events: &[SessionEvent],
     deck: &str,
     t0: f64,
     t1: f64,
-) -> Vec<SessionEvent> {
+) -> Option<Vec<SessionEvent>> {
     let in_range = |e: &SessionEvent| {
         e.event_type == "set_nudge"
             && e.deck.as_deref() == Some(deck)
             && e.elapsed_ms >= t0
             && e.elapsed_ms <= t1
-            && !(e.elapsed_ms == t1 && e.percent != Some(0.0))
+            && !((e.elapsed_ms - t1).abs() <= FILTER_SPAN_EPS_MS && e.percent != Some(0.0))
     };
     if !events.iter().any(in_range) {
-        return events.to_vec();
+        return None;
     }
-    events.iter().filter(|e| !in_range(e)).cloned().collect()
+    Some(events.iter().filter(|e| !in_range(e)).cloned().collect())
 }
 
 const FILTER_SPAN_EPS_MS: f64 = 1.0;
@@ -658,23 +658,35 @@ pub fn move_filter_active_span(
 }
 
 // Rewrites event track paths after the user relocates missing files.
+// None = no event carries a mapped path (no-op for callers).
 pub fn relocate_event_paths(
     events: &[SessionEvent],
     mapping: &HashMap<String, String>,
-) -> Vec<SessionEvent> {
-    events
-        .iter()
-        .map(|event| {
-            if let Some(path) = &event.path {
-                if let Some(new_path) = mapping.get(path) {
-                    let mut out = event.clone();
-                    out.path = Some(new_path.clone());
-                    return out;
+) -> Option<Vec<SessionEvent>> {
+    let touches_mapped_path = events.iter().any(|event| {
+        event
+            .path
+            .as_ref()
+            .is_some_and(|path| mapping.contains_key(path))
+    });
+    if !touches_mapped_path {
+        return None;
+    }
+    Some(
+        events
+            .iter()
+            .map(|event| {
+                if let Some(path) = &event.path {
+                    if let Some(new_path) = mapping.get(path) {
+                        let mut out = event.clone();
+                        out.path = Some(new_path.clone());
+                        return out;
+                    }
                 }
-            }
-            event.clone()
-        })
-        .collect()
+                event.clone()
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -894,7 +906,7 @@ mod tests {
         ];
         // Delete [1000, 2000]: removes the opener at 1000 and the closing zero at
         // 2000, but keeps the non-zero opener at 2000.
-        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0);
+        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0).unwrap();
         let remaining: Vec<f64> = out
             .iter()
             .filter(|e| e.event_type == "set_nudge")
@@ -906,8 +918,7 @@ mod tests {
     #[test]
     fn delete_nudge_range_noop_when_nothing_matches() {
         let events = vec![ev(0.0, "set_volume", "A")];
-        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0);
-        assert_eq!(out.len(), 1);
+        assert!(delete_nudge_range(&events, "A", 1000.0, 2000.0).is_none());
     }
 
     #[test]
@@ -924,9 +935,13 @@ mod tests {
         ];
         let mut mapping = HashMap::new();
         mapping.insert("/old/a.mp3".to_string(), "/new/a.mp3".to_string());
-        let out = relocate_event_paths(&events, &mapping);
+        let out = relocate_event_paths(&events, &mapping).unwrap();
         assert_eq!(out[0].path.as_deref(), Some("/new/a.mp3"));
         assert_eq!(out[1].path.as_deref(), Some("/keep/b.mp3"));
+
+        let mut unrelated = HashMap::new();
+        unrelated.insert("/never/there.mp3".to_string(), "/new/c.mp3".to_string());
+        assert!(relocate_event_paths(&events, &unrelated).is_none());
     }
 
     #[test]

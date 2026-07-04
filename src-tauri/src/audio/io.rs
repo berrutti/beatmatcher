@@ -20,7 +20,7 @@ fn open_format(
     let mut hint = Hint::new();
     if let Some(ext) = std::path::Path::new(path)
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(|extension| extension.to_str())
     {
         hint.with_extension(ext);
     }
@@ -45,7 +45,7 @@ pub fn decode_audio(
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or("no audio track found")?;
 
     let track_id = track.id;
@@ -55,7 +55,10 @@ pub fn decode_audio(
     let mut decoder =
         symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
-    let capacity = codec_params.n_frames.map(|n| n as usize * 2).unwrap_or(0);
+    let capacity = codec_params
+        .n_frames
+        .map(|frame_count| frame_count as usize * 2)
+        .unwrap_or(0);
     let mut samples: Vec<f32> = Vec::with_capacity(capacity);
     // Determined from the first decoded packet spec rather than codec_params,
     // because codec_params.channels can be None for some formats even when the
@@ -70,10 +73,10 @@ pub fn decode_audio(
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
+            Ok(packet) => packet,
             Err(symphonia::core::errors::Error::IoError(_)) => break,
             Err(symphonia::core::errors::Error::ResetRequired) => continue,
-            Err(e) => return Err(e.into()),
+            Err(error) => return Err(error.into()),
         };
 
         if packet.track_id() != track_id {
@@ -89,13 +92,13 @@ pub fn decode_audio(
                 let src_channels = spec.channels.count();
                 // Lock in the channel count from the first packet.
                 let out_channels = *actual_channels.get_or_insert_with(|| {
-                    let ch = src_channels.min(2);
+                    let channel_count = src_channels.min(2);
                     log::info!(
                         "decode_audio: first packet spec src_channels={} out_channels={}",
                         src_channels,
-                        ch
+                        channel_count
                     );
-                    ch
+                    channel_count
                 });
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 buf.copy_interleaved_ref(decoded);
@@ -113,7 +116,7 @@ pub fn decode_audio(
                 }
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(e) => return Err(e.into()),
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -142,9 +145,9 @@ pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate
         let lo_frame = src_frame.min(in_frames.saturating_sub(1));
         let hi_frame = (src_frame + 1).min(in_frames.saturating_sub(1));
 
-        for ch in 0..in_channels {
-            let lo_sample = input[lo_frame * in_channels + ch];
-            let hi_sample = input[hi_frame * in_channels + ch];
+        for channel in 0..in_channels {
+            let lo_sample = input[lo_frame * in_channels + channel];
+            let hi_sample = input[hi_frame * in_channels + channel];
             output.push(lo_sample + interp_factor * (hi_sample - lo_sample));
         }
     }
@@ -173,7 +176,7 @@ fn fill_tags_from_slice(
 
 pub fn read_tags(path: &str) -> TrackTags {
     let mut probed = match open_format(path) {
-        Ok(p) => p,
+        Ok(probe_result) => probe_result,
         Err(_) => {
             return TrackTags {
                 title: None,
@@ -186,7 +189,11 @@ pub fn read_tags(path: &str) -> TrackTags {
     let mut artist: Option<String> = None;
 
     // Tags embedded before the format container (ID3v2 in MP3, APEv2, etc.)
-    if let Some(rev) = probed.metadata.get().and_then(|m| m.current().cloned()) {
+    if let Some(rev) = probed
+        .metadata
+        .get()
+        .and_then(|metadata| metadata.current().cloned())
+    {
         fill_tags_from_slice(rev.tags(), &mut title, &mut artist);
     }
 
@@ -206,25 +213,29 @@ pub fn read_cover_art(path: &str) -> Option<String> {
     use symphonia::core::meta::StandardVisualKey;
 
     fn first_visual(visuals: &[symphonia::core::meta::Visual]) -> Option<String> {
-        let v = visuals
+        let visual = visuals
             .iter()
-            .find(|v| v.usage == Some(StandardVisualKey::FrontCover))
+            .find(|visual| visual.usage == Some(StandardVisualKey::FrontCover))
             .or_else(|| visuals.first())?;
-        let media_type = if v.media_type.is_empty() {
+        let media_type = if visual.media_type.is_empty() {
             "image/jpeg"
         } else {
-            &v.media_type
+            &visual.media_type
         };
         Some(format!(
             "data:{};base64,{}",
             media_type,
-            STANDARD.encode(&*v.data)
+            STANDARD.encode(&*visual.data)
         ))
     }
 
     let mut probed = open_format(path).ok()?;
 
-    if let Some(rev) = probed.metadata.get().and_then(|m| m.current().cloned()) {
+    if let Some(rev) = probed
+        .metadata
+        .get()
+        .and_then(|metadata| metadata.current().cloned())
+    {
         if let Some(url) = first_visual(rev.visuals()) {
             return Some(url);
         }
@@ -249,14 +260,19 @@ mod tests {
         let input = vec![0.0f32, 0.25, 0.5, 0.75, 1.0];
         let output = resample_linear(&input, 1, 44100, 44100);
         assert_eq!(output.len(), input.len());
-        for (a, b) in input.iter().zip(output.iter()) {
-            assert!((a - b).abs() < 1e-6, "a={} b={}", a, b);
+        for (input_sample, output_sample) in input.iter().zip(output.iter()) {
+            assert!(
+                (input_sample - output_sample).abs() < 1e-6,
+                "input={} output={}",
+                input_sample,
+                output_sample
+            );
         }
     }
 
     #[test]
     fn resample_linear_downsample_halves_length() {
-        let input: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let input: Vec<f32> = (0..100).map(|index| index as f32 / 100.0).collect();
         let output = resample_linear(&input, 1, 44100, 22050);
         assert!(
             output.len() >= 49 && output.len() <= 51,
@@ -289,9 +305,14 @@ mod tests {
         let input = vec![1.0f32, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
         let output = resample_linear(&input, 2, 44100, 44100);
         assert_eq!(output.len(), input.len());
-        for (i, &s) in output.iter().enumerate() {
-            let expected = if i % 2 == 0 { 1.0 } else { -1.0 };
-            assert!((s - expected).abs() < 1e-5, "idx={} got={}", i, s);
+        for (index, &sample) in output.iter().enumerate() {
+            let expected = if index % 2 == 0 { 1.0 } else { -1.0 };
+            assert!(
+                (sample - expected).abs() < 1e-5,
+                "idx={} got={}",
+                index,
+                sample
+            );
         }
     }
 

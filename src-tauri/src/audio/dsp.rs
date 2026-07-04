@@ -1,14 +1,4 @@
-// ── Biquad filter (Direct Form II Transposed) ─────────────────────────────────
-//
-// Implements H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)
-// Coefficients follow the Audio EQ Cookbook (Robert Bristow-Johnson).
-//
-// b0/b1/b2 . Feedforward: how much of the current and past INPUT samples
-//             contribute to the output. Together they shape the frequency
-//             response (e.g. low-pass attenuates high-frequency input).
-// a1/a2    . Feedback: how much of the past OUTPUT samples feed back into
-//             the filter. This creates resonance/poles in the response.
-// delay1/2 . The two internal memory cells that carry state between samples.
+// Audio EQ Cookbook biquad (Robert Bristow-Johnson), Direct Form II Transposed.
 
 #[derive(Copy, Clone)]
 pub(crate) struct Biquad {
@@ -186,11 +176,7 @@ impl Biquad {
     }
 }
 
-// ── 3-band EQ (2 channels) ────────────────────────────────────────────────────
-//
-// Low and high use two cascaded 2nd-order shelves (= 4th-order total) so the
-// rolloff is steep enough to decisively kill bass and treble. Mid uses a single
-// wide-Q peaking filter to cover the full vocal/instrument range.
+// Low/high: two cascaded 2nd-order shelves (4th-order, kills decisively); mid: one wide-Q peak.
 
 const EQ_LOW_SHELF_HZ: f32 = 200.0;
 const EQ_MID_PEAK_HZ: f32 = 1000.0;
@@ -271,7 +257,7 @@ const FILTER_RESONANCE_Q: f32 = 2.0;
 // gives a smooth, flat response at the entry point of the sweep with no
 // resonance bump.
 const FILTER_CENTER_Q: f32 = 0.5;
-const FILTER_CENTER_DEAD_ZONE: f32 = 0.05;
+const FILTER_CENTER_DEAD_ZONE: f32 = session_core::FILTER_DEAD_ZONE as f32;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
 // Crossfade time for bypass toggle. The filter output is crossfaded with the
 // dry signal so the knob position never sweeps during a bypass transition.
@@ -396,10 +382,7 @@ impl FilterState {
     }
 }
 
-// ── Master bus limiter ────────────────────────────────────────────────────────
-// True-peak brickwall limiter. Attack is instantaneous (gain_reduction jumps
-// to THRESHOLD/peak immediately) so no sample ever exceeds THRESHOLD.
-// Release recovers smoothly over ~150 ms to avoid audible pumping.
+// True-peak brickwall: instantaneous attack (no sample exceeds THRESHOLD), ~150ms release.
 
 pub(crate) struct LimiterState {
     pub(crate) gain_reduction: f32,

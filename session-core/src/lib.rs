@@ -20,7 +20,7 @@ pub use lane_edit::{
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
     paint_nudge_range, relocate_event_paths, resize_filter_active_span, set_rate_at, set_rate_span,
     splice_lane_events, toggle_filter_active_range,
-    EditableLane, LaneSpec, MIN_GESTURE_MS,
+    EditableLane, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use sim::{
     build_snapshots, event_sim_order, sim_apply_event, sim_pos, sim_state_from_snapshot, DeckSim,
@@ -76,8 +76,9 @@ mod wasm {
         serde_json::to_string(&blocks).map_err(|e| JsError::new(&e.to_string()))
     }
 
-    /// Drag-clamp range for a block. Returns `{ minStartMs, maxEndMs }`, with
-    /// `maxEndMs` = null meaning open-ended (Rust Infinity has no JSON form).
+    /// Drag-clamp range for a block: `{ minStartMs, maxEndMs, startTrimMinMs,
+    /// minBlockMs }`; `maxEndMs` null = open-ended. `startTrimMinMs` uses the
+    /// trim commit's own formula so preview and commit clamp identically.
     #[wasm_bindgen(js_name = blockBounds)]
     pub fn block_bounds(
         events_json: &str,
@@ -88,12 +89,33 @@ mod wasm {
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
         let out = crate::block_bounds(&events, &clips, &block).map(|(min_start, max_end)| {
+            let earliest_by_audio = if block.playback_rate > 0.0 {
+                block.start_ms - (block.track_start_sec / block.playback_rate) * 1000.0
+            } else {
+                min_start
+            };
             serde_json::json!({
                 "minStartMs": min_start,
                 "maxEndMs": if max_end.is_finite() { Some(max_end) } else { None },
+                "startTrimMinMs": min_start.max(earliest_by_audio),
+                "minBlockMs": crate::MIN_BLOCK_MS,
             })
         });
         serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// The shared edit/mixer constants, from the one place they are defined.
+    #[wasm_bindgen(js_name = editConstants)]
+    pub fn edit_constants() -> String {
+        serde_json::json!({
+            "eqMinDb": crate::EQ_MIN_DB,
+            "eqMaxDb": crate::EQ_MAX_DB,
+            "filterDeadZone": crate::FILTER_DEAD_ZONE,
+            "defaultMasterGain": crate::DEFAULT_MASTER_GAIN,
+            "minBlockMs": crate::MIN_BLOCK_MS,
+            "minGestureMs": crate::MIN_GESTURE_MS,
+        })
+        .to_string()
     }
 
     /// Move a block by `delta_ms` (clamped to its neighborhood). Returns
@@ -372,7 +394,8 @@ mod wasm {
         events_to_json(crate::paint_nudge_range(&events, deck, t0, t1, percent))
     }
 
-    /// Remove the nudge span for `deck` in [t0, t1] (keeps an adjacent opener at t1).
+    /// Remove the nudge span for `deck` in [t0, t1] (keeps an adjacent opener
+    /// at t1). JSON `null` = nothing matched, keep the input reference.
     #[wasm_bindgen(js_name = deleteNudgeRange)]
     pub fn delete_nudge_range(
         events_json: &str,
@@ -381,15 +404,22 @@ mod wasm {
         t1: f64,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        events_to_json(crate::delete_nudge_range(&events, deck, t0, t1))
+        match crate::delete_nudge_range(&events, deck, t0, t1) {
+            Some(edited) => events_to_json(edited),
+            None => Ok("null".to_string()),
+        }
     }
 
     /// Rewrite event track paths per `mapping` (JSON object old->new path).
+    /// JSON `null` = no event carries a mapped path.
     #[wasm_bindgen(js_name = relocateEventPaths)]
     pub fn relocate_event_paths(events_json: &str, mapping_json: &str) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
         let mapping: std::collections::HashMap<String, String> =
             serde_json::from_str(mapping_json).map_err(|e| JsError::new(&e.to_string()))?;
-        events_to_json(crate::relocate_event_paths(&events, &mapping))
+        match crate::relocate_event_paths(&events, &mapping) {
+            Some(edited) => events_to_json(edited),
+            None => Ok("null".to_string()),
+        }
     }
 }

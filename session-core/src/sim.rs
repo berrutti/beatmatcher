@@ -147,12 +147,14 @@ pub fn sim_pos(sim: &DeckSim, at_ms: f64, sr_f: f64) -> f64 {
     }
     let effective_rate = sim.rate * sim.nudge_factor;
     let elapsed = (at_ms - sim.play_start_ms).max(0.0) / 1000.0 * sr_f * effective_rate;
-    if sim.loop_active && sim.loop_end > sim.loop_start {
+    let raw = sim.play_start_frame + elapsed;
+    // Engine parity: play linearly until loop_end, only then wrap (deck.rs next_pos).
+    if sim.loop_active && sim.loop_end > sim.loop_start && raw >= sim.loop_end {
         let len = sim.loop_end - sim.loop_start;
-        let offset = (sim.play_start_frame - sim.loop_start + elapsed).rem_euclid(len);
-        (sim.loop_start + offset).clamp(0.0, sim.total_frames)
+        let wrapped = sim.loop_start + (raw - sim.loop_end).rem_euclid(len);
+        wrapped.clamp(0.0, sim.total_frames)
     } else {
-        (sim.play_start_frame + elapsed).clamp(0.0, sim.total_frames)
+        raw.clamp(0.0, sim.total_frames)
     }
 }
 
@@ -481,8 +483,9 @@ fn snap_at(state: &SimState, at_ms: f64, sr_f: f64) -> SessionSnapshot {
     }
 }
 
-// deck_snapshot (initial state) sorts first within its rounded-ms cluster; see
-// the collapsed_load_play_at_start_reconstructs_playing test for why.
+// deck_snapshot (initial state) sorts first within its rounded-ms cluster, and
+// at an exactly equal timestamp (only edits synthesize those) transport enders
+// sort before starters; both rules are pinned by tests in this module.
 pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
     let bucket = |e: &SessionEvent| e.elapsed_ms.round() as i64;
     let snapshot_rank = |e: &SessionEvent| u8::from(e.event_type != "deck_snapshot");
@@ -494,6 +497,16 @@ pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering
                 .partial_cmp(&b.elapsed_ms)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
+        .then_with(|| transport_phase(a).cmp(&transport_phase(b)))
+}
+
+fn transport_phase(event: &SessionEvent) -> u8 {
+    match event.event_type.as_str() {
+        "stop" | "stopped_at_cue" | "stop_at_cue" | "cue_set_and_stop" | "exit_loop"
+        | "cue_preview_end" => 0,
+        "play" | "loop_out" | "cue_preview_start" | "reloop" => 2,
+        _ => 1,
+    }
 }
 
 // Build one snapshot per event, capturing state AFTER the event fires.
@@ -563,14 +576,8 @@ mod tests {
         }
     }
 
-    // ── scrub vs full-playthrough reconstruction parity ───────────────────────
-    //
-    // "Playing through to T" applies every event up to T then reads sim_pos(T).
-    // "Scrubbing to T" is what start_session_playback does: find the nearest
-    // snapshot, replay only the events between it and T, then read sim_pos(T).
-    // The two MUST agree for every deck at every T, otherwise scrubbing lands a
-    // deck at a different position than continuous playback would.
-
+    // Scrubbing (snapshot + replay, as start_session_playback does) must land
+    // every deck exactly where playing through all events would.
     fn playthrough_pos(
         events: &[SessionEvent],
         from_ms: f64,
@@ -769,8 +776,6 @@ mod tests {
         assert_eq!(path.as_deref(), Some(track2.as_str()));
     }
 
-    // ── sim_pos ──────────────────────────────────────────────────────────────
-
     #[test]
     fn sim_pos_stopped_returns_start_frame() {
         let sim = DeckSim {
@@ -849,8 +854,6 @@ mod tests {
         let pos = sim_pos(&sim, 1500.0, SR_F);
         assert!((pos - SR_F / 2.0).abs() < 1.0, "expected ~22050, got {pos}");
     }
-
-    // ── sim_apply_event ───────────────────────────────────────────────────────
 
     #[test]
     fn apply_play_marks_deck_playing() {
@@ -1008,8 +1011,6 @@ mod tests {
         assert_eq!(state.master_gain, 0.5);
     }
 
-    // ── build_snapshots ───────────────────────────────────────────────────────
-
     #[test]
     fn empty_session_produces_single_clean_snapshot() {
         let snaps = build_snapshots(&[], SR, &HashMap::new());
@@ -1112,8 +1113,6 @@ mod tests {
         );
     }
 
-    // ── snapshot lookup (partition_point) ─────────────────────────────────────
-
     #[test]
     fn scrub_before_first_event_loads_clean_state() {
         let events = vec![SessionEvent {
@@ -1184,8 +1183,6 @@ mod tests {
         );
     }
 
-    // ── sim_state_from_snapshot round-trip ────────────────────────────────────
-
     #[test]
     fn round_trip_preserves_playing_deck_position() {
         let path = "/fake/track.mp3".to_string();
@@ -1209,8 +1206,6 @@ mod tests {
         // 2s of play at rate=1 from frame 0 → 88200 (well within 441000).
         assert_eq!(sim_pos(&sim.decks["A"], 2000.0, SR_F), 88200.0);
     }
-
-    // ── nudge tracking ────────────────────────────────────────────────────────
 
     #[test]
     fn sim_pos_accounts_for_nudge_factor() {
@@ -1450,7 +1445,6 @@ mod tests {
         }
     }
 
-    // ── event types previously without parity coverage ────────────────────────
 
     // loop_in must commit the current (possibly looped) position before
     // clearing loop state, and reloop must jump back to the loop start and
@@ -1603,6 +1597,26 @@ mod tests {
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
         assert_eq!(strip.filter_value, 0.0);
         assert!(strip.filter_active);
+    }
+
+    #[test]
+    fn same_bucket_sub_ms_order_is_decided_by_raw_time() {
+        let play = deck_ev("play", 100.2, "A");
+        let stop = deck_ev("stop", 100.6, "A");
+        assert_eq!(event_sim_order(&play, &stop), std::cmp::Ordering::Less);
+        assert_eq!(event_sim_order(&stop, &play), std::cmp::Ordering::Greater);
+    }
+
+    // Otherwise a shared block boundary reads as a zero-length clip.
+    #[test]
+    fn exact_equal_ms_orders_enders_before_starters() {
+        let play = deck_ev("play", 7000.0, "A");
+        let stop = deck_ev("stop", 7000.0, "A");
+        assert_eq!(event_sim_order(&stop, &play), std::cmp::Ordering::Less);
+        assert_eq!(event_sim_order(&play, &stop), std::cmp::Ordering::Greater);
+        let exit = deck_ev("exit_loop", 7000.0, "A");
+        let loop_out = deck_ev("loop_out", 7000.0, "A");
+        assert_eq!(event_sim_order(&exit, &loop_out), std::cmp::Ordering::Less);
     }
 
     #[test]

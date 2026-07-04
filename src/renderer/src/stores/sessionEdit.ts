@@ -3,16 +3,13 @@ import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
-import {
-  laneSpecFor,
-  spliceLaneEvents,
-  deleteNudgeRange,
-  relocateEventPaths
-} from '@renderer/utils/sessionEditOps';
+import { laneSpecFor, spliceLaneEvents } from '@renderer/utils/sessionEditOps';
 import { basename, indexByBasename } from '@renderer/utils/path';
 import {
   normalizeGestureSamples,
   decimateSteps,
+  deleteNudgeRange,
+  relocateEventPaths,
   toggleFilterActiveRange,
   deleteFilterActiveSpan,
   resizeFilterActiveSpan,

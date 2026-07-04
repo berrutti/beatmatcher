@@ -57,7 +57,6 @@ const trackRect = (vc: ViewContext, top: number, height: number): Rect => ({
   h: height
 });
 
-// ── tick ruler ──────────────────────────────────────────────────────────────
 export function tickRowItem(): SceneItem {
   return {
     bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: TICK_H }),
@@ -66,7 +65,6 @@ export function tickRowItem(): SceneItem {
   };
 }
 
-// ── deck row background + labels + the lane dropdown caret ───────────────────
 export function deckChromeItem(
   row: RowLayout,
   zebraIndex: number,
@@ -85,7 +83,6 @@ export function deckChromeItem(
   };
 }
 
-// ── the deck's clip band (clips + loaded spans); hit-tests blocks ────────────
 export function clipBandItem(
   row: RowLayout,
   clips: Clip[],
@@ -185,7 +182,6 @@ export function blockAtPoint(
   return null;
 }
 
-// ── nudge marker (one per span); hit covers the band so it can be grabbed ────
 export function nudgeItem(row: RowLayout, span: NudgeSpan, deck: string): SceneItem {
   return {
     bounds: (vc) => ({
@@ -205,7 +201,6 @@ export function nudgeItem(row: RowLayout, span: NudgeSpan, deck: string): SceneI
   };
 }
 
-// ── automation lane surface (the value curve); hit = draw/paint surface ──────
 export function laneSurfaceItem(
   lane: SublaneLayout,
   deck: string,
@@ -233,7 +228,6 @@ export function laneSurfaceItem(
   };
 }
 
-// ── filter-active region: hit-only (the fill is drawn by the filter lane) ────
 export function filterRegionItem(
   lane: SublaneLayout,
   deck: string,
@@ -263,7 +257,6 @@ export function filterRegionItem(
   };
 }
 
-// ── filter-span selection outline (white box on the filter lane) ─────────────
 // Bounds span the full track width (clipped vertically to the lane) so the
 // outline's vertical edges aren't shaved off by the engine's per-item clip,
 // matching the old withLaneClip-based highlight.
@@ -288,7 +281,6 @@ export function filterSelectionItem(
   };
 }
 
-// ── lane separator: hit-only grab band at the lane's bottom edge ─────────────
 export function laneSeparatorItem(lane: SublaneLayout, deck: string): SceneItem {
   const edgeY = lane.top + lane.height;
   return {
@@ -306,7 +298,6 @@ export function laneSeparatorItem(lane: SublaneLayout, deck: string): SceneItem 
   };
 }
 
-// ── waveform separator: hit-only grab band at the waveform/lane boundary ──────
 export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
   const edgeY = row.top + row.waveformHeight;
   return {
@@ -322,7 +313,6 @@ export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
   };
 }
 
-// ── master gain lane ─────────────────────────────────────────────────────────
 export function masterItem(top: number, height: number, gain: MasterLanes): SceneItem {
   return {
     bounds: (vc) => ({ x: 0, y: top, w: vc.canvasW, h: height }),
@@ -347,7 +337,6 @@ export function masterItem(top: number, height: number, gain: MasterLanes): Scen
   };
 }
 
-// ── row dividers (draw-only) ─────────────────────────────────────────────────
 export function rowDividersItem(rows: RowLayout[]): SceneItem {
   return {
     bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: vc.canvasH }),
@@ -356,7 +345,6 @@ export function rowDividersItem(rows: RowLayout[]): SceneItem {
   };
 }
 
-// ── playhead (draw-only) ─────────────────────────────────────────────────────
 export function playheadItem(playheadMs: number, bottomY: number): SceneItem {
   return {
     bounds: (vc) => {
@@ -378,7 +366,6 @@ export function playheadItem(playheadMs: number, bottomY: number): SceneItem {
   };
 }
 
-// ── frame gutters (1px lines framing the track area; draw-only, drawn last) ──
 export function frameGuttersItem(): SceneItem {
   return {
     bounds: (vc) => ({ x: 0, y: 0, w: vc.canvasW, h: vc.canvasH }),
@@ -387,7 +374,6 @@ export function frameGuttersItem(): SceneItem {
   };
 }
 
-// ── overview minimap (bottom, fixed) ─────────────────────────────────────────
 export function overviewItem(
   totalMs: number,
   clips: Clip[],

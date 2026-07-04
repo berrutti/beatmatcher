@@ -225,8 +225,11 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const events: SessionEvent[] = raw.events ?? [];
-    const lastEvent = events[events.length - 1];
-    const durationMs = lastEvent?.elapsed_ms ?? 0;
+    // Max, not last: a .bms with sub-ms ordering drift is not strictly sorted.
+    let durationMs = 0;
+    for (const event of events) {
+      durationMs = Math.max(durationMs, event.elapsed_ms);
+    }
     const parts = path.split('/');
     const filename = parts[parts.length - 1] ?? 'session.bms';
 

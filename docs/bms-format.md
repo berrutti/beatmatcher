@@ -17,7 +17,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 }
 ```
 
-`elapsed_ms` is milliseconds since the recording started, rounded to 0.1 ms. `startedAt` is an ISO-8601 wall-clock timestamp.
+`elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp.
 
 ## Event types
 

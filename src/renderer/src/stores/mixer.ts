@@ -9,14 +9,11 @@ type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: numb
 type EqBand = 'low' | 'mid' | 'high';
 type EqState = { low: number; mid: number; high: number };
 
-// -2 dBFS: must match DEFAULT_MASTER_GAIN in audio.rs
+// Defined in session-core; copies exist here because WASM is not initialized
+// at module-evaluation time. Pinned by the editConstants parity test.
 export const DEFAULT_MASTER_GAIN = 0.7943;
-
 export const EQ_MIN_DB = -26;
 export const EQ_MAX_DB = 6;
-
-// Must match FILTER_CENTER_DEAD_ZONE in src-tauri/src/audio/dsp.rs: the DSP
-// treats |value| <= 0.05 as bypass.
 export const FILTER_DEAD_ZONE = 0.05;
 
 const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];

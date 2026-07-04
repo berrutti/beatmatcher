@@ -52,8 +52,6 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
-// ── Audio engine ───────────────────────────────────────────────────────────────
-
 pub struct AppAudio {
     pub device_sample_rate: u32,
     decks: HashMap<String, Arc<Mutex<DeckState>>>,
