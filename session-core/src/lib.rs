@@ -13,8 +13,8 @@ pub mod timeline;
 pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
     block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
-    delete_transport_ranges, move_transport_block, trim_transport_block, DeleteRange, Edge,
-    MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
+    delete_transport_ranges, move_transport_block, split_transport_block, trim_transport_block,
+    DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use lane_edit::{
@@ -178,6 +178,23 @@ mod wasm {
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
         events_to_json(crate::delete_transport_block(&events, &clips, &block))
+    }
+
+    /// Split a block into two at `split_ms`, gaplessly (a stop immediately
+    /// followed by a play, the right part resuming exactly the audio it
+    /// already played). Rejected (no-op) if `split_ms` is within `minBlockMs`
+    /// of either edge. Returns the events JSON.
+    #[wasm_bindgen(js_name = splitTransportBlock)]
+    pub fn split_transport_block(
+        events_json: &str,
+        clips_json: &str,
+        block_json: &str,
+        split_ms: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let clips = parse_clips(clips_json)?;
+        let block = parse_block(block_json)?;
+        events_to_json(crate::split_transport_block(&events, &clips, &block, split_ms))
     }
 
     /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range
