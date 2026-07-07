@@ -10,6 +10,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 
 const props = defineProps<{
   accent: string;
+  active: boolean;
   getBeat: () => number | null;
   coverArt: string | null;
 }>();
@@ -51,10 +52,11 @@ function draw() {
 
   const startAngle = -Math.PI / 2;
   const endAngle = startAngle + phase4 * Math.PI * 2;
+  const color = props.active ? props.accent : '#444';
 
   ctx.beginPath();
   ctx.arc(cx, cy, radius, startAngle, endAngle);
-  ctx.strokeStyle = props.accent;
+  ctx.strokeStyle = color;
   ctx.lineWidth = LINE_WIDTH;
   ctx.stroke();
 
@@ -62,7 +64,7 @@ function draw() {
   const dotY = cy + radius * Math.sin(endAngle);
   ctx.beginPath();
   ctx.arc(dotX, dotY, LINE_WIDTH / 2, 0, Math.PI * 2);
-  ctx.fillStyle = props.accent;
+  ctx.fillStyle = color;
   ctx.fill();
 
   rafId = requestAnimationFrame(draw);

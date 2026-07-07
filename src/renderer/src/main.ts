@@ -1,9 +1,13 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
+import '@fontsource/jost/400.css';
+import '@fontsource/jost/600.css';
+import '@fontsource/jost/700.css';
 import './assets/main.css';
 import { i18n } from './i18n';
 import { initSessionCore } from '@renderer/utils/sessionCore';
+import { vTooltip } from '@renderer/directives/tooltip';
 
 async function init() {
   await initSessionCore();
@@ -12,6 +16,7 @@ async function init() {
   const app = createApp(App);
   app.use(pinia);
   app.use(i18n);
+  app.directive('tooltip', vTooltip);
   app.mount('#app');
 
   if (import.meta.hot) {

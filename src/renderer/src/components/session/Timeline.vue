@@ -699,7 +699,7 @@ watch(
   color: var(--color-text);
   font-family: var(--font);
   font-size: 0.75rem;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   text-align: left;
   white-space: nowrap;
   cursor: pointer;

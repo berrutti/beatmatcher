@@ -4,7 +4,7 @@
       <button
         class="btn-secondary topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
-        :title="mixer.isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
+        v-tooltip="mixer.isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
         tabindex="-1"
         @click="onRecClick"
       >
@@ -19,10 +19,19 @@
         {{ mixer.deckCount === 4 ? $t('topStrip.fourDecks') : $t('topStrip.twoDecks') }}
       </button>
 
+      <button
+        class="btn-secondary topstrip__deck-count-btn"
+        :class="{ 'topstrip__deck-count-btn--active': mixer.showWaveformStrip }"
+        tabindex="-1"
+        @click="mixer.toggleWaveformStrip()"
+      >
+        {{ $t('topStrip.waveforms') }}
+      </button>
+
       <div
         class="topstrip__swarm-btn"
         :class="{ 'topstrip__swarm-btn--active': mixer.swarmMode }"
-        :title="$t('topStrip.swarmHint')"
+        v-tooltip="$t('topStrip.swarmHint')"
       >
         {{ $t('topStrip.swarm') }}
         <span
@@ -112,7 +121,7 @@
           :value="mixer.cueMix"
           @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
           @dblclick="mixer.setCueMix(0)"
-          :title="$t('topStrip.cueMixHint')"
+          v-tooltip="$t('topStrip.cueMixHint')"
         />
         <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.mix') }}</span>
         <select
@@ -236,8 +245,8 @@ onUnmounted(() => {
   height: var(--topstrip-h);
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 12px;
+  gap: 4px;
+  padding: 0 4px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg);
   font-family: var(--font);
@@ -299,12 +308,13 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.02em;
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
   cursor: not-allowed;
   user-select: none;
+  text-transform: uppercase;
 }
 
 .topstrip__swarm-btn--active {
@@ -331,7 +341,7 @@ onUnmounted(() => {
   text-align: center;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   color: var(--color-muted);
   opacity: 0.5;
   transition:
@@ -424,8 +434,9 @@ onUnmounted(() => {
 
 .topstrip__label {
   color: var(--color-muted);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   font-size: 9px;
+  text-transform: uppercase;
 }
 
 .topstrip__select {
@@ -453,11 +464,12 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.02em;
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
   cursor: pointer;
+  text-transform: uppercase;
 }
 
 .topstrip__rec-btn:hover {
@@ -486,7 +498,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.02em;
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
@@ -495,9 +507,15 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-transform: uppercase;
 }
 
 .topstrip__deck-count-btn:hover {
+  border-color: var(--color-text);
+  color: var(--color-text);
+}
+
+.topstrip__deck-count-btn--active {
   border-color: var(--color-text);
   color: var(--color-text);
 }

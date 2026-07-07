@@ -68,6 +68,13 @@ export const useMixerStore = defineStore('mixer', () => {
     deckCount.value === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
   );
 
+  const showWaveformStrip = ref(storageGet<boolean>(STORAGE_KEYS.showWaveformStrip, true));
+
+  function toggleWaveformStrip() {
+    showWaveformStrip.value = !showWaveformStrip.value;
+    storageSet(STORAGE_KEYS.showWaveformStrip, showWaveformStrip.value);
+  }
+
   const masterGain = ref(DEFAULT_MASTER_GAIN);
 
   function setMasterGain(gain: number) {
@@ -332,6 +339,7 @@ export const useMixerStore = defineStore('mixer', () => {
     mainDeviceId,
     masterGain,
     outputDevices,
+    showWaveformStrip,
     swarmMode,
     swarmSelected,
     volume,
@@ -361,6 +369,7 @@ export const useMixerStore = defineStore('mixer', () => {
     startRecording,
     stopRecording,
     toggleDeckCount,
-    toggleFilter
+    toggleFilter,
+    toggleWaveformStrip
   };
 });

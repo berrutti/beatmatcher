@@ -950,10 +950,7 @@ pub(crate) async fn stop_recording(state: tauri::State<'_, AppState>) -> Result<
 pub(crate) async fn read_track_tags(path: String) -> audio::TrackTags {
     tokio::task::spawn_blocking(move || audio::read_tags(&path))
         .await
-        .unwrap_or(audio::TrackTags {
-            title: None,
-            artist: None,
-        })
+        .unwrap_or_default()
 }
 
 // Mirrors the "filename (1).ext" pattern browsers use for repeat downloads,

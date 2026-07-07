@@ -94,7 +94,7 @@
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
           :disabled="mixer.swarmMode"
-          :title="$t('mixer.cueHint')"
+          v-tooltip="$t('mixer.cueHint')"
           tabindex="-1"
           @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
         >
@@ -102,90 +102,18 @@
         </button>
       </div>
     </div>
-
-    <WaveformStrips
-      class="mixer__wrapper"
-      :sources="[
-        {
-          getPosition: () => decks.deckC.getPlayheadPosition(),
-          getBpm: () => decks.deckC.trackBpm,
-          getBeatOffset: () => decks.deckC.beatOffset,
-          getRate: () => decks.deckC.rate,
-          getDenseData: () => decks.deckC.denseSpectralData,
-          getDenseRate: () => decks.deckC.denseSpectralRate,
-          isWaveformLoading: () => decks.deckC.waveformLoading,
-          accent: decks.deckC.accent
-        },
-        {
-          getPosition: () => decks.deckA.getPlayheadPosition(),
-          getBpm: () => decks.deckA.trackBpm,
-          getBeatOffset: () => decks.deckA.beatOffset,
-          getRate: () => decks.deckA.rate,
-          getDenseData: () => decks.deckA.denseSpectralData,
-          getDenseRate: () => decks.deckA.denseSpectralRate,
-          isWaveformLoading: () => decks.deckA.waveformLoading,
-          accent: decks.deckA.accent
-        },
-        {
-          getPosition: () => decks.deckB.getPlayheadPosition(),
-          getBpm: () => decks.deckB.trackBpm,
-          getBeatOffset: () => decks.deckB.beatOffset,
-          getRate: () => decks.deckB.rate,
-          getDenseData: () => decks.deckB.denseSpectralData,
-          getDenseRate: () => decks.deckB.denseSpectralRate,
-          isWaveformLoading: () => decks.deckB.waveformLoading,
-          accent: decks.deckB.accent
-        },
-        {
-          getPosition: () => decks.deckD.getPlayheadPosition(),
-          getBpm: () => decks.deckD.trackBpm,
-          getBeatOffset: () => decks.deckD.beatOffset,
-          getRate: () => decks.deckD.rate,
-          getDenseData: () => decks.deckD.denseSpectralData,
-          getDenseRate: () => decks.deckD.denseSpectralRate,
-          isWaveformLoading: () => decks.deckD.waveformLoading,
-          accent: decks.deckD.accent
-        }
-      ]"
-      @scrub-start="onScrubStart"
-      @scrub="onScrub"
-      @scrub-end="onScrubEnd"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
-import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
-
-let scrubSavedVolume: number | null = null;
-
-function onScrubStart(sourceIndex: number) {
-  const deckId = DECKS_DISPOSITION[sourceIndex];
-  if (!deckId) return;
-  scrubSavedVolume = mixer.volume[deckId];
-  mixer.setVolume(deckId, 0);
-}
-
-function onScrub(sourceIndex: number, sec: number) {
-  const deckId = DECKS_DISPOSITION[sourceIndex];
-  if (!deckId) return;
-  decks.decks[deckId].seekTo(sec);
-}
-
-function onScrubEnd(sourceIndex: number) {
-  const deckId = DECKS_DISPOSITION[sourceIndex];
-  if (!deckId || scrubSavedVolume === null) return;
-  mixer.setVolume(deckId, scrubSavedVolume);
-  scrubSavedVolume = null;
-}
 
 const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
 const deckPeaks = reactive<Record<DeckId, PeakState>>({
@@ -296,18 +224,14 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 <style scoped>
 .mixer {
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.4em;
-  padding: 0.3em 0.3em 0em;
-  width: 100%;
-}
-
-.mixer__wrapper {
-  flex: 1;
-  min-height: 0;
+  padding: 0.3em;
   width: 100%;
 }
 
@@ -315,14 +239,16 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   display: flex;
   align-items: stretch;
   justify-content: center;
-  gap: 0.4em;
+  gap: 0;
   width: 100%;
+  min-width: 440px;
   flex: 1;
   min-height: 16em;
 }
 
 .mixer__channel {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -388,7 +314,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__channel-label {
   font-size: 0.75em;
   font-weight: 700;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.03em;
 }
 
 .mixer__eq {
@@ -447,7 +373,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 }
 
 .mixer__eq-slider:disabled {
-  opacity: 0.35;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 
@@ -458,7 +384,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
 .mixer__eq-label {
   font-size: 0.5em;
   color: var(--color-muted);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
 }
 
 .mixer__filter {
@@ -516,7 +442,7 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   font-family: var(--font);
   font-size: 0.55em;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   padding: 0.25em 0.45em;
   border-radius: 3px;
   cursor: pointer;
@@ -642,7 +568,8 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 0.6em;
-  letter-spacing: 0.15em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   padding: 0.3em 0.7em;
   border-radius: 3px;
   cursor: pointer;
@@ -652,9 +579,14 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
     color 0.1s;
 }
 
-.mixer__cue-btn:hover {
+.mixer__cue-btn:hover:not(:disabled) {
   border-color: var(--color-cue);
   color: var(--color-cue);
+}
+
+.mixer__cue-btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
 }
 
 .mixer__cue-btn--active {

@@ -98,7 +98,7 @@ export function useKeyboard() {
 
     if (e.key === 'Tab') {
       e.preventDefault();
-      collection.toggle();
+      if (appMode.mode === 'performance') collection.toggleBigLibrary();
       return;
     }
 

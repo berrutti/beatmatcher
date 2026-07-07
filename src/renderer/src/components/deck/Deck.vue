@@ -18,26 +18,60 @@
       @cancel="pendingLoad = null"
     />
 
-    <div class="deck__header">
-      <span class="deck__label">{{ $t('deck.label', { id: props.deck.id }) }}</span>
-      <div v-if="props.deck.trackName" class="deck__track-info">
-        <div class="deck__status-dot" :class="{ 'deck__status-dot--on': props.deck.playing }" />
-        <span class="deck__track-name" :title="props.deck.trackName">{{
-          props.deck.trackName
+    <div class="deck__loading-bar" />
+
+    <div v-if="props.compact" class="deck__compact">
+      <button
+        class="deck__compact-btn"
+        :disabled="!props.deck.trackLoaded || props.deck.loading"
+        :tabindex="-1"
+        @mousedown.prevent="props.deck.cueStart()"
+        @mouseup="props.deck.cueEnd()"
+        @mouseleave="onCueMouseLeave"
+      >
+        {{ $t('deck.cue') }}
+      </button>
+      <button
+        class="deck__compact-btn"
+        :class="{ 'deck__compact-btn--playing': props.deck.playing }"
+        :disabled="!props.deck.trackLoaded || props.deck.loading"
+        :tabindex="-1"
+        @click="onTogglePlay()"
+      >
+        {{ props.deck.playing ? '⏸' : '▶' }}
+      </button>
+
+      <div class="deck__compact-info">
+        <span class="deck__label" :class="{ 'deck__label--empty': !props.deck.trackLoaded }">{{
+          $t('deck.label', { id: props.deck.id })
         }}</span>
+        <span
+          class="deck__compact-track-name"
+          :class="{ 'deck__track-name--empty': !props.deck.trackName }"
+          v-tooltip="props.deck.trackName || undefined"
+          >{{ props.deck.trackName || $t('deck.notLoaded') }}</span
+        >
       </div>
 
-      <button
-        v-if="props.deck.trackLoaded"
-        class="deck__q-btn"
-        :class="{ 'deck__q-btn--on': props.deck.quantized }"
-        :tabindex="-1"
-        @click="props.deck.toggleQuantized()"
-      >
-        Q
-      </button>
-      <div v-if="props.deck.trackLoaded" class="deck__bpm-header">
-        <div class="deck__bpm-value-wrap" @click="onBpmValueClick">
+      <TrackWaveform
+        class="deck__compact-overview"
+        :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
+        :accent="props.deck.accent"
+        :track-data="props.deck.trackData"
+        :get-playhead-position="props.deck.getPlayheadPosition"
+        :full-spectral-data="props.deck.fullSpectralData"
+        :loop-region="props.deck.loopRegion"
+        :loop-active="props.deck.loopActive"
+        :cue-point="props.deck.cuePoint"
+        @seek="props.deck.seekTo"
+      />
+
+      <div class="deck__bpm-header">
+        <div
+          class="deck__bpm-value-wrap"
+          :class="{ 'deck__bpm-value-wrap--empty': !props.deck.trackLoaded }"
+          @click="onBpmValueClick"
+        >
           <input
             v-if="editingBpm"
             ref="bpmInputEl"
@@ -52,150 +86,220 @@
           />
           <span
             class="deck__bpm-value-header"
+            :class="{ 'deck__bpm-value-header--empty': !props.deck.trackLoaded }"
             :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
             >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
           >
         </div>
         <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
       </div>
-      <button
-        v-if="props.deck.trackLoaded"
-        class="deck__eject-btn"
-        :tabindex="-1"
-        :title="$t('deck.ejectTitle')"
-        @click="props.deck.ejectTrack()"
-      >
-        ⏏
-      </button>
     </div>
 
-    <div class="deck__loading-bar" />
+    <div v-else class="deck__body">
+      <div class="deck__main">
+        <TrackWaveform
+          class="deck__overview"
+          :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
+          :accent="props.deck.accent"
+          :track-data="props.deck.trackData"
+          :get-playhead-position="props.deck.getPlayheadPosition"
+          :full-spectral-data="props.deck.fullSpectralData"
+          :loop-region="props.deck.loopRegion"
+          :loop-active="props.deck.loopActive"
+          :cue-point="props.deck.cuePoint"
+          @seek="props.deck.seekTo"
+        />
 
-    <div v-if="!props.deck.trackLoaded" class="deck__drop-zone">
-      <span class="deck__drop-hint">{{
-        props.deck.loading ? $t('deck.loading') : $t('deck.dragHint')
-      }}</span>
-    </div>
-
-    <div
-      class="deck__content"
-      :style="{ visibility: props.deck.trackLoaded ? 'visible' : 'hidden' }"
-    >
-      <TrackWaveform
-        class="deck__overview"
-        :class="{ 'deck__overview--waveform-loading': props.deck.waveformLoading }"
-        :accent="props.deck.accent"
-        :track-data="props.deck.trackData"
-        :get-playhead-position="props.deck.getPlayheadPosition"
-        :full-spectral-data="props.deck.fullSpectralData"
-        :loop-region="props.deck.loopRegion"
-        :loop-active="props.deck.loopActive"
-        :cue-point="props.deck.cuePoint"
-        @seek="props.deck.seekTo"
-      />
-
-      <div class="deck__controls">
-        <div class="deck__phase-ring">
-          <PhaseRing
-            :accent="props.deck.accent"
-            :get-beat="() => props.deck.beat"
-            :cover-art="props.deck.coverArt"
-          />
-        </div>
-
-        <div class="deck__transport-cluster">
-          <div class="deck__btn-row">
-            <button
-              class="deck__btn deck__btn--nudge"
-              :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @mousedown="onNudgeStart('back')"
-              @mouseup="props.deck.nudgeEnd()"
-              @mouseleave="onNudgeMouseLeave"
-            >
-              <span class="deck__btn-key" :tabindex="-1">{{ keybindings.NUDGE_BACK }}</span>
-              <span class="deck__btn-icon">↶</span>
-            </button>
-            <button
-              class="deck__btn deck__btn--nudge"
-              :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @mousedown="onNudgeStart('forward')"
-              @mouseup="props.deck.nudgeEnd()"
-              @mouseleave="onNudgeMouseLeave"
-            >
-              <span class="deck__btn-key">{{ keybindings.NUDGE_FORWARD }}</span>
-              <span class="deck__btn-icon">↷</span>
-            </button>
+        <div class="deck__info-row">
+          <div class="deck__phase-ring">
+            <PhaseRing
+              :accent="props.deck.accent"
+              :active="props.deck.trackLoaded"
+              :get-beat="() => props.deck.beat"
+              :cover-art="props.deck.coverArt"
+            />
           </div>
 
-          <div class="deck__btn-row">
-            <button
-              class="deck__btn deck__btn--cue"
-              :class="{ 'deck__btn--cueing': props.deck.cueing }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @mousedown.prevent="props.deck.cueStart()"
-              @mouseup="props.deck.cueEnd()"
-              @mouseleave="onCueMouseLeave"
-            >
-              <span class="deck__btn-key">{{ keybindings.CUE }}</span>
-              <span>{{ $t('deck.cue') }}</span>
-            </button>
-            <button
-              class="deck__btn deck__btn--play"
-              :class="{ 'deck__btn--playing': props.deck.playing }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @click="onTogglePlay()"
-            >
-              <span class="deck__btn-key">{{ keybindings.PLAY }}</span>
-              <span>{{ props.deck.playing ? '⏸' : '▶' }}</span>
-            </button>
+          <div class="deck__info">
+            <div class="deck__info-top">
+              <span
+                class="deck__label"
+                :class="{ 'deck__label--empty': !props.deck.trackLoaded }"
+                >{{ $t('deck.label', { id: props.deck.id }) }}</span
+              >
+
+              <button
+                class="deck__q-btn"
+                :class="{ 'deck__q-btn--on': props.deck.quantized }"
+                :disabled="!props.deck.trackLoaded"
+                :tabindex="-1"
+                @click="props.deck.toggleQuantized()"
+              >
+                Q
+              </button>
+              <button
+                class="deck__eject-btn"
+                :disabled="!props.deck.trackLoaded"
+                :tabindex="-1"
+                v-tooltip="$t('deck.ejectTitle')"
+                @click="props.deck.ejectTrack()"
+              >
+                ⏏
+              </button>
+            </div>
+
+            <div class="deck__track-info">
+              <span v-if="!props.deck.trackName" class="deck__track-name--empty-label">{{
+                $t('deck.notLoaded')
+              }}</span>
+              <template v-else>
+                <p
+                  v-if="artistTitle.artist"
+                  class="deck__track-line deck__track-line--artist"
+                  v-tooltip="artistTitle.artist"
+                >
+                  <span class="deck__track-line-label">{{ $t('deck.artist') }}</span
+                  ><span class="deck__track-line-value">{{ artistTitle.artist }}</span>
+                </p>
+                <p
+                  class="deck__track-line deck__track-line--track"
+                  v-tooltip="artistTitle.title ?? undefined"
+                >
+                  <span class="deck__track-line-label">{{ $t('deck.track') }}</span
+                  ><span class="deck__track-line-value">{{ artistTitle.title }}</span>
+                </p>
+              </template>
+            </div>
+
+            <div class="deck__bpm-header">
+              <div
+                class="deck__bpm-value-wrap"
+                :class="{ 'deck__bpm-value-wrap--empty': !props.deck.trackLoaded }"
+                @click="onBpmValueClick"
+              >
+                <input
+                  v-if="editingBpm"
+                  ref="bpmInputEl"
+                  v-model="bpmInputValue"
+                  class="deck__bpm-input-header"
+                  type="number"
+                  min="20"
+                  step="0.01"
+                  @blur="onBpmInputBlur"
+                  @keydown.enter="onBpmInputBlur"
+                  @keydown.escape="editingBpm = false"
+                />
+                <span
+                  class="deck__bpm-value-header"
+                  :class="{ 'deck__bpm-value-header--empty': !props.deck.trackLoaded }"
+                  :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
+                  >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
+                >
+              </div>
+              <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
+            </div>
           </div>
 
-          <div class="deck__btn-row">
-            <button
-              class="deck__btn deck__btn--loop-in"
-              :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @click="props.deck.setLoopIn()"
-            >
-              <span class="deck__btn-key">{{ keybindings.LOOP_IN }}</span>
-              <span class="deck__btn-icon">{{ $t('deck.loopIn') }}</span>
-            </button>
-            <button
-              class="deck__btn deck__btn--loop-out"
-              :class="{ 'deck__btn--loop-active': props.deck.loopActive }"
-              :disabled="!props.deck.trackLoaded || props.deck.loading"
-              :tabindex="-1"
-              @click="onLoopOutClick()"
-            >
-              <span class="deck__btn-key">{{ keybindings.LOOP_OUT_EXIT }}</span>
-              <span class="deck__btn-icon">{{ loopOutLabel() }}</span>
-            </button>
+          <div class="deck__transport-cluster">
+            <div class="deck__btn-row">
+              <button
+                class="deck__btn deck__btn--nudge"
+                :class="{ 'deck__btn--active': props.deck.nudging === 'back' }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @mousedown="onNudgeStart('back')"
+                @mouseup="props.deck.nudgeEnd()"
+                @mouseleave="onNudgeMouseLeave"
+              >
+                <span class="deck__btn-key" :tabindex="-1">{{ keybindings.NUDGE_BACK }}</span>
+                <span class="deck__btn-icon">↶</span>
+              </button>
+              <button
+                class="deck__btn deck__btn--nudge"
+                :class="{ 'deck__btn--active': props.deck.nudging === 'forward' }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @mousedown="onNudgeStart('forward')"
+                @mouseup="props.deck.nudgeEnd()"
+                @mouseleave="onNudgeMouseLeave"
+              >
+                <span class="deck__btn-key">{{ keybindings.NUDGE_FORWARD }}</span>
+                <span class="deck__btn-icon">↷</span>
+              </button>
+            </div>
+
+            <div class="deck__btn-row">
+              <button
+                class="deck__btn deck__btn--cue"
+                :class="{ 'deck__btn--cueing': props.deck.cueing }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @mousedown.prevent="props.deck.cueStart()"
+                @mouseup="props.deck.cueEnd()"
+                @mouseleave="onCueMouseLeave"
+              >
+                <span class="deck__btn-key">{{ keybindings.CUE }}</span>
+                <span class="deck__btn-icon">{{ $t('deck.cue') }}</span>
+              </button>
+              <button
+                class="deck__btn deck__btn--play"
+                :class="{ 'deck__btn--playing': props.deck.playing }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @click="onTogglePlay()"
+              >
+                <span class="deck__btn-key">{{ keybindings.PLAY }}</span>
+                <span class="deck__btn-icon">{{ props.deck.playing ? '⏸' : '▶' }}</span>
+              </button>
+            </div>
+
+            <div class="deck__btn-row">
+              <button
+                class="deck__btn deck__btn--loop-in"
+                :class="{
+                  'deck__btn--loop-active': props.deck.loopActive,
+                  'deck__btn--loop-region': props.deck.loopRegion && !props.deck.loopActive
+                }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @click="props.deck.setLoopIn()"
+              >
+                <span class="deck__btn-key">{{ keybindings.LOOP_IN }}</span>
+                <span class="deck__btn-icon">{{ $t('deck.loopIn') }}</span>
+              </button>
+              <button
+                class="deck__btn deck__btn--loop-out"
+                :class="{
+                  'deck__btn--loop-active': props.deck.loopActive,
+                  'deck__btn--loop-region': props.deck.loopRegion && !props.deck.loopActive
+                }"
+                :disabled="!props.deck.trackLoaded || props.deck.loading"
+                :tabindex="-1"
+                @click="onLoopOutClick()"
+              >
+                <span class="deck__btn-key">{{ keybindings.LOOP_OUT_EXIT }}</span>
+                <span class="deck__btn-icon">{{ loopOutLabel() }}</span>
+              </button>
+            </div>
           </div>
         </div>
+      </div>
 
-        <div class="deck__pitch-wrapper">
-          <span class="deck__slider-label">-{{ settingsStore.pitchRange }}%</span>
-          <input
-            type="range"
-            class="deck__slider"
-            :min="-settingsStore.pitchRange"
-            :max="settingsStore.pitchRange"
-            step="0.01"
-            :value="-props.deck.pitchOffset"
-            orient="vertical"
-            :disabled="!props.deck.trackLoaded || props.deck.loading"
-            @input="onSliderInput"
-            @dblclick="onPitchDblClick"
-          />
-          <span class="deck__slider-label">+{{ settingsStore.pitchRange }}%</span>
-        </div>
+      <div class="deck__pitch-wrapper">
+        <span class="deck__slider-label">-{{ settingsStore.pitchRange }}</span>
+        <input
+          type="range"
+          class="deck__slider"
+          :min="-settingsStore.pitchRange"
+          :max="settingsStore.pitchRange"
+          step="0.01"
+          :value="-props.deck.pitchOffset"
+          orient="vertical"
+          :disabled="!props.deck.trackLoaded || props.deck.loading"
+          @input="onSliderInput"
+          @dblclick="onPitchDblClick"
+        />
+        <span class="deck__slider-label">+{{ settingsStore.pitchRange }}</span>
       </div>
     </div>
   </div>
@@ -223,9 +327,21 @@ const settingsStore = useSettingsStore();
 
 const props = defineProps<{
   deck: Deck;
+  compact?: boolean;
 }>();
 
 const keybindings = computed(() => settingsStore.keybindings[props.deck.id as keyof Keybindings]);
+
+// Track metadata only stores a single combined "Artist - Title" (or "Artist
+// – Title") string, not separate fields, so split it here for display.
+const ARTIST_TITLE_SEPARATOR = /\s[–-]\s/;
+const artistTitle = computed(() => {
+  const name = props.deck.trackName;
+  if (!name) return { artist: null, title: null };
+  const match = name.split(ARTIST_TITLE_SEPARATOR);
+  if (match.length < 2) return { artist: null, title: name };
+  return { artist: match[0], title: match.slice(1).join(' - ') };
+});
 
 const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
@@ -323,14 +439,18 @@ function onConfirmLoad() {
 </script>
 
 <style scoped>
+/* Root & top-level state modifiers
+   ------------------------------------------------------------------ */
 .deck {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   transition: background 0.2s;
   position: relative;
+  /* Shared by .deck__btn and .deck__compact-btn's plain hover state. */
+  --btn-hover-border: #444;
+  --btn-hover-bg: #1e1e1e;
 }
 
 .deck--playing {
@@ -340,113 +460,6 @@ function onConfirmLoad() {
 .deck--drag-over {
   outline: 2px dashed var(--deck-accent);
   outline-offset: -4px;
-}
-
-.deck__header {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6em;
-  width: 100%;
-  padding: 0.5em 0.8em;
-  border-bottom: 1px solid var(--color-border);
-  flex-shrink: 0;
-}
-
-.deck__track-info {
-  display: flex;
-  align-items: center;
-  gap: 0.4em;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.deck__label {
-  font-size: 0.9em;
-  font-weight: 700;
-  letter-spacing: 0.25em;
-  color: var(--deck-accent);
-  flex-shrink: 0;
-}
-
-.deck__status-dot {
-  width: 0.5em;
-  height: 0.5em;
-  border-radius: 50%;
-  background: var(--color-border);
-  flex-shrink: 0;
-  margin-right: 0.3em;
-  transition:
-    background 0.1s,
-    box-shadow 0.1s;
-}
-.deck__status-dot--on {
-  background: var(--color-play);
-  box-shadow: 0 0 0.5em var(--color-play);
-}
-
-.deck__track-name {
-  font-size: 0.65em;
-  color: var(--color-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.deck__bpm-header {
-  display: flex;
-  align-items: center;
-  gap: 0.25em;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.deck__bpm-value-wrap {
-  position: relative;
-  cursor: text;
-}
-
-.deck__bpm-value-header {
-  font-size: 0.85em;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--deck-accent);
-  letter-spacing: -0.01em;
-  display: block;
-}
-
-.deck__bpm-input-header {
-  position: absolute;
-  inset: 0;
-  font-size: 0.85em;
-  font-weight: 700;
-  font-family: var(--font);
-  font-variant-numeric: tabular-nums;
-  background: transparent;
-  border: none;
-  box-shadow: 0 1px 0 0 var(--deck-accent);
-  color: var(--deck-accent);
-  width: 100%;
-  padding: 0;
-  outline: none;
-  line-height: inherit;
-  appearance: textfield;
-}
-.deck__bpm-input-header::-webkit-inner-spin-button,
-.deck__bpm-input-header::-webkit-outer-spin-button {
-  display: none;
-}
-.deck__bpm-input-header::selection {
-  background: var(--deck-accent);
-  color: var(--color-bg);
-}
-
-.deck__bpm-unit-header {
-  font-size: 0.6em;
-  color: var(--color-muted);
-  letter-spacing: 0.1em;
 }
 
 .deck__loading-bar {
@@ -477,32 +490,104 @@ function onConfirmLoad() {
   }
 }
 
-.deck__drop-zone {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 1em;
-  pointer-events: none;
+/* Deck label + BPM readout
+   Shared between the normal and compact layouts. */
+.deck__label {
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--deck-accent);
+  flex-shrink: 0;
 }
 
-.deck__content {
+.deck__label--empty {
+  color: var(--color-muted);
+  opacity: 0.6;
+}
+
+.deck__bpm-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  flex-shrink: 0;
+}
+
+.deck__bpm-value-wrap {
+  position: relative;
+  cursor: text;
+}
+
+.deck__bpm-value-wrap--empty {
+  cursor: default;
+}
+
+.deck__bpm-value-header {
+  font-size: 0.8em;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--deck-accent);
+  letter-spacing: -0.01em;
+  display: block;
+}
+
+.deck__bpm-value-header--empty {
+  color: var(--color-muted);
+  opacity: 0.6;
+}
+
+.deck__bpm-input-header {
+  position: absolute;
+  inset: 0;
+  font-size: 0.8em;
+  font-weight: 700;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: none;
+  box-shadow: 0 1px 0 0 var(--deck-accent);
+  color: var(--deck-accent);
+  width: 100%;
+  padding: 0;
+  outline: none;
+  line-height: inherit;
+  appearance: textfield;
+}
+.deck__bpm-input-header::-webkit-inner-spin-button,
+.deck__bpm-input-header::-webkit-outer-spin-button {
+  display: none;
+}
+.deck__bpm-input-header::selection {
+  background: var(--deck-accent);
+  color: var(--color-bg);
+}
+
+.deck__bpm-unit-header {
+  font-size: 0.6em;
+  color: var(--color-muted);
+  letter-spacing: 0.04em;
+}
+
+/* Normal (full-size) layout
+   ------------------------------------------------------------------ */
+.deck__body {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
 }
-.deck__drop-hint {
-  color: var(--color-muted);
-  font-style: italic;
-  font-size: 1.2em;
-  opacity: 0.6;
-  text-align: center;
+
+.deck__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
 }
 
 .deck__overview {
-  padding: 0.5em 0.8em 0;
+  flex-shrink: 0;
   transition: opacity 0.3s ease;
 }
 
@@ -510,94 +595,38 @@ function onConfirmLoad() {
   opacity: 0.3;
 }
 
-.deck__controls {
+.deck__info-row {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-evenly;
   min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0.5em;
 }
 
 .deck__phase-ring {
   aspect-ratio: 1;
-  height: clamp(2rem, 0.5rem + 10cqi, 10rem);
+  height: 100%;
+  flex-shrink: 0;
+  /* Matches the waveform's SIDE_MARGIN in TrackWaveform.vue, so the ring
+     lines up with where the waveform itself starts, not the canvas edge. */
+  margin-left: 4px;
+}
+
+.deck__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+.deck__info-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.deck__transport-cluster {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
-}
-
-.deck__btn-row {
-  display: flex;
-  gap: 0.5em;
-}
-
-.deck__btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25em;
-  width: 4.5em;
-  height: 3.5em;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font-family: var(--font);
-  font-size: clamp(1em, 0.7cqi, 1.2em);
-  cursor: pointer;
-  transition:
-    background 0.1s,
-    border-color 0.1s,
-    box-shadow 0.1s;
-}
-.deck__btn:hover {
-  border-color: #444;
-  background: #1e1e1e;
-}
-.deck__btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.deck__btn-key {
-  font-size: 0.6em;
-  color: var(--color-muted);
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-}
-.deck__btn-icon {
-  font-size: 0.85em;
-}
-
-.deck__btn--nudge.deck__btn--active {
-  background: color-mix(in srgb, var(--color-nudge) 20%, transparent);
-  border-color: var(--color-nudge);
-  box-shadow: 0 0 0.8em color-mix(in srgb, var(--color-nudge) 30%, transparent);
-  color: var(--color-nudge);
-}
-.deck__btn--cue:hover {
-  border-color: var(--color-cue);
-  color: var(--color-cue);
-}
-.deck__btn--cueing {
-  border-color: var(--color-cue) !important;
-  color: var(--color-cue) !important;
-  background: color-mix(in srgb, var(--color-cue) 12%, transparent) !important;
-}
-.deck__btn--play:hover {
-  border-color: var(--deck-accent);
-  color: var(--deck-accent);
-}
-.deck__btn--play.deck__btn--playing {
-  border-color: var(--color-play);
-  color: var(--color-play);
-  background: color-mix(in srgb, var(--color-play) 8%, transparent);
-}
 .deck__q-btn {
   padding: 0 0.35em;
   height: 1.4em;
@@ -608,7 +637,7 @@ function onConfirmLoad() {
   font-family: var(--font);
   font-size: 0.65em;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   cursor: pointer;
   flex-shrink: 0;
   line-height: 1;
@@ -616,6 +645,10 @@ function onConfirmLoad() {
 .deck__q-btn--on {
   color: var(--deck-accent);
   border-color: var(--deck-accent);
+}
+.deck__q-btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
 }
 
 .deck__eject-btn {
@@ -634,32 +667,197 @@ function onConfirmLoad() {
     opacity 0.1s,
     color 0.1s;
 }
-.deck__eject-btn:hover {
+.deck__eject-btn:hover:not(:disabled) {
   opacity: 1;
   color: var(--color-fg);
 }
+.deck__eject-btn:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
 
-.deck__btn--loop-in:hover:not(:disabled),
-.deck__btn--loop-out:hover:not(:disabled) {
+/* Artist / track lines */
+.deck__track-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.deck__track-name--empty-label {
+  font-size: 0.8em;
+  color: var(--color-muted);
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.deck__track-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.8em;
+}
+
+.deck__track-line--artist {
+  flex-shrink: 0;
+  -webkit-line-clamp: 1;
+}
+
+.deck__track-line--track {
+  flex: 1;
+  -webkit-line-clamp: 3;
+}
+
+.deck__track-line-label {
+  color: var(--color-muted);
+  margin-right: 0.2em;
+}
+
+.deck__track-line-value {
+  color: var(--color-text);
+}
+
+/* Transport buttons (nudge / cue / play / loop in-out)
+   ------------------------------------------------------------------ */
+/* 2 columns x 3 rows of (near-)square buttons: shaping the whole cluster's
+   box with this ratio (the same height:100%+aspect-ratio trick already used
+   by .deck__phase-ring next to it) sizes it correctly up front, so the
+   buttons inside can just fill their row with flex:1 without fighting
+   .deck__info's greedy flex:1 for leftover width. */
+.deck__transport-cluster {
+  flex-shrink: 0;
+  aspect-ratio: 2 / 3;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deck__btn-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.deck__btn {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font);
+  font-size: 1em;
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    box-shadow 0.1s;
+}
+.deck__btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+/* Generic hover only applies when no button-specific state below is active,
+   so a state color (nudge/cue/play/loop) is never masked by this grey hover -
+   no specificity fight or !important needed. */
+.deck__btn:hover:not(
+    :disabled,
+    .deck__btn--active,
+    .deck__btn--cueing,
+    .deck__btn--playing,
+    .deck__btn--loop-active,
+    .deck__btn--loop-region
+  ) {
+  border-color: var(--btn-hover-border);
+  background: var(--btn-hover-bg);
+}
+
+.deck__btn-key {
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--color-muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.deck__btn-icon {
+  font-size: 0.75em;
+  font-weight: 600;
+}
+
+/* Nudge: colored only while actively held (mousedown/keydown) */
+.deck__btn--nudge.deck__btn--active {
+  background: color-mix(in srgb, var(--color-nudge) 20%, transparent);
+  border-color: var(--color-nudge);
+  box-shadow: 0 0 0.8em color-mix(in srgb, var(--color-nudge) 30%, transparent);
+  color: var(--color-nudge);
+}
+
+/* Cue: a hint color on hover, a stronger color while actively held */
+.deck__btn--cue:hover:not(:disabled, .deck__btn--cueing) {
+  border-color: var(--color-cue);
+  color: var(--color-cue);
+}
+.deck__btn--cueing {
+  border-color: var(--color-cue);
+  color: var(--color-cue);
+  background: color-mix(in srgb, var(--color-cue) 12%, transparent);
+}
+
+/* Play: a hint color (the deck's own accent) on hover, green while playing */
+.deck__btn--play:hover:not(:disabled, .deck__btn--playing) {
   border-color: var(--deck-accent);
   color: var(--deck-accent);
+}
+.deck__btn--play.deck__btn--playing {
+  border-color: var(--color-play);
+  color: var(--color-play);
+  background: color-mix(in srgb, var(--color-play) 8%, transparent);
+}
+
+/* Loop in/out: these are instant, non-holdable actions, so there is no
+   "currently held" hover hint. Cyan marks a defined-but-inactive loop region;
+   amber marks an actively looping region. */
+.deck__btn--loop-region {
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) 12%, transparent);
 }
 .deck__btn--loop-active {
   border-color: #ca8a04;
   color: var(--color-accent-amber);
   background: color-mix(in srgb, var(--color-accent-amber) 18%, transparent);
 }
+
+/* Pitch slider
+   ------------------------------------------------------------------ */
 .deck__pitch-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.2em;
+  height: 100%;
   flex-shrink: 0;
 }
 
 .deck__slider-label {
-  font-size: 0.75em;
+  flex-shrink: 0;
+  font-size: 0.6em;
   color: var(--color-muted);
+  pointer-events: none;
 }
 
 .deck__slider {
@@ -667,25 +865,32 @@ function onConfirmLoad() {
   appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 30px;
-  height: 16em;
+  width: 1.4em;
+  flex: 1;
+  min-height: 0;
   cursor: pointer;
   background: transparent;
   padding: 0;
 }
 
 .deck__slider::-webkit-slider-runnable-track {
-  width: 4px;
-  background: #161616;
-  border: 1px solid #2c2c2c;
-  border-radius: 2px;
+  width: 2px;
+  background-color: #161616;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    #333 0,
+    #333 1px,
+    transparent 1px,
+    transparent 10px
+  );
+  border-radius: 1px;
 }
 
 .deck__slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 28px;
-  height: 20px;
+  width: 1.4em;
+  height: 0.9em;
   background:
     repeating-linear-gradient(
       to bottom,
@@ -701,16 +906,81 @@ function onConfirmLoad() {
   border-left: 1px solid #666;
   border-right: 1px solid #666;
   cursor: grab;
-  margin-left: -14px;
+  margin-left: -0.7em;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.7);
 }
 
 .deck__slider:disabled {
-  opacity: 0.35;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 
 .deck__slider:disabled::-webkit-slider-thumb {
   cursor: default;
+}
+
+/* Compact layout (big-library mode)
+   ------------------------------------------------------------------ */
+.deck__compact {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+}
+
+.deck__compact-btn {
+  flex-shrink: 0;
+  width: 3.6em;
+  height: 1.8em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font);
+  font-size: 0.75em;
+  cursor: pointer;
+}
+.deck__compact-btn:hover:not(:disabled) {
+  border-color: var(--btn-hover-border);
+  background: var(--btn-hover-bg);
+}
+.deck__compact-btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+.deck__compact-btn--playing {
+  border-color: var(--color-play);
+  color: var(--color-play);
+  background: color-mix(in srgb, var(--color-play) 8%, transparent);
+}
+
+.deck__compact-info {
+  flex-shrink: 0;
+  width: 12em;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.deck__compact-track-name {
+  font-size: 0.65em;
+  color: var(--color-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.deck__track-name--empty {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.deck__compact-overview {
+  flex: 1;
+  min-width: 0;
 }
 </style>

@@ -3,11 +3,17 @@
     <template v-if="appModeStore.mode === 'edit'">
       <button
         class="deck-btn"
-        :class="{ 'deck-btn--loaded': deckLoaded('E') }"
+        :class="{ 'deck-btn--loaded': deckLoaded('E'), 'deck-btn--unavailable': disabled }"
         :style="{ '--btn-color': decksStore.deckE.accent }"
         :disabled="disabled || deckLoaded('E')"
         tabindex="-1"
-        title="Click to send to Edit"
+        v-tooltip="
+          deckLoaded('E')
+            ? $t('browser.sameDeck')
+            : disabled
+              ? unavailableTooltip
+              : $t('browser.sendToEdit')
+        "
         @click.stop="load('E')"
       >
         {{ decksStore.decks['E'].name }}
@@ -18,11 +24,17 @@
         v-for="deckId in DECKS_DISPOSITION"
         :key="deckId"
         class="deck-btn"
-        :class="{ 'deck-btn--loaded': deckLoaded(deckId) }"
+        :class="{ 'deck-btn--loaded': deckLoaded(deckId), 'deck-btn--unavailable': disabled }"
         :style="{ '--btn-color': decksStore.decks[deckId].accent }"
         :disabled="disabled || deckLoaded(deckId)"
         tabindex="-1"
-        :title="`Click to send to Deck ${deckId}`"
+        v-tooltip="
+          deckLoaded(deckId)
+            ? $t('browser.sameDeck')
+            : disabled
+              ? unavailableTooltip
+              : $t('browser.sendToDeck', { deckId })
+        "
         @click.stop="load(deckId)"
       >
         {{ decksStore.decks[deckId].name }}
@@ -32,6 +44,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
@@ -39,7 +53,12 @@ import { useAppModeStore } from '@renderer/stores/appMode';
 const props = defineProps<{
   path: string;
   disabled?: boolean;
+  unavailableTooltip?: string;
 }>();
+
+const { t } = useI18n();
+
+const unavailableTooltip = computed(() => props.unavailableTooltip ?? t('browser.analyzeFirst'));
 
 const decksStore = useDecksStore();
 const appModeStore = useAppModeStore();
@@ -93,7 +112,12 @@ function load(deckId: string) {
 }
 
 .deck-btn:disabled {
-  opacity: 0.35;
+  opacity: var(--disabled-opacity);
   cursor: default;
+}
+
+.deck-btn--unavailable {
+  border-style: dashed;
+  cursor: not-allowed;
 }
 </style>

@@ -14,6 +14,7 @@
     <EditView v-if="appMode.mode === 'edit'" class="app__view" :deck="decksStore.deckE" />
     <Performance v-else-if="appMode.mode === 'performance'" class="app__view" />
     <Session v-else-if="appMode.mode === 'session'" class="app__view" />
+    <Tooltip />
   </div>
 </template>
 
@@ -35,6 +36,7 @@ import Performance from '@renderer/components/performance/Performance.vue';
 import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import Tooltip from '@renderer/components/Tooltip.vue';
 
 const { t } = useI18n();
 const decksStore = useDecksStore();
