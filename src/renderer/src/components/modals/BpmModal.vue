@@ -3,6 +3,7 @@
     :open="open"
     :title="$t('bpmModal.title')"
     :confirm-label="$t('bpmModal.confirmLabel')"
+    :auto-focus-el="inputEl"
     @confirm="submit"
     @cancel="emit('cancel')"
   >
@@ -15,7 +16,6 @@
       step="0.1"
       :placeholder="$t('bpmModal.placeholder')"
       @keydown.enter="submit"
-      @keydown.escape="emit('cancel')"
     />
   </Modal>
 </template>

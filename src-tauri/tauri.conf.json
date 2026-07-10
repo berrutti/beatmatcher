@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Beatmatcher",
-  "version": "6.11.1",
+  "version": "7.0.0",
   "identifier": "com.berrutti.beatmatcher",
   "build": {
     "frontendDist": "../dist-tauri",
@@ -15,7 +15,7 @@
         "title": "Beatmatcher",
         "width": 1360,
         "height": 765,
-        "minWidth": 960,
+        "minWidth": 1300,
         "minHeight": 540,
         "resizable": true,
         "fullscreen": false,

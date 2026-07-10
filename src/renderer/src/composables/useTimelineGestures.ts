@@ -639,7 +639,14 @@ export function useTimelineGestures(deps: GestureDeps) {
         clientX: event.clientX,
         clientY: event.clientY,
         nudge: hit.target === 'nudgeSpan' ? (hit.data as NudgeSpan) : null,
-        bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(point.x)) : null
+        bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(point.x)) : null,
+        split:
+          hit.target === 'clip'
+            ? {
+                block: (hit.data as { block: TransportBlock }).block,
+                ms: deps.getVc().xToMs(point.x)
+              }
+            : null
       });
     }
   }

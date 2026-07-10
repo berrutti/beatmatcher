@@ -78,7 +78,7 @@ export function buildScene(input: SceneInput): SceneResult {
   const masterHeight = MASTER_ROW_H;
   const rows = computeRowLayout(deckSpecs, masterTop + masterHeight, input.waveformHeight);
 
-  const items: SceneItem[] = [tickRowItem()];
+  const items: SceneItem[] = [];
 
   items.push(masterItem(masterTop, masterHeight, input.masterLanes));
 
@@ -142,6 +142,10 @@ export function buildScene(input: SceneInput): SceneResult {
   );
 
   items.push(frameGuttersItem());
+
+  // Drawn last so vertical scroll (which can push the master row's top above
+  // TICK_H, see masterTop above) never paints over the ruler.
+  items.push(tickRowItem());
 
   const contentHeight = rows.reduce((sum, row) => sum + row.height, 0) + masterHeight;
 

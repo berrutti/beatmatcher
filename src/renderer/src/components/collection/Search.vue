@@ -58,7 +58,8 @@ function onPointerDown(e: PointerEvent) {
   color: var(--color-text);
   font-family: var(--font);
   font-size: 0.8em;
-  padding: 0.25em 1.6em 0.25em 0.5em;
+  height: 22px;
+  padding: 0 1.6em 0 0.5em;
   border-radius: 3px;
   outline: none;
   width: 8em;

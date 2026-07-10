@@ -20,7 +20,7 @@
     <button
       class="appbar__settings-btn"
       tabindex="-1"
-      :title="$t('appBar.settingsTitle')"
+      v-tooltip="$t('appBar.settingsTitle')"
       @click="settingsStore.isOpen = true"
     >
       {{ $t('appBar.settingsBtn') }}
@@ -109,12 +109,12 @@ async function onConfirm() {
   height: var(--appbar-h);
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 4px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg);
   font-family: var(--font);
   flex-shrink: 0;
-  gap: 6px;
+  gap: 4px;
   position: relative;
   z-index: 100;
 }
@@ -129,7 +129,7 @@ async function onConfirm() {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   border-radius: 3px;
   cursor: pointer;
@@ -139,6 +139,7 @@ async function onConfirm() {
   padding: 0 8px;
   flex-shrink: 0;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .appbar__settings-btn:hover {

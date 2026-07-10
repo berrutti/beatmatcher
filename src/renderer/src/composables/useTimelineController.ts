@@ -27,6 +27,7 @@ export type DeckMenu = {
   y: number;
   nudge: NudgeSpan | null;
   bpm: BpmContext | null;
+  split: { block: TransportBlock; ms: number } | null;
 };
 export type LanePicker = { deck: string; x: number; y: number };
 export type FilterMenu = { deck: string; span: FilterActiveSpan; x: number; y: number };
@@ -203,6 +204,9 @@ export function useTimelineController(opts: {
         opts.requestRender();
         await editStore.commitRangesDelete(opts.getClips(), intent.ranges);
         break;
+      case 'clip.split':
+        await editStore.commitClipSplit(opts.getClips(), intent.block, intent.ms);
+        break;
       case 'clip.select':
         applySelection([clickSelectionRef(intent.block, intent.ms)], intent.additive);
         filterSelection.value = null;
@@ -278,7 +282,8 @@ export function useTimelineController(opts: {
           x: intent.clientX,
           y: intent.clientY,
           nudge: intent.nudge,
-          bpm: intent.bpm
+          bpm: intent.bpm,
+          split: intent.split
         };
         break;
       case 'menu.filterRegion':

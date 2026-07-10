@@ -45,6 +45,13 @@
       >
         {{ $t('session.setBpmFromHere') }}
       </button>
+      <button
+        v-if="editStore.editMode && deckMenu.split"
+        class="lane-menu__item"
+        @click="onSplitClip"
+      >
+        {{ $t('session.splitClip') }}
+      </button>
       <button class="lane-menu__item" @click="onToggleMute">
         {{ $t('session.mute') }}
         <span class="lane-menu__check">{{
@@ -370,6 +377,13 @@ function onDeleteNudge(): void {
   editStore.deleteNudge(menu.deck, menu.nudge.startMs, menu.nudge.endMs).catch(() => {});
 }
 
+function onSplitClip(): void {
+  const menu = deckMenu.value;
+  deckMenu.value = null;
+  if (!menu?.split) return;
+  controller.handleIntent({ type: 'clip.split', block: menu.split.block, ms: menu.split.ms });
+}
+
 function onToggleMute(): void {
   if (deckMenu.value) sessionStore.toggleMute(deckMenu.value.deck);
   deckMenu.value = null;
@@ -685,8 +699,9 @@ watch(
   color: var(--color-text);
   font-family: var(--font);
   font-size: 0.75rem;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 

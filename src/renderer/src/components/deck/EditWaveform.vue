@@ -132,7 +132,7 @@ let cachedPtsPerSec = 0;
 let waveImgBitmap: ImageBitmap | null = null;
 let bitmapForPeaks: Float32Array | null = null;
 let bitmapCanvasH = 0;
-let bitmapPixelW = 0;
+let bitmapScreenPxPerSec = 0;
 let bitmapBuildInFlight = false;
 
 function requiredPtsPerSec(): number {
@@ -262,14 +262,21 @@ function ensureBitmap(canvasW: number, canvasH: number) {
 
   const sameSource = bitmapForPeaks === cachedPeaks;
   const sameSize = bitmapCanvasH === canvasH;
-  const closeWidth = sameSize && Math.abs(bitmapPixelW - bitmapW) <= bitmapW * 0.15;
-  if (sameSource && sameSize && closeWidth) return;
+  // The bitmap is always stretched to the current canvas size at draw time
+  // (see drawWaveform), so it can never visually desync from the live beat
+  // grid. This tolerance only controls how eagerly we recompute it at a
+  // sharper resolution; without it, continuous resizing would rebuild (and
+  // slightly re-quantize) the waveform on every frame, causing it to shimmer.
+  const sameResolution =
+    bitmapScreenPxPerSec > 0 &&
+    Math.abs(bitmapScreenPxPerSec - screenPxPerSec) <= bitmapScreenPxPerSec * 0.15;
+  if (sameSource && sameSize && sameResolution) return;
   if (bitmapBuildInFlight) return;
 
   const peaksSnapshot = cachedPeaks;
   bitmapForPeaks = cachedPeaks;
   bitmapCanvasH = canvasH;
-  bitmapPixelW = bitmapW;
+  bitmapScreenPxPerSec = screenPxPerSec;
   bitmapBuildInFlight = true;
   buildBitmap(peaksSnapshot, bitmapW, canvasH);
 }
@@ -651,8 +658,8 @@ watch(
 
 .waveform__empty-text {
   color: var(--color-muted);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
+  font-size: 0.7em;
+  letter-spacing: 0.02em;
   opacity: 0.6;
 }
 
@@ -665,6 +672,7 @@ watch(
 
 .waveform__canvas {
   flex: 1;
+  min-height: 0;
   width: 100%;
   display: block;
   cursor: crosshair;
@@ -673,18 +681,18 @@ watch(
 .waveform__controls {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 4px;
+  padding: 4px;
   border-top: 1px solid #1e1e1e;
   background: #0d0d0d;
 }
 
 .waveform__bpm-readout {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 700;
   color: var(--accent);
   margin-left: auto;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
 }
 
 .waveform__zoom {
@@ -702,8 +710,8 @@ watch(
   background: #1a1a1a;
   border: 1px solid #2a2a2a;
   color: #aaa;
-  font-family: var(--font-mono);
-  font-size: 1rem;
+  font-family: var(--font);
+  font-size: 1em;
   width: 26px;
   height: 26px;
   border-radius: 3px;
@@ -721,8 +729,8 @@ watch(
 }
 
 .waveform__zoom-label {
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
+  font-size: 0.65em;
+  letter-spacing: 0.04em;
   color: #555;
   min-width: 24px;
   text-align: center;

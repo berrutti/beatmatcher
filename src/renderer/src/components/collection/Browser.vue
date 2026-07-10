@@ -25,28 +25,30 @@
           >{{ filteredTracks.length }}/{{ store.tracks.length }}</span
         >
         <Search v-model="searchQuery" />
-        <button
-          tabindex="-1"
-          v-if="store.hasPending"
-          class="collection__header-btn"
-          @click="store.analyzeAll()"
-        >
-          {{ $t('browser.analyzeAll') }}
-        </button>
-        <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">
-          {{ $t('browser.addFiles') }}
-        </button>
-        <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">
-          {{ $t('browser.addFolder') }}
-        </button>
-        <button
-          tabindex="-1"
-          v-if="store.tracks.length > 0"
-          class="collection__header-btn collection__header-btn--muted"
-          @click="pendingClear = true"
-        >
-          {{ $t('browser.clear') }}
-        </button>
+        <div class="collection__header-actions">
+          <button
+            tabindex="-1"
+            v-if="store.hasPending"
+            class="collection__header-btn"
+            @click="store.analyzeAll()"
+          >
+            {{ $t('browser.analyzeAll') }}
+          </button>
+          <button tabindex="-1" class="collection__header-btn" @click="openFileDialog">
+            {{ $t('browser.addFiles') }}
+          </button>
+          <button tabindex="-1" class="collection__header-btn" @click="openFolderDialog">
+            {{ $t('browser.addFolder') }}
+          </button>
+          <button
+            tabindex="-1"
+            v-if="store.tracks.length > 0"
+            class="collection__header-btn collection__header-btn--muted"
+            @click="pendingClear = true"
+          >
+            {{ $t('browser.clear') }}
+          </button>
+        </div>
       </template>
 
       <template v-else-if="activePlaylistId === null">
@@ -80,230 +82,54 @@
       </template>
     </div>
 
-    <div
-      v-if="tab === 'all'"
-      :ref="setAllTracksScrollEl"
-      class="collection__body"
-      :style="store.draggingPath ? { overflowY: 'hidden' } : {}"
-      @scroll.passive="onAllTracksScroll"
-    >
-      <div v-if="store.tracks.length === 0" class="collection__empty">
-        {{ $t('browser.dropHint') }}
-      </div>
-      <div v-else-if="sortedFilteredTracks.length === 0" class="collection__empty">
-        {{ $t('browser.noResults') }}
-      </div>
-      <div v-else class="collection__list">
-        <div :ref="setSortBarEl" class="collection__sort-bar">
-          <button
-            tabindex="-1"
-            class="collection__sort-btn collection__sort-btn--title"
-            @click="toggleSort('title')"
-          >
-            {{ $t('browser.colTitle')
-            }}{{ sortField === 'title' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
-          </button>
-          <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('bpm')">
-            {{ $t('browser.colBpm')
-            }}{{ sortField === 'bpm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
-          </button>
-          <button tabindex="-1" class="collection__sort-btn" @click="toggleSort('added')">
-            {{ $t('browser.colAdded')
-            }}{{ sortField === 'added' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '' }}
-          </button>
-        </div>
-        <div
-          v-if="trackRowRange.topSpacerHeight > 0"
-          :style="{ height: `${trackRowRange.topSpacerHeight}px` }"
-        />
-        <div
-          v-for="track in visibleTracks"
-          :key="track.id"
-          class="collection__item"
-          :class="[
-            `collection__item--${track.status}`,
-            { 'collection__item--played': track.path && mixerStore.playedPaths.has(track.path) }
-          ]"
-          @pointerdown="onItemPointerDown($event, track)"
-          @dblclick="onTrackDblClick(track)"
-          @contextmenu.prevent="openContextMenu($event, track.id)"
-        >
-          <span class="collection__item-name" :title="track.title ?? displayName(track.name)">{{
-            track.title ?? displayName(track.name)
-          }}</span>
-          <span v-if="store.getBpm(track) !== null" class="collection__item-bpm">
-            {{ store.getBpm(track)?.toFixed(1) }} BPM
-          </span>
-          <span v-else-if="track.status === 'analyzing'" class="collection__item-tag">
-            {{ $t('browser.detecting') }}
-          </span>
-          <span
-            v-else-if="track.status === 'error'"
-            class="collection__item-tag collection__item-tag--error"
-            >{{ $t('browser.statusError') }}</span
-          >
-          <span
-            v-if="track.status === 'missing'"
-            class="collection__item-tag collection__item-tag--missing"
-            >{{ $t('browser.statusMissing') }}</span
-          >
-          <Buttons v-if="track.status === 'ready' && track.path" :path="track.path ?? ''" />
-          <button
-            v-if="track.status === 'idle'"
-            class="collection__item-btn"
-            tabindex="-1"
-            @click.stop="store.analyzeTrack(track.id)"
-          >
-            {{ $t('browser.analyze') }}
-          </button>
-          <button
-            v-if="track.status === 'error'"
-            class="collection__item-btn"
-            tabindex="-1"
-            @click.stop="openBpmModal(track.id)"
-          >
-            {{ $t('browser.setBpm') }}
-          </button>
-          <button
-            v-if="track.status === 'missing'"
-            class="collection__item-btn"
-            tabindex="-1"
-            @click.stop="store.locateMissingTracks()"
-          >
-            {{ $t('browser.locate') }}
-          </button>
-          <button
-            class="collection__item-remove"
-            tabindex="-1"
-            @click.stop="pendingRemoveTrackId = track.id"
-          >
-            ✕
-          </button>
-        </div>
-        <div
-          v-if="trackRowRange.bottomSpacerHeight > 0"
-          :style="{ height: `${trackRowRange.bottomSpacerHeight}px` }"
-        />
-      </div>
-    </div>
+    <AllTracksView v-if="tab === 'all'" :tracks="filteredTracks" />
 
     <div v-else-if="activePlaylistId === null" class="collection__body">
       <div v-if="store.playlists.length === 0" class="collection__empty">
         {{ $t('browser.noPlaylists') }}
       </div>
-      <div v-else class="collection__list">
-        <div
+      <!-- Fixed, non-resizable, non-reorderable columns: this list never
+           grows past title + track count, so column customization would be
+           pure overhead. -->
+      <Table v-else>
+        <template #colgroup>
+          <col />
+          <col :style="{ width: PLAYLIST_TRACK_COUNT_WIDTH + 'px' }" />
+          <col :style="{ width: TABLE_CHROME_WIDTH.remove + 'px' }" />
+        </template>
+        <template #header>
+          <TableHeaderCell>{{ $t('browser.colTitle') }}</TableHeaderCell>
+          <TableHeaderCell>{{ $t('browser.colTracks') }}</TableHeaderCell>
+          <TableHeaderCell></TableHeaderCell>
+        </template>
+        <tr
           v-for="playlist in store.playlists"
           :key="playlist.id"
-          class="collection__item collection__item--playlist"
+          class="collection__row collection__item--playlist"
           @click="openPlaylist(playlist.id)"
         >
-          <span class="collection__item-name">{{ playlist.name }}</span>
-          <span class="collection__item-bpm">{{
-            $t('browser.trackCount', playlist.paths.length)
-          }}</span>
-          <button
-            class="collection__item-remove"
-            tabindex="-1"
-            @click.stop="pendingDeletePlaylistId = playlist.id"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div v-else class="collection__body collection__body--playlist">
-      <div ref="playlistListEl" class="collection__list">
-        <div v-if="playlistItems.length === 0" class="collection__empty" style="height: 60px">
-          {{ $t('browser.emptyPlaylist') }}
-        </div>
-        <div
-          v-for="(item, idx) in playlistItems"
-          :key="item.path"
-          class="collection__item collection__playlist-track"
-          :class="{
-            'collection__playlist-track--dragging': playlistDragFromIdx === idx,
-            'collection__item--played': mixerStore.playedPaths.has(item.path)
-          }"
-          @pointerdown="onPlaylistTrackPointerDown($event, idx)"
-          @dblclick="onTrackDblClickByPath(item.path)"
-          @contextmenu.prevent="item.entry && openContextMenu($event, item.entry.id)"
-        >
-          <span class="collection__playlist-num">{{ idx + 1 }}</span>
-          <span class="collection__playlist-grip">⠿</span>
-          <span class="collection__item-name" :title="item.label">{{ item.label }}</span>
-          <span v-if="item.bpm !== null" class="collection__item-bpm"
-            >{{ item.bpm.toFixed(1) }} BPM</span
-          >
-          <Buttons
-            :path="item.path"
-            :disabled="item.entry === null || item.entry.status !== 'ready'"
-          />
-          <button
-            class="collection__item-remove"
-            tabindex="-1"
-            @click.stop="removeFromActivePlaylist(item.path)"
-          >
-            ✕
-          </button>
-        </div>
-        <div
-          v-if="showDropLine"
-          class="collection__drop-line"
-          :style="{ top: `${playlistDropY - 1}px` }"
-        />
-      </div>
-
-      <div class="collection__add-section">
-        <button
-          class="collection__add-toggle"
-          tabindex="-1"
-          @click="showAddSection = !showAddSection"
-        >
-          {{ showAddSection ? '▾' : '▸' }} {{ $t('browser.addTracks') }}
-        </button>
-        <div v-if="showAddSection" class="collection__add-body">
-          <Search v-model="addSectionSearch" :full-width="true" />
-          <div v-if="addableTracks.length === 0" class="collection__empty" style="height: 40px">
-            {{
-              store.tracks.filter((t) => t.status === 'ready').length === 0
-                ? $t('browser.noAnalyzed')
-                : $t('browser.allInPlaylist')
-            }}
-          </div>
-          <div
-            v-for="track in addableTracks"
-            :key="track.id"
-            class="collection__item"
-            style="cursor: default"
-          >
-            <span class="collection__item-name" :title="track.title ?? displayName(track.name)">{{
-              track.title ?? displayName(track.name)
-            }}</span>
-            <span v-if="store.getBpm(track) !== null" class="collection__item-bpm">
-              {{ store.getBpm(track)?.toFixed(1) }} BPM
-            </span>
+          <td class="collection__td collection__td--title">
+            <span class="collection__item-name" v-tooltip="playlist.name">{{ playlist.name }}</span>
+          </td>
+          <td class="collection__td collection__td--bpm">
+            {{ $t('browser.trackCount', playlist.paths.length) }}
+          </td>
+          <td class="collection__td collection__td--remove">
             <button
+              class="collection__item-remove"
               tabindex="-1"
-              class="collection__item-btn"
-              @click="
-                track.path && activePlaylistId && store.addToPlaylist(activePlaylistId, track.path)
-              "
+              @click.stop="pendingDeletePlaylistId = playlist.id"
             >
-              +
+              ✕
             </button>
-          </div>
-        </div>
-      </div>
+          </td>
+          <td class="collection__td"></td>
+        </tr>
+      </Table>
     </div>
 
-    <BpmModal
-      :open="bpmModalTrackId !== null"
-      :current-bpm="null"
-      @submit="onBpmSubmit"
-      @cancel="bpmModalTrackId = null"
-    />
+    <PlaylistDetailView v-else :playlist-id="activePlaylistId" />
+
     <ConfirmModal
       :open="pendingClear"
       :title="$t('browser.clearTitle')"
@@ -320,82 +146,28 @@
       @confirm="confirmDeletePlaylist"
       @cancel="pendingDeletePlaylistId = null"
     />
-    <ConfirmModal
-      :open="pendingRemoveTrackId !== null"
-      :title="$t('browser.removeTrackTitle')"
-      :body="$t('browser.removeTrackBody')"
-      :confirm-label="$t('browser.remove')"
-      @confirm="confirmRemoveTrack"
-      @cancel="pendingRemoveTrackId = null"
-    />
-
-    <Teleport to="body">
-      <div
-        v-if="contextMenu"
-        ref="contextMenuEl"
-        class="context-menu"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-        @click.stop
-      >
-        <button tabindex="-1" class="context-menu__item" @click="onContextMenuReanalyze">
-          {{ $t('browser.recalcBpm') }}
-        </button>
-        <div
-          v-if="store.playlists.length > 0"
-          class="context-menu__item context-menu__item--sub"
-          @mouseenter="onSubEnter"
-        >
-          <span>{{ $t('browser.addToPlaylist') }}</span>
-          <span class="context-menu__arrow">▶</span>
-          <div class="context-menu__submenu" :class="{ 'context-menu__submenu--flip': subFlipped }">
-            <button
-              tabindex="-1"
-              v-for="playlist in store.playlists"
-              :key="playlist.id"
-              class="context-menu__item"
-              @click="onContextMenuAddToPlaylist(playlist.id)"
-            >
-              {{ playlist.name }}
-            </button>
-          </div>
-        </div>
-        <div v-else class="context-menu__item context-menu__item--disabled">
-          <span>{{ $t('browser.addToPlaylist') }}</span>
-          <span class="context-menu__item-hint">{{ $t('browser.noPlaylistsShort') }}</span>
-        </div>
-      </div>
-      <div
-        v-if="contextMenu"
-        class="context-menu__backdrop"
-        @click="closeContextMenu"
-        @contextmenu.prevent="closeContextMenu"
-      />
-    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useDecksStore } from '@renderer/stores/decks';
-import { useAppModeStore } from '@renderer/stores/appMode';
-import { useMixerStore } from '@renderer/stores/mixer';
-import type { CollectionEntry } from '@renderer/stores/collection';
-import BpmModal from '@renderer/components/modals/BpmModal.vue';
-import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import { matchesTrackQuery } from '@renderer/utils/trackSearch';
+import { displayName } from '@renderer/utils/trackDisplay';
+import { TABLE_CHROME_WIDTH } from '@renderer/composables/useColumnResize';
 import Search from '@renderer/components/collection/Search.vue';
-import Buttons from '@renderer/components/collection/Buttons.vue';
+import Table from '@renderer/components/collection/Table.vue';
+import TableHeaderCell from '@renderer/components/collection/TableHeaderCell.vue';
+import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import AllTracksView from '@renderer/components/collection/AllTracksView.vue';
+import PlaylistDetailView from '@renderer/components/collection/PlaylistDetailView.vue';
 
 const store = useCollectionStore();
-const decksStore = useDecksStore();
-const appModeStore = useAppModeStore();
-const mixerStore = useMixerStore();
 
 const isDragOver = ref(false);
 const pendingClear = ref(false);
-const bpmModalTrackId = ref<string | null>(null);
 const searchQuery = ref('');
 
 const tab = ref<'all' | 'playlists'>('all');
@@ -403,232 +175,27 @@ const activePlaylistId = ref<string | null>(null);
 const renamingPlaylist = ref(false);
 const renameValue = ref('');
 const renameInputEl = ref<HTMLInputElement | null>(null);
-const showAddSection = ref(false);
-const addSectionSearch = ref('');
 
-const playlistListEl = ref<HTMLElement | null>(null);
-const playlistDragFromIdx = ref<number | null>(null);
-const playlistDropIdx = ref<number | null>(null);
-const playlistDropY = ref(0);
-
-type SortField = 'title' | 'bpm' | 'added';
-const sortField = ref<SortField>('added');
-const sortDir = ref<'asc' | 'desc'>('asc');
 const pendingDeletePlaylistId = ref<string | null>(null);
-const pendingRemoveTrackId = ref<string | null>(null);
 
 const pendingDeletePlaylistName = computed(
   () => store.playlists.find((p) => p.id === pendingDeletePlaylistId.value)?.name ?? ''
 );
 
-type ContextMenu = { trackId: string; x: number; y: number };
-const contextMenu = ref<ContextMenu | null>(null);
-const contextMenuEl = ref<HTMLElement | null>(null);
-const subFlipped = ref(false);
-
-async function openContextMenu(e: MouseEvent, trackId: string) {
-  contextMenu.value = { trackId, x: e.clientX, y: e.clientY };
-  await nextTick();
-  if (!contextMenuEl.value || !contextMenu.value) return;
-  const rect = contextMenuEl.value.getBoundingClientRect();
-  const x = rect.right > window.innerWidth ? e.clientX - rect.width : e.clientX;
-  const y = rect.bottom > window.innerHeight ? e.clientY - rect.height : e.clientY;
-  contextMenu.value = { ...contextMenu.value, x, y };
-}
-
-function onSubEnter(e: MouseEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  const submenuHeight = store.playlists.length * 32 + 8;
-  subFlipped.value = rect.top + submenuHeight > window.innerHeight;
-}
-
-function closeContextMenu() {
-  contextMenu.value = null;
-}
-
-function onContextMenuReanalyze() {
-  if (contextMenu.value) store.reanalyzeTrack(contextMenu.value.trackId);
-  closeContextMenu();
-}
-
-function onContextMenuAddToPlaylist(playlistId: string) {
-  const track = store.tracks.find((t) => t.id === contextMenu.value?.trackId);
-  if (track?.path) store.addToPlaylist(playlistId, track.path);
-  closeContextMenu();
-}
-
-function toggleSort(field: SortField) {
-  if (sortField.value === field) {
-    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc';
-  } else {
-    sortField.value = field;
-    sortDir.value = 'asc';
-  }
-}
-
 const filteredTracks = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase();
-  if (!q) return store.tracks;
-  return store.tracks.filter((t) => {
-    const label = t.title ?? displayName(t.name);
-    return label.toLowerCase().includes(q);
-  });
+  const q = searchQuery.value;
+  if (!q.trim()) return store.tracks;
+  return store.tracks.filter((t) => matchesTrackQuery(t, displayName(t.name), q));
 });
 
-const sortedFilteredTracks = computed(() => {
-  const tracks = filteredTracks.value;
-  if (sortField.value === 'added') {
-    return sortDir.value === 'asc' ? [...tracks] : [...tracks].reverse();
-  }
-  return [...tracks].sort((a, b) => {
-    let aVal: string | number | null;
-    let bVal: string | number | null;
-    if (sortField.value === 'title') {
-      aVal = (a.title ?? displayName(a.name)).toLowerCase();
-      bVal = (b.title ?? displayName(b.name)).toLowerCase();
-    } else {
-      aVal = store.getBpm(a);
-      bVal = store.getBpm(b);
-    }
-    if (aVal === null && bVal === null) return 0;
-    if (aVal === null) return 1;
-    if (bVal === null) return -1;
-    const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-    return sortDir.value === 'asc' ? cmp : -cmp;
-  });
-});
-
-// Large collections (hundreds of tracks) made every row a permanent DOM node,
-// so resizing the window forced a full flex/text-ellipsis layout pass over
-// all of them every frame, even the ones scrolled out of view. Only rows
-// within (or near) the visible scroll area are mounted; the rest are
-// represented by two spacer divs sized to the height they'd otherwise take up.
-const TRACK_ROW_HEIGHT = 32; // must match .collection__item height in <style>
-const TRACK_ROW_BUFFER = 6;
-
-type TemplateRefEl = Element | ComponentPublicInstance | null;
-
-const allTracksScrollEl = ref<HTMLElement | null>(null);
-const allTracksScrollTop = ref(0);
-const allTracksViewportHeight = ref(0);
-const sortBarHeight = ref(0);
-let allTracksResizeObserver: ResizeObserver | null = null;
-
-function setAllTracksScrollEl(el: TemplateRefEl) {
-  allTracksResizeObserver?.disconnect();
-  allTracksResizeObserver = null;
-  const scrollEl = el instanceof HTMLElement ? el : null;
-  allTracksScrollEl.value = scrollEl;
-  if (!scrollEl) return;
-  allTracksViewportHeight.value = scrollEl.clientHeight;
-  allTracksResizeObserver = new ResizeObserver(() => {
-    allTracksViewportHeight.value = scrollEl.clientHeight;
-  });
-  allTracksResizeObserver.observe(scrollEl);
-}
-
-function setSortBarEl(el: TemplateRefEl) {
-  sortBarHeight.value = el instanceof HTMLElement ? el.offsetHeight : 0;
-}
-
-function onAllTracksScroll() {
-  if (allTracksScrollEl.value) allTracksScrollTop.value = allTracksScrollEl.value.scrollTop;
-}
-
-onUnmounted(() => allTracksResizeObserver?.disconnect());
-
-const trackRowRange = computed(() => {
-  const total = sortedFilteredTracks.value.length;
-  const scrollWithinRows = Math.max(0, allTracksScrollTop.value - sortBarHeight.value);
-  const firstVisible = Math.floor(scrollWithinRows / TRACK_ROW_HEIGHT);
-  const visibleRowCount = Math.ceil(allTracksViewportHeight.value / TRACK_ROW_HEIGHT);
-  const start = Math.max(0, firstVisible - TRACK_ROW_BUFFER);
-  const end = Math.min(total, firstVisible + visibleRowCount + TRACK_ROW_BUFFER);
-  return {
-    start,
-    end,
-    topSpacerHeight: start * TRACK_ROW_HEIGHT,
-    bottomSpacerHeight: (total - end) * TRACK_ROW_HEIGHT
-  };
-});
-
-const visibleTracks = computed(() =>
-  sortedFilteredTracks.value.slice(trackRowRange.value.start, trackRowRange.value.end)
-);
-
-const activePlaylist = computed(
-  () => store.playlists.find((p) => p.id === activePlaylistId.value) ?? null
-);
-
-type PlaylistItem = {
-  path: string;
-  entry: CollectionEntry | null;
-  label: string;
-  bpm: number | null;
-};
-
-const playlistItems = computed((): PlaylistItem[] => {
-  const playlist = activePlaylist.value;
-  if (!playlist) return [];
-  return playlist.paths.map((path) => {
-    const entry = store.tracks.find((t) => t.path === path) ?? null;
-    const label = entry
-      ? (entry.title ?? displayName(entry.name))
-      : (path.split('/').pop() ?? path);
-    const bpm = entry ? store.getBpm(entry) : null;
-    return { path, entry, label, bpm };
-  });
-});
-
-const addableTracks = computed(() => {
-  const playlist = activePlaylist.value;
-  if (!playlist) return [];
-  const q = addSectionSearch.value.trim().toLowerCase();
-  return store.tracks.filter((t) => {
-    if (!t.path || t.status !== 'ready') return false;
-    if (playlist.paths.includes(t.path)) return false;
-    if (!q) return true;
-    const label = t.title ?? displayName(t.name);
-    return label.toLowerCase().includes(q);
-  });
-});
-
-const showDropLine = computed((): boolean => {
-  if (playlistDragFromIdx.value === null || playlistDropIdx.value === null) return false;
-  if (playlistDropIdx.value === playlistDragFromIdx.value) return false;
-  if (playlistDropIdx.value === playlistDragFromIdx.value + 1) return false;
-  return true;
-});
-
-function openBpmModal(id: string) {
-  bpmModalTrackId.value = id;
-}
-
-function onBpmSubmit(bpm: number) {
-  if (bpmModalTrackId.value) store.setBpm(bpmModalTrackId.value, bpm);
-  bpmModalTrackId.value = null;
-}
-
-function displayName(filename: string): string {
-  return filename.replace(/\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i, '');
-}
-
-function loadToDeck(path: string, deckId: string) {
-  window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path } }));
-}
-
-function removeFromActivePlaylist(path: string) {
-  if (activePlaylistId.value) store.removeFromPlaylist(activePlaylistId.value, path);
-}
+// The playlist-overview table has no column customization system at all;
+// its track-count column is unrelated to the pinned bpm width used
+// elsewhere even though it happens to reuse the same value.
+const PLAYLIST_TRACK_COUNT_WIDTH = 55;
 
 function confirmClear() {
   store.clearAll();
   pendingClear.value = false;
-}
-
-function confirmRemoveTrack() {
-  if (pendingRemoveTrackId.value) store.removeTrack(pendingRemoveTrackId.value);
-  pendingRemoveTrackId.value = null;
 }
 
 function confirmDeletePlaylist() {
@@ -641,25 +208,12 @@ function confirmDeletePlaylist() {
   pendingDeletePlaylistId.value = null;
 }
 
-function onTrackDblClick(track: CollectionEntry) {
-  if (track.status !== 'ready' || !track.path) return;
-  const target = decksStore.bestAvailableDeck(appModeStore.mode === 'edit');
-  if (!target) return;
-  loadToDeck(track.path, target);
-}
-
-function onTrackDblClickByPath(path: string) {
-  const entry = store.tracks.find((t) => t.path === path);
-  if (!entry || entry.status !== 'ready') return;
-  const target = decksStore.bestAvailableDeck(appModeStore.mode === 'edit');
-  if (!target) return;
-  loadToDeck(path, target);
-}
+const activePlaylist = computed(
+  () => store.playlists.find((p) => p.id === activePlaylistId.value) ?? null
+);
 
 function openPlaylist(id: string) {
   activePlaylistId.value = id;
-  showAddSection.value = false;
-  addSectionSearch.value = '';
   renamingPlaylist.value = false;
 }
 
@@ -667,7 +221,6 @@ async function onCreatePlaylist() {
   store.createPlaylist(`Playlist ${store.playlists.length + 1}`);
   const created = store.playlists[store.playlists.length - 1];
   activePlaylistId.value = created.id;
-  showAddSection.value = false;
   renameValue.value = created.name;
   renamingPlaylist.value = true;
   await nextTick();
@@ -693,63 +246,6 @@ function confirmRename() {
 
 function cancelRename() {
   renamingPlaylist.value = false;
-}
-
-function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
-  if (e.button !== 0) return;
-  if ((e.target as HTMLElement).closest('button')) return;
-
-  const playlist = activePlaylist.value;
-  if (!playlist) return;
-
-  playlistDragFromIdx.value = fromIdx;
-  playlistDropIdx.value = fromIdx;
-
-  function computeDropIdx(clientY: number): number {
-    const el = playlistListEl.value;
-    if (!el) return fromIdx;
-    const items = el.querySelectorAll<HTMLElement>('.collection__playlist-track');
-    for (let i = 0; i < items.length; i++) {
-      const rect = items[i].getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) {
-        playlistDropY.value = items[i].offsetTop;
-        return i;
-      }
-    }
-    const last = items[items.length - 1];
-    playlistDropY.value = last ? last.offsetTop + last.offsetHeight : 0;
-    return items.length;
-  }
-
-  function onMove(ev: PointerEvent) {
-    playlistDropIdx.value = computeDropIdx(ev.clientY);
-  }
-
-  function resetDrag() {
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onCancel);
-    playlistDragFromIdx.value = null;
-    playlistDropIdx.value = null;
-  }
-
-  function onUp(ev: PointerEvent) {
-    const from = playlistDragFromIdx.value;
-    const dropIdx = computeDropIdx(ev.clientY);
-    resetDrag();
-    if (from === null) return;
-    if (dropIdx === from || dropIdx === from + 1) return;
-    const to = dropIdx > from ? dropIdx - 1 : dropIdx;
-    store.moveInPlaylist(playlist?.id ?? null, from, to);
-  }
-
-  function onCancel() {
-    resetDrag();
-  }
-
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onCancel);
 }
 
 const AUDIO_EXT = /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i;
@@ -785,128 +281,6 @@ onMounted(async () => {
 });
 onUnmounted(() => unlistenDrop?.());
 
-// Movement below this threshold is treated as a click, not a drag start.
-const DRAG_THRESHOLD = 5;
-
-const DRAG_GHOST_SCALE = 0.6;
-
-type DragGhost = { element: HTMLElement; halfWidth: number; halfHeight: number };
-
-// Tracked at module level so a ghost orphaned by an earlier drag (e.g. the
-// pointerup was lost because the window lost focus) can never pile up: each
-// new drag removes any leftover ghost before creating its own.
-let currentDragGhost: DragGhost | null = null;
-
-function clearDragGhost() {
-  currentDragGhost?.element.remove();
-  currentDragGhost = null;
-}
-
-// transform-origin defaults to the element's own center, so scaling never
-// shifts that center: left/top only need the unscaled half-size offset, and
-// that offset never changes again for the rest of the drag.
-function createDragGhost(source: HTMLElement, clientX: number, clientY: number): DragGhost {
-  clearDragGhost();
-  const rect = source.getBoundingClientRect();
-  const element = source.cloneNode(true) as HTMLElement;
-  element.classList.add('collection__drag-ghost');
-  element.querySelectorAll('button').forEach((button) => button.remove());
-  element.style.width = `${rect.width}px`;
-  element.style.height = `${rect.height}px`;
-  const halfWidth = rect.width / 2;
-  const halfHeight = rect.height / 2;
-  element.style.left = `${clientX - halfWidth}px`;
-  element.style.top = `${clientY - halfHeight}px`;
-  document.body.appendChild(element);
-  // Only `transform` animates here, never left/top, so the brief shrink-in
-  // never delays cursor tracking.
-  requestAnimationFrame(() => {
-    element.style.transition = 'transform 100ms ease';
-    element.style.transform = `scale(${DRAG_GHOST_SCALE})`;
-  });
-  const ghost: DragGhost = { element, halfWidth, halfHeight };
-  currentDragGhost = ghost;
-  return ghost;
-}
-
-function moveDragGhost(ghost: DragGhost, clientX: number, clientY: number) {
-  ghost.element.style.left = `${clientX - ghost.halfWidth}px`;
-  ghost.element.style.top = `${clientY - ghost.halfHeight}px`;
-}
-
-function resolveDeckIdAtPoint(clientX: number, clientY: number): string | undefined {
-  const el = document.elementFromPoint(clientX, clientY);
-  const deckEl = el?.closest('[data-deck-id]') as HTMLElement | null;
-  return deckEl?.dataset.deckId;
-}
-
-function onItemPointerDown(event: PointerEvent, track: CollectionEntry) {
-  if (event.button !== 0 || track.status !== 'ready' || !track.path) return;
-  if ((event.target as HTMLElement).closest('button')) return;
-
-  const startX = event.clientX;
-  const startY = event.clientY;
-  const path = track.path;
-  const itemEl = event.currentTarget as HTMLElement;
-  let active = false;
-  let dragGhost: DragGhost | null = null;
-
-  function onMove(ev: PointerEvent) {
-    if (!active) {
-      if (
-        Math.abs(ev.clientX - startX) < DRAG_THRESHOLD &&
-        Math.abs(ev.clientY - startY) < DRAG_THRESHOLD
-      )
-        return;
-      active = true;
-      store.startDrag(path);
-      document.body.style.cursor = 'grabbing';
-      // The search input can be left focused from an earlier click; without
-      // blurring it here, keyboard shortcuts typed during/after the drag go
-      // into the search box instead of controlling decks.
-      const focused = document.activeElement;
-      if (focused instanceof HTMLInputElement) focused.blur();
-      dragGhost = createDragGhost(itemEl, ev.clientX, ev.clientY);
-      return;
-    }
-    if (dragGhost) moveDragGhost(dragGhost, ev.clientX, ev.clientY);
-  }
-
-  function finishDrag(): boolean {
-    const wasActive = active;
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onCancel);
-    window.removeEventListener('blur', onCancel);
-    clearDragGhost();
-    dragGhost = null;
-    if (wasActive) {
-      document.body.style.cursor = '';
-      store.endDrag();
-    }
-    return wasActive;
-  }
-
-  function onUp(ev: PointerEvent) {
-    if (!finishDrag()) return;
-    const deckId = resolveDeckIdAtPoint(ev.clientX, ev.clientY);
-    if (deckId) {
-      window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path } }));
-    }
-  }
-
-  function onCancel() {
-    finishDrag();
-  }
-
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onCancel);
-  // If the window loses focus mid-drag (alt-tab, native dialog), no further
-  // pointer events arrive at all, so this is the only way to clean up.
-  window.addEventListener('blur', onCancel);
-}
-
 async function openFileDialog() {
   const { open } = await import('@tauri-apps/plugin-dialog');
   const result = await open({
@@ -931,7 +305,7 @@ async function openFolderDialog() {
 }
 </script>
 
-<style scoped>
+<style>
 .collection {
   height: 100%;
   display: flex;
@@ -950,8 +324,8 @@ async function openFolderDialog() {
   display: flex;
   align-items: center;
   gap: 0.8em;
-  padding: 0 1em;
-  height: 32px;
+  padding: 0 4px;
+  height: 29px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-border);
 }
@@ -968,9 +342,13 @@ async function openFolderDialog() {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 0.7em;
-  letter-spacing: 0.12em;
-  padding: 0.2em 0.6em;
+  letter-spacing: 0.02em;
+  height: 22px;
+  padding: 0 0.6em;
+  display: flex;
+  align-items: center;
   cursor: pointer;
+  text-transform: uppercase;
 }
 
 .collection__tab:first-child {
@@ -999,20 +377,31 @@ async function openFolderDialog() {
   opacity: 0.6;
 }
 
+.collection__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
 .collection__header-btn {
   background: transparent;
   border: 1px solid var(--color-border);
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 0.75em;
-  letter-spacing: 0.12em;
-  padding: 0.25em 0.7em;
+  letter-spacing: 0.02em;
+  height: 22px;
+  padding: 0 0.7em;
+  display: flex;
+  align-items: center;
+  text-transform: uppercase;
   border-radius: 3px;
   cursor: pointer;
   margin-left: auto;
 }
 
-.collection__header-btn + .collection__header-btn {
+.collection__header-actions .collection__header-btn {
   margin-left: 0;
 }
 
@@ -1022,7 +411,6 @@ async function openFolderDialog() {
 }
 
 .collection__header-btn--muted {
-  margin-left: 0;
   opacity: 0.5;
 }
 
@@ -1090,7 +478,7 @@ async function openFolderDialog() {
   font-size: 0.78em;
   color: var(--color-muted);
   opacity: 0.5;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
 }
 
 .collection__list {
@@ -1102,7 +490,7 @@ async function openFolderDialog() {
   display: flex;
   align-items: center;
   gap: 0.6em;
-  padding: 0 1em;
+  padding: 0 4px;
   height: 32px;
   border-bottom: 1px solid var(--color-border);
   cursor: default;
@@ -1138,7 +526,14 @@ async function openFolderDialog() {
   color: var(--color-muted);
   font-size: 0.9em;
   white-space: nowrap;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
+}
+
+.collection__td--added {
+  color: var(--color-muted);
+  font-size: 0.85em;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .collection__item-tag {
@@ -1176,7 +571,8 @@ async function openFolderDialog() {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 0.85em;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   padding: 0.15em 0.5em;
   border-radius: 3px;
   cursor: pointer;
@@ -1196,7 +592,7 @@ async function openFolderDialog() {
   font-size: 0.9em;
   width: 1.4em;
   height: 1.4em;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 3px;
@@ -1207,7 +603,8 @@ async function openFolderDialog() {
   padding: 0;
 }
 
-.collection__item:hover .collection__item-remove {
+.collection__item:hover .collection__item-remove,
+.collection__row:hover .collection__item-remove {
   opacity: 0.5;
 }
 
@@ -1216,32 +613,83 @@ async function openFolderDialog() {
   color: var(--color-text);
 }
 
-.collection__sort-bar {
-  display: flex;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-  flex-shrink: 0;
-}
-
 .collection__sort-btn {
+  width: 100%;
   background: transparent;
   border: none;
-  color: var(--color-muted);
+  color: inherit;
   font-family: var(--font);
-  font-size: 0.72em;
-  letter-spacing: 0.12em;
-  padding: 0.35em 0.8em;
+  font-size: 1em;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  padding: 0;
   cursor: pointer;
   white-space: nowrap;
+  text-align: inherit;
 }
 
 .collection__sort-btn:hover {
   color: var(--color-text);
 }
 
-.collection__sort-btn--title {
-  flex: 1;
+.collection__row {
+  height: 32px;
+  cursor: default;
+  transition: background 0.1s;
+  /* Without this, a mousedown-and-move on a row's text starts a native
+     text-selection drag instead of (or alongside) our own pointer-based
+     drag-to-deck/reorder logic - and once the pointer nears the top of the
+     scrollable list, the browser auto-scrolls to extend that selection,
+     which looks exactly like the list scrolling on its own mid-drag. */
+  user-select: none;
+}
+
+.collection__row:hover {
+  background: var(--color-surface);
+}
+
+.collection__row.collection__item--ready {
+  cursor: grab;
+}
+
+.collection__row.collection__item--ready:active {
+  cursor: grabbing;
+}
+
+.collection__td {
+  border-bottom: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
+  padding: 0 4px;
+  overflow: hidden;
+}
+
+.collection__td--status {
+  border-right: none;
+}
+
+.collection__td--bpm,
+.collection__td--added {
   text-align: left;
+}
+
+.collection__td--meta {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.collection__meta-value {
+  color: var(--color-muted);
+}
+
+.collection__item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6em;
+}
+
+.collection__td--remove {
+  text-align: center;
 }
 
 .collection__playlist-track {
@@ -1295,11 +743,12 @@ async function openFolderDialog() {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 0.75em;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.02em;
   padding: 0.6em 1em;
   cursor: pointer;
   text-align: left;
   display: block;
+  text-transform: uppercase;
 }
 
 .collection__add-toggle:hover {
@@ -1311,9 +760,7 @@ async function openFolderDialog() {
   max-height: 200px;
   overflow-y: auto;
 }
-</style>
 
-<style>
 .collection__drag-ghost {
   position: fixed;
   z-index: 2000;
@@ -1348,7 +795,7 @@ async function openFolderDialog() {
   color: var(--color-text);
   font-family: var(--font);
   font-size: 0.75rem;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   text-align: left;
   cursor: pointer;
 }
@@ -1358,10 +805,17 @@ async function openFolderDialog() {
   color: #fff;
 }
 
-.context-menu__separator {
-  height: 1px;
-  background: #333;
-  margin: 4px 0;
+.context-menu__title {
+  padding: 4px 14px 6px;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.context-menu__checkbox {
+  display: inline-block;
+  width: 1.2em;
 }
 
 .context-menu__item--sub {
@@ -1376,7 +830,7 @@ async function openFolderDialog() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  cursor: default;
+  cursor: not-allowed;
   opacity: 0.45;
 }
 

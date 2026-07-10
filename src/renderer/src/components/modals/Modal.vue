@@ -1,6 +1,11 @@
 <template>
   <Transition name="modal">
-    <div v-if="open" class="modal__backdrop" @click.self="emit('cancel')">
+    <div
+      v-if="open"
+      class="modal__backdrop"
+      @click.self="emit('cancel')"
+      @keydown.escape="emit('cancel')"
+    >
       <div class="modal">
         <div class="modal__title">{{ title }}</div>
         <slot />
@@ -20,14 +25,23 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue';
 
-const props = defineProps<{ open: boolean; title: string; confirmLabel?: string }>();
+const { open, autoFocusEl = null } = defineProps<{
+  open: boolean;
+  title: string;
+  confirmLabel?: string;
+  // Element to focus when the modal opens, e.g. a form input inside the
+  // slot, passed down as a template ref (Vue auto-unwraps it in the
+  // template, so this receives the element itself). Falls back to the
+  // confirm button when not given.
+  autoFocusEl?: HTMLElement | null;
+}>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 watch(
-  () => props.open,
+  () => open,
   (val) => {
-    if (val) nextTick(() => confirmBtn.value?.focus());
+    if (val) nextTick(() => (autoFocusEl ?? confirmBtn.value)?.focus());
   }
 );
 </script>
@@ -57,7 +71,7 @@ watch(
 .modal__title {
   font-size: 0.85rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   color: var(--color-text);
 }
 
@@ -70,7 +84,7 @@ watch(
 .modal__btn {
   font-family: var(--font);
   font-size: 0.7rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   padding: 8px 16px;
   border-radius: 4px;
   cursor: pointer;

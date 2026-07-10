@@ -8,14 +8,17 @@ export const STORAGE_KEYS = {
   collection: 'beatmatcher.library.collection',
   playlists: 'beatmatcher.library.playlists',
   savedTracks: 'beatmatcher.library.saved-tracks',
+  metadataOverrides: 'beatmatcher.library.metadata-overrides',
 
   // UI state (layout, panel sizes)
   deckCount: 'beatmatcher.ui.deck-count',
-  collectionHeight: 'beatmatcher.ui.collection-height',
+  bigLibrary: 'beatmatcher.ui.big-library',
+  showWaveformStrip: 'beatmatcher.ui.show-waveform-strip',
   locale: 'beatmatcher.ui.locale',
   sessionDeckLane: 'beatmatcher.ui.session-deck-lane',
   sessionLaneHeight: 'beatmatcher.ui.session-lane-height',
-  sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height'
+  sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height',
+  browserColumns: 'beatmatcher.ui.browser-columns'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

@@ -58,7 +58,7 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
   color: var(--color-text);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
@@ -67,6 +67,7 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
   align-items: center;
   gap: 4px;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .dropdown__trigger:hover {
@@ -99,10 +100,11 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--label-letter-spacing);
   padding: 7px 12px;
   text-align: left;
   cursor: pointer;
+  text-transform: uppercase;
 }
 
 .dropdown__item:hover {
