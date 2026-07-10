@@ -103,10 +103,8 @@ describe('PlaylistDetailView: drag must still let the browser auto-scroll the li
     const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
     row.element.dispatchEvent(event);
 
-    // Unlike AllTracksView's drag-to-deck, this is a reorder-within-the-list
-    // drag - dragging a track above the visible area needs the browser's own
-    // autoscroll to bring the top of a long playlist into view, so the
-    // default action must NOT be suppressed here.
+    // Unlike drag-to-deck, this reorder-within-the-list drag needs the
+    // browser's own autoscroll to reach the top of a long playlist.
     expect(preventDefaultSpy).not.toHaveBeenCalled();
   });
 });

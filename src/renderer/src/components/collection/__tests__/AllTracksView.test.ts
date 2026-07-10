@@ -28,10 +28,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: vi.fn()
 }));
 
-// AllTracksView only reads decksStore/appModeStore/mixerStore through a few
-// narrow properties (never mutates them), so these stand in for the real
-// stores - which pull in settings/session/WASM dependencies unrelated to
-// what this test is about.
+// Minimal stand-ins: the real stores pull in settings/session/WASM
+// dependencies unrelated to what this test is about.
 vi.mock('@renderer/stores/decks', () => ({
   useDecksStore: () => ({ bestAvailableDeck: vi.fn(() => 'A') }),
   DECKS_DISPOSITION: ['C', 'A', 'B', 'D']
@@ -71,9 +69,8 @@ async function mountWithReadyTrack() {
     global: {
       plugins: [i18n],
       directives: { tooltip: vTooltip },
-      // These aren't what's under test here - stubbing keeps the mount
-      // focused on the row's own pointerdown behavior instead of needing to
-      // satisfy every child component's own store/prop expectations too.
+      // Not under test here - stubbing keeps the mount focused on the row's
+      // own pointerdown behavior.
       stubs: {
         Buttons: true,
         BpmModal: true,
@@ -105,10 +102,8 @@ describe('AllTracksView: drag must not let the browser auto-scroll the list', ()
     const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
     row.element.dispatchEvent(event);
 
-    // Suppressing the browser's own default action here is what stops it
-    // from treating the drag as a text-selection gesture and auto-scrolling
-    // the list once the pointer nears its edge - the actual bug this guards
-    // against wouldn't show up as a wheel or scroll event at all.
+    // Suppressing the default action stops WebKit's native text-selection
+    // autoscroll, which fires with no wheel or scroll event to catch.
     expect(preventDefaultSpy).toHaveBeenCalled();
   });
 });
