@@ -38,16 +38,16 @@ const emit = defineEmits<{
 }>();
 
 const HALF_WINDOW_SEC = 5;
-const OFFSCREEN_W = 256;
+const OFFSCREEN_CROSS = 256;
 // Pre-render ±30s around the playhead. At 250 pts/sec this caps the offscreen
-// at 15,000 rows, well within WebKit's ~32k canvas dimension limit.
+// at 15,000 columns, well within WebKit's ~32k canvas dimension limit.
 const BUFFER_SEC = 30;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
 let resizeObserver: ResizeObserver | null = null;
 
-type DragState = { stripIndex: number; anchorY: number; anchorPos: number };
+type DragState = { stripIndex: number; anchorX: number; anchorPos: number };
 const drag = ref<DragState | null>(null);
 const hoveredStripIndex = ref(-1);
 
@@ -65,14 +65,14 @@ function onPointerDown(e: PointerEvent) {
   const h = canvas.clientHeight;
   if (!w || !h) return;
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
   const n = props.sources.length;
-  const stripW = w / n;
-  const stripIndex = Math.min(Math.floor(x / stripW), n - 1);
+  const stripH = h / n;
+  const stripIndex = Math.min(Math.floor(y / stripH), n - 1);
   if (states[stripIndex]?.canvas === null) return;
   drag.value = {
     stripIndex,
-    anchorY: e.clientY,
+    anchorX: e.clientX,
     anchorPos: props.sources[stripIndex].getPosition()
   };
   canvas.setPointerCapture(e.pointerId);
@@ -83,12 +83,12 @@ function onPointerMove(e: PointerEvent) {
   if (!drag.value) return;
   const canvas = canvasEl.value;
   if (!canvas) return;
-  const h = canvas.clientHeight;
-  if (!h) return;
+  const w = canvas.clientWidth;
+  if (!w) return;
   const src = props.sources[drag.value.stripIndex];
   const rate = Math.max(0.1, src.getRate());
-  const dy = e.clientY - drag.value.anchorY;
-  const sec = Math.max(0, drag.value.anchorPos - (dy * (2 * HALF_WINDOW_SEC * rate)) / h);
+  const dx = e.clientX - drag.value.anchorX;
+  const sec = Math.max(0, drag.value.anchorPos - (dx * (2 * HALF_WINDOW_SEC * rate)) / w);
   emit('scrub', drag.value.stripIndex, sec);
 }
 
@@ -98,25 +98,26 @@ function onPointerUp() {
 }
 
 function onMouseMove(e: MouseEvent) {
-  if (drag.value !== null || !canvasEl.value || !canvasEl.value.clientWidth) return;
-  const rect = canvasEl.value.getBoundingClientRect();
-  const x = e.clientX - rect.left;
+  const canvas = canvasEl.value;
+  if (drag.value !== null || !canvas || !canvas.clientHeight) return;
+  const rect = canvas.getBoundingClientRect();
+  const y = e.clientY - rect.top;
   const n = props.sources.length;
-  hoveredStripIndex.value = Math.min(Math.floor((x / canvasEl.value.clientWidth) * n), n - 1);
+  hoveredStripIndex.value = Math.min(Math.floor((y / canvas.clientHeight) * n), n - 1);
 }
 
-const ROWS_PER_CHUNK = 500;
+const STEPS_PER_CHUNK = 500;
 
 type OffscreenState = {
   canvas: HTMLCanvasElement | null;
   builtFrom: Float32Array | null;
   denseRate: number;
-  // Aggregated rows/sec stored in the offscreen. Chosen so that 1 row ≈ 1
+  // Aggregated steps/sec stored in the offscreen. Chosen so that 1 step ≈ 1
   // physical pixel in the visible window, eliminating downscale aliasing.
   displayRate: number;
-  numRows: number;
+  numSteps: number;
   bufferStartSec: number;
-  lastBuiltH: number;
+  lastBuiltMain: number;
   lastBuiltDpr: number;
   isBuilding: boolean;
 };
@@ -129,15 +130,15 @@ function initStates() {
     builtFrom: null,
     denseRate: 0,
     displayRate: 0,
-    numRows: 0,
+    numSteps: 0,
     bufferStartSec: 0,
-    lastBuiltH: 0,
+    lastBuiltMain: 0,
     lastBuiltDpr: 0,
     isBuilding: false
   }));
 }
 
-async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr: number) {
+async function buildOffscreenWindow(i: number, centerPos: number, mainSize: number, dpr: number) {
   const state = states[i];
   state.isBuilding = true;
   await new Promise<void>((r) => setTimeout(r, 0));
@@ -156,9 +157,9 @@ async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr
   const totalSamples = Math.floor(data.length / 4);
   const totalDuration = totalSamples / denseRate;
 
-  // Target: 1 aggregated row per physical pixel in the 10-second visible window
-  const physicalH = h * dpr;
-  const targetDisplayRate = physicalH / (2 * HALF_WINDOW_SEC);
+  // Target: 1 aggregated step per physical pixel in the 10-second visible window
+  const physicalMain = mainSize * dpr;
+  const targetDisplayRate = physicalMain / (2 * HALF_WINDOW_SEC);
   const stride = Math.max(1, Math.round(denseRate / targetDisplayRate));
   const displayRate = denseRate / stride;
 
@@ -166,31 +167,29 @@ async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr
   const bufferEndSec = Math.min(totalDuration, centerPos + BUFFER_SEC);
   const startSample = Math.floor(bufferStartSec * denseRate);
   const endSample = Math.min(totalSamples, Math.ceil(bufferEndSec * denseRate));
-  const numRows = Math.ceil((endSample - startSample) / stride);
+  const numSteps = Math.ceil((endSample - startSample) / stride);
 
   const canvas = document.createElement('canvas');
-  canvas.width = OFFSCREEN_W;
-  canvas.height = numRows;
+  canvas.width = numSteps;
+  canvas.height = OFFSCREEN_CROSS;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     state.isBuilding = false;
     return;
   }
 
-  const imageData = ctx.createImageData(OFFSCREEN_W, numRows);
+  const imageData = ctx.createImageData(numSteps, OFFSCREEN_CROSS);
   const px = imageData.data;
-  const cx = OFFSCREEN_W / 2;
+  const cy = OFFSCREEN_CROSS / 2;
 
-  for (let row = 0; row < numRows; row++) {
-    const rowBase = row * OFFSCREEN_W * 4;
-
+  for (let col = 0; col < numSteps; col++) {
     let bass = 0,
       mid = 0,
       high = 0,
       amp = 0,
       count = 0;
     for (let k = 0; k < stride; k++) {
-      const sampleIdx = startSample + row * stride + k;
+      const sampleIdx = startSample + col * stride + k;
       if (sampleIdx >= totalSamples) break;
       const di = sampleIdx * 4;
       bass += data[di];
@@ -207,19 +206,19 @@ async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr
     amp /= count;
 
     const [r, g, b] = spectralColor(bass, mid, high);
-    const barW = Math.sqrt(amp) * cx * 1.5;
-    const xLeft = Math.max(0, Math.round(cx - barW));
-    const xRight = Math.min(OFFSCREEN_W - 1, Math.round(cx + barW));
+    const barH = Math.sqrt(amp) * cy * 1.5;
+    const yTop = Math.max(0, Math.round(cy - barH));
+    const yBottom = Math.min(OFFSCREEN_CROSS - 1, Math.round(cy + barH));
 
-    for (let x = xLeft; x <= xRight; x++) {
-      const idx = rowBase + x * 4;
+    for (let y = yTop; y <= yBottom; y++) {
+      const idx = (y * numSteps + col) * 4;
       px[idx] = r;
       px[idx + 1] = g;
       px[idx + 2] = b;
       px[idx + 3] = 255;
     }
 
-    if ((row + 1) % ROWS_PER_CHUNK === 0) {
+    if ((col + 1) % STEPS_PER_CHUNK === 0) {
       if (src.getDenseData() !== data) {
         state.isBuilding = false;
         return;
@@ -239,9 +238,9 @@ async function buildOffscreenWindow(i: number, centerPos: number, h: number, dpr
   state.builtFrom = data;
   state.denseRate = denseRate;
   state.displayRate = displayRate;
-  state.numRows = numRows;
+  state.numSteps = numSteps;
   state.bufferStartSec = bufferStartSec;
-  state.lastBuiltH = h;
+  state.lastBuiltMain = mainSize;
   state.lastBuiltDpr = dpr;
   state.isBuilding = false;
 }
@@ -266,50 +265,50 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
 
   const n = props.sources.length;
-  const stripW = Math.floor(w / n);
+  const stripH = Math.floor(h / n);
 
   for (let i = 0; i < n; i++) {
     const src = props.sources[i];
     const state = states[i];
-    const x0 = i * stripW;
+    const y0 = i * stripH;
 
     const pos = src.getPosition();
-    const bufferEndSec = state.bufferStartSec + state.numRows / (state.displayRate || 1);
+    const bufferEndSec = state.bufferStartSec + state.numSteps / (state.displayRate || 1);
     const edgeGuard = HALF_WINDOW_SEC + 5;
     const needsRebuild =
       state.builtFrom !== src.getDenseData() ||
-      state.lastBuiltH !== h ||
+      state.lastBuiltMain !== w ||
       state.lastBuiltDpr !== dpr ||
       pos < state.bufferStartSec + edgeGuard ||
       pos > bufferEndSec - edgeGuard;
 
-    if (needsRebuild && !state.isBuilding) buildOffscreenWindow(i, pos, h, dpr).catch(() => {});
+    if (needsRebuild && !state.isBuilding) buildOffscreenWindow(i, pos, w, dpr).catch(() => {});
     if (!state.canvas) continue;
 
     // rate > 1 means pitched up: audio advances faster than real time, so the
-    // waveform appears compressed vertically (fewer audio seconds fit in the
+    // waveform appears compressed horizontally (fewer audio seconds fit in the
     // fixed real-time window). Divide all audio-time offsets by rate to convert
     // to real-time screen coordinates.
     const rate = Math.max(0.1, src.getRate());
-    const scaleY = h / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
+    const scaleX = w / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
     // Snap to physical pixel boundary to eliminate sub-pixel shimmer
-    const tyRaw = h / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleY;
-    const ty = Math.round(tyRaw * dpr) / dpr;
+    const txRaw = w / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleX;
+    const tx = Math.round(txRaw * dpr) / dpr;
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(x0, 0, stripW, h);
+    ctx.rect(0, y0, w, stripH);
     ctx.clip();
     ctx.drawImage(
       state.canvas,
       0,
       0,
-      OFFSCREEN_W,
-      state.numRows,
-      x0,
-      ty,
-      stripW,
-      state.numRows * scaleY
+      state.numSteps,
+      OFFSCREEN_CROSS,
+      tx,
+      y0,
+      state.numSteps * scaleX,
+      stripH
     );
     ctx.restore();
 
@@ -324,40 +323,40 @@ function draw() {
 
       for (let bn = nStart; bn <= nEnd; bn++) {
         const tBeat = beatOffset + bn * beatPeriod;
-        const yBeat = h / 2 + (((tBeat - pos) / rate) * h) / (2 * HALF_WINDOW_SEC);
+        const xBeat = w / 2 + (((tBeat - pos) / rate) * w) / (2 * HALF_WINDOW_SEC);
         const alpha = bn % 4 === 0 ? 0.8 : 0.4;
         ctx.lineWidth = 3;
         ctx.strokeStyle = `rgba(0,0,0,${alpha})`;
         ctx.beginPath();
-        ctx.moveTo(x0, yBeat);
-        ctx.lineTo(x0 + stripW, yBeat);
+        ctx.moveTo(xBeat, y0);
+        ctx.lineTo(xBeat, y0 + stripH);
         ctx.stroke();
         ctx.lineWidth = 1;
         ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
         ctx.beginPath();
-        ctx.moveTo(x0, yBeat);
-        ctx.lineTo(x0 + stripW, yBeat);
+        ctx.moveTo(xBeat, y0);
+        ctx.lineTo(xBeat, y0 + stripH);
         ctx.stroke();
       }
     }
 
-    // Horizontal playhead. Same y across all strips; alignment = sync
+    // Vertical playhead. Same x across all strips; alignment = sync
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.9)';
     ctx.beginPath();
-    ctx.moveTo(x0, h / 2);
-    ctx.lineTo(x0 + stripW, h / 2);
+    ctx.moveTo(w / 2, y0);
+    ctx.lineTo(w / 2, y0 + stripH);
     ctx.stroke();
     ctx.lineWidth = 1;
     ctx.strokeStyle = 'rgba(220,30,30,1)';
     ctx.beginPath();
-    ctx.moveTo(x0, h / 2);
-    ctx.lineTo(x0 + stripW, h / 2);
+    ctx.moveTo(w / 2, y0);
+    ctx.lineTo(w / 2, y0 + stripH);
     ctx.stroke();
 
     if (src.isWaveformLoading()) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(x0, 0, stripW, h);
+      ctx.fillRect(0, y0, w, stripH);
     }
   }
 
@@ -366,7 +365,7 @@ function draw() {
   for (let i = 1; i < n; i++) {
     if (states[i - 1].canvas !== null || states[i].canvas !== null) {
       ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(i * stripW, 0, 1, h);
+      ctx.fillRect(0, i * stripH, w, 1);
     }
   }
 
@@ -386,7 +385,7 @@ function resizeCanvas(canvas: HTMLCanvasElement) {
   ctx.scale(dpr, dpr);
   // Force offscreen rebuild at new size
   for (const s of states) {
-    s.lastBuiltH = 0;
+    s.lastBuiltMain = 0;
     s.lastBuiltDpr = 0;
   }
 }

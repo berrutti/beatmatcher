@@ -1,10 +1,20 @@
 use serde::Serialize;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackTags {
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub genre: Option<String>,
+    pub composer: Option<String>,
+    pub remixer: Option<String>,
+    pub label: Option<String>,
+    pub comment: Option<String>,
+    pub track_number: Option<String>,
+    pub year: Option<String>,
+    pub rating: Option<String>,
 }
 
 fn open_format(
@@ -155,20 +165,33 @@ pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate
     output
 }
 
-fn fill_tags_from_slice(
-    tags: &[symphonia::core::meta::Tag],
-    title: &mut Option<String>,
-    artist: &mut Option<String>,
-) {
+fn fill_tags_from_slice(tags: &[symphonia::core::meta::Tag], out: &mut TrackTags) {
     use symphonia::core::meta::StandardTagKey;
     for tag in tags {
+        let value = || tag.value.to_string();
         match tag.std_key {
-            Some(StandardTagKey::TrackTitle) if title.is_none() => {
-                *title = Some(tag.value.to_string());
+            Some(StandardTagKey::TrackTitle) if out.title.is_none() => out.title = Some(value()),
+            Some(StandardTagKey::Artist) if out.artist.is_none() => out.artist = Some(value()),
+            Some(StandardTagKey::Album) if out.album.is_none() => out.album = Some(value()),
+            Some(StandardTagKey::AlbumArtist) if out.album_artist.is_none() => {
+                out.album_artist = Some(value())
             }
-            Some(StandardTagKey::Artist) if artist.is_none() => {
-                *artist = Some(tag.value.to_string());
+            Some(StandardTagKey::Genre) if out.genre.is_none() => out.genre = Some(value()),
+            Some(StandardTagKey::Composer) if out.composer.is_none() => {
+                out.composer = Some(value())
             }
+            Some(StandardTagKey::Remixer) if out.remixer.is_none() => out.remixer = Some(value()),
+            Some(StandardTagKey::Label) if out.label.is_none() => out.label = Some(value()),
+            Some(StandardTagKey::Comment) if out.comment.is_none() => out.comment = Some(value()),
+            Some(StandardTagKey::TrackNumber) if out.track_number.is_none() => {
+                out.track_number = Some(value())
+            }
+            // Prefer the plain release date/year; fall back to the original
+            // release date if that's all the file has.
+            Some(StandardTagKey::Date) if out.year.is_none() => out.year = Some(value()),
+            Some(StandardTagKey::ReleaseDate) if out.year.is_none() => out.year = Some(value()),
+            Some(StandardTagKey::OriginalDate) if out.year.is_none() => out.year = Some(value()),
+            Some(StandardTagKey::Rating) if out.rating.is_none() => out.rating = Some(value()),
             _ => {}
         }
     }
@@ -177,16 +200,10 @@ fn fill_tags_from_slice(
 pub fn read_tags(path: &str) -> TrackTags {
     let mut probed = match open_format(path) {
         Ok(probe_result) => probe_result,
-        Err(_) => {
-            return TrackTags {
-                title: None,
-                artist: None,
-            }
-        }
+        Err(_) => return TrackTags::default(),
     };
 
-    let mut title: Option<String> = None;
-    let mut artist: Option<String> = None;
+    let mut tags = TrackTags::default();
 
     // Tags embedded before the format container (ID3v2 in MP3, APEv2, etc.)
     if let Some(rev) = probed
@@ -194,18 +211,16 @@ pub fn read_tags(path: &str) -> TrackTags {
         .get()
         .and_then(|metadata| metadata.current().cloned())
     {
-        fill_tags_from_slice(rev.tags(), &mut title, &mut artist);
+        fill_tags_from_slice(rev.tags(), &mut tags);
     }
 
     // Tags from the format reader itself (FLAC Vorbis comments, M4A atoms, etc.)
-    if title.is_none() || artist.is_none() {
-        let mut format = probed.format;
-        if let Some(rev) = format.metadata().current() {
-            fill_tags_from_slice(rev.tags(), &mut title, &mut artist);
-        }
+    let mut format = probed.format;
+    if let Some(rev) = format.metadata().current() {
+        fill_tags_from_slice(rev.tags(), &mut tags);
     }
 
-    TrackTags { title, artist }
+    tags
 }
 
 pub fn read_cover_art(path: &str) -> Option<String> {

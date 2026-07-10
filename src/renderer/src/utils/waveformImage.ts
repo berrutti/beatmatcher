@@ -17,6 +17,61 @@ export function spectralColor(bass: number, mid: number, high: number): [number,
   return [r, g, b];
 }
 
+function averageAmpForColumn(
+  peaks: Float32Array,
+  col: number,
+  cw: number,
+  numPoints: number
+): number {
+  const srcStart = (col * numPoints) / cw;
+  const srcEnd = ((col + 1) * numPoints) / cw;
+  const iStart = srcStart | 0;
+  const iEnd = Math.min(numPoints - 1, Math.max(iStart, (srcEnd - 1e-9) | 0));
+
+  let sumAmp = 0,
+    count = 0;
+  for (let i = iStart; i <= iEnd; i++) {
+    sumAmp += peaks[i * 4 + 3];
+    count++;
+  }
+  return count > 0 ? sumAmp / count : 0;
+}
+
+// Vertical extent a waveform bar occupies at a given column, so the playhead
+// line can be clipped to match instead of always spanning the full height.
+function barVerticalExtent(
+  avgAmp: number,
+  ch: number,
+  ampScale: number
+): { yTop: number; yBot: number } {
+  const halfCh = ch / 2;
+  const displayAmp = avgAmp >= 0.001 ? Math.sqrt(avgAmp) : 0;
+  const barPx = (displayAmp * halfCh * ampScale) | 0;
+  return {
+    yTop: Math.max(0, (halfCh | 0) - barPx),
+    yBot: Math.min(ch, (halfCh | 0) + barPx)
+  };
+}
+
+// The y of the tallest bar actually present across the whole waveform,
+// rather than the theoretical amplitude=1 max, which real tracks never
+// reach after the per-column averaging and sqrt compression above. Used to
+// size a playhead line that touches the waveform's real top edge instead of
+// floating above it.
+export function maxBarTop(peaks: Float32Array, cw: number, ch: number, ampScale: number): number {
+  const numPoints = (peaks.length / 4) | 0;
+  let maxAvgAmp = 0;
+  for (let col = 0; col < cw; col++) {
+    const avgAmp = averageAmpForColumn(peaks, col, cw, numPoints);
+    if (avgAmp > maxAvgAmp) maxAvgAmp = avgAmp;
+  }
+
+  const halfCh = ch / 2;
+  const displayAmp = maxAvgAmp >= 0.001 ? Math.sqrt(maxAvgAmp) : 0;
+  const barPx = (displayAmp * halfCh * ampScale) | 0;
+  return Math.max(0, (halfCh | 0) - barPx);
+}
+
 export function buildWaveformImageData(
   cw: number,
   ch: number,
@@ -25,7 +80,6 @@ export function buildWaveformImageData(
 ): ImageData {
   const img = new ImageData(cw, ch);
   const px = img.data;
-  const halfCh = ch / 2;
   const numPoints = (peaks.length / 4) | 0;
 
   for (let col = 0; col < cw; col++) {
@@ -59,14 +113,11 @@ export function buildWaveformImageData(
 
     const avgAmp = count > 0 ? sumAmp / count : 0;
     if (avgAmp >= 0.001) {
-      const displayAmp = Math.sqrt(avgAmp);
       const avgBass = sumAmp > 0 ? sumR / sumAmp : 0;
       const avgMid = sumAmp > 0 ? sumG / sumAmp : 0;
       const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
       const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
-      const barPx = (displayAmp * halfCh * ampScale) | 0;
-      const yTop = Math.max(0, (halfCh | 0) - barPx);
-      const yBot = Math.min(ch, (halfCh | 0) + barPx);
+      const { yTop, yBot } = barVerticalExtent(avgAmp, ch, ampScale);
       for (let row = yTop; row < yBot; row++) {
         const idx = (row * cw + col) * 4;
         px[idx] = r;

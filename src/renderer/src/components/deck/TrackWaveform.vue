@@ -1,17 +1,17 @@
 <template>
   <div class="overview">
-    <canvas ref="canvasEl" class="overview__canvas" @mousedown="onMouseDown" @contextmenu.prevent />
     <div class="overview__times">
-      <span ref="elapsedEl">0:00</span>
-      <span ref="remainingEl">-0:00</span>
+      <span ref="elapsedEl" class="overview__time overview__time--elapsed">0:00</span>
+      <span ref="remainingEl" class="overview__time overview__time--remaining">-0:00</span>
     </div>
+    <canvas ref="canvasEl" class="overview__canvas" @mousedown="onMouseDown" @contextmenu.prevent />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
-import { buildWaveformImageData } from '@renderer/utils/waveformImage';
+import { buildWaveformImageData, maxBarTop } from '@renderer/utils/waveformImage';
 
 const props = defineProps<{
   accent: string;
@@ -36,8 +36,14 @@ let waveImgData: ImageData | null = null;
 let waveImgForPeaks: Float32Array | null = null;
 let waveImgForCw = 0;
 let waveImgForCh = 0;
+let playheadTop = 0;
 
 const OVERVIEW_AMP_SCALE = 0.85;
+const CUE_TRIANGLE_WIDTH = 4;
+const CUE_TRIANGLE_HEIGHT = 8;
+// Half the cue triangle's width, reserved on both edges so the triangle
+// never gets clipped when the cue point sits at the very start or end.
+const SIDE_MARGIN = CUE_TRIANGLE_WIDTH;
 
 function formatSec(sec: number): string {
   const abs = Math.abs(sec);
@@ -70,21 +76,25 @@ function draw() {
     return;
   }
 
-  const cw = canvas.width;
+  const marginPx = SIDE_MARGIN * dpr;
+  const cw = canvas.width - marginPx * 2;
   const ch = canvas.height;
   if (waveImgForPeaks !== peaks || waveImgForCw !== cw || waveImgForCh !== ch) {
     waveImgData = buildWaveformImageData(cw, ch, peaks, OVERVIEW_AMP_SCALE);
+    playheadTop = maxBarTop(peaks, cw, ch, OVERVIEW_AMP_SCALE);
     waveImgForPeaks = peaks;
     waveImgForCw = cw;
     waveImgForCh = ch;
   }
   if (!waveImgData) return;
-  ctx.putImageData(waveImgData, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.putImageData(waveImgData, marginPx, 0);
 
+  const usableW = w - SIDE_MARGIN * 2;
   const region = props.loopRegion;
   if (region && trackDuration > 0) {
-    const x1 = Math.max(0, (region.startSec / trackDuration) * w);
-    const x2 = Math.min(w, (region.endSec / trackDuration) * w);
+    const x1 = SIDE_MARGIN + Math.max(0, (region.startSec / trackDuration) * usableW);
+    const x2 = SIDE_MARGIN + Math.min(usableW, (region.endSec / trackDuration) * usableW);
     if (x2 > x1) {
       ctx.fillStyle = props.loopActive ? '#ca8a04' : '#78716c';
       ctx.globalAlpha = 0.3;
@@ -103,16 +113,14 @@ function draw() {
   }
 
   if (trackDuration > 0) {
-    const cueX = (props.cuePoint / trackDuration) * w;
-    const TRI_W = 5;
-    const TRI_H = 8;
+    const cueX = SIDE_MARGIN + (props.cuePoint / trackDuration) * usableW;
     ctx.save();
     ctx.fillStyle = '#eab308';
     ctx.globalAlpha = 0.9;
     ctx.beginPath();
-    ctx.moveTo(cueX - TRI_W, h);
-    ctx.lineTo(cueX + TRI_W, h);
-    ctx.lineTo(cueX, h - TRI_H);
+    ctx.moveTo(cueX - CUE_TRIANGLE_WIDTH, h);
+    ctx.lineTo(cueX + CUE_TRIANGLE_WIDTH, h);
+    ctx.lineTo(cueX, h - CUE_TRIANGLE_HEIGHT);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -120,13 +128,13 @@ function draw() {
 
   const pos = props.getPlayheadPosition();
   const posRatio = trackDuration > 0 ? Math.min(1, pos / trackDuration) : 0;
-  const px = posRatio * w;
+  const px = SIDE_MARGIN + posRatio * usableW;
 
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
   ctx.beginPath();
-  ctx.moveTo(px, 0);
+  ctx.moveTo(px, playheadTop / dpr);
   ctx.lineTo(px, h);
   ctx.stroke();
   ctx.globalAlpha = 1;
@@ -145,7 +153,8 @@ let dragRectWidth = 0;
 let isDragging = false;
 
 function pxToSec(px: number): number {
-  return dragRectWidth > 0 ? (px / dragRectWidth) * trackDuration : 0;
+  const usableWidth = dragRectWidth - SIDE_MARGIN * 2;
+  return usableWidth > 0 ? ((px - SIDE_MARGIN) / usableWidth) * trackDuration : 0;
 }
 
 function onMouseDown(e: MouseEvent) {
@@ -206,10 +215,13 @@ watch(
 <style scoped>
 .overview {
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25em;
   flex-shrink: 0;
+}
+
+.overview__times {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0.3em;
 }
 
 .overview__canvas {
@@ -218,13 +230,11 @@ watch(
   display: block;
 }
 
-.overview__times {
-  display: flex;
-  justify-content: space-between;
+.overview__time {
   font-size: 0.6em;
   color: var(--color-muted);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  padding: 0 0.2em;
+  pointer-events: none;
 }
 </style>

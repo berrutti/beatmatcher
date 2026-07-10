@@ -31,7 +31,7 @@
             </button>
           </div>
           <div v-for="path in session.missingTracks" :key="path" class="session__missing-row">
-            <span class="session__missing-name" :title="path">{{ basename(path) }}</span>
+            <span class="session__missing-name" v-tooltip="path">{{ basename(path) }}</span>
           </div>
         </div>
         <SessionTimeline
@@ -59,7 +59,7 @@
       <button
         class="session__btn session__btn--transport"
         :class="{ 'session__btn--active': editStore.editMode }"
-        :title="$t('session.edit')"
+        v-tooltip="$t('session.edit')"
         @click="editStore.toggleEditMode()"
       >
         ✎
@@ -272,7 +272,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   background: color-mix(in srgb, #f97316 8%, transparent);
   border-bottom: 1px solid color-mix(in srgb, #f97316 30%, transparent);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
 }
 
 .session__missing {
@@ -292,7 +292,7 @@ onUnmounted(() => {
 
 .session__missing-title {
   color: var(--color-danger);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
 }
 
 .session__missing-row {
@@ -312,7 +312,7 @@ onUnmounted(() => {
 .session__missing-btn {
   font-family: var(--font);
   font-size: 0.85em;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   padding: 0.2em 0.8em;
   border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent);
@@ -320,6 +320,7 @@ onUnmounted(() => {
   color: var(--color-danger);
   cursor: pointer;
   flex-shrink: 0;
+  text-transform: uppercase;
 }
 
 .session__missing-btn:hover {
@@ -348,7 +349,7 @@ onUnmounted(() => {
 .session__drop-hint {
   font-size: 1em;
   color: var(--color-muted);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   opacity: 0.6;
   font-style: italic;
   pointer-events: none;
@@ -371,13 +372,14 @@ onUnmounted(() => {
   /* Pinned so glyphs from fallback fonts (play/pause are not in JetBrains
      Mono) cannot change the button height between states. */
   line-height: 1.2;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   padding: 0.45em 1.2em;
   border-radius: 4px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-muted);
   cursor: pointer;
+  text-transform: uppercase;
 }
 
 .session__btn--play {

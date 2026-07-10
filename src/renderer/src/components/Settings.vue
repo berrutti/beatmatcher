@@ -3,7 +3,7 @@
     <div ref="modalEl" class="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
       <div class="settings-header">
         <span class="settings-title">{{ $t('settings.title') }}</span>
-        <button class="settings-close" :title="$t('settings.close')" @click="close">✕</button>
+        <button class="settings-close" v-tooltip="$t('settings.close')" @click="close">✕</button>
       </div>
 
       <section class="settings-section">
@@ -548,8 +548,9 @@ onUnmounted(() => {
 .settings-title {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.03em;
   color: var(--color-text);
+  text-transform: uppercase;
 }
 
 .settings-close {
@@ -585,8 +586,9 @@ onUnmounted(() => {
 .settings-section-label {
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.03em;
   color: var(--color-muted);
+  text-transform: uppercase;
 }
 
 .settings-hint {
@@ -659,9 +661,10 @@ onUnmounted(() => {
 .settings-toggle-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.02em;
   color: var(--color-muted);
   min-width: 18px;
+  text-transform: uppercase;
 }
 
 .settings-row {
@@ -707,7 +710,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--label-letter-spacing);
   padding: 3px 7px;
   border-radius: 3px;
   cursor: pointer;
@@ -731,7 +734,7 @@ onUnmounted(() => {
 .settings-range-label {
   font-size: 10px;
   color: var(--color-muted);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
 }
 
 .settings-number {
@@ -768,7 +771,8 @@ onUnmounted(() => {
 .settings-deck-label {
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .settings-deck-grid {
@@ -830,14 +834,14 @@ onUnmounted(() => {
 .settings-btn-key {
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--accent);
   line-height: 1;
 }
 
 .settings-btn--active .settings-btn-key {
-  letter-spacing: 0.25em;
+  letter-spacing: 0.04em;
 }
 
 .settings-btn-action {
@@ -872,7 +876,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
   padding: 3px 8px;
   border-radius: 3px;
   cursor: pointer;
