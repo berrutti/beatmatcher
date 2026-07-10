@@ -308,7 +308,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
@@ -464,7 +464,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
@@ -498,7 +498,7 @@ onUnmounted(() => {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;

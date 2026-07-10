@@ -66,33 +66,7 @@
         @seek="props.deck.seekTo"
       />
 
-      <div class="deck__bpm-header">
-        <div
-          class="deck__bpm-value-wrap"
-          :class="{ 'deck__bpm-value-wrap--empty': !props.deck.trackLoaded }"
-          @click="onBpmValueClick"
-        >
-          <input
-            v-if="editingBpm"
-            ref="bpmInputEl"
-            v-model="bpmInputValue"
-            class="deck__bpm-input-header"
-            type="number"
-            min="20"
-            step="0.01"
-            @blur="onBpmInputBlur"
-            @keydown.enter="onBpmInputBlur"
-            @keydown.escape="editingBpm = false"
-          />
-          <span
-            class="deck__bpm-value-header"
-            :class="{ 'deck__bpm-value-header--empty': !props.deck.trackLoaded }"
-            :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
-            >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
-          >
-        </div>
-        <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
-      </div>
+      <DeckBpmHeader :deck="props.deck" />
     </div>
 
     <div v-else class="deck__body">
@@ -171,33 +145,7 @@
               </template>
             </div>
 
-            <div class="deck__bpm-header">
-              <div
-                class="deck__bpm-value-wrap"
-                :class="{ 'deck__bpm-value-wrap--empty': !props.deck.trackLoaded }"
-                @click="onBpmValueClick"
-              >
-                <input
-                  v-if="editingBpm"
-                  ref="bpmInputEl"
-                  v-model="bpmInputValue"
-                  class="deck__bpm-input-header"
-                  type="number"
-                  min="20"
-                  step="0.01"
-                  @blur="onBpmInputBlur"
-                  @keydown.enter="onBpmInputBlur"
-                  @keydown.escape="editingBpm = false"
-                />
-                <span
-                  class="deck__bpm-value-header"
-                  :class="{ 'deck__bpm-value-header--empty': !props.deck.trackLoaded }"
-                  :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
-                  >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
-                >
-              </div>
-              <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
-            </div>
+            <DeckBpmHeader :deck="props.deck" />
           </div>
 
           <div class="deck__transport-cluster">
@@ -306,7 +254,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
@@ -316,6 +264,7 @@ import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/deck/PhaseRing.vue';
 import TrackWaveform from '@renderer/components/deck/TrackWaveform.vue';
+import DeckBpmHeader from '@renderer/components/deck/DeckBpmHeader.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 
 const { t } = useI18n();
@@ -342,28 +291,6 @@ const artistTitle = computed(() => {
   if (match.length < 2) return { artist: null, title: name };
   return { artist: match[0], title: match.slice(1).join(' - ') };
 });
-
-const editingBpm = ref(false);
-const bpmInputEl = ref<HTMLInputElement | null>(null);
-const bpmInputValue = ref('');
-
-async function startEditingBpm() {
-  bpmInputValue.value = props.deck.targetBpm?.toFixed(2) ?? '';
-  editingBpm.value = true;
-  await nextTick();
-  bpmInputEl.value?.select();
-}
-
-function onBpmValueClick() {
-  if (!props.deck.trackLoaded) return;
-  startEditingBpm();
-}
-
-function onBpmInputBlur() {
-  const val = parseFloat(bpmInputValue.value);
-  if (!isNaN(val) && val > 0) props.deck.setTargetBpm(val);
-  editingBpm.value = false;
-}
 
 // The slider value is negated: like a CDJ pitch fader, up = slower, down = faster.
 function onSliderInput(e: Event) {
@@ -439,8 +366,6 @@ function onConfirmLoad() {
 </script>
 
 <style scoped>
-/* Root & top-level state modifiers
-   ------------------------------------------------------------------ */
 .deck {
   min-width: 0;
   display: flex;
@@ -505,70 +430,6 @@ function onConfirmLoad() {
   opacity: 0.6;
 }
 
-.deck__bpm-header {
-  display: flex;
-  align-items: center;
-  gap: 0.25em;
-  flex-shrink: 0;
-}
-
-.deck__bpm-value-wrap {
-  position: relative;
-  cursor: text;
-}
-
-.deck__bpm-value-wrap--empty {
-  cursor: default;
-}
-
-.deck__bpm-value-header {
-  font-size: 0.8em;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--deck-accent);
-  letter-spacing: -0.01em;
-  display: block;
-}
-
-.deck__bpm-value-header--empty {
-  color: var(--color-muted);
-  opacity: 0.6;
-}
-
-.deck__bpm-input-header {
-  position: absolute;
-  inset: 0;
-  font-size: 0.8em;
-  font-weight: 700;
-  font-family: var(--font);
-  font-variant-numeric: tabular-nums;
-  background: transparent;
-  border: none;
-  box-shadow: 0 1px 0 0 var(--deck-accent);
-  color: var(--deck-accent);
-  width: 100%;
-  padding: 0;
-  outline: none;
-  line-height: inherit;
-  appearance: textfield;
-}
-.deck__bpm-input-header::-webkit-inner-spin-button,
-.deck__bpm-input-header::-webkit-outer-spin-button {
-  display: none;
-}
-.deck__bpm-input-header::selection {
-  background: var(--deck-accent);
-  color: var(--color-bg);
-}
-
-.deck__bpm-unit-header {
-  font-size: 0.6em;
-  color: var(--color-muted);
-  letter-spacing: 0.04em;
-}
-
-/* Normal (full-size) layout
-   ------------------------------------------------------------------ */
 .deck__body {
   flex: 1;
   min-height: 0;
@@ -723,8 +584,6 @@ function onConfirmLoad() {
   color: var(--color-text);
 }
 
-/* Transport buttons (nudge / cue / play / loop in-out)
-   ------------------------------------------------------------------ */
 /* 2 columns x 3 rows of (near-)square buttons: shaping the whole cluster's
    box with this ratio (the same height:100%+aspect-ratio trick already used
    by .deck__phase-ring next to it) sizes it correctly up front, so the
@@ -843,8 +702,6 @@ function onConfirmLoad() {
   background: color-mix(in srgb, var(--color-accent-amber) 18%, transparent);
 }
 
-/* Pitch slider
-   ------------------------------------------------------------------ */
 .deck__pitch-wrapper {
   display: flex;
   flex-direction: column;
@@ -919,8 +776,6 @@ function onConfirmLoad() {
   cursor: default;
 }
 
-/* Compact layout (big-library mode)
-   ------------------------------------------------------------------ */
 .deck__compact {
   flex: 1;
   min-width: 0;

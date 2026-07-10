@@ -4,14 +4,16 @@ import { useTooltip } from '@renderer/composables/useTooltip';
 const { scheduleShow, hide } = useTooltip();
 
 function onEnter(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
+  if (!(e.currentTarget instanceof HTMLElement)) return;
+  const el = e.currentTarget;
   const text = el.dataset.tooltipText;
   if (!text) return;
   scheduleShow(text, el);
 }
 
-function onLeave() {
-  hide();
+function onLeave(e: MouseEvent) {
+  if (!(e.currentTarget instanceof HTMLElement)) return;
+  hide(e.currentTarget);
 }
 
 export const vTooltip: Directive<HTMLElement, string | null | undefined> = {
@@ -28,6 +30,6 @@ export const vTooltip: Directive<HTMLElement, string | null | undefined> = {
     el.removeEventListener('mouseenter', onEnter);
     el.removeEventListener('mouseleave', onLeave);
     el.removeEventListener('mousedown', onLeave);
-    hide();
+    hide(el);
   }
 };

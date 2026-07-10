@@ -18,8 +18,7 @@ export const STORAGE_KEYS = {
   sessionDeckLane: 'beatmatcher.ui.session-deck-lane',
   sessionLaneHeight: 'beatmatcher.ui.session-lane-height',
   sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height',
-  browserColumns: 'beatmatcher.ui.browser-columns',
-  playlistListColumns: 'beatmatcher.ui.playlist-list-columns'
+  browserColumns: 'beatmatcher.ui.browser-columns'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

@@ -40,15 +40,11 @@ function averageAmpForColumn(
 // Vertical extent a waveform bar occupies at a given column, so the playhead
 // line can be clipped to match instead of always spanning the full height.
 function barVerticalExtent(
-  peaks: Float32Array,
-  col: number,
-  cw: number,
+  avgAmp: number,
   ch: number,
   ampScale: number
 ): { yTop: number; yBot: number } {
-  const numPoints = (peaks.length / 4) | 0;
   const halfCh = ch / 2;
-  const avgAmp = averageAmpForColumn(peaks, col, cw, numPoints);
   const displayAmp = avgAmp >= 0.001 ? Math.sqrt(avgAmp) : 0;
   const barPx = (displayAmp * halfCh * ampScale) | 0;
   return {
@@ -121,7 +117,7 @@ export function buildWaveformImageData(
       const avgMid = sumAmp > 0 ? sumG / sumAmp : 0;
       const avgHigh = sumAmp > 0 ? sumB / sumAmp : 0;
       const [r, g, b] = spectralColor(avgBass, avgMid, avgHigh);
-      const { yTop, yBot } = barVerticalExtent(peaks, col, cw, ch, ampScale);
+      const { yTop, yBot } = barVerticalExtent(avgAmp, ch, ampScale);
       for (let row = yTop; row < yBot; row++) {
         const idx = (row * cw + col) * 4;
         px[idx] = r;

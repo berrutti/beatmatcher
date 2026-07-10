@@ -15,6 +15,7 @@ const state = reactive<TooltipState>({
 });
 
 let showTimer: ReturnType<typeof setTimeout> | null = null;
+let owner: HTMLElement | null = null;
 
 function clearShowTimer() {
   if (showTimer !== null) {
@@ -25,6 +26,7 @@ function clearShowTimer() {
 
 function scheduleShow(text: string, target: HTMLElement) {
   clearShowTimer();
+  owner = target;
   showTimer = setTimeout(() => {
     state.text = text;
     state.targetRect = target.getBoundingClientRect();
@@ -32,9 +34,16 @@ function scheduleShow(text: string, target: HTMLElement) {
   }, TOOLTIP_SHOW_DELAY_MS);
 }
 
-function hide() {
+// `target` identifies which element is asking to hide the tooltip. The
+// state is a single shared singleton across every v-tooltip instance, so
+// without this check one element unmounting (or its mouseleave firing)
+// could hide a tooltip that actually belongs to a different, still-visible
+// element.
+function hide(target?: HTMLElement) {
+  if (target && target !== owner) return;
   clearShowTimer();
   state.visible = false;
+  owner = null;
 }
 
 export function useTooltip() {

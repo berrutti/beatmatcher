@@ -15,12 +15,14 @@ vi.mock('@renderer/utils/storage', () => ({
     playlists: 'playlists',
     savedTracks: 'savedTracks',
     bigLibrary: 'bigLibrary',
-    browserColumns: 'browserColumns',
-    playlistListColumns: 'playlistListColumns'
+    browserColumns: 'browserColumns'
   }
 }));
 
-import { useCollectionStore, METADATA_FIELDS, isMetadataField } from '../collection';
+import { storageGet } from '@renderer/utils/storage';
+import { useCollectionStore, METADATA_FIELDS, COLUMN_FIELDS, isMetadataField } from '../collection';
+
+const mockedStorageGet = vi.mocked(storageGet);
 
 describe('collection store: column visibility', () => {
   beforeEach(() => {
@@ -44,7 +46,7 @@ describe('collection store: column visibility', () => {
 
   it('refuses to hide the last visible column', () => {
     const store = useCollectionStore();
-    for (const field of METADATA_FIELDS) {
+    for (const field of COLUMN_FIELDS) {
       if (store.isColumnVisible(field) && field !== 'title') store.toggleColumn(field);
     }
     expect(store.orderedVisibleColumns).toEqual(['title']);
@@ -58,7 +60,7 @@ describe('collection store: column visibility', () => {
   it('never leaves zero visible columns no matter which one is hidden last', () => {
     const store = useCollectionStore();
     store.toggleColumn('artist');
-    expect(store.orderedVisibleColumns).toEqual(['title']);
+    expect(store.orderedVisibleColumns).toEqual(['title', 'bpm', 'added']);
     store.toggleColumn('title');
     expect(store.orderedVisibleColumns.length).toBeGreaterThanOrEqual(1);
   });
@@ -89,7 +91,7 @@ describe('collection store: column reordering', () => {
     const order = store.columnOrder;
     expect(order.indexOf('artist')).toBeLessThan(order.indexOf('title'));
     // the visible order (what the table actually renders) reflects the move
-    expect(store.orderedVisibleColumns).toEqual(['artist', 'title']);
+    expect(store.orderedVisibleColumns).toEqual(['artist', 'title', 'bpm', 'added']);
   });
 
   it('is a no-op for a field that is not in the order (defensive check)', () => {
@@ -102,26 +104,139 @@ describe('collection store: column reordering', () => {
   });
 });
 
-describe('collection store: column widths', () => {
+describe('collection store: column shares', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
 
-  it('falls back to a sensible default width before any resize', () => {
+  it('falls back to a sensible default share before any resize', () => {
     const store = useCollectionStore();
-    expect(store.getColumnWidth('title')).toBeGreaterThan(0);
+    expect(store.getColumnShare('title')).toBeGreaterThan(0);
   });
 
-  it('persists a manually set width', () => {
+  it('persists a manually set share', () => {
     const store = useCollectionStore();
-    store.setColumnWidth('title', 200);
-    expect(store.getColumnWidth('title')).toBe(200);
+    store.setColumnShare('title', 200);
+    expect(store.getColumnShare('title')).toBe(200);
   });
 
-  it('clamps widths to a sane minimum instead of allowing zero/negative widths', () => {
+  it('clamps shares to a sane minimum instead of allowing zero/negative shares', () => {
     const store = useCollectionStore();
-    store.setColumnWidth('title', -50);
-    expect(store.getColumnWidth('title')).toBeGreaterThanOrEqual(40);
+    store.setColumnShare('title', -50);
+    expect(store.getColumnShare('title')).toBeGreaterThan(0);
+  });
+});
+
+describe('collection store: bpm/added as adjustable columns', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it('shows bpm and added by default alongside title and artist', () => {
+    const store = useCollectionStore();
+    expect(store.isColumnVisible('bpm')).toBe(true);
+    expect(store.isColumnVisible('added')).toBe(true);
+  });
+
+  it('toggles bpm hidden and back to visible', () => {
+    const store = useCollectionStore();
+    store.toggleColumn('bpm');
+    expect(store.isColumnVisible('bpm')).toBe(false);
+    store.toggleColumn('bpm');
+    expect(store.isColumnVisible('bpm')).toBe(true);
+  });
+
+  it('reorders bpm in front of a metadata column', () => {
+    const store = useCollectionStore();
+    store.reorderColumn('bpm', 'title');
+    expect(store.columnOrder.indexOf('bpm')).toBeLessThan(store.columnOrder.indexOf('title'));
+    expect(store.orderedVisibleColumns.indexOf('bpm')).toBeLessThan(
+      store.orderedVisibleColumns.indexOf('title')
+    );
+  });
+});
+
+describe('collection store: bpm/added migration for pre-existing installs', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('keeps bpm and added visible for a store saved before they were adjustable columns', () => {
+    mockedStorageGet.mockImplementation((key: string, fallback: unknown) => {
+      if (key === 'browserColumns') {
+        return { order: ['title', 'artist'], visible: ['title'], widths: {} };
+      }
+      return fallback;
+    });
+
+    const store = useCollectionStore();
+
+    expect(store.isColumnVisible('bpm')).toBe(true);
+    expect(store.isColumnVisible('added')).toBe(true);
+    expect(store.columnOrder).toContain('bpm');
+    expect(store.columnOrder).toContain('added');
+  });
+
+  it('respects an explicit bpm/added visibility choice made after the migration already ran', () => {
+    mockedStorageGet.mockImplementation((key: string, fallback: unknown) => {
+      if (key === 'browserColumns') {
+        return {
+          order: ['title', 'artist', 'bpm', 'added'],
+          visible: ['title', 'added'],
+          widths: {}
+        };
+      }
+      return fallback;
+    });
+
+    const store = useCollectionStore();
+
+    expect(store.isColumnVisible('bpm')).toBe(false);
+    expect(store.isColumnVisible('added')).toBe(true);
+  });
+});
+
+describe('collection store: widths-to-shares migration', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('reuses a pre-existing pixel width as the initial share for that column', () => {
+    mockedStorageGet.mockImplementation((key: string, fallback: unknown) => {
+      if (key === 'browserColumns') {
+        return {
+          order: ['title', 'artist', 'bpm', 'added'],
+          visible: ['title', 'artist', 'bpm', 'added'],
+          widths: { title: 200, artist: 100 }
+        };
+      }
+      return fallback;
+    });
+
+    const store = useCollectionStore();
+
+    expect(store.getColumnShare('title')).toBe(200);
+    expect(store.getColumnShare('artist')).toBe(100);
+  });
+
+  it('prefers an already-migrated shares key over a stale widths key', () => {
+    mockedStorageGet.mockImplementation((key: string, fallback: unknown) => {
+      if (key === 'browserColumns') {
+        return {
+          order: ['title', 'artist', 'bpm', 'added'],
+          visible: ['title', 'artist', 'bpm', 'added'],
+          shares: { title: 300 },
+          widths: { title: 200 }
+        };
+      }
+      return fallback;
+    });
+
+    const store = useCollectionStore();
+
+    expect(store.getColumnShare('title')).toBe(300);
   });
 });
 

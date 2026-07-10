@@ -5,7 +5,7 @@ import type { LoadableTrack } from '@renderer/stores/decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { indexByBasename } from '@renderer/utils/path';
 
-type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
+export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | 'missing';
 
 export type SavedTrack = {
   path: string;
@@ -42,12 +42,23 @@ export const METADATA_FIELDS = [
 export type MetadataField = (typeof METADATA_FIELDS)[number];
 export type TrackMetadata = Record<MetadataField, string | null>;
 
-const DEFAULT_VISIBLE_COLUMNS: MetadataField[] = ['title', 'artist'];
+// bpm and added aren't editable metadata (they come from analysis and from
+// the track's addedAt timestamp, not TrackMetadata), but they render as
+// ordinary columns, so they share the same visibility/order/width system.
+export const COLUMN_FIELDS = [...METADATA_FIELDS, 'bpm', 'added'] as const;
+export type ColumnField = (typeof COLUMN_FIELDS)[number];
 
-// Title gets a narrower default than the other text fields since it's
-// usually the shortest of the bunch; the rest default to a size that fits
-// typical values without being read from disk.
-const DEFAULT_COLUMN_WIDTH: Record<MetadataField, number> = {
+const DEFAULT_VISIBLE_COLUMNS: ColumnField[] = ['title', 'artist', 'bpm', 'added'];
+
+// Every resizable column's width is a unitless share of the space left over
+// after the fixed/pinned columns, not a pixel value - a column's actual
+// pixel width is always its share divided by the sum of every visible
+// resizable column's share (see utils/columnShares.ts). Title gets a
+// smaller default share than the other text fields since it's usually the
+// shortest of the bunch. bpm/added aren't here: their content (a short
+// number, a short date) never needs user-adjustable width, so they're
+// rendered at a fixed pixel width instead of joining this system.
+const DEFAULT_COLUMN_SHARE: Record<MetadataField, number> = {
   title: 140,
   artist: 130,
   album: 130,
@@ -63,29 +74,49 @@ const DEFAULT_COLUMN_WIDTH: Record<MetadataField, number> = {
 };
 
 type ColumnsState = {
-  order: MetadataField[];
-  visible: MetadataField[];
-  widths: Partial<Record<MetadataField, number>>;
+  order: ColumnField[];
+  visible: ColumnField[];
+  shares: Partial<Record<MetadataField, number>>;
+};
+
+// The shape columns were stored in before widths became shares: `widths`
+// held literal pixel values. Reusing those same numbers as shares still
+// preserves the user's intent (only the ratio between them matters for a
+// share), so loading old data needs nothing more than reading the old key.
+type StoredColumnsState = Partial<Omit<ColumnsState, 'shares'>> & {
+  shares?: Partial<Record<MetadataField, number>>;
+  widths?: Partial<Record<MetadataField, number>>;
 };
 
 export function isMetadataField(value: unknown): value is MetadataField {
   return typeof value === 'string' && METADATA_FIELDS.some((field) => field === value);
 }
 
+export function isColumnField(value: unknown): value is ColumnField {
+  return typeof value === 'string' && COLUMN_FIELDS.some((field) => field === value);
+}
+
 function loadColumnsState(): ColumnsState {
   const fallback: ColumnsState = {
-    order: [...METADATA_FIELDS],
+    order: [...COLUMN_FIELDS],
     visible: [...DEFAULT_VISIBLE_COLUMNS],
-    widths: {}
+    shares: {}
   };
-  const stored = storageGet<Partial<ColumnsState> | null>(STORAGE_KEYS.browserColumns, null);
+  const stored = storageGet<StoredColumnsState | null>(STORAGE_KEYS.browserColumns, null);
   if (!stored || !Array.isArray(stored.order) || !Array.isArray(stored.visible)) return fallback;
-  const validOrder = stored.order.filter(isMetadataField);
-  // A field added to METADATA_FIELDS after this was saved won't be in the
+  const validOrder = stored.order.filter(isColumnField);
+  // A field added to COLUMN_FIELDS after this was saved won't be in the
   // stored order yet; append it so it still shows up in the column picker.
-  const order = [...validOrder, ...METADATA_FIELDS.filter((f) => !validOrder.includes(f))];
-  const visible = stored.visible.filter(isMetadataField);
-  return { order, visible, widths: stored.widths ?? {} };
+  const order = [...validOrder, ...COLUMN_FIELDS.filter((f) => !validOrder.includes(f))];
+  const validVisible = stored.visible.filter(isColumnField);
+  // bpm/added were permanent, non-optional columns before they joined this
+  // system, so a store saved before that never listed them in `visible`.
+  // Without this, upgrading would silently hide two previously-always-shown
+  // columns instead of just making them optional going forward.
+  const visible: ColumnField[] = validOrder.includes('bpm')
+    ? validVisible
+    : [...validVisible, 'bpm', 'added'];
+  return { order, visible, shares: stored.shares ?? stored.widths ?? {} };
 }
 
 export type CollectionEntry = {
@@ -180,11 +211,11 @@ export const useCollectionStore = defineStore('collection', () => {
     columnsState.order.filter((f) => columnsState.visible.includes(f))
   );
 
-  function isColumnVisible(field: MetadataField): boolean {
+  function isColumnVisible(field: ColumnField): boolean {
     return columnsState.visible.includes(field);
   }
 
-  function toggleColumn(field: MetadataField) {
+  function toggleColumn(field: ColumnField) {
     const idx = columnsState.visible.indexOf(field);
     if (idx !== -1) {
       // At least one column must stay visible, or the table would have
@@ -200,7 +231,7 @@ export const useCollectionStore = defineStore('collection', () => {
   // `beforeField` is the field `field` should land in front of, or null to
   // move it to the end. Working in terms of fields rather than indices keeps
   // this correct regardless of how many hidden columns sit between them.
-  function reorderColumn(field: MetadataField, beforeField: MetadataField | null) {
+  function reorderColumn(field: ColumnField, beforeField: ColumnField | null) {
     const order = columnsState.order;
     const fromIndex = order.indexOf(field);
     if (fromIndex === -1) return;
@@ -210,12 +241,17 @@ export const useCollectionStore = defineStore('collection', () => {
     persistColumnsState();
   }
 
-  function getColumnWidth(field: MetadataField): number {
-    return columnsState.widths[field] ?? DEFAULT_COLUMN_WIDTH[field];
+  function getColumnShare(field: MetadataField): number {
+    return columnsState.shares[field] ?? DEFAULT_COLUMN_SHARE[field];
   }
 
-  function setColumnWidth(field: MetadataField, widthPx: number) {
-    columnsState.widths[field] = Math.max(40, Math.round(widthPx));
+  // The meaningful floor is a pixel width, but that depends on how much
+  // space is actually available at resize time, which this store has no
+  // notion of - so it's enforced by the caller (see Browser.vue's use of
+  // utils/columnShares.ts) before a share ever reaches here. This just
+  // guards against a share collapsing to zero or negative outright.
+  function setColumnShare(field: MetadataField, share: number) {
+    columnsState.shares[field] = Math.max(1, share);
     persistColumnsState();
   }
 
@@ -271,6 +307,25 @@ export const useCollectionStore = defineStore('collection', () => {
     { deep: true }
   );
 
+  function createCollectionEntry(params: {
+    name: string;
+    size: number;
+    path: string | null;
+  }): CollectionEntry {
+    const hasSaved = params.path !== null && getSaved(params.path) !== null;
+    return {
+      id: `${params.name}-${Math.random().toString(36).slice(2)}`,
+      name: params.name,
+      size: params.size,
+      path: params.path,
+      status: hasSaved ? 'ready' : 'idle',
+      silenceEnd: 0,
+      ...emptyMetadata(),
+      addedAt: Date.now(),
+      lastAnalysisFailed: false
+    };
+  }
+
   async function addFilesFromPaths(paths: string[]) {
     const newPaths = paths.filter((p) => !tracks.some((t) => t.path === p));
     if (newPaths.length === 0) return;
@@ -279,18 +334,7 @@ export const useCollectionStore = defineStore('collection', () => {
       const size = sizes[i];
       if (size === null || size === undefined) return;
       const name = path.split('/').pop() ?? path;
-      const hasSaved = getSaved(path) !== null;
-      const entry: CollectionEntry = {
-        id: `${name}-${Math.random().toString(36).slice(2)}`,
-        name,
-        size,
-        path,
-        status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0,
-        ...emptyMetadata(),
-        addedAt: Date.now(),
-        lastAnalysisFailed: false
-      };
+      const entry = createCollectionEntry({ name, size, path });
       tracks.push(entry);
       queueTagRead(entry.id);
     });
@@ -309,18 +353,7 @@ export const useCollectionStore = defineStore('collection', () => {
         }
         continue;
       }
-      const hasSaved = path !== null && getSaved(path) !== null;
-      const entry: CollectionEntry = {
-        id: `${file.name}-${Math.random().toString(36).slice(2)}`,
-        name: file.name,
-        size: file.size,
-        path,
-        status: hasSaved ? 'ready' : 'idle',
-        silenceEnd: 0,
-        ...emptyMetadata(),
-        addedAt: Date.now(),
-        lastAnalysisFailed: false
-      };
+      const entry = createCollectionEntry({ name: file.name, size: file.size, path });
       tracks.push(entry);
       queueTagRead(entry.id);
     }
@@ -340,6 +373,12 @@ export const useCollectionStore = defineStore('collection', () => {
         savedTracks[newPath] = { ...saved, path: newPath };
         delete savedTracks[oldPath];
         persistSaved();
+      }
+      const overrides = metadataOverrides[oldPath];
+      if (overrides) {
+        metadataOverrides[newPath] = overrides;
+        delete metadataOverrides[oldPath];
+        persistMetadataOverrides();
       }
       for (const p of playlists) {
         const idx = p.paths.indexOf(oldPath);
@@ -444,8 +483,8 @@ export const useCollectionStore = defineStore('collection', () => {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
         path: entry.path
       });
-      entry.silenceEnd = result.silenceEnd;
       if (result.bpm !== null && result.bpm > 0) {
+        entry.silenceEnd = result.silenceEnd;
         saveSaved({
           path: entry.path,
           name: entry.name,
@@ -455,19 +494,25 @@ export const useCollectionStore = defineStore('collection', () => {
         });
         entry.status = 'ready';
         entry.lastAnalysisFailed = false;
-      } else if (hadPreviousBpm) {
-        entry.status = 'ready';
-        entry.lastAnalysisFailed = true;
       } else {
-        entry.status = 'error';
+        markAnalysisFallback(entry, hadPreviousBpm);
       }
     } catch {
-      if (hadPreviousBpm) {
-        entry.status = 'ready';
-        entry.lastAnalysisFailed = true;
-      } else {
-        entry.status = 'error';
-      }
+      markAnalysisFallback(entry, hadPreviousBpm);
+    }
+  }
+
+  // A failed or low-confidence reanalysis keeps the previously saved BPM
+  // grid intact rather than discarding it; entry.silenceEnd is deliberately
+  // left untouched here since setBpm reads it to derive beatOffset, and a
+  // detector run that wasn't trusted enough to update the BPM shouldn't be
+  // trusted to shift the beat grid either.
+  function markAnalysisFallback(entry: CollectionEntry, hadPreviousBpm: boolean) {
+    if (hadPreviousBpm) {
+      entry.status = 'ready';
+      entry.lastAnalysisFailed = true;
+    } else {
+      entry.status = 'error';
     }
   }
 
@@ -694,7 +739,7 @@ export const useCollectionStore = defineStore('collection', () => {
     isColumnVisible,
     toggleColumn,
     reorderColumn,
-    getColumnWidth,
-    setColumnWidth
+    getColumnShare,
+    setColumnShare
   };
 });

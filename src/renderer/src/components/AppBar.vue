@@ -129,7 +129,7 @@ async function onConfirm() {
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--label-letter-spacing);
   height: 22px;
   border-radius: 3px;
   cursor: pointer;
