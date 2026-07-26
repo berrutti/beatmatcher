@@ -279,7 +279,9 @@ pub struct DeckState {
     pub(crate) bpm: Option<f64>,
     pub(crate) beat_offset_frames: f64,
     pub(crate) playback_rate: f64,
-    pub(crate) nudge_factor: f64, // 1 + nudge_percent/100
+    pub(crate) jog_hold_factor: f64, // 1 + nudge_percent/100
+    pub(crate) jog_pending: f64,
+    jog_filtered: f64,
     pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
@@ -314,7 +316,9 @@ impl DeckState {
             bpm: None,
             beat_offset_frames: 0.0,
             playback_rate: 1.0,
-            nudge_factor: 1.0,
+            jog_hold_factor: 1.0,
+            jog_pending: 0.0,
+            jog_filtered: 0.0,
             quantize: true,
             bass_band: Arc::new(Vec::new()),
             mid_band: Arc::new(Vec::new()),
@@ -345,7 +349,9 @@ impl DeckState {
     pub(crate) fn reset(&mut self) {
         self.eject();
         self.playback_rate = 1.0;
-        self.nudge_factor = 1.0;
+        self.jog_hold_factor = 1.0;
+        self.jog_pending = 0.0;
+        self.jog_filtered = 0.0;
     }
 
     // Threshold for "position is at the cue point" used by press_cue.
@@ -353,8 +359,8 @@ impl DeckState {
     const CUE_THRESHOLD_FRAMES: f64 = 50.0;
 
     // Matches the floor set_playback_rate applies to playback_rate, so the
-    // effective step (playback_rate * nudge_factor) can never reach zero.
-    const NUDGE_FACTOR_MIN: f64 = 0.1;
+    // effective step (playback_rate * jog_hold_factor) can never reach zero.
+    const JOG_FACTOR_MIN: f64 = 0.1;
 
     pub fn press_cue(&mut self) -> CuePressOutcome {
         if self.total_frames == 0 {
@@ -433,12 +439,41 @@ impl DeckState {
         self.main_pos / self.device_sample_rate as f64
     }
 
+    // Applied per block rather than per frame, so the decay does not change with
+    // the buffer size.
+    const JOG_FILTER_ALPHA: f64 = 0.25;
+
+    // First pass, worth revisiting on the hardware. Percent is the unit the nudge
+    // button already speaks, so the two inputs stay directly comparable.
+    const JOG_SCRUB_MS_PER_TICK: f64 = 2.0;
+    const JOG_PERCENT_PER_TICK: f64 = 0.35;
+
+    /// Zeroing the accumulator here is what lets a released wheel settle without
+    /// anything having to notice it was released.
+    pub(crate) fn consume_jog(&mut self) {
+        let pending = std::mem::take(&mut self.jog_pending);
+        if pending == 0.0 && self.jog_filtered == 0.0 {
+            return;
+        }
+        self.jog_filtered += (pending - self.jog_filtered) * Self::JOG_FILTER_ALPHA;
+        if self.jog_filtered.abs() < f64::EPSILON {
+            self.jog_filtered = 0.0;
+        }
+        if self.is_playing {
+            return;
+        }
+        let frames_per_tick = Self::JOG_SCRUB_MS_PER_TICK / 1000.0 * self.device_sample_rate as f64;
+        let scrubbed = self.main_pos + self.jog_filtered * frames_per_tick;
+        self.main_pos = scrubbed.clamp(0.0, self.total_frames as f64);
+        self.cue_pos = self.main_pos;
+    }
+
     // Nudge as a percentage bend, floored so the effective step stays positive.
     // The UI clamps its own slider, but a hand-edited .bms or a MIDI mapping can
     // reach this directly, and a percent below -100 would drive playback
     // backwards through next_pos and read_at, which both assume forward motion.
     pub fn set_nudge_percent(&mut self, percent: f64) {
-        self.nudge_factor = (1.0 + percent / 100.0).max(Self::NUDGE_FACTOR_MIN);
+        self.jog_hold_factor = (1.0 + percent / 100.0).max(Self::JOG_FACTOR_MIN);
     }
 
     // Reads the next master output sample and advances main_pos.
@@ -476,6 +511,10 @@ impl DeckState {
         let RenderTargets { main, cue } = targets;
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
+
+        // Ahead of the settled check below, because scrubbing a paused deck is
+        // the one thing that has to happen on a block that renders no audio.
+        self.consume_jog();
 
         // Not gated on `cue_active`: the cue path is silenced at its output,
         // and its filter state has to keep tracking the main path.
@@ -562,7 +601,13 @@ impl DeckState {
     }
 
     fn next_pos(&mut self, pos: f64, is_main: bool) -> f64 {
-        let step = self.playback_rate * self.nudge_factor;
+        // One bend for both inputs. A held nudge button is a wheel turned at a
+        // perfectly steady velocity, so it is the constant case of the same
+        // quantity: with the wheel idle this reduces to `jog_hold_factor` exactly,
+        // which is what keeps recorded sessions replaying frame for frame.
+        let wheel = self.jog_filtered * Self::JOG_PERCENT_PER_TICK / 100.0;
+        let factor = (self.jog_hold_factor + wheel).max(Self::JOG_FACTOR_MIN);
+        let step = self.playback_rate * factor;
         let new_pos = pos + step;
 
         // A degenerate loop (loop_end at or before cue_point) is treated as no
@@ -596,7 +641,7 @@ impl DeckState {
         if !self.is_playing || overshoot_frames <= 0.0 {
             return;
         }
-        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.nudge_factor;
+        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.jog_hold_factor;
         if self.loop_active && self.loop_end > self.cue_point && pos >= self.loop_end {
             let dur = self.loop_end - self.cue_point;
             pos = self.cue_point + (pos - self.loop_end).rem_euclid(dur);
@@ -692,14 +737,103 @@ mod tests {
         let mut d = DeckState::loaded_for_testing(SR, 1.0);
         d.set_nudge_percent(-200.0);
         assert!(
-            d.nudge_factor >= 0.1,
-            "nudge_factor must stay positive, got {}",
-            d.nudge_factor
+            d.jog_hold_factor >= 0.1,
+            "jog_hold_factor must stay positive, got {}",
+            d.jog_hold_factor
         );
         d.set_nudge_percent(4.0);
-        assert!((d.nudge_factor - 1.04).abs() < 1e-9);
+        assert!((d.jog_hold_factor - 1.04).abs() < 1e-9);
         d.set_nudge_percent(-4.0);
-        assert!((d.nudge_factor - 0.96).abs() < 1e-9);
+        assert!((d.jog_hold_factor - 0.96).abs() < 1e-9);
+    }
+
+    // The port of nudge onto the wheel's velocity model is only safe if a held
+    // button still advances the playhead exactly as far as it used to, or every
+    // recorded session drifts against its own offline render.
+    #[test]
+    fn a_held_nudge_advances_exactly_as_it_did_before_the_wheel_existed() {
+        for (rate, percent) in [(1.0, 4.0), (1.0, -4.0), (0.94, 8.0), (1.08, -2.0)] {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.playback_rate = rate;
+            deck.set_nudge_percent(percent);
+            deck.is_playing = true;
+
+            let expected = rate * (1.0 + percent / 100.0);
+            for _ in 0..8 {
+                deck.consume_jog();
+                let before = deck.main_pos;
+                let after = deck.next_pos(before, false);
+                assert!(
+                    (after - before - expected).abs() < 1e-12,
+                    "rate {rate} percent {percent}: stepped {}, expected {expected}",
+                    after - before
+                );
+            }
+        }
+    }
+
+    // An idle wheel must contribute nothing at all, not merely something small.
+    #[test]
+    fn an_untouched_wheel_leaves_a_paused_deck_where_it_was() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 1000.0;
+        for _ in 0..64 {
+            deck.consume_jog();
+        }
+        assert_eq!(deck.main_pos, 1000.0);
+    }
+
+    // What replaces the release watchdog: the accumulator reads zero once the
+    // hand is gone, so the bend has to settle on its own.
+    #[test]
+    fn a_released_wheel_rings_down_to_no_bend() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.is_playing = true;
+        for _ in 0..8 {
+            deck.jog_pending += 20.0;
+            deck.consume_jog();
+        }
+        let bent = deck.next_pos(0.0, false);
+        assert!(bent > 1.0, "a turned wheel should bend forward, got {bent}");
+
+        for _ in 0..400 {
+            deck.consume_jog();
+        }
+        assert_eq!(deck.next_pos(0.0, false), 1.0);
+    }
+
+    #[test]
+    fn a_turned_wheel_scrubs_a_paused_deck_both_ways() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 20_000.0;
+
+        deck.jog_pending += 50.0;
+        deck.consume_jog();
+        assert!(deck.main_pos > 20_000.0);
+        assert_eq!(deck.cue_pos, deck.main_pos);
+
+        let forward = deck.main_pos;
+        deck.jog_pending -= 200.0;
+        deck.consume_jog();
+        assert!(deck.main_pos < forward);
+    }
+
+    // Scrubbing backwards past the start would read at a negative frame.
+    #[test]
+    fn scrubbing_cannot_leave_the_track() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 10.0;
+        for _ in 0..200 {
+            deck.jog_pending -= 500.0;
+            deck.consume_jog();
+        }
+        assert!(deck.main_pos >= 0.0);
+
+        for _ in 0..2000 {
+            deck.jog_pending += 500.0;
+            deck.consume_jog();
+        }
+        assert!(deck.main_pos <= deck.total_frames as f64);
     }
 
     // --- ChannelStrip gain smoothing ---

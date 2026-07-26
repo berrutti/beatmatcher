@@ -359,9 +359,9 @@ impl XfaderAssign {
         }
     }
 
-    /// Anything unrecognized reads as `Thru`, so a session written by a newer
-    /// build degrades to an inert crossfader rather than failing to load.
-    pub fn from_str(value: &str) -> Self {
+    /// Infallible so that a session written by a newer build degrades to an inert
+    /// crossfader rather than failing to load.
+    pub fn from_str_or_thru(value: &str) -> Self {
         match value {
             "a" => XfaderAssign::A,
             "b" => XfaderAssign::B,
@@ -569,10 +569,10 @@ mod tests {
     #[test]
     fn an_assign_round_trips_and_an_unknown_one_reads_as_thru() {
         for assign in [XfaderAssign::Thru, XfaderAssign::A, XfaderAssign::B] {
-            assert_eq!(XfaderAssign::from_str(assign.as_str()), assign);
+            assert_eq!(XfaderAssign::from_str_or_thru(assign.as_str()), assign);
         }
-        assert_eq!(XfaderAssign::from_str("c"), XfaderAssign::Thru);
-        assert_eq!(XfaderAssign::from_str(""), XfaderAssign::Thru);
+        assert_eq!(XfaderAssign::from_str_or_thru("c"), XfaderAssign::Thru);
+        assert_eq!(XfaderAssign::from_str_or_thru(""), XfaderAssign::Thru);
     }
 
     // The v1 manifests must keep their hashes or every session recorded before

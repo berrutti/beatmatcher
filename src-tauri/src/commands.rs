@@ -73,6 +73,17 @@ pub(crate) struct DeckSyncPayload {
     pub(crate) position_sec: f64,
     pub(crate) loop_active: bool,
     pub(crate) loop_region_cleared: bool,
+    // A controller press never sees `LoopOutResult`, so the region it just
+    // defined has to arrive with the state rather than as a return value.
+    pub(crate) loop_region: Option<LoopRegionPayload>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoopRegionPayload {
+    start_sec: f64,
+    end_sec: f64,
+    beats: i64,
 }
 
 impl DeckSyncPayload {
@@ -89,16 +100,35 @@ impl DeckSyncPayload {
             position_sec: deck_state.position_sec(),
             loop_active: deck_state.loop_active,
             loop_region_cleared,
+            loop_region: loop_region_of(deck_state, sr),
         }
     }
+}
+
+/// The loop's start is the cue point, which `loop_in` and `set_loop_region` both
+/// write, so a defined region is `loop_end` above it rather than a pair.
+fn loop_region_of(deck_state: &audio::DeckState, sr: f64) -> Option<LoopRegionPayload> {
+    if sr <= 0.0 || deck_state.loop_end <= deck_state.cue_point {
+        return None;
+    }
+    let start_sec = deck_state.cue_point / sr;
+    let end_sec = deck_state.loop_end / sr;
+    Some(LoopRegionPayload {
+        start_sec,
+        end_sec,
+        beats: match deck_state.bpm {
+            Some(bpm) => ((end_sec - start_sec) * bpm / 60.0).round() as i64,
+            None => 0,
+        },
+    })
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoopOutResult {
-    start_sec: f64,
-    end_sec: f64,
-    beats: i64,
+    pub(crate) start_sec: f64,
+    pub(crate) end_sec: f64,
+    pub(crate) beats: i64,
     // Some when a late quantized press caused an immediate seek; frontend must sync positionCache.
     seek_to_sec: Option<f64>,
 }
@@ -268,7 +298,7 @@ pub(crate) async fn load_track(
         deck_state.bpm = None;
         deck_state.beat_offset_frames = 0.0;
         deck_state.playback_rate = 1.0;
-        deck_state.nudge_factor = 1.0;
+        deck_state.jog_hold_factor = 1.0;
         deck_state.bass_band = Arc::new(Vec::new());
         deck_state.mid_band = Arc::new(Vec::new());
         deck_state.high_band = Arc::new(Vec::new());
@@ -450,16 +480,7 @@ pub(crate) fn set_loop_active(
     deck: String,
     active: bool,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.loop_active = active;
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    if !active {
-        state.log("exit_loop", serde_json::json!({ "deck": deck }));
-    }
-    Ok(payload)
+    state.set_loop_active(ParamOrigin::Ui, &deck, active)
 }
 
 #[tauri::command]
@@ -487,18 +508,7 @@ pub(crate) fn set_loop_in(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (payload, cue_sec, quantize) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let sec = loop_in_core(&mut deck_state)?;
-        let payload = DeckSyncPayload::from_deck(&deck_state, true);
-        (payload, sec, deck_state.quantize)
-    };
-    state.log(
-        "loop_in",
-        serde_json::json!({ "deck": deck, "cue_sec": cue_sec, "quantized": quantize }),
-    );
-    Ok(payload)
+    state.loop_in(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -506,25 +516,7 @@ pub(crate) fn set_loop_out(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<Option<LoopOutResult>, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (result, quantize) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let quantize = deck_state.quantize;
-        (loop_out_core(&mut deck_state)?, quantize)
-    };
-    if let Some(r) = &result {
-        state.log(
-            "loop_out",
-            serde_json::json!({
-                "deck": deck,
-                "start_sec": r.start_sec,
-                "end_sec": r.end_sec,
-                "beats": r.beats,
-                "quantized": quantize,
-            }),
-        );
-    }
-    Ok(result)
+    state.loop_out(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -575,15 +567,12 @@ pub(crate) fn set_playback_rate(
     deck: String,
     rate: f64,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .playback_rate = rate.max(0.1);
-    state.log(
-        "set_playback_rate",
-        serde_json::json!({ "deck": deck, "rate": rate }),
-    );
-    Ok(())
+    state.set_playback_rate(ParamOrigin::Ui, &deck, rate)
+}
+
+#[tauri::command]
+pub(crate) fn set_pitch_range(state: tauri::State<'_, AppState>, percent: f64) {
+    state.audio.set_pitch_range_percent(percent);
 }
 
 #[tauri::command]
@@ -598,7 +587,7 @@ pub(crate) fn set_nudge(
         deck_state.set_nudge_percent(percent);
         NudgeResult {
             position_sec: deck_state.position_sec(),
-            effective_rate: deck_state.playback_rate * deck_state.nudge_factor,
+            effective_rate: deck_state.playback_rate * deck_state.jog_hold_factor,
         }
     };
     state.log(
@@ -698,20 +687,7 @@ pub(crate) fn set_reloop(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if deck_state.loop_end > deck_state.cue_point {
-            deck_state.main_pos = deck_state.cue_point;
-            deck_state.cue_pos = deck_state.cue_point;
-            if deck_state.is_playing {
-                deck_state.loop_active = true;
-            }
-        }
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    state.log("reloop", serde_json::json!({ "deck": deck }));
-    Ok(payload)
+    state.reloop(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -1076,7 +1052,7 @@ pub(crate) async fn render_session_to_file(
                 let json = std::fs::read_to_string(&session_path)
                     .map_err(|e| format!("{session_path}: {e}"))?;
                 std::sync::Arc::new(
-                    serde_json::from_str::<crate::offline_render::SessionFile>(&json)
+                    crate::offline_render::SessionFile::parse(&json)
                         .map_err(|e| format!("parse error: {e}"))?,
                 )
             }
@@ -1122,7 +1098,7 @@ pub(crate) fn set_xfader_assign(
     state.set_xfader_assign(
         ParamOrigin::Ui,
         deck,
-        session_core::XfaderAssign::from_str(assign),
+        session_core::XfaderAssign::from_str_or_thru(assign),
     )
 }
 

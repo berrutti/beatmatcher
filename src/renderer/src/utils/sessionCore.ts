@@ -28,6 +28,7 @@ import init, {
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
+  bmsVersion as wasmBmsVersion,
   editConstants as wasmEditConstants,
   laneSpecs as wasmLaneSpecs,
   mixerParams as wasmMixerParams
@@ -153,6 +154,10 @@ export function blockBounds(
   };
 }
 
+export function bmsVersion(): number {
+  return wasmBmsVersion();
+}
+
 export type EditConstants = {
   eqMinDb: number;
   eqMaxDb: number;
@@ -184,7 +189,7 @@ export type LaneSpec = {
   unit: LaneUnit;
 };
 
-export type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
+type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
 
 const laneSpecCache = new Map<string, Record<EditableLaneKey, LaneSpec>>();
 

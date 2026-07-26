@@ -78,7 +78,7 @@ struct DeckState {
     track_pos_sec: f64,
     pos_mark_ms: f64,
     rate: f64,
-    nudge_factor: f64,
+    jog_hold_factor: f64,
     loop_start_sec: Option<f64>,
     loop_end_sec: Option<f64>,
     loop_active: bool,
@@ -101,13 +101,13 @@ struct DeckState {
 fn make_deck_state() -> DeckState {
     DeckState {
         rate: 1.0,
-        nudge_factor: 1.0,
+        jog_hold_factor: 1.0,
         clip_rate: 1.0,
         ..Default::default()
     }
 }
 
-// Mirrors the engine's position stepping (playback_rate * nudge_factor,
+// Mirrors the engine's position stepping (playback_rate * jog_hold_factor,
 // wrapping inside an active loop). Without this, a bare resume `play` after a
 // stop would inherit a stale position from the last explicit position event,
 // and clip edits would bake that wrong position into synthesized events.
@@ -115,7 +115,7 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
     let playing = deck.clip_start_ms.is_some() || deck.loop_active;
     if playing && ms > deck.pos_mark_ms {
         let mut pos =
-            deck.track_pos_sec + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.nudge_factor;
+            deck.track_pos_sec + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.jog_hold_factor;
         if deck.loop_active {
             if let (Some(ls), Some(le)) = (deck.loop_start_sec, deck.loop_end_sec) {
                 let duration = le - ls;
@@ -131,9 +131,9 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
 
 // Record the effective rate (rate*nudge) at `ms` so finalize_clip can slice a
 // clip's wall span into constant-rate wave segments. Call after any change to
-// `deck.rate` or `deck.nudge_factor`.
+// `deck.rate` or `deck.jog_hold_factor`.
 fn record_eff_rate(deck: &mut DeckState, ms: f64) {
-    deck.eff_rate_changes.push((ms, deck.rate * deck.nudge_factor));
+    deck.eff_rate_changes.push((ms, deck.rate * deck.jog_hold_factor));
 }
 
 // Effective rate in force at `ms` (the last recorded change at/before it).
@@ -399,7 +399,7 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 // load_track), and the sim mirrors it; recorded sessions re-seed the
                 // rate right after, but an edited stream may not.
                 deck.rate = 1.0;
-                deck.nudge_factor = 1.0;
+                deck.jog_hold_factor = 1.0;
                 // A freshly loaded track has no grid until set_beat_grid/analyze.
                 deck.bpm = None;
                 deck.beat_offset_sec = 0.0;
@@ -498,7 +498,7 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
             "set_nudge" => {
                 if let Some(percent) = ev.percent {
-                    deck.nudge_factor = 1.0 + percent / 100.0;
+                    deck.jog_hold_factor = 1.0 + percent / 100.0;
                     record_eff_rate(deck, ev.elapsed_ms);
                 }
             }

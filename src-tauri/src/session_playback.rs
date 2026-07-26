@@ -57,8 +57,8 @@ pub(crate) async fn preload_session(
     .await
     .map_err(|e| e.to_string())??;
 
-    let session: crate::offline_render::SessionFile =
-        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+    let session = crate::offline_render::SessionFile::parse(&json)
+        .map_err(|e| format!("parse error: {e}"))?;
 
     index_session(&state, path, session).await;
 
@@ -148,7 +148,13 @@ pub(crate) async fn update_session_events(
     index_session(
         &state,
         path,
-        crate::offline_render::SessionFile { events, mixer },
+        // Current rather than carried over: whatever version the file was read as,
+        // loading ported its events, so what the editor holds is this vocabulary.
+        crate::offline_render::SessionFile {
+            version: session_core::BMS_VERSION,
+            events,
+            mixer,
+        },
     )
     .await;
 
@@ -181,8 +187,8 @@ pub(crate) async fn start_session_playback(
                 .await
                 .map_err(|e| e.to_string())??
             };
-            let parsed: crate::offline_render::SessionFile =
-                serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+            let parsed = crate::offline_render::SessionFile::parse(&json)
+                .map_err(|e| format!("parse error: {e}"))?;
             let parsed = Arc::new(parsed);
             state
                 .session_files
@@ -320,7 +326,7 @@ pub(crate) async fn start_session_playback(
                 d.loop_active = ds.loop_active;
                 d.loop_end = ds.loop_end.min(total_frames as f64);
                 d.playback_rate = ds.rate;
-                d.nudge_factor = ds.nudge_factor;
+                d.jog_hold_factor = ds.jog_hold_factor;
                 d.bpm = ds.bpm;
                 d.beat_offset_frames = ds.beat_offset_frames;
                 d.is_playing = false;

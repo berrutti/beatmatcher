@@ -212,11 +212,18 @@ const LSB_OFFSET: u8 = 32;
 const MAX_CONTROLLER: u8 = 127;
 const SEVEN_BIT_MAX: f64 = 127.0;
 const FOURTEEN_BIT_MAX: f64 = 16383.0;
+const RELATIVE_CENTRE: i32 = 64;
+const SEVEN_BIT_WRAP: i32 = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Resolution {
     SevenBit,
     FourteenBit,
+    // Two ways this surface reports a control with no position. The jog sits at
+    // `RELATIVE_CENTRE` and deviates by however far it was turned; the browse
+    // encoder sends a signed step, 1 or 127 for one detent either way.
+    CentreDelta,
+    SignedStep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,7 +270,7 @@ impl Source {
                     },
                     Half::Msb,
                 );
-                if resolution == Resolution::SevenBit {
+                if resolution != Resolution::FourteenBit {
                     return Ok(vec![high]);
                 }
                 let low = controller
@@ -303,6 +310,28 @@ enum Action {
     CueToggle {
         deck: String,
     },
+    PlayToggle {
+        deck: String,
+    },
+    TransportCue {
+        deck: String,
+    },
+    LoopIn {
+        deck: String,
+    },
+    LoopOut {
+        deck: String,
+    },
+    LoopExitOrReloop {
+        deck: String,
+    },
+    TempoFader {
+        deck: String,
+    },
+    Jog {
+        deck: String,
+    },
+    Browse,
     // Master scope, so it names no deck and takes its range from the master
     // descriptor rather than a strip's.
     XfaderPosition,
@@ -387,7 +416,75 @@ fn cue_toggle(channel: u8, note: u8, deck: &str) -> Binding {
     }
 }
 
+fn play_toggle(channel: u8, note: u8, deck: &str) -> Binding {
+    Binding {
+        source: Source::Note { channel, note },
+        action: Action::PlayToggle {
+            deck: deck.to_string(),
+        },
+    }
+}
+
+fn transport_cue(channel: u8, note: u8, deck: &str) -> Binding {
+    Binding {
+        source: Source::Note { channel, note },
+        action: Action::TransportCue {
+            deck: deck.to_string(),
+        },
+    }
+}
+
+fn deck_note(channel: u8, note: u8, action: Action) -> Binding {
+    Binding {
+        source: Source::Note { channel, note },
+        action,
+    }
+}
+
+fn relative(channel: u8, controller: u8, resolution: Resolution, action: Action) -> Binding {
+    Binding {
+        source: Source::ControlChange {
+            channel,
+            controller,
+            resolution,
+        },
+        action,
+    }
+}
+
+/// `None` for anything that reports a position, which has to be read through the
+/// binding's range instead.
+fn relative_delta(resolution: Resolution, value: u8) -> Option<i32> {
+    let value = i32::from(value);
+    match resolution {
+        Resolution::CentreDelta => Some(value - RELATIVE_CENTRE),
+        Resolution::SignedStep => Some(if value >= RELATIVE_CENTRE {
+            value - SEVEN_BIT_WRAP
+        } else {
+            value
+        }),
+        Resolution::SevenBit | Resolution::FourteenBit => None,
+    }
+}
+
+fn tempo_fader(channel: u8, controller: u8, deck: &str) -> Binding {
+    Binding {
+        source: Source::ControlChange {
+            channel,
+            controller,
+            resolution: Resolution::FourteenBit,
+        },
+        action: Action::TempoFader {
+            deck: deck.to_string(),
+        },
+    }
+}
+
 /// Read off a DDJ-FLX6 rather than taken from its documentation.
+///
+/// One loop covers mixer and deck controls alike because a mixer strip is wired
+/// to its channel permanently while a deck half re-channels on deck select, and
+/// both end up on the channel of the deck they address.
 fn ddj_flx6() -> Profile {
     let mut bindings = Vec::new();
     for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
@@ -396,11 +493,44 @@ fn ddj_flx6() -> Profile {
         bindings.push(deck_param(channel, 15, deck, "eq", "low"));
         bindings.push(deck_param(channel, 19, deck, "fader", "gain"));
         bindings.push(cue_toggle(channel, 84, deck));
+        bindings.push(play_toggle(channel, 11, deck));
+        bindings.push(transport_cue(channel, 12, deck));
+        bindings.push(deck_note(
+            channel,
+            16,
+            Action::LoopIn {
+                deck: deck.to_string(),
+            },
+        ));
+        bindings.push(deck_note(
+            channel,
+            17,
+            Action::LoopOut {
+                deck: deck.to_string(),
+            },
+        ));
+        bindings.push(deck_note(
+            channel,
+            77,
+            Action::LoopExitOrReloop {
+                deck: deck.to_string(),
+            },
+        ));
+        bindings.push(tempo_fader(channel, 0, deck));
+        bindings.push(relative(
+            channel,
+            33,
+            Resolution::CentreDelta,
+            Action::Jog {
+                deck: deck.to_string(),
+            },
+        ));
     }
     for (controller, deck) in [(23, "A"), (24, "B"), (25, "C"), (26, "D")] {
         bindings.push(deck_param(6, controller, deck, "filter", "value"));
     }
     bindings.push(xfader(6, 31));
+    bindings.push(relative(6, 64, Resolution::SignedStep, Action::Browse));
     Profile::new(bindings).expect("the built-in DDJ-FLX6 profile")
 }
 
@@ -484,6 +614,35 @@ enum Move {
     Cue {
         deck: String,
     },
+    Play {
+        deck: String,
+    },
+    CuePress {
+        deck: String,
+    },
+    CueRelease {
+        deck: String,
+    },
+    LoopIn {
+        deck: String,
+    },
+    LoopOut {
+        deck: String,
+    },
+    LoopExitOrReloop {
+        deck: String,
+    },
+    Tempo {
+        deck: String,
+        position: f64,
+    },
+    Jog {
+        deck: String,
+        ticks: i32,
+    },
+    Browse {
+        steps: i32,
+    },
     Xfader {
         position: f64,
     },
@@ -495,10 +654,26 @@ fn resolve_move(profile: &Profile, halves: &mut HighResolution, data: &[u8]) -> 
             channel: message.channel,
             controller: message.controller,
         })?;
+        // Ahead of the position maths, and ahead of `join`, so a relative control
+        // never leaves a half behind for a real pair to collide with.
+        if let Some(delta) = relative_delta(binding.source.resolution(), message.value) {
+            return match &binding.action {
+                Action::Jog { deck } => (delta != 0).then(|| Move::Jog {
+                    deck: deck.clone(),
+                    ticks: delta,
+                }),
+                Action::Browse => (delta != 0).then_some(Move::Browse { steps: delta }),
+                _ => None,
+            };
+        }
         let position = match binding.source.resolution() {
-            Resolution::SevenBit => f64::from(message.value) / SEVEN_BIT_MAX,
             Resolution::FourteenBit => {
                 f64::from(halves.join(index, half, message.value)) / FOURTEEN_BIT_MAX
+            }
+            // A relative control returned above, so it never reaches this; the arm
+            // is spelled out anyway so a new resolution has to be considered here.
+            Resolution::SevenBit | Resolution::CentreDelta | Resolution::SignedStep => {
+                f64::from(message.value) / SEVEN_BIT_MAX
             }
         };
         return match &binding.action {
@@ -509,26 +684,55 @@ fn resolve_move(profile: &Profile, halves: &mut HighResolution, data: &[u8]) -> 
                 position,
             }),
             Action::XfaderPosition => Some(Move::Xfader { position }),
-            Action::CueToggle { .. } => None,
+            Action::TempoFader { deck } => Some(Move::Tempo {
+                deck: deck.clone(),
+                position,
+            }),
+            Action::CueToggle { .. }
+            | Action::PlayToggle { .. }
+            | Action::TransportCue { .. }
+            | Action::LoopIn { .. }
+            | Action::LoopOut { .. }
+            | Action::LoopExitOrReloop { .. }
+            | Action::Jog { .. }
+            | Action::Browse => None,
         };
     }
 
     let message = parse_note_on(data)?;
-    // Cue is a toggle in the app but a momentary button on the controller.
-    if message.velocity == 0 {
-        return None;
-    }
     let (_, binding, _) = profile.resolve(Key::Note {
         channel: message.channel,
         note: message.note,
     })?;
-    let Action::CueToggle { deck } = &binding.action else {
-        return None;
-    };
-    Some(Move::Cue { deck: deck.clone() })
+    let pressed = message.velocity > 0;
+    match &binding.action {
+        // Toggles in the app, momentary buttons on the controller.
+        Action::CueToggle { deck } => pressed.then(|| Move::Cue { deck: deck.clone() }),
+        Action::PlayToggle { deck } => pressed.then(|| Move::Play { deck: deck.clone() }),
+        Action::TransportCue { deck } => Some(if pressed {
+            Move::CuePress { deck: deck.clone() }
+        } else {
+            Move::CueRelease { deck: deck.clone() }
+        }),
+        Action::LoopIn { deck } => pressed.then(|| Move::LoopIn { deck: deck.clone() }),
+        Action::LoopOut { deck } => pressed.then(|| Move::LoopOut { deck: deck.clone() }),
+        Action::LoopExitOrReloop { deck } => {
+            pressed.then(|| Move::LoopExitOrReloop { deck: deck.clone() })
+        }
+        Action::DeckParam { .. }
+        | Action::XfaderPosition
+        | Action::TempoFader { .. }
+        | Action::Jog { .. }
+        | Action::Browse => None,
+    }
 }
 
-pub(crate) fn apply(state: &crate::AppState, midi: &MidiState, data: &[u8]) {
+pub(crate) fn apply(
+    state: &crate::AppState,
+    midi: &MidiState,
+    app: &tauri::AppHandle,
+    data: &[u8],
+) {
     // The same gate the keyboard has in `useKeyboard.ts`. Outside performance the
     // session scheduler owns the strips, and it writes them through
     // `apply_deck_command`, which does not pass the `set_deck_param` funnel, so
@@ -549,6 +753,37 @@ pub(crate) fn apply(state: &crate::AppState, midi: &MidiState, data: &[u8]) {
         Some(Move::Cue { deck }) => {
             state
                 .toggle_cue_active(crate::ParamOrigin::Midi, &deck)
+                .ok();
+        }
+        Some(Move::Play { deck }) => {
+            state.toggle_play(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::CuePress { deck }) => {
+            state.press_cue(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::CueRelease { deck }) => {
+            state.release_cue(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::LoopIn { deck }) => {
+            state.loop_in(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::LoopOut { deck }) => {
+            state.loop_out(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::LoopExitOrReloop { deck }) => {
+            state.exit_or_reloop(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::Jog { deck, ticks }) => {
+            state.jog(crate::ParamOrigin::Midi, &deck, ticks).ok();
+        }
+        // Selection is not engine state, so this is the one move Rust forwards
+        // rather than acts on.
+        Some(Move::Browse { steps }) => {
+            app.emit("midi-browse", steps).ok();
+        }
+        Some(Move::Tempo { deck, position }) => {
+            state
+                .set_playback_rate_from_fader(crate::ParamOrigin::Midi, &deck, position)
                 .ok();
         }
         Some(Move::Xfader { position }) => {
@@ -916,6 +1151,210 @@ mod tests {
             resolve_move(&profile, &mut halves, &note_on(1, 84, 0)),
             None
         );
+    }
+
+    #[test]
+    fn a_play_press_toggles_and_its_release_does_not() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 11, 127)),
+            Some(Move::Play {
+                deck: "A".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 11, 0)),
+            None
+        );
+    }
+
+    // Dropping the release would leave the deck previewing from the cue point
+    // forever, with the button already back up.
+    #[test]
+    fn a_transport_cue_press_and_release_are_both_moves() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 12, 127)),
+            Some(Move::CuePress {
+                deck: "A".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 12, 0)),
+            Some(Move::CueRelease {
+                deck: "A".to_string()
+            })
+        );
+    }
+
+    // The transport cue and the headphone cue are different buttons on different
+    // halves of the surface, and only the latter has an LED the app drives.
+    #[test]
+    fn transport_cue_is_not_the_headphone_cue() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(2, 84, 127)),
+            Some(Move::Cue {
+                deck: "C".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(2, 12, 127)),
+            Some(Move::CuePress {
+                deck: "C".to_string()
+            })
+        );
+        assert_eq!(
+            profile.cue_keys.get("C"),
+            Some(&Key::Note {
+                channel: 2,
+                note: 84
+            })
+        );
+    }
+
+    // Deck select re-channels a deck half, so a transport press on the C layer
+    // has to reach deck C without the profile knowing layers exist.
+    #[test]
+    fn transport_reaches_all_four_decks_by_channel() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
+            assert_eq!(
+                resolve_move(&profile, &mut halves, &note_on(channel, 11, 127)),
+                Some(Move::Play {
+                    deck: deck.to_string()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_three_loop_buttons_resolve_to_their_own_moves() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 16, 127)),
+            Some(Move::LoopIn {
+                deck: "B".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 17, 127)),
+            Some(Move::LoopOut {
+                deck: "B".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 77, 127)),
+            Some(Move::LoopExitOrReloop {
+                deck: "B".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 16, 0)),
+            None
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 17, 0)),
+            None
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 77, 0)),
+            None
+        );
+    }
+
+    // Read off the hardware: the tempo fader is cc 0 with its low half at cc 32,
+    // and the low half arrives first.
+    #[test]
+    fn the_tempo_fader_is_a_high_resolution_pair() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+
+        resolve_move(&profile, &mut halves, &control_change(0, 32, 0));
+        let bottom = resolve_move(&profile, &mut halves, &control_change(0, 0, 0));
+        assert_eq!(
+            bottom,
+            Some(Move::Tempo {
+                deck: "A".to_string(),
+                position: 0.0
+            })
+        );
+
+        resolve_move(&profile, &mut halves, &control_change(0, 0, 127));
+        let top = resolve_move(&profile, &mut halves, &control_change(0, 32, 127));
+        assert_eq!(
+            top,
+            Some(Move::Tempo {
+                deck: "A".to_string(),
+                position: 1.0
+            })
+        );
+    }
+
+    // Read off the hardware: the jog rests at 64 and the values seen turning it
+    // slowly were 63 and 70, so it reports deviation rather than position.
+    #[test]
+    fn the_jog_reports_deviation_from_its_centre() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(0, 33, 70)),
+            Some(Move::Jog {
+                deck: "A".to_string(),
+                ticks: 6
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(0, 33, 63)),
+            Some(Move::Jog {
+                deck: "A".to_string(),
+                ticks: -1
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(0, 33, 64)),
+            None
+        );
+    }
+
+    // The other relative encoding on this surface: one detent either way, which
+    // read as 1 and 127 rather than as a deviation from 64.
+    #[test]
+    fn the_browse_encoder_reports_a_signed_step() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(6, 64, 1)),
+            Some(Move::Browse { steps: 1 })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(6, 64, 127)),
+            Some(Move::Browse { steps: -1 })
+        );
+    }
+
+    // A relative control declares no low half, so binding one must not reserve
+    // the cc 32 above it and steal a real address.
+    #[test]
+    fn a_relative_control_claims_no_low_half() {
+        let profile = ddj_flx6();
+        assert!(profile
+            .resolve(Key::ControlChange {
+                channel: 0,
+                controller: 65
+            })
+            .is_none());
+        assert!(profile
+            .resolve(Key::ControlChange {
+                channel: 6,
+                controller: 96
+            })
+            .is_none());
     }
 
     #[test]

@@ -33,6 +33,15 @@ struct TransportChange {
     state: DeckSyncPayload,
 }
 
+/// Rate rides its own event because the frontend derives the displayed bpm and
+/// pitch offset from it, rather than storing it as the engine does.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RateChange {
+    deck: String,
+    rate: f64,
+}
+
 // Cue is not a manifest param, so it cannot be addressed by slot and param the
 // way the rest can. It still reaches the UI on this channel, under a slot name
 // the mixer store dispatches on.
@@ -43,6 +52,7 @@ enum Address {
     Xfader,
     XfaderAssign(String),
     Transport(String),
+    Rate(String),
 }
 
 /// One lock over both, so a mark cannot land its cleared flag in the batch that
@@ -115,6 +125,10 @@ impl EnginePush {
         self.insert(origin, Address::Transport(deck.to_string()));
     }
 
+    pub(crate) fn mark_rate(&self, origin: ParamOrigin, deck: &str) {
+        self.insert(origin, Address::Rate(deck.to_string()));
+    }
+
     fn take(&self) -> Pending {
         let mut pending = self
             .pending
@@ -135,6 +149,7 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
         let pending = push.take();
         let loops_cleared = pending.loops_cleared;
         let mut transport: Vec<TransportChange> = Vec::new();
+        let mut rates: Vec<RateChange> = Vec::new();
         let batch: Vec<ParamChange> = pending
             .dirty
             .into_iter()
@@ -148,6 +163,15 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
                         loops_cleared.contains(&deck),
                     );
                     transport.push(TransportChange { deck, state });
+                    None
+                }
+                Address::Rate(deck) => {
+                    let rate = audio
+                        .deck(&deck)?
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .playback_rate;
+                    rates.push(RateChange { deck, rate });
                     None
                 }
                 Address::Param(deck, slot, param) => {
@@ -208,6 +232,9 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
         }
         if !transport.is_empty() {
             app.emit("engine-transport", transport).ok();
+        }
+        if !rates.is_empty() {
+            app.emit("engine-rate", rates).ok();
         }
     });
 }
@@ -311,8 +338,29 @@ mod tests {
         push.mark_transport(ParamOrigin::Midi, "A", false);
         push.mark(ParamOrigin::Midi, "A", "fader", "gain");
         push.mark_cue(ParamOrigin::Midi, "A");
+        push.mark_rate(ParamOrigin::Midi, "A");
 
-        assert_eq!(push.take().dirty.len(), 3);
+        assert_eq!(push.take().dirty.len(), 4);
+    }
+
+    // What bounds a tempo fader sweep: 14 bits of travel is thousands of writes,
+    // and the UI only needs where it came to rest.
+    #[test]
+    fn a_tempo_sweep_collapses_to_one_rate_per_deck() {
+        let push = EnginePush::new();
+        for _ in 0..2000 {
+            push.mark_rate(ParamOrigin::Midi, "A");
+        }
+        push.mark_rate(ParamOrigin::Midi, "B");
+
+        assert_eq!(push.take().dirty.len(), 2);
+    }
+
+    #[test]
+    fn a_ui_rate_move_is_never_pushed_back() {
+        let push = EnginePush::new();
+        push.mark_rate(ParamOrigin::Ui, "A");
+        assert!(push.take().dirty.is_empty());
     }
 
     #[test]

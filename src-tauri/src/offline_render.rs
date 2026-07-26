@@ -250,8 +250,7 @@ pub fn render_and_compare(
     }
 
     let json = std::fs::read_to_string(session_path).map_err(|e| format!("{session_path}: {e}"))?;
-    let session: SessionFile =
-        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+    let session = SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))?;
 
     let rendered = render_session(&session, sample_rate, reference.len())?;
 
@@ -544,7 +543,7 @@ mod golden {
     // Touches every mixer param so the golden covers the whole strip.
     fn session_json(source: &str) -> String {
         format!(
-            r#"{{"events":[
+            r#"{{"version":2,"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512}},
 {{"elapsed_ms":0,"type":"load_track","deck":"A","path":"{source}"}},
 {{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.9}},
@@ -905,7 +904,8 @@ mod param_addressing {
     use super::*;
 
     fn render(events: &str) -> Vec<f32> {
-        let json = format!(r#"{{"events":[{events}]}}"#).replace("__SOURCE__", &source_wav_path());
+        let json = format!(r#"{{"version":2,"events":[{events}]}}"#)
+            .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&json).expect("parse session");
         render_session(&session, SAMPLE_RATE, 0).expect("render session")
     }
@@ -980,7 +980,7 @@ mod param_addressing {
     #[test]
     fn a_session_recorded_on_a_mixer_this_build_lacks_is_refused() {
         let json = format!(
-            r#"{{"mixer":{{"id":"isolator","hash":"deadbeefdeadbeef"}},"events":[{PREAMBLE}{STOP}]}}"#
+            r#"{{"version":2,"mixer":{{"id":"isolator","hash":"deadbeefdeadbeef"}},"events":[{PREAMBLE}{STOP}]}}"#
         )
         .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&json).expect("parse session");
@@ -996,7 +996,7 @@ mod param_addressing {
         let render_on = |manifest: &session_core::MixerManifest| {
             let header = serde_json::to_string(&manifest.header()).expect("header");
             let json = format!(
-                r#"{{"mixer":{header},"events":[{PREAMBLE}
+                r#"{{"version":2,"mixer":{header},"events":[{PREAMBLE}
 {{"elapsed_ms":100,"type":"set_param","deck":"A","slot":"eq","param":"low","value":0.0}},
 {STOP}]}}"#
             )
@@ -1015,7 +1015,7 @@ mod param_addressing {
     #[test]
     fn a_session_stamped_with_the_current_mixer_renders() {
         let header = serde_json::to_string(&session_core::CLASSIC_3BAND.header()).expect("header");
-        let stamped = format!(r#"{{"mixer":{header},"events":[{PREAMBLE}{STOP}]}}"#)
+        let stamped = format!(r#"{{"version":2,"mixer":{header},"events":[{PREAMBLE}{STOP}]}}"#)
             .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&stamped).expect("parse session");
         assert_eq!(

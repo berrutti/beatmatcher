@@ -137,6 +137,7 @@ export const useSettingsStore = defineStore('settings', () => {
   watch([bpmMin, bpmMax], ([min, max]) => invoke('set_bpm_range', { min, max }), {
     immediate: true
   });
+  watch(pitchRange, (v) => invoke('set_pitch_range', { percent: v }), { immediate: true });
 
   function setLimiterEnabled(enabled: boolean): void {
     limiterEnabled.value = enabled;

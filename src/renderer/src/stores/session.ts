@@ -6,6 +6,8 @@ import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
+import { portEvents } from '@renderer/utils/bmsCompatibility';
+import { bmsVersion } from '@renderer/utils/sessionCore';
 
 export type ParsedSession = {
   version: number;
@@ -233,7 +235,7 @@ export const useSessionStore = defineStore('session', () => {
       return false;
     }
 
-    const events: SessionEvent[] = raw.events ?? [];
+    const events: SessionEvent[] = portEvents(raw.events ?? [], raw.version);
     // Max, not last: a .bms with sub-ms ordering drift is not strictly sorted.
     let durationMs = 0;
     for (const event of events) {
@@ -243,7 +245,7 @@ export const useSessionStore = defineStore('session', () => {
     const filename = parts[parts.length - 1] ?? 'session.bms';
 
     session.value = {
-      version: raw.version ?? 1,
+      version: bmsVersion(),
       startedAt: raw.startedAt ?? '',
       // Sessions written before manifests existed have no header, and every one
       // of those was played on the classic mixer.

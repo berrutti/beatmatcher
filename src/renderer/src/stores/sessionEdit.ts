@@ -20,7 +20,8 @@ import {
   moveTransportBlock,
   trimTransportBlock,
   splitTransportBlock,
-  deleteTransportRanges
+  deleteTransportRanges,
+  bmsVersion
 } from '@renderer/utils/sessionCore';
 import {
   TransportBlock,
@@ -331,8 +332,14 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     syncToRust();
   }
 
+  // Stamped rather than carried over from `raw`: loading ports the events, so a
+  // session read as an older version is current by the time it can be saved.
   function serialize(session: ParsedSession): string {
-    return JSON.stringify({ ...session.raw, events: session.events }, null, 2);
+    return JSON.stringify(
+      { ...session.raw, version: bmsVersion(), events: session.events },
+      null,
+      2
+    );
   }
 
   async function save(): Promise<boolean> {

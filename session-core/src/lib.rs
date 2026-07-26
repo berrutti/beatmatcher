@@ -17,7 +17,7 @@ pub use clip_edit::{
     delete_transport_ranges, move_transport_block, split_transport_block, trim_transport_block,
     DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
-pub use event::{SessionCommand, SessionEvent, SessionFile};
+pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use param::{
     is_fader_gain, manifest_by_id, resolve_manifest, MixerHeader, MixerManifest, ParamDescriptor,
     xfader_gains, ParamKind, ParamScope, ParamUnit, SlotDescriptor, Taper, XfaderAssign,
@@ -185,6 +185,11 @@ mod wasm {
             })
             .collect();
         serde_json::Value::Object(map).to_string()
+    }
+
+    #[wasm_bindgen(js_name = bmsVersion)]
+    pub fn bms_version() -> u32 {
+        crate::BMS_VERSION
     }
 
     /// The shared edit/mixer constants, from the one place they are defined.

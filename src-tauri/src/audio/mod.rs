@@ -34,6 +34,10 @@ use stream::{
     find_output_device, MasterMonitor as Monitor, SendStream,
 };
 
+/// Stands in only until the frontend mirrors its own setting down, which it does
+/// on load. Matches the default in `settings.ts`.
+const DEFAULT_PITCH_RANGE_PERCENT: f64 = 10.0;
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
@@ -71,6 +75,9 @@ pub struct AppAudio {
     buffer_frames: Arc<AtomicU32>,
     pub bpm_min: Arc<AtomicU32>,
     pub bpm_max: Arc<AtomicU32>,
+    // Mirrored from the frontend, which owns it. A tempo fader arrives as a
+    // position that means nothing until something knows how far the fader travels.
+    pitch_range_percent: Mutex<f64>,
     _main_stream: Mutex<Option<SendStream>>,
     _cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
@@ -136,6 +143,7 @@ impl AppAudio {
             buffer_frames: Arc::new(AtomicU32::new(0)),
             bpm_min: Arc::new(AtomicU32::new(BPM_MIN as u32)),
             bpm_max: Arc::new(AtomicU32::new(BPM_MAX as u32)),
+            pitch_range_percent: Mutex::new(DEFAULT_PITCH_RANGE_PERCENT),
             default_device_id,
             _main_stream: Mutex::new(Some(SendStream(main_stream))),
             _cue_stream: Mutex::new(None),
@@ -230,6 +238,20 @@ impl AppAudio {
     pub fn set_bpm_range(&self, min: u32, max: u32) {
         self.bpm_min.store(min, Ordering::Relaxed);
         self.bpm_max.store(max, Ordering::Relaxed);
+    }
+
+    pub fn pitch_range_percent(&self) -> f64 {
+        *self
+            .pitch_range_percent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn set_pitch_range_percent(&self, percent: f64) {
+        *self
+            .pitch_range_percent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = percent;
     }
 
     pub fn get_buffer_frames(&self) -> u32 {

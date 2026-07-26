@@ -13,7 +13,7 @@ type EqBand = 'low' | 'mid' | 'high';
 export type XfaderAssign = 'thru' | 'a' | 'b';
 export type XfaderSide = 'a' | 'b';
 type EqState = { low: number; mid: number; high: number };
-export type EqBandSpec = MixerParamSpec & { param: EqBand };
+type EqBandSpec = MixerParamSpec & { param: EqBand };
 
 const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
 

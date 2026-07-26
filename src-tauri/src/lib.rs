@@ -99,7 +99,7 @@ impl SessionLogger {
     fn stop(&mut self) {
         let started_at = system_time_to_iso8601(self.start_wall);
         let log = serde_json::json!({
-            "version": 1,
+            "version": session_core::BMS_VERSION,
             "startedAt": started_at,
             "mixer": self.mixer.header(),
             "events": std::mem::take(&mut self.events),
@@ -135,6 +135,19 @@ pub struct AppState {
     // lets the controller reach the engine, this one lets the engine light the
     // controller's buttons without `AppState` knowing about `MidiState`.
     cue_feedback: std::sync::Mutex<Option<CueFeedback>>,
+}
+
+/// Matches the `step` on the frontend's pitch slider. A 14-bit fader resolves far
+/// finer than that, and rate is not a manifest param, so nothing else quantizes it:
+/// without this one sweep logs thousands of events that no slider drag could.
+const PITCH_STEPS_PER_PERCENT: f64 = 100.0;
+
+const MIN_PLAYBACK_RATE: f64 = 0.1;
+
+fn rate_from_fader(position: f64, pitch_range_percent: f64) -> f64 {
+    let offset_percent = pitch_range_percent * (position.clamp(0.0, 1.0) * 2.0 - 1.0);
+    let stepped = (offset_percent * PITCH_STEPS_PER_PERCENT).round() / PITCH_STEPS_PER_PERCENT;
+    1.0 + stepped / 100.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -347,6 +360,175 @@ impl AppState {
         self.engine_push
             .mark_transport(origin, deck, payload.loop_region_cleared);
         Ok(payload)
+    }
+
+    pub(crate) fn set_playback_rate(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        rate: f64,
+    ) -> Result<(), String> {
+        self.deck(deck)?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .playback_rate = rate.max(MIN_PLAYBACK_RATE);
+        self.log(
+            "set_playback_rate",
+            serde_json::json!({ "deck": deck, "rate": rate }),
+        );
+        self.engine_push.mark_rate(origin, deck);
+        Ok(())
+    }
+
+    pub(crate) fn set_playback_rate_from_fader(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        position: f64,
+    ) -> Result<(), String> {
+        // Clamped here as well as in the setter, so a rate the deck would refuse
+        // still compares equal to the one it is already holding.
+        let rate =
+            rate_from_fader(position, self.audio.pitch_range_percent()).max(MIN_PLAYBACK_RATE);
+        // Several fader positions land on one step, so without this the quantization
+        // in `rate_from_fader` would shorten no event list: it would repeat values.
+        if self
+            .deck(deck)?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .playback_rate
+            == rate
+        {
+            return Ok(());
+        }
+        self.set_playback_rate(origin, deck, rate)
+    }
+
+    /// Wheel ticks accumulate on the deck and the audio thread consumes them, so
+    /// this neither waits for a block nor pushes a position: the transport mark
+    /// makes the next flush read whatever the wheel moved.
+    pub(crate) fn jog(&self, origin: ParamOrigin, deck: &str, ticks: i32) -> Result<(), String> {
+        self.deck(deck)?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .jog_pending += f64::from(ticks);
+        self.engine_push.mark_transport(origin, deck, false);
+        Ok(())
+    }
+
+    pub(crate) fn loop_in(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (payload, cue_sec, quantize) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let sec = commands::loop_in_core(&mut deck_state)?;
+            let payload = DeckSyncPayload::from_deck(&deck_state, true);
+            (payload, sec, deck_state.quantize)
+        };
+        self.log(
+            "loop_in",
+            serde_json::json!({ "deck": deck, "cue_sec": cue_sec, "quantized": quantize }),
+        );
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        Ok(payload)
+    }
+
+    pub(crate) fn loop_out(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<Option<commands::LoopOutResult>, String> {
+        let deck_arc = self.deck(deck)?;
+        let (result, quantize) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let quantize = deck_state.quantize;
+            (commands::loop_out_core(&mut deck_state)?, quantize)
+        };
+        if let Some(region) = &result {
+            self.log(
+                "loop_out",
+                serde_json::json!({
+                    "deck": deck,
+                    "start_sec": region.start_sec,
+                    "end_sec": region.end_sec,
+                    "beats": region.beats,
+                    "quantized": quantize,
+                }),
+            );
+            self.engine_push.mark_transport(origin, deck, false);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn set_loop_active(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        active: bool,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let payload = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            deck_state.loop_active = active;
+            DeckSyncPayload::from_deck(&deck_state, false)
+        };
+        if !active {
+            self.log("exit_loop", serde_json::json!({ "deck": deck }));
+        }
+        self.engine_push.mark_transport(origin, deck, false);
+        Ok(payload)
+    }
+
+    pub(crate) fn reloop(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let payload = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            if deck_state.loop_end > deck_state.cue_point {
+                deck_state.main_pos = deck_state.cue_point;
+                deck_state.cue_pos = deck_state.cue_point;
+                if deck_state.is_playing {
+                    deck_state.loop_active = true;
+                }
+            }
+            DeckSyncPayload::from_deck(&deck_state, false)
+        };
+        self.log("reloop", serde_json::json!({ "deck": deck }));
+        self.engine_push.mark_transport(origin, deck, false);
+        Ok(payload)
+    }
+
+    /// The controller's third loop button, which the keyboard reaches by holding
+    /// shift over loop out. Resolved from engine state rather than mirrored from
+    /// the UI's own view of it.
+    pub(crate) fn exit_or_reloop(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (active, has_region) = {
+            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                deck_state.loop_active,
+                deck_state.loop_end > deck_state.cue_point,
+            )
+        };
+        if active {
+            return self.set_loop_active(origin, deck, false);
+        }
+        if has_region {
+            return self.reloop(origin, deck);
+        }
+        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(DeckSyncPayload::from_deck(&deck_state, false))
     }
 
     /// Cue is headphone routing rather than a mixer move, so it is not a
@@ -562,6 +744,7 @@ pub fn run() {
                     midi::apply(
                         midi_handle.state::<AppState>().inner(),
                         midi_handle.state::<midi::MidiState>().inner(),
+                        &midi_handle,
                         data,
                     );
                 }),
@@ -607,6 +790,7 @@ pub fn run() {
             commands::set_bpm_range,
             commands::set_buffer_size,
             commands::set_app_mode,
+            commands::set_pitch_range,
             commands::set_xfader_position,
             commands::set_xfader_assign,
             commands::set_cue_active,
@@ -653,6 +837,54 @@ fn confirm_quit(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A fader resting at its detent must play at exactly 1.0: a rate of 0.99999
+    // is an out-of-tune deck that looks in tune.
+    #[test]
+    fn a_centred_tempo_fader_is_exactly_unity() {
+        for range in [6.0, 8.0, 10.0, 16.0, 50.0, 100.0] {
+            assert_eq!(rate_from_fader(0.5, range), 1.0);
+        }
+    }
+
+    #[test]
+    fn the_tempo_fader_ends_span_the_pitch_range() {
+        assert_eq!(rate_from_fader(0.0, 10.0), 0.9);
+        assert_eq!(rate_from_fader(1.0, 10.0), 1.1);
+        assert_eq!(rate_from_fader(0.0, 100.0), 0.0);
+        assert_eq!(rate_from_fader(1.0, 100.0), 2.0);
+    }
+
+    #[test]
+    fn a_fader_position_outside_the_unit_interval_cannot_widen_the_range() {
+        assert_eq!(rate_from_fader(-0.5, 10.0), 0.9);
+        assert_eq!(rate_from_fader(2.0, 10.0), 1.1);
+    }
+
+    #[test]
+    fn a_fader_sweep_cannot_out_resolve_the_pitch_slider() {
+        const FOURTEEN_BIT_POSITIONS: i32 = 16384;
+        let range = 10.0;
+        let mut previous = f64::NAN;
+        let mut distinct = 0;
+        for step in 0..FOURTEEN_BIT_POSITIONS {
+            let position = f64::from(step) / f64::from(FOURTEEN_BIT_POSITIONS - 1);
+            let rate = rate_from_fader(position, range);
+            if rate != previous {
+                distinct += 1;
+                previous = rate;
+            }
+        }
+        // What the slider itself offers: -10.00 to +10.00 inclusive, in steps of 0.01.
+        assert_eq!(distinct, 2001);
+    }
+
+    #[test]
+    fn a_quantized_fader_still_reaches_both_ends_and_the_detent() {
+        assert_eq!(rate_from_fader(0.0, 8.0), 0.92);
+        assert_eq!(rate_from_fader(0.5, 8.0), 1.0);
+        assert_eq!(rate_from_fader(1.0, 8.0), 1.08);
+    }
 
     fn unix_secs(secs: u64) -> std::time::SystemTime {
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
@@ -745,7 +977,7 @@ mod tests {
             .take_pending()
             .expect("stop should produce pending JSON");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
-        assert_eq!(parsed["version"], 1);
+        assert_eq!(parsed["version"], 2);
         assert!(parsed["startedAt"].as_str().is_some());
         assert!(parsed["events"].is_array());
         assert_eq!(parsed["events"].as_array().unwrap().len(), 1);

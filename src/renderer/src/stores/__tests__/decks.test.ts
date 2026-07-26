@@ -150,7 +150,8 @@ describe('applyEngineTransport', () => {
       cuePointSec: 12.5,
       positionSec: 20,
       loopActive: true,
-      loopRegionCleared: false
+      loopRegionCleared: false,
+      loopRegion: null
     });
 
     expect(decks.deckA.loopPlaying).toBe(true);
@@ -169,9 +170,49 @@ describe('applyEngineTransport', () => {
       cuePointSec: 1,
       positionSec: 1,
       loopActive: false,
-      loopRegionCleared: true
+      loopRegionCleared: true,
+      loopRegion: null
     });
 
     expect(decks.deckB.loopRegion).toBeNull();
+  });
+
+  // Before the push carried the region, `setLoopOut` read it out of the invoke's
+  // return value, which a controller press never produces.
+  it('draws the region a controller press defined', () => {
+    const decks = useDecksStore();
+
+    decks.deckA.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 10,
+      positionSec: 11,
+      loopActive: true,
+      loopRegionCleared: false,
+      loopRegion: { startSec: 10, endSec: 14, beats: 8 }
+    });
+
+    expect(decks.deckA.loopRegion).toEqual({ startSec: 10, endSec: 14, beats: 8 });
+  });
+
+  // The guard that keeps carrying the region from being a regression: a payload
+  // without one must leave the cached region exactly as it was, which is what
+  // every transport push did before this field existed.
+  it('leaves a cached region alone when the payload carries none', () => {
+    const decks = useDecksStore();
+    const region = { startSec: 1, endSec: 2, beats: 4 };
+    decks.deckB.loopRegion = region;
+
+    decks.deckB.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 1,
+      positionSec: 1.5,
+      loopActive: false,
+      loopRegionCleared: false,
+      loopRegion: null
+    });
+
+    expect(decks.deckB.loopRegion).toEqual(region);
   });
 });

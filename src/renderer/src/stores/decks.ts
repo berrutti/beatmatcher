@@ -53,9 +53,12 @@ type DeckSyncPayload = {
   positionSec: number;
   loopActive: boolean;
   loopRegionCleared: boolean;
+  loopRegion: LoopRegion | null;
 };
 
 type TransportPush = DeckSyncPayload & { deck: DeckId };
+
+type RatePush = { deck: DeckId; rate: number };
 
 // The deck header shows BPM with two decimals; the audible rate is computed
 // from the rounded value so display and playback always agree.
@@ -120,6 +123,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
     if (payload.isPlaying) clockAtPlay = performance.now();
     if (payload.loopRegionCleared) {
       state.loopRegion = null;
+    } else if (payload.loopRegion) {
+      state.loopRegion = payload.loopRegion;
     }
   }
 
@@ -368,6 +373,16 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
+    // The engine owns the rate; bpm and pitch offset are this store's derived
+    // display of it, so they are recomputed here rather than invoked back.
+    applyEngineRate(rate: number) {
+      if (state.trackBpm === null) return;
+      syncPosition();
+      localRate = rate;
+      state.targetBpm = roundBpm(state.trackBpm * rate);
+      state.pitchOffset = (rate - 1) * 100;
+    },
+
     async togglePlay() {
       const payload = await invoke<DeckSyncPayload>('toggle_play', { deck: id });
       applyDeckState(payload);
@@ -556,6 +571,14 @@ export const useDecksStore = defineStore('decks', () => {
       const deck = decks[push.deck];
       if (!deck) continue;
       deck.applyEngineTransport(push);
+    }
+  });
+
+  listen<RatePush[]>('engine-rate', (event) => {
+    for (const push of event.payload) {
+      const deck = decks[push.deck];
+      if (!deck) continue;
+      deck.applyEngineRate(push.rate);
     }
   });
 

@@ -4,7 +4,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "startedAt": "2026-06-06T14:00:00Z",
   "mixer": { "id": "classic-3band", "hash": "a1b2c3d4e5f60718" },
   "events": [
@@ -19,6 +19,10 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 ```
 
 `elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp.
+
+`version` is a single integer, bumped only when the event vocabulary itself changes, meaning an event type is renamed or replaced or the fields one carries are re-addressed. It is not bumped for a new event type, because a reader that does not know a type ignores it and the rest of the session still replays. The current number lives in one place, `BMS_VERSION` in session-core, so the writer and this document cannot drift apart. The field is required: a document without it is refused rather than guessed at.
+
+An older version is never rejected. Reading a session ports it: every event in a superseded vocabulary is rewritten into the current one at load, before anything interprets it, so playback, the timeline lanes and the lane editor all see one vocabulary and no reader needs to know which version it came from. Porting is a renaming rather than a reinterpretation, and is only possible while every address in the old vocabulary still exists on the mixer the session resolves to, which is what keeps the rewrite from changing how a recording sounds. A ported session is not written back to disk on open: the file changes only when it is saved, and it is then stamped with the version it now contains.
 
 `mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` event means (slot order, unit ids, param ids, ranges, defaults, steps, dead zones), but not display labels, so renaming a knob does not invalidate existing sessions. Rendering refuses a session whose mixer this build does not have, or whose mixer has changed shape since, rather than producing output that silently differs from the recording. Sessions written before manifests existed have no `mixer` field and replay on the classic mixer.
 

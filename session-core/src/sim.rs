@@ -23,7 +23,7 @@ pub struct DeckSim {
     pub play_start_ms: f64,
     pub play_start_frame: f64,
     pub rate: f64,
-    pub nudge_factor: f64,
+    pub jog_hold_factor: f64,
     pub loop_active: bool,
     pub loop_start: f64,
     pub loop_end: f64,
@@ -41,7 +41,7 @@ impl Default for DeckSim {
             play_start_ms: 0.0,
             play_start_frame: 0.0,
             rate: 1.0,
-            nudge_factor: 1.0,
+            jog_hold_factor: 1.0,
             loop_active: false,
             loop_start: 0.0,
             loop_end: 0.0,
@@ -104,7 +104,7 @@ pub struct DeckSnap {
     pub position_frame: f64,
     pub is_playing: bool,
     pub rate: f64,
-    pub nudge_factor: f64,
+    pub jog_hold_factor: f64,
     pub loop_active: bool,
     pub loop_start: f64,
     pub loop_end: f64,
@@ -162,7 +162,7 @@ pub fn sim_pos(sim: &DeckSim, ms: f64, sample_rate_f64: f64) -> f64 {
     if !sim.is_playing {
         return sim.play_start_frame;
     }
-    let effective_rate = sim.rate * sim.nudge_factor;
+    let effective_rate = sim.rate * sim.jog_hold_factor;
     let elapsed = (ms - sim.play_start_ms).max(0.0) / 1000.0 * sample_rate_f64 * effective_rate;
     let raw = sim.play_start_frame + elapsed;
     // Engine parity: play linearly until loop_end, only then wrap (deck.rs next_pos).
@@ -187,7 +187,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
                     play_start_ms: snap.elapsed_ms,
                     play_start_frame: d.position_frame,
                     rate: d.rate,
-                    nudge_factor: d.nudge_factor,
+                    jog_hold_factor: d.jog_hold_factor,
                     loop_active: d.loop_active,
                     loop_start: d.loop_start,
                     loop_end: d.loop_end,
@@ -284,7 +284,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             // or nudge survives into the new track.
             sim.loop_start = pos;
             sim.loop_end = 0.0;
-            sim.nudge_factor = 1.0;
+            sim.jog_hold_factor = 1.0;
             sim.cue_point = pos;
             sim.bpm = None;
             sim.beat_offset_frames = pos;
@@ -339,7 +339,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             let sim = state.decks.entry(deck.to_string()).or_default();
             sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.play_start_ms = event.elapsed_ms;
-            sim.nudge_factor = 1.0 + percent / 100.0;
+            sim.jog_hold_factor = 1.0 + percent / 100.0;
         }
         SessionCommand::LoopIn { deck, cue_sec } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
@@ -478,7 +478,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
                     position_frame: sim_pos(sim, ms, sample_rate_f64),
                     is_playing: sim.is_playing,
                     rate: sim.rate,
-                    nudge_factor: sim.nudge_factor,
+                    jog_hold_factor: sim.jog_hold_factor,
                     loop_active: sim.loop_active,
                     loop_start: sim.loop_start,
                     loop_end: sim.loop_end,
@@ -1222,14 +1222,14 @@ mod tests {
     }
 
     #[test]
-    fn sim_pos_accounts_for_nudge_factor() {
+    fn sim_pos_accounts_for_jog_hold_factor() {
         // Nudge at +4% means the deck advances 4% faster.
         let sim = DeckSim {
             is_playing: true,
             play_start_ms: 0.0,
             play_start_frame: 0.0,
             rate: 1.0,
-            nudge_factor: 1.04,
+            jog_hold_factor: 1.04,
             total_frames: 1_000_000.0,
             ..Default::default()
         };
@@ -1239,13 +1239,13 @@ mod tests {
 
     #[test]
     fn sim_pos_unit_nudge_unchanged() {
-        // nudge_factor = 1.0 must not change the result vs the non-nudge tests.
+        // jog_hold_factor = 1.0 must not change the result vs the non-nudge tests.
         let sim = DeckSim {
             is_playing: true,
             play_start_ms: 0.0,
             play_start_frame: 0.0,
             rate: 1.0,
-            nudge_factor: 1.0,
+            jog_hold_factor: 1.0,
             total_frames: 1_000_000.0,
             ..Default::default()
         };
@@ -1264,7 +1264,7 @@ mod tests {
                 play_start_ms: 0.0,
                 play_start_frame: 0.0,
                 rate: 1.0,
-                nudge_factor: 1.0,
+                jog_hold_factor: 1.0,
                 total_frames: 1_000_000.0,
                 ..Default::default()
             },
@@ -1284,7 +1284,7 @@ mod tests {
         );
         assert_eq!(state.decks["A"].play_start_frame, SAMPLE_RATE_F64);
         assert_eq!(state.decks["A"].play_start_ms, 1000.0);
-        assert!((state.decks["A"].nudge_factor - 1.04).abs() < 1e-9);
+        assert!((state.decks["A"].jog_hold_factor - 1.04).abs() < 1e-9);
 
         // At t=2000ms: 44100 + 44100 * 1.04 = 44100 + 45864 = 89964.
         let pos = sim_pos(&state.decks["A"], 2000.0, SAMPLE_RATE_F64);
@@ -1301,7 +1301,7 @@ mod tests {
                 play_start_ms: 0.0,
                 play_start_frame: 0.0,
                 rate: 1.0,
-                nudge_factor: 1.04, // nudge already active
+                jog_hold_factor: 1.04, // nudge already active
                 total_frames: 1_000_000.0,
                 ..Default::default()
             },
@@ -1321,7 +1321,7 @@ mod tests {
         );
         let committed = SAMPLE_RATE_F64 * 1.04;
         assert!((state.decks["A"].play_start_frame - committed).abs() < 1.0);
-        assert!((state.decks["A"].nudge_factor - 1.0).abs() < 1e-9);
+        assert!((state.decks["A"].jog_hold_factor - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1350,10 +1350,10 @@ mod tests {
             },
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &cache);
-        // Last snapshot is after the nudge event: nudge_factor should be 1.04.
+        // Last snapshot is after the nudge event: jog_hold_factor should be 1.04.
         let last = snaps.last().unwrap();
-        let nudge_factor = last.decks.get("A").map(|d| d.nudge_factor).unwrap_or(0.0);
-        assert!((nudge_factor - 1.04).abs() < 1e-9, "nudge_factor in snapshot: {nudge_factor}");
+        let jog_hold_factor = last.decks.get("A").map(|d| d.jog_hold_factor).unwrap_or(0.0);
+        assert!((jog_hold_factor - 1.04).abs() < 1e-9, "jog_hold_factor in snapshot: {jog_hold_factor}");
 
         // Round-trip: SimState from snapshot should carry nudge through to sim_pos.
         let sim = sim_state_from_snapshot(last);
