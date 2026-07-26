@@ -20,8 +20,9 @@ pub use clip_edit::{
 pub use event::{SessionCommand, SessionEvent, SessionFile};
 pub use param::{
     is_fader_gain, manifest_by_id, resolve_manifest, MixerHeader, MixerManifest, ParamDescriptor,
-    ParamKind, ParamScope, ParamUnit, SlotDescriptor, Taper, CLASSIC_3BAND, FADER_GAIN,
-    ISOLATOR_3BAND, MANIFESTS, REQUIRED_STRIP_ROLES,
+    xfader_gains, ParamKind, ParamScope, ParamUnit, SlotDescriptor, Taper, XfaderAssign,
+    CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2, MANIFESTS,
+    REQUIRED_STRIP_ROLES,
 };
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,

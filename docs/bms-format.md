@@ -39,6 +39,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 | `loop_in` / `loop_out` / `set_loop_region` | `deck`, `start_sec`, `end_sec`                                                                                       | loop points changed                                               |
 | `set_loop_active`                          | `deck`, `active`                                                                                                     | loop toggled                                                      |
 | `set_param`                                | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                    |
+| `set_xfader_assign`                        | `deck`, `assign`                                                                                                     | which crossfader bus a channel is on                              |
 
 ## Mixer parameters
 
@@ -51,13 +52,29 @@ Every mixer parameter is one `set_param` event addressed as **deck / slot / para
 | `filter` | `value`                | deck   | -1 to +1, negative LPF, positive HPF |
 | `filter` | `active`               | deck   | 0 or 1, filter on/off                |
 | `gain`   | `gain`                 | master | 0-1, master output level             |
+| `xfader` | `position`             | master | -1 to +1, -1 full A, +1 full B       |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
 { "elapsed_ms": 4900.0, "type": "set_param", "slot": "gain", "param": "gain", "value": 0.7943 }
 ```
 
-The table above is the `classic-3band` manifest. The slot and param set, and the range each value is read in, come from whichever manifest the `mixer` header names: `isolator-3band` uses the same addresses but reads `eq` bands as 0-1 kill amounts rather than dB. This is why the header carries a hash, and why a value cannot be interpreted without resolving the manifest first. A `set_param` naming a slot or param that manifest does not have is ignored, so the rest of the session still replays.
+The table above is the `classic-3band-v2` manifest. The slot and param set, and the range each value is read in, come from whichever manifest the `mixer` header names: `isolator-3band` uses the same addresses but reads `eq` bands as 0-1 kill amounts rather than dB. This is why the header carries a hash, and why a value cannot be interpreted without resolving the manifest first. A `set_param` naming a slot or param that manifest does not have is ignored, so the rest of the session still replays.
+
+## Crossfader
+
+`xfader/position` is master scope, but the gain it implies is per channel, because each channel decides whether it listens to it. That assignment is categorical rather than a number, so it is its own event rather than a `set_param`:
+
+```json
+{ "elapsed_ms": 3000.0, "type": "set_xfader_assign", "deck": "A", "assign": "a" }
+{ "elapsed_ms": 4100.0, "type": "set_param", "slot": "xfader", "param": "position", "value": -1.0 }
+```
+
+`assign` is `a`, `b`, or `thru`. An unrecognized value reads as `thru`, so a session written by a newer build loses the assignment rather than failing to load. `thru` is the default and multiplies the channel by exactly 1 wherever the crossfader sits, which is why a session that never mentions the crossfader is unaffected by it.
+
+The curve is constant power: both buses sit at -3 dB with the fader centred, and the ends are exactly 0 and 1 rather than merely close, so a fully cut channel is silent rather than 140 dB down.
+
+The crossfader arrived in the `-v2` manifests. The `classic-3band` and `isolator-3band` manifests are frozen at their original shape rather than gaining the slot, because the header hash covers master slots and adding one would have refused every session recorded before it. A pre-crossfader session therefore resolves a pre-crossfader mixer and renders exactly as it always did.
 
 ## Latency compensation
 

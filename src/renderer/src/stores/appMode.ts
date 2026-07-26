@@ -14,6 +14,11 @@ export const useAppModeStore = defineStore('appMode', () => {
     const prev = mode.value;
     if (prev === next) return;
 
+    // Ahead of the transition's own awaits so entering session stops MIDI before
+    // anything is torn down. Leaving it re-enables MIDI early, which is harmless:
+    // the scheduler is already stopping and the mixer is reset right after.
+    await invoke('set_app_mode', { mode: next });
+
     const decks = useDecksStore();
     const mixer = useMixerStore();
     const session = useSessionStore();

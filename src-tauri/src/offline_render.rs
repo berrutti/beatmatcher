@@ -345,6 +345,7 @@ pub fn render_session(
         })
         .collect();
     let mut master_gain = crate::audio::DEFAULT_MASTER_GAIN;
+    let mut xfader_position = 0.0f32;
 
     // The live audio engine applies commands on the next callback after they fire,
     // so recorded audio always starts `buffer_size_frames` after the event timestamp.
@@ -393,7 +394,14 @@ pub fn render_session(
         // Dispatch events whose position falls before this chunk's end.
         while ev_idx < timeline.len() && timeline[ev_idx].0 < chunk_end {
             if let Some(cmd) = timeline[ev_idx].1.command() {
-                apply_event(cmd, &mut decks, &mut strips, &mut master_gain, sample_rate)?;
+                apply_event(
+                    cmd,
+                    &mut decks,
+                    &mut strips,
+                    &mut master_gain,
+                    &mut xfader_position,
+                    sample_rate,
+                )?;
             }
             ev_idx += 1;
         }
@@ -420,11 +428,18 @@ pub fn render_session(
     Ok(output)
 }
 
+fn resolve_xfader_gains(strips: &mut HashMap<String, ChannelStrip>, position: f32) {
+    for strip in strips.values_mut() {
+        strip.set_xfader_position(position);
+    }
+}
+
 fn apply_event(
     cmd: SessionCommand<'_>,
     decks: &mut HashMap<String, DeckState>,
     strips: &mut HashMap<String, ChannelStrip>,
     master_gain: &mut f32,
+    xfader_position: &mut f32,
     sr: u32,
 ) -> Result<(), String> {
     if let SessionCommand::SetParam {
@@ -437,6 +452,10 @@ fn apply_event(
     {
         if (slot, param) == ("gain", "gain") {
             *master_gain = (value as f32).clamp(0.0, 1.0);
+        }
+        if (slot, param) == ("xfader", "position") {
+            *xfader_position = (value as f32).clamp(-1.0, 1.0);
+            resolve_xfader_gains(strips, *xfader_position);
         }
         return Ok(());
     }
@@ -898,6 +917,51 @@ mod param_addressing {
 
     const FADER_DOWN: &str = r#"{"elapsed_ms":100,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.3},"#;
     const STOP: &str = r#"{"elapsed_ms":900,"type":"stop","deck":"A"}"#;
+
+    const ASSIGN_A: &str =
+        r#"{"elapsed_ms":100,"type":"set_xfader_assign","deck":"A","assign":"a"},"#;
+    const XFADER_RIGHT: &str = r#"{"elapsed_ms":110,"type":"set_param","slot":"xfader","param":"position","value":1.0},"#;
+
+    // The renderer has to honour the crossfader, or a recorded set renders as
+    // something the DJ never played.
+    #[test]
+    fn a_deck_crossfaded_away_renders_silent() {
+        let open = render(&format!("{PREAMBLE}{ASSIGN_A}{STOP}"));
+        let cut = render(&format!("{PREAMBLE}{ASSIGN_A}{XFADER_RIGHT}{STOP}"));
+        let sample_at = |ms: usize| ms * SAMPLE_RATE as usize / 1000 * 2;
+        let window_rms = |frames: &[f32]| {
+            let window = &frames[sample_at(400)..sample_at(880)];
+            (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt()
+        };
+        assert!(
+            window_rms(&cut) < window_rms(&open) * 0.01,
+            "the crossfader did not cut: {} vs {}",
+            window_rms(&cut),
+            window_rms(&open)
+        );
+    }
+
+    // Thru is the default, so a crossfader move with nothing assigned to it must
+    // leave the render bit-identical. This is what makes the v2 mixer safe.
+    #[test]
+    fn a_crossfader_move_with_nothing_assigned_changes_nothing() {
+        let without = render(&format!("{PREAMBLE}{STOP}"));
+        let with_move = render(&format!("{PREAMBLE}{XFADER_RIGHT}{STOP}"));
+        assert_eq!(without, with_move);
+    }
+
+    // The order the two arrive in must not matter: assigning after the fader has
+    // already moved has to resolve against where it currently sits.
+    #[test]
+    fn assigning_after_the_crossfader_moved_still_cuts() {
+        let assign_late =
+            r#"{"elapsed_ms":200,"type":"set_xfader_assign","deck":"A","assign":"a"},"#;
+        let cut = render(&format!("{PREAMBLE}{XFADER_RIGHT}{assign_late}{STOP}"));
+        let sample_at = |ms: usize| ms * SAMPLE_RATE as usize / 1000 * 2;
+        let window = &cut[sample_at(400)..sample_at(880)];
+        let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
+        assert!(rms < 0.001, "a late assign did not resolve: {rms}");
+    }
 
     // An unknown param must be inert, not fatal: a session recorded against a
     // mixer this build does not have still has to replay everything else.

@@ -4,12 +4,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DECKS_DISPOSITION, type DeckId } from './decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { useSettingsStore, DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 type ParamChange = { deck: string; slot: string; param: string; value: number };
 type EqBand = 'low' | 'mid' | 'high';
+export type XfaderAssign = 'thru' | 'a' | 'b';
+export type XfaderSide = 'a' | 'b';
 type EqState = { low: number; mid: number; high: number };
 export type EqBandSpec = MixerParamSpec & { param: EqBand };
 
@@ -45,9 +47,20 @@ export const useMixerStore = defineStore('mixer', () => {
   });
   const EQ_BANDS: EqBand[] = ['low', 'mid', 'high'];
 
+  // Centre, and every deck through, so the crossfader is inert until a deck is
+  // deliberately put on a side. Matches the engine's own default.
+  const xfaderPosition = ref(0);
+  const xfaderAssign = reactive<Record<DeckId, XfaderAssign>>({
+    A: 'thru',
+    B: 'thru',
+    C: 'thru',
+    D: 'thru',
+    E: 'thru' // the edit deck never reaches the live mixer
+  });
+
   // The live engine builds every strip on this one manifest. Ranges, steps and
   // defaults come from its descriptors rather than being restated here.
-  const deckParams = mixerParams(DEFAULT_MIXER_ID);
+  const deckParams = mixerParams(LIVE_MIXER_ID);
 
   const eq = reactive<Record<DeckId, EqState>>({
     A: defaultEqState(),
@@ -131,6 +144,22 @@ export const useMixerStore = defineStore('mixer', () => {
     invoke('set_volume', { deck: deckId, gain: volume[deckId] });
   }
 
+  function setXfaderPosition(position: number) {
+    xfaderPosition.value = Math.max(-1, Math.min(1, position));
+    invoke('set_xfader_position', { position: xfaderPosition.value });
+  }
+
+  function setXfaderAssign(deckId: DeckId, assign: XfaderAssign) {
+    xfaderAssign[deckId] = assign;
+    invoke('set_xfader_assign', { deck: deckId, assign });
+  }
+
+  // The UI has no button for `thru`: the two sides are one exclusive pair, so
+  // deselecting the lit one is what takes the deck off the crossfader.
+  function toggleXfaderAssign(deckId: DeckId, side: XfaderSide) {
+    setXfaderAssign(deckId, xfaderAssign[deckId] === side ? 'thru' : side);
+  }
+
   function setCueActive(deckId: DeckId, active: boolean) {
     cueActive[deckId] = active;
     invoke('set_cue_active', { deck: deckId, active });
@@ -168,8 +197,24 @@ export const useMixerStore = defineStore('mixer', () => {
   // Engine-originated only, and deliberately does not invoke back: Rust never
   // pushes a value the UI itself wrote, so anything arriving here is a move the
   // store has not already made.
+  function assignFromValue(value: number): XfaderAssign {
+    if (value === 1) return 'a';
+    if (value === 2) return 'b';
+    return 'thru';
+  }
+
   function applyEngineParam(change: ParamChange): void {
+    // Master scope, so it arrives with no deck and has to be read before the
+    // guard below rejects it.
+    if (change.slot === 'xfader' && change.param === 'position') {
+      xfaderPosition.value = change.value;
+      return;
+    }
     if (!isDeckId(change.deck)) return;
+    if (change.slot === 'xfader' && change.param === 'assign') {
+      xfaderAssign[change.deck] = assignFromValue(change.value);
+      return;
+    }
     if (change.slot === 'eq' && isEqBand(change.param)) {
       eq[change.deck][change.param] = change.value;
       return;
@@ -196,7 +241,9 @@ export const useMixerStore = defineStore('mixer', () => {
   });
 
   function reset(): void {
+    setXfaderPosition(0);
     for (const deckId of LIVE_DECKS) {
+      setXfaderAssign(deckId, 'thru');
       setVolume(deckId, 1);
       for (const band of EQ_BANDS) setEq(deckId, band, eqDefault(band));
       setFilter(deckId, 0);
@@ -402,6 +449,8 @@ export const useMixerStore = defineStore('mixer', () => {
     swarmMode,
     swarmSelected,
     volume,
+    xfaderPosition,
+    xfaderAssign,
     isRecording,
     playedPaths,
     markPlayed,
@@ -425,6 +474,9 @@ export const useMixerStore = defineStore('mixer', () => {
     setMasterGain,
     setSwarmChannel,
     setSwarmMode,
+    setXfaderAssign,
+    setXfaderPosition,
+    toggleXfaderAssign,
     setVolume,
     startRecording,
     stopRecording,

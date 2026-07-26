@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -68,6 +68,8 @@ pub struct MidiState {
     monitor: Arc<Monitor>,
     dispatch: DispatchSlot,
     connected: Mutex<Option<String>>,
+    profile: Profile,
+    halves: Mutex<HighResolution>,
 }
 
 impl MidiState {
@@ -85,7 +87,16 @@ impl MidiState {
             monitor,
             dispatch,
             connected: Mutex::new(None),
+            profile: ddj_flx6(),
+            halves: Mutex::new(HighResolution::default()),
         }
+    }
+
+    pub(crate) fn clear_halves(&self) {
+        self.halves
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     fn send(&self, request: Request) {
@@ -194,66 +205,18 @@ pub fn set_dispatch(state: &MidiState, dispatch: Dispatch) {
 }
 
 const CONTROL_CHANGE: u8 = 0xB0;
+const NOTE_ON: u8 = 0x90;
 // High-resolution control change puts the low half on the controller 32 above
 // the high half's.
 const LSB_OFFSET: u8 = 32;
+const MAX_CONTROLLER: u8 = 127;
 const SEVEN_BIT_MAX: f64 = 127.0;
 const FOURTEEN_BIT_MAX: f64 = 16383.0;
 
-// Scaffolding until mapping profiles land. Read off a DDJ-FLX6 rather than
-// guessed: every control it sends is high resolution, each deck owns a channel
-// for its eq and fader, and the mixer's filter knobs share one channel.
-const BINDINGS: &[Binding] = &[
-    Binding::high_resolution(0, 7, "A", "eq", "high"),
-    Binding::high_resolution(0, 11, "A", "eq", "mid"),
-    Binding::high_resolution(0, 15, "A", "eq", "low"),
-    Binding::high_resolution(0, 19, "A", "fader", "gain"),
-    Binding::high_resolution(1, 7, "B", "eq", "high"),
-    Binding::high_resolution(1, 11, "B", "eq", "mid"),
-    Binding::high_resolution(1, 15, "B", "eq", "low"),
-    Binding::high_resolution(1, 19, "B", "fader", "gain"),
-    Binding::high_resolution(2, 7, "C", "eq", "high"),
-    Binding::high_resolution(2, 11, "C", "eq", "mid"),
-    Binding::high_resolution(2, 15, "C", "eq", "low"),
-    Binding::high_resolution(2, 19, "C", "fader", "gain"),
-    Binding::high_resolution(3, 7, "D", "eq", "high"),
-    Binding::high_resolution(3, 11, "D", "eq", "mid"),
-    Binding::high_resolution(3, 15, "D", "eq", "low"),
-    Binding::high_resolution(3, 19, "D", "fader", "gain"),
-    Binding::high_resolution(6, 23, "A", "filter", "value"),
-    Binding::high_resolution(6, 24, "B", "filter", "value"),
-    Binding::high_resolution(6, 25, "C", "filter", "value"),
-    Binding::high_resolution(6, 26, "D", "filter", "value"),
-];
-
-struct Binding {
-    channel: u8,
-    // For a high-resolution binding this is the high half; the low half is
-    // implied at LSB_OFFSET above it.
-    controller: u8,
-    high_resolution: bool,
-    deck: &'static str,
-    slot: &'static str,
-    param: &'static str,
-}
-
-impl Binding {
-    const fn high_resolution(
-        channel: u8,
-        controller: u8,
-        deck: &'static str,
-        slot: &'static str,
-        param: &'static str,
-    ) -> Self {
-        Self {
-            channel,
-            controller,
-            high_resolution: true,
-            deck,
-            slot,
-            param,
-        }
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolution {
+    SevenBit,
+    FourteenBit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,9 +225,188 @@ enum Half {
     Lsb,
 }
 
+/// Distinct from `Source` because a high-resolution control declares one source
+/// but arrives on two addresses, and dispatch has to find it by either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Key {
+    ControlChange { channel: u8, controller: u8 },
+    Note { channel: u8, note: u8 },
+}
+
+/// A high-resolution control names only its high half; the low half is implied
+/// at `LSB_OFFSET` above it.
+enum Source {
+    ControlChange {
+        channel: u8,
+        controller: u8,
+        resolution: Resolution,
+    },
+    Note {
+        channel: u8,
+        note: u8,
+    },
+}
+
+impl Source {
+    fn keys(&self) -> Result<Vec<(Key, Half)>, String> {
+        match *self {
+            Source::Note { channel, note } => Ok(vec![(Key::Note { channel, note }, Half::Msb)]),
+            Source::ControlChange {
+                channel,
+                controller,
+                resolution,
+            } => {
+                let high = (
+                    Key::ControlChange {
+                        channel,
+                        controller,
+                    },
+                    Half::Msb,
+                );
+                if resolution == Resolution::SevenBit {
+                    return Ok(vec![high]);
+                }
+                let low = controller
+                    .checked_add(LSB_OFFSET)
+                    .filter(|low| *low <= MAX_CONTROLLER)
+                    .ok_or_else(|| {
+                        format!("cc {controller} is too high to carry a low half at +{LSB_OFFSET}")
+                    })?;
+                Ok(vec![
+                    high,
+                    (
+                        Key::ControlChange {
+                            channel,
+                            controller: low,
+                        },
+                        Half::Lsb,
+                    ),
+                ])
+            }
+        }
+    }
+
+    fn resolution(&self) -> Resolution {
+        match *self {
+            Source::ControlChange { resolution, .. } => resolution,
+            Source::Note { .. } => Resolution::SevenBit,
+        }
+    }
+}
+
+enum Action {
+    DeckParam {
+        deck: String,
+        slot: String,
+        param: String,
+    },
+    CueToggle {
+        deck: String,
+    },
+    // Master scope, so it names no deck and takes its range from the master
+    // descriptor rather than a strip's.
+    XfaderPosition,
+}
+
+struct Binding {
+    source: Source,
+    action: Action,
+}
+
+pub struct Profile {
+    bindings: Vec<Binding>,
+    by_key: HashMap<Key, (usize, Half)>,
+    cue_keys: HashMap<String, Key>,
+}
+
+impl Profile {
+    /// Refuses a colliding profile rather than letting the last binding win,
+    /// because the symptom is the wrong deck's control moving, which reads as
+    /// broken hardware rather than a broken mapping.
+    fn new(bindings: Vec<Binding>) -> Result<Self, String> {
+        let mut by_key = HashMap::new();
+        let mut cue_keys = HashMap::new();
+        for (index, binding) in bindings.iter().enumerate() {
+            let keys = binding.source.keys()?;
+            if let Action::CueToggle { deck } = &binding.action {
+                if let Some((key, _)) = keys.first() {
+                    cue_keys.insert(deck.clone(), *key);
+                }
+            }
+            for (key, half) in keys {
+                if by_key.insert(key, (index, half)).is_some() {
+                    return Err(format!("two bindings share {key:?}"));
+                }
+            }
+        }
+        Ok(Self {
+            bindings,
+            by_key,
+            cue_keys,
+        })
+    }
+
+    fn resolve(&self, key: Key) -> Option<(usize, &Binding, Half)> {
+        let &(index, half) = self.by_key.get(&key)?;
+        Some((index, &self.bindings[index], half))
+    }
+}
+
+fn deck_param(channel: u8, controller: u8, deck: &str, slot: &str, param: &str) -> Binding {
+    Binding {
+        source: Source::ControlChange {
+            channel,
+            controller,
+            resolution: Resolution::FourteenBit,
+        },
+        action: Action::DeckParam {
+            deck: deck.to_string(),
+            slot: slot.to_string(),
+            param: param.to_string(),
+        },
+    }
+}
+
+fn xfader(channel: u8, controller: u8) -> Binding {
+    Binding {
+        source: Source::ControlChange {
+            channel,
+            controller,
+            resolution: Resolution::FourteenBit,
+        },
+        action: Action::XfaderPosition,
+    }
+}
+
+fn cue_toggle(channel: u8, note: u8, deck: &str) -> Binding {
+    Binding {
+        source: Source::Note { channel, note },
+        action: Action::CueToggle {
+            deck: deck.to_string(),
+        },
+    }
+}
+
+/// Read off a DDJ-FLX6 rather than taken from its documentation.
+fn ddj_flx6() -> Profile {
+    let mut bindings = Vec::new();
+    for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
+        bindings.push(deck_param(channel, 7, deck, "eq", "high"));
+        bindings.push(deck_param(channel, 11, deck, "eq", "mid"));
+        bindings.push(deck_param(channel, 15, deck, "eq", "low"));
+        bindings.push(deck_param(channel, 19, deck, "fader", "gain"));
+        bindings.push(cue_toggle(channel, 84, deck));
+    }
+    for (controller, deck) in [(23, "A"), (24, "B"), (25, "C"), (26, "D")] {
+        bindings.push(deck_param(6, controller, deck, "filter", "value"));
+    }
+    bindings.push(xfader(6, 31));
+    Profile::new(bindings).expect("the built-in DDJ-FLX6 profile")
+}
+
 #[derive(Default)]
 struct HighResolution {
-    halves: std::collections::HashMap<(u8, u8), (u8, u8)>,
+    halves: HashMap<usize, (u8, u8)>,
 }
 
 impl HighResolution {
@@ -273,13 +415,19 @@ impl HighResolution {
     /// forever. The intermediate that a high half produces on its own is at
     /// most one low-half step away from the value the next message brings, so
     /// it is corrected before it can be heard.
-    fn join(&mut self, channel: u8, controller: u8, half: Half, value: u8) -> u16 {
-        let halves = self.halves.entry((channel, controller)).or_insert((0, 0));
+    fn join(&mut self, binding: usize, half: Half, value: u8) -> u16 {
+        let halves = self.halves.entry(binding).or_insert((0, 0));
         match half {
             Half::Msb => halves.0 = value,
             Half::Lsb => halves.1 = value,
         }
         (u16::from(halves.0) << 7) | u16::from(halves.1)
+    }
+
+    /// A half left over from before a reconnect would join with the first
+    /// message after it and produce one value the knob was never at.
+    fn clear(&mut self) {
+        self.halves.clear();
     }
 }
 
@@ -303,62 +451,6 @@ fn parse_control_change(data: &[u8]) -> Option<ControlChange> {
     })
 }
 
-fn resolve(message: &ControlChange) -> Option<(&'static Binding, Half)> {
-    BINDINGS.iter().find_map(|binding| {
-        if binding.channel != message.channel {
-            return None;
-        }
-        if binding.controller == message.controller {
-            return Some((binding, Half::Msb));
-        }
-        let low = binding.controller.checked_add(LSB_OFFSET);
-        if binding.high_resolution && low == Some(message.controller) {
-            return Some((binding, Half::Lsb));
-        }
-        None
-    })
-}
-
-fn position(
-    halves: &mut HighResolution,
-    message: &ControlChange,
-    binding: &Binding,
-    half: Half,
-) -> f64 {
-    if !binding.high_resolution {
-        return f64::from(message.value) / SEVEN_BIT_MAX;
-    }
-    let joined = halves.join(message.channel, binding.controller, half, message.value);
-    f64::from(joined) / FOURTEEN_BIT_MAX
-}
-
-const NOTE_ON: u8 = 0x90;
-
-// Note 84 on the deck's own channel, with the release arriving as the same note
-// at zero velocity.
-const CUE_BINDINGS: &[CueBinding] = &[
-    CueBinding::new(0, 84, "A"),
-    CueBinding::new(1, 84, "B"),
-    CueBinding::new(2, 84, "C"),
-    CueBinding::new(3, 84, "D"),
-];
-
-struct CueBinding {
-    channel: u8,
-    note: u8,
-    deck: &'static str,
-}
-
-impl CueBinding {
-    const fn new(channel: u8, note: u8, deck: &'static str) -> Self {
-        Self {
-            channel,
-            note,
-            deck,
-        }
-    }
-}
-
 struct NoteOn {
     channel: u8,
     note: u8,
@@ -379,77 +471,143 @@ fn parse_note_on(data: &[u8]) -> Option<NoteOn> {
     })
 }
 
-pub(crate) fn apply(state: &crate::AppState, data: &[u8]) {
+/// Separated from applying it so the mapping path is testable without an
+/// `AppState`, which cannot be built outside a running app.
+#[derive(Debug, PartialEq)]
+enum Move {
+    Param {
+        deck: String,
+        slot: String,
+        param: String,
+        position: f64,
+    },
+    Cue {
+        deck: String,
+    },
+    Xfader {
+        position: f64,
+    },
+}
+
+fn resolve_move(profile: &Profile, halves: &mut HighResolution, data: &[u8]) -> Option<Move> {
     if let Some(message) = parse_control_change(data) {
-        apply_control_change(state, &message);
-    } else if let Some(message) = parse_note_on(data) {
-        apply_note_on(state, &message);
+        let (index, binding, half) = profile.resolve(Key::ControlChange {
+            channel: message.channel,
+            controller: message.controller,
+        })?;
+        let position = match binding.source.resolution() {
+            Resolution::SevenBit => f64::from(message.value) / SEVEN_BIT_MAX,
+            Resolution::FourteenBit => {
+                f64::from(halves.join(index, half, message.value)) / FOURTEEN_BIT_MAX
+            }
+        };
+        return match &binding.action {
+            Action::DeckParam { deck, slot, param } => Some(Move::Param {
+                deck: deck.clone(),
+                slot: slot.clone(),
+                param: param.clone(),
+                position,
+            }),
+            Action::XfaderPosition => Some(Move::Xfader { position }),
+            Action::CueToggle { .. } => None,
+        };
+    }
+
+    let message = parse_note_on(data)?;
+    // Cue is a toggle in the app but a momentary button on the controller.
+    if message.velocity == 0 {
+        return None;
+    }
+    let (_, binding, _) = profile.resolve(Key::Note {
+        channel: message.channel,
+        note: message.note,
+    })?;
+    let Action::CueToggle { deck } = &binding.action else {
+        return None;
+    };
+    Some(Move::Cue { deck: deck.clone() })
+}
+
+pub(crate) fn apply(state: &crate::AppState, midi: &MidiState, data: &[u8]) {
+    // The same gate the keyboard has in `useKeyboard.ts`. Outside performance the
+    // session scheduler owns the strips, and it writes them through
+    // `apply_deck_command`, which does not pass the `set_deck_param` funnel, so
+    // nothing downstream would notice the two fighting.
+    if state.app_mode() != crate::AppMode::Performance {
+        return;
+    }
+    // Scoped so the halves lock is released before the engine locks are taken.
+    let moved = {
+        let mut halves = midi
+            .halves
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        resolve_move(&midi.profile, &mut halves, data)
+    };
+    match moved {
+        None => {}
+        Some(Move::Cue { deck }) => {
+            state.toggle_cue_active(crate::ParamOrigin::Midi, &deck).ok();
+        }
+        Some(Move::Xfader { position }) => {
+            let Some(descriptor) = state.audio.mixer().descriptor(
+                session_core::ParamScope::Master,
+                "xfader",
+                "position",
+            ) else {
+                return;
+            };
+            let value = descriptor.from_unit_interval(position);
+            state.set_xfader_position(crate::ParamOrigin::Midi, value as f32);
+        }
+        Some(Move::Param {
+            deck,
+            slot,
+            param,
+            position,
+        }) => {
+            let Some(descriptor) =
+                state
+                    .audio
+                    .mixer()
+                    .descriptor(session_core::ParamScope::Deck, &slot, &param)
+            else {
+                return;
+            };
+            let value = descriptor.from_unit_interval(position);
+            state
+                .set_deck_param(crate::ParamOrigin::Midi, &deck, &slot, &param, value as f32)
+                .ok();
+        }
     }
 }
 
 /// Lights a deck's cue button to match the app. Driven by every cue change
 /// whatever caused it, so a mouse toggle lights the button too.
 pub fn send_cue_led(state: &MidiState, deck: &str, active: bool) {
-    let Some(binding) = CUE_BINDINGS.iter().find(|binding| binding.deck == deck) else {
+    let Some(Key::Note { channel, note }) = state.profile.cue_keys.get(deck).copied() else {
         return;
     };
     state.send(Request::Send(vec![
-        NOTE_ON | binding.channel,
-        binding.note,
+        NOTE_ON | channel,
+        note,
         if active { 127 } else { 0 },
     ]));
 }
 
-// Cue is a toggle in the app but a momentary button on the controller, so only
-// the press acts. Acting on the release too would undo it immediately.
-fn apply_note_on(state: &crate::AppState, message: &NoteOn) {
-    if message.velocity == 0 {
-        return;
+/// Nothing else pushes state when a port opens, so a cue the app already has on
+/// would leave its button dark until the next toggle.
+fn resync_cue_leds(state: &crate::AppState, midi: &MidiState) {
+    for deck in midi.profile.cue_keys.keys() {
+        let Some(strip) = state.audio.strip(deck) else {
+            continue;
+        };
+        let active = strip
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cue_active;
+        send_cue_led(midi, deck, active);
     }
-    let Some(binding) = CUE_BINDINGS
-        .iter()
-        .find(|binding| binding.channel == message.channel && binding.note == message.note)
-    else {
-        return;
-    };
-    state
-        .toggle_cue_active(crate::ParamOrigin::Midi, binding.deck)
-        .ok();
-}
-
-fn apply_control_change(state: &crate::AppState, message: &ControlChange) {
-    static HALVES: Mutex<Option<HighResolution>> = Mutex::new(None);
-
-    let Some((binding, half)) = resolve(message) else {
-        return;
-    };
-    let control_position = {
-        let mut guard = HALVES.lock().unwrap_or_else(|error| error.into_inner());
-        position(
-            guard.get_or_insert_with(HighResolution::default),
-            message,
-            binding,
-            half,
-        )
-    };
-    let Some(descriptor) =
-        state
-            .audio
-            .mixer()
-            .descriptor(session_core::ParamScope::Deck, binding.slot, binding.param)
-    else {
-        return;
-    };
-    let value = descriptor.from_unit_interval(control_position);
-    state
-        .set_deck_param(
-            crate::ParamOrigin::Midi,
-            binding.deck,
-            binding.slot,
-            binding.param,
-            value as f32,
-        )
-        .ok();
 }
 
 pub fn start_monitor(app: tauri::AppHandle, state: &MidiState) {
@@ -476,8 +634,10 @@ pub fn list_midi_inputs() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn set_midi_input(
     state: tauri::State<'_, MidiState>,
+    app_state: tauri::State<'_, crate::AppState>,
     port: Option<String>,
 ) -> Result<(), String> {
+    state.clear_halves();
     let Some(port) = port else {
         state.send(Request::Disconnect);
         *state
@@ -495,6 +655,9 @@ pub fn set_midi_input(
         .connected
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = Some(port);
+    // The reply arrives before the Connect arm opens the output, but requests are
+    // served in order, so these are sent once that arm has finished.
+    resync_cue_leds(&app_state, &state);
     Ok(())
 }
 
@@ -549,43 +712,138 @@ mod tests {
         assert!(parse_control_change(&[]).is_none());
     }
 
+    fn note_on(channel: u8, note: u8, velocity: u8) -> Vec<u8> {
+        vec![NOTE_ON | channel, note, velocity]
+    }
+
     #[test]
     fn both_halves_of_a_bound_control_resolve_and_an_unbound_one_does_not() {
-        let high = parse_control_change(&control_change(0, 15, 64)).expect("a control change");
-        let (binding, half) = resolve(&high).expect("cc 15 is bound");
+        let profile = ddj_flx6();
+        let (_, binding, half) = profile
+            .resolve(Key::ControlChange {
+                channel: 0,
+                controller: 15,
+            })
+            .expect("cc 15 is bound");
+        let Action::DeckParam { deck, slot, param } = &binding.action else {
+            panic!("cc 15 is a deck param");
+        };
         assert_eq!(
-            (binding.deck, binding.slot, binding.param),
+            (deck.as_str(), slot.as_str(), param.as_str()),
             ("A", "eq", "low")
         );
         assert_eq!(half, Half::Msb);
 
-        let low = parse_control_change(&control_change(0, 47, 0)).expect("a control change");
-        let (_, half) = resolve(&low).expect("cc 47 is the low half of cc 15");
+        let (_, _, half) = profile
+            .resolve(Key::ControlChange {
+                channel: 0,
+                controller: 47,
+            })
+            .expect("cc 47 is the low half of cc 15");
         assert_eq!(half, Half::Lsb);
 
-        let unbound = parse_control_change(&control_change(0, 99, 0)).expect("a control change");
-        assert!(resolve(&unbound).is_none());
+        assert!(profile
+            .resolve(Key::ControlChange {
+                channel: 0,
+                controller: 99
+            })
+            .is_none());
         // The low half exists only on the binding's own channel.
-        let elsewhere = parse_control_change(&control_change(5, 47, 0)).expect("a control change");
-        assert!(resolve(&elsewhere).is_none());
+        assert!(profile
+            .resolve(Key::ControlChange {
+                channel: 5,
+                controller: 47
+            })
+            .is_none());
+    }
+
+    // Read off the hardware: the crossfader is cc 31 on the filters' channel,
+    // with its low half at cc 63, and it sweeps the full -1..+1 of the master
+    // descriptor rather than a strip's range.
+    #[test]
+    fn the_crossfader_sweeps_end_to_end() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+
+        let left = resolve_move(&profile, &mut halves, &control_change(6, 63, 0));
+        assert_eq!(left, Some(Move::Xfader { position: 0.0 }));
+
+        resolve_move(&profile, &mut halves, &control_change(6, 31, 127));
+        let right = resolve_move(&profile, &mut halves, &control_change(6, 63, 127));
+        assert_eq!(right, Some(Move::Xfader { position: 1.0 }));
+    }
+
+    // The exact interleave from the hardware, high half then low half, which is
+    // what the controller actually sends.
+    #[test]
+    fn the_crossfaders_two_halves_join() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+
+        resolve_move(&profile, &mut halves, &control_change(6, 31, 122));
+        let moved = resolve_move(&profile, &mut halves, &control_change(6, 63, 127));
+        let Some(Move::Xfader { position }) = moved else {
+            panic!("cc 31/63 is the crossfader");
+        };
+        assert!((position - f64::from((122 << 7) | 127) / 16383.0).abs() < 1e-12);
+    }
+
+    // Its low half is cc 63, which must not land on the filters' 55-58 block.
+    #[test]
+    fn the_crossfader_does_not_collide_with_the_filters() {
+        let profile = ddj_flx6();
+        for controller in [55, 56, 57, 58] {
+            let (_, binding, _) = profile
+                .resolve(Key::ControlChange {
+                    channel: 6,
+                    controller,
+                })
+                .expect("a filter low half");
+            assert!(matches!(binding.action, Action::DeckParam { .. }));
+        }
+    }
+
+    #[test]
+    fn a_cue_note_resolves_to_its_deck() {
+        let profile = ddj_flx6();
+        let (_, binding, _) = profile
+            .resolve(Key::Note {
+                channel: 2,
+                note: 84,
+            })
+            .expect("note 84 on channel 2 is bound");
+        let Action::CueToggle { deck } = &binding.action else {
+            panic!("note 84 is a cue toggle");
+        };
+        assert_eq!(deck, "C");
     }
 
     // Each deck owns a channel and each control a CC, so a crossed pair would
     // silently move the wrong deck's knob.
     #[test]
-    fn no_two_bindings_share_an_address() {
-        for (index, binding) in BINDINGS.iter().enumerate() {
-            for other in &BINDINGS[index + 1..] {
-                assert!(
-                    binding.channel != other.channel || binding.controller != other.controller,
-                    "{}/{} collides with {}/{}",
-                    binding.deck,
-                    binding.param,
-                    other.deck,
-                    other.param
-                );
-            }
-        }
+    fn a_profile_whose_sources_collide_is_refused() {
+        let collision = Profile::new(vec![
+            deck_param(0, 7, "A", "eq", "high"),
+            deck_param(0, 7, "B", "eq", "high"),
+        ]);
+        assert!(collision.is_err());
+    }
+
+    // The collision a table of declared addresses cannot see: cc 7's implied low
+    // half is cc 39, so binding cc 39 as well silently steals it.
+    #[test]
+    fn an_implied_low_half_colliding_with_another_high_half_is_refused() {
+        let collision = Profile::new(vec![
+            deck_param(0, 7, "A", "eq", "high"),
+            deck_param(0, 39, "A", "eq", "mid"),
+        ]);
+        assert!(collision.is_err());
+    }
+
+    #[test]
+    fn a_control_change_too_high_to_carry_a_low_half_is_refused() {
+        assert!(Profile::new(vec![deck_param(0, 96, "A", "eq", "high")]).is_err());
+        assert!(Profile::new(vec![deck_param(0, 95, "A", "eq", "high")]).is_ok());
     }
 
     // The exact stream from the screenshot, high half first, ending at the 8192
@@ -593,12 +851,12 @@ mod tests {
     #[test]
     fn the_two_halves_of_a_high_resolution_control_join() {
         let mut halves = HighResolution::default();
-        assert_eq!(halves.join(0, 15, Half::Msb, 61), 61 << 7);
-        assert_eq!(halves.join(0, 15, Half::Lsb, 75), (61 << 7) | 75);
-        assert_eq!(halves.join(0, 15, Half::Msb, 62), (62 << 7) | 75);
-        assert_eq!(halves.join(0, 15, Half::Lsb, 50), (62 << 7) | 50);
-        assert_eq!(halves.join(0, 15, Half::Msb, 64), (64 << 7) | 50);
-        assert_eq!(halves.join(0, 15, Half::Lsb, 0), 8192);
+        assert_eq!(halves.join(0, Half::Msb, 61), 61 << 7);
+        assert_eq!(halves.join(0, Half::Lsb, 75), (61 << 7) | 75);
+        assert_eq!(halves.join(0, Half::Msb, 62), (62 << 7) | 75);
+        assert_eq!(halves.join(0, Half::Lsb, 50), (62 << 7) | 50);
+        assert_eq!(halves.join(0, Half::Msb, 64), (64 << 7) | 50);
+        assert_eq!(halves.join(0, Half::Lsb, 0), 8192);
     }
 
     // Acting on a lone high half is what stops a controller that sends only the
@@ -606,48 +864,91 @@ mod tests {
     #[test]
     fn a_high_half_on_its_own_lands_within_one_low_half_step() {
         let mut halves = HighResolution::default();
-        halves.join(0, 15, Half::Msb, 61);
-        halves.join(0, 15, Half::Lsb, 127);
-        let intermediate = halves.join(0, 15, Half::Msb, 62);
-        let settled = halves.join(0, 15, Half::Lsb, 0);
+        halves.join(0, Half::Msb, 61);
+        halves.join(0, Half::Lsb, 127);
+        let intermediate = halves.join(0, Half::Msb, 62);
+        let settled = halves.join(0, Half::Lsb, 0);
         assert!(u32::from(intermediate).abs_diff(u32::from(settled)) <= 127);
     }
 
     #[test]
     fn two_high_resolution_controls_do_not_share_halves() {
         let mut halves = HighResolution::default();
-        halves.join(0, 15, Half::Msb, 64);
-        assert_eq!(halves.join(1, 15, Half::Lsb, 3), 3);
+        halves.join(0, Half::Msb, 64);
+        assert_eq!(halves.join(1, Half::Lsb, 3), 3);
+    }
+
+    // A half surviving a reconnect would join with the first message after it
+    // and place the knob somewhere it has never been.
+    #[test]
+    fn clearing_forgets_a_half() {
+        let mut halves = HighResolution::default();
+        halves.join(0, Half::Msb, 127);
+        halves.clear();
+        assert_eq!(halves.join(0, Half::Lsb, 3), 3);
     }
 
     #[test]
     fn a_high_resolution_control_spans_the_whole_param_range() {
+        let profile = ddj_flx6();
         let mut halves = HighResolution::default();
-        let binding = &BINDINGS[0];
-        let at = |controller: u8, value: u8| ControlChange {
-            channel: 0,
-            controller,
-            value,
-        };
 
-        assert_eq!(position(&mut halves, &at(47, 0), binding, Half::Lsb), 0.0);
-        position(&mut halves, &at(15, 127), binding, Half::Msb);
-        assert_eq!(position(&mut halves, &at(47, 127), binding, Half::Lsb), 1.0);
+        let low = resolve_move(&profile, &mut halves, &control_change(0, 47, 0));
+        assert!(matches!(low, Some(Move::Param { position, .. }) if position == 0.0));
+        resolve_move(&profile, &mut halves, &control_change(0, 15, 127));
+        let high = resolve_move(&profile, &mut halves, &control_change(0, 47, 127));
+        assert!(matches!(high, Some(Move::Param { position, .. }) if position == 1.0));
+    }
+
+    #[test]
+    fn a_cue_press_toggles_and_its_release_does_not() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 84, 127)),
+            Some(Move::Cue {
+                deck: "B".to_string()
+            })
+        );
+        assert_eq!(resolve_move(&profile, &mut halves, &note_on(1, 84, 0)), None);
+    }
+
+    #[test]
+    fn an_unmapped_message_is_no_move() {
+        let profile = ddj_flx6();
+        let mut halves = HighResolution::default();
+        assert_eq!(resolve_move(&profile, &mut halves, &control_change(9, 99, 64)), None);
+        assert_eq!(resolve_move(&profile, &mut halves, &note_on(9, 60, 127)), None);
+        // Clock, a running-status runt, and an empty buffer.
+        assert_eq!(resolve_move(&profile, &mut halves, &[0xF8]), None);
+        assert_eq!(resolve_move(&profile, &mut halves, &[0xB0, 20]), None);
+        assert_eq!(resolve_move(&profile, &mut halves, &[]), None);
     }
 
     // A binding naming an address the mixer does not have would silently do
     // nothing at runtime, which is indistinguishable from a broken controller.
     #[test]
     fn every_binding_addresses_a_real_param() {
-        for binding in BINDINGS {
+        for binding in &ddj_flx6().bindings {
+            let Action::DeckParam { slot, param, .. } = &binding.action else {
+                continue;
+            };
             assert!(
                 session_core::CLASSIC_3BAND
-                    .descriptor(session_core::ParamScope::Deck, binding.slot, binding.param)
+                    .descriptor(session_core::ParamScope::Deck, slot, param)
                     .is_some(),
-                "{}/{}",
-                binding.slot,
-                binding.param
+                "{slot}/{param}"
             );
+        }
+    }
+
+    // The LED path is a reverse lookup, so a cue binding the profile can dispatch
+    // but not light would leave the button dark whatever the app did.
+    #[test]
+    fn every_cue_binding_has_a_key_to_light() {
+        let profile = ddj_flx6();
+        for deck in ["A", "B", "C", "D"] {
+            assert!(profile.cue_keys.contains_key(deck), "{deck}");
         }
     }
 

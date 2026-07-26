@@ -140,7 +140,12 @@ pub enum ParamScope {
     Master,
 }
 
-pub static MANIFESTS: &[&MixerManifest] = &[&CLASSIC_3BAND, &ISOLATOR_3BAND];
+pub static MANIFESTS: &[&MixerManifest] = &[
+    &CLASSIC_3BAND,
+    &ISOLATOR_3BAND,
+    &CLASSIC_3BAND_V2,
+    &ISOLATOR_3BAND_V2,
+];
 
 pub fn manifest_by_id(id: &str) -> Option<&'static MixerManifest> {
     MANIFESTS.iter().copied().find(|manifest| manifest.id == id)
@@ -218,21 +223,23 @@ impl MixerManifest {
 pub static CLASSIC_3BAND: MixerManifest = MixerManifest {
     id: "classic-3band",
     cue_tap: "fader",
-    strip: &[
-        SlotDescriptor {
-            slot: "eq",
-            unit_id: "eq3band",
-            params: &[
-                eq_param("low", "Low", "LO"),
-                eq_param("mid", "Mid", "MD"),
-                eq_param("high", "High", "HI"),
-            ],
-        },
-        SWEEP_FILTER_SLOT,
-        FADER_SLOT,
-    ],
+    strip: CLASSIC_STRIP,
     master: MASTER_SLOTS,
 };
+
+const CLASSIC_STRIP: &[SlotDescriptor] = &[
+    SlotDescriptor {
+        slot: "eq",
+        unit_id: "eq3band",
+        params: &[
+            eq_param("low", "Low", "LO"),
+            eq_param("mid", "Mid", "MD"),
+            eq_param("high", "High", "HI"),
+        ],
+    },
+    SWEEP_FILTER_SLOT,
+    FADER_SLOT,
+];
 
 const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "filter",
@@ -291,7 +298,7 @@ const FADER_SLOT: SlotDescriptor = SlotDescriptor {
     }],
 };
 
-const MASTER_SLOTS: &[SlotDescriptor] = &[SlotDescriptor {
+const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "gain",
     unit_id: "master_gain",
     params: &[ParamDescriptor {
@@ -309,7 +316,89 @@ const MASTER_SLOTS: &[SlotDescriptor] = &[SlotDescriptor {
         automatable: true,
         lane_group: 0,
     }],
-}];
+};
+
+// Symmetric about zero, so no bipolar taper is needed to make the centre detent
+// read as centre. Pinned by `a_bipolar_taper_over_a_symmetric_range_stays_linear`.
+const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
+    slot: "xfader",
+    unit_id: "xfader",
+    params: &[ParamDescriptor {
+        id: "position",
+        label: "Crossfader",
+        short_label: "X",
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        step: 0.01,
+        unit: ParamUnit::Normalized,
+        taper: Taper::Linear,
+        dead_zone: None,
+        kind: ParamKind::Fader,
+        automatable: true,
+        lane_group: 0,
+    }],
+};
+
+/// Which crossfader bus a strip is multiplied by. `Thru` is the default so a
+/// session that predates the crossfader, or never assigns one, is unaffected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum XfaderAssign {
+    #[default]
+    Thru,
+    A,
+    B,
+}
+
+impl XfaderAssign {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            XfaderAssign::Thru => "thru",
+            XfaderAssign::A => "a",
+            XfaderAssign::B => "b",
+        }
+    }
+
+    /// Anything unrecognized reads as `Thru`, so a session written by a newer
+    /// build degrades to an inert crossfader rather than failing to load.
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "a" => XfaderAssign::A,
+            "b" => XfaderAssign::B,
+            _ => XfaderAssign::Thru,
+        }
+    }
+
+    pub fn gain(&self, position: f64) -> f64 {
+        let (a, b) = xfader_gains(position);
+        match self {
+            XfaderAssign::Thru => 1.0,
+            XfaderAssign::A => a,
+            XfaderAssign::B => b,
+        }
+    }
+}
+
+/// Constant power rather than linear: both buses sit at -3 dB with the fader
+/// centred, so a blend holds its perceived level instead of dipping through the
+/// middle.
+pub fn xfader_gains(position: f64) -> (f64, f64) {
+    // The ends are returned exactly rather than left to the trig: `cos` at a
+    // quarter turn is 6e-17, not zero, and anything downstream asking whether a
+    // deck is silent would read that as audible.
+    if position <= -1.0 {
+        return (1.0, 0.0);
+    }
+    if position >= 1.0 {
+        return (0.0, 1.0);
+    }
+    let angle = (position + 1.0) / 2.0 * std::f64::consts::FRAC_PI_2;
+    (angle.cos(), angle.sin())
+}
+
+const MASTER_SLOTS: &[SlotDescriptor] = &[MASTER_GAIN_SLOT];
+
+const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT];
 
 // The same strip as the classic mixer with a different unit in the `eq` slot:
 // full kill instead of a shelf, so the params share their ids but not their
@@ -318,20 +407,40 @@ const MASTER_SLOTS: &[SlotDescriptor] = &[SlotDescriptor {
 pub static ISOLATOR_3BAND: MixerManifest = MixerManifest {
     id: "isolator-3band",
     cue_tap: "fader",
-    strip: &[
-        SlotDescriptor {
-            slot: "eq",
-            unit_id: "isolator3band",
-            params: &[
-                isolator_param("low", "Low", "LO"),
-                isolator_param("mid", "Mid", "MD"),
-                isolator_param("high", "High", "HI"),
-            ],
-        },
-        SWEEP_FILTER_SLOT,
-        FADER_SLOT,
-    ],
+    strip: ISOLATOR_STRIP,
     master: MASTER_SLOTS,
+};
+
+const ISOLATOR_STRIP: &[SlotDescriptor] = &[
+    SlotDescriptor {
+        slot: "eq",
+        unit_id: "isolator3band",
+        params: &[
+            isolator_param("low", "Low", "LO"),
+            isolator_param("mid", "Mid", "MD"),
+            isolator_param("high", "High", "HI"),
+        ],
+    },
+    SWEEP_FILTER_SLOT,
+    FADER_SLOT,
+];
+
+// The v1 manifests are frozen, not deprecated: a session recorded before the
+// crossfader existed still resolves one by id and renders exactly as it did.
+// Adding the slot in place would have changed their hash and refused every one
+// of those files.
+pub static CLASSIC_3BAND_V2: MixerManifest = MixerManifest {
+    id: "classic-3band-v2",
+    cue_tap: "fader",
+    strip: CLASSIC_STRIP,
+    master: MASTER_SLOTS_V2,
+};
+
+pub static ISOLATOR_3BAND_V2: MixerManifest = MixerManifest {
+    id: "isolator-3band-v2",
+    cue_tap: "fader",
+    strip: ISOLATOR_STRIP,
+    master: MASTER_SLOTS_V2,
 };
 
 const fn isolator_param(
@@ -405,6 +514,84 @@ mod tests {
             automatable: true,
             lane_group: 0,
         }
+    }
+
+    // Exactly zero, not merely small: `cue.rs` decides audibility with `> 0.0`,
+    // so a residual 6e-17 from `cos` would count a cut deck as in the mix.
+    #[test]
+    fn the_crossfader_ends_hold_one_bus_open_and_close_the_other() {
+        assert_eq!(xfader_gains(-1.0), (1.0, 0.0));
+        assert_eq!(xfader_gains(1.0), (0.0, 1.0));
+        assert_eq!(XfaderAssign::A.gain(1.0), 0.0);
+        assert_eq!(XfaderAssign::B.gain(-1.0), 0.0);
+    }
+
+    // What constant power buys: summed power is flat across the throw, so a
+    // blend does not dip through the middle the way a linear pair does.
+    #[test]
+    fn the_crossfader_holds_power_across_its_throw() {
+        for step in 0..=20 {
+            let position = -1.0 + f64::from(step) / 10.0;
+            let (a, b) = xfader_gains(position);
+            assert!(
+                (a * a + b * b - 1.0).abs() < 1e-9,
+                "power dipped at {position}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_position_beyond_the_ends_is_clamped() {
+        assert_eq!(xfader_gains(-4.0), xfader_gains(-1.0));
+        assert_eq!(xfader_gains(4.0), xfader_gains(1.0));
+    }
+
+    // Thru is what makes this a safe addition: a strip that never assigns is
+    // multiplied by one wherever the crossfader sits.
+    #[test]
+    fn a_thru_strip_ignores_the_crossfader() {
+        for step in 0..=20 {
+            let position = -1.0 + f64::from(step) / 10.0;
+            assert_eq!(XfaderAssign::Thru.gain(position), 1.0);
+        }
+    }
+
+    #[test]
+    fn an_assigned_strip_follows_its_own_bus() {
+        assert_eq!(XfaderAssign::A.gain(-1.0), 1.0);
+        assert_eq!(XfaderAssign::A.gain(1.0), 0.0);
+        assert_eq!(XfaderAssign::B.gain(-1.0), 0.0);
+        assert_eq!(XfaderAssign::B.gain(1.0), 1.0);
+    }
+
+    // The assign round-trips through the `.bms` as a string, and a value this
+    // build does not know must not fail the load.
+    #[test]
+    fn an_assign_round_trips_and_an_unknown_one_reads_as_thru() {
+        for assign in [XfaderAssign::Thru, XfaderAssign::A, XfaderAssign::B] {
+            assert_eq!(XfaderAssign::from_str(assign.as_str()), assign);
+        }
+        assert_eq!(XfaderAssign::from_str("c"), XfaderAssign::Thru);
+        assert_eq!(XfaderAssign::from_str(""), XfaderAssign::Thru);
+    }
+
+    // The v1 manifests must keep their hashes or every session recorded before
+    // the crossfader is refused by `resolve_manifest`.
+    #[test]
+    fn versioning_the_mixer_left_the_frozen_manifests_alone() {
+        assert!(CLASSIC_3BAND
+            .descriptor(ParamScope::Master, "xfader", "position")
+            .is_none());
+        assert!(ISOLATOR_3BAND
+            .descriptor(ParamScope::Master, "xfader", "position")
+            .is_none());
+        assert!(CLASSIC_3BAND_V2
+            .descriptor(ParamScope::Master, "xfader", "position")
+            .is_some());
+        assert!(ISOLATOR_3BAND_V2
+            .descriptor(ParamScope::Master, "xfader", "position")
+            .is_some());
+        assert_ne!(CLASSIC_3BAND.content_hash(), CLASSIC_3BAND_V2.content_hash());
     }
 
     #[test]

@@ -101,20 +101,56 @@
         >
           {{ $t('mixer.cue') }}
         </button>
+
+        <div class="mixer__assign" v-tooltip="$t('mixer.assignHint')">
+          <button
+            v-for="option in XFADER_ASSIGNS"
+            :key="option.value"
+            class="mixer__assign-btn"
+            :class="{ 'mixer__assign-btn--active': mixer.xfaderAssign[deckId] === option.value }"
+            :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            :aria-label="$t(option.label)"
+            tabindex="-1"
+            @click="mixer.toggleXfaderAssign(deckId, option.value)"
+          >
+            {{ option.short }}
+          </button>
+        </div>
       </div>
+    </div>
+
+    <div class="mixer__xfader">
+      <span class="mixer__xfader-end">{{ $t('mixer.assignA') }}</span>
+      <input
+        type="range"
+        class="mixer__xfader-slider"
+        min="-1"
+        max="1"
+        step="0.01"
+        :value="mixer.xfaderPosition"
+        v-tooltip="$t('mixer.xfaderHint')"
+        @input="(e) => mixer.setXfaderPosition(parseFloat((e.target as HTMLInputElement).value))"
+        @dblclick="mixer.setXfaderPosition(0)"
+      />
+      <span class="mixer__xfader-end">{{ $t('mixer.assignB') }}</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { useMixerStore } from '@renderer/stores/mixer';
+import { useMixerStore, type XfaderSide } from '@renderer/stores/mixer';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
+
+const XFADER_ASSIGNS: { value: XfaderSide; short: string; label: string }[] = [
+  { value: 'a', short: 'A', label: 'mixer.assignA' },
+  { value: 'b', short: 'B', label: 'mixer.assignB' }
+];
 
 const deckParams = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
 const deckPeaks = reactive<Record<DeckId, PeakState>>({
@@ -559,6 +595,100 @@ function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
   border-right: 1px solid #444;
   cursor: grab;
   margin-left: -14px;
+  box-shadow:
+    0 3px 7px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.mixer__assign {
+  display: flex;
+  gap: 1px;
+  margin-top: 0.35em;
+}
+
+.mixer__assign-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font);
+  font-size: 0.55em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.25em 0.45em;
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.mixer__assign-btn:hover {
+  border-color: var(--fader-accent);
+  color: var(--fader-accent);
+}
+
+.mixer__assign-btn--active {
+  border-color: var(--fader-accent);
+  color: var(--fader-accent);
+  background: color-mix(in srgb, var(--fader-accent) 15%, transparent);
+}
+
+.mixer__xfader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  padding: 0.5em 0.8em 0.2em;
+}
+
+.mixer__xfader-end {
+  font-size: 0.5em;
+  color: var(--color-muted);
+  letter-spacing: 0.04em;
+}
+
+/* The channel fader's cap and track, laid on its side: a crossfader is a fader,
+   not a sweep, so it reads as one rather than borrowing the filter's knurl. */
+.mixer__xfader-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  max-width: 16em;
+  height: 28px;
+  cursor: pointer;
+  background: transparent;
+  padding: 0;
+}
+
+.mixer__xfader-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #111;
+  border: 1px solid #282828;
+  border-radius: 2px;
+}
+
+.mixer__xfader-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 28px;
+  background: linear-gradient(
+    to right,
+    #303030 0%,
+    #303030 38%,
+    #be1c1c 38%,
+    #be1c1c 62%,
+    #303030 62%,
+    #303030 100%
+  );
+  border-radius: 2px;
+  border-left: 1px solid #555;
+  border-right: 1px solid #1a1a1a;
+  border-top: 1px solid #444;
+  border-bottom: 1px solid #444;
+  cursor: grab;
+  margin-top: -11px;
   box-shadow:
     0 3px 7px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);

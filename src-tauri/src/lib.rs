@@ -7,6 +7,7 @@ pub mod offline_render;
 mod session_playback;
 
 use audio::AppAudio;
+use commands::DeckSyncPayload;
 use engine_push::{EnginePush, ParamOrigin};
 use std::sync::Arc;
 
@@ -126,6 +127,9 @@ pub struct AppState {
         std::collections::HashMap<String, Arc<crate::offline_render::SessionFile>>,
     >,
     session: std::sync::Mutex<Option<SessionLogger>>,
+    // Mirrored from the frontend, which owns mode. Rust needs it only because
+    // the MIDI thread has no other way to know the session scheduler is running.
+    app_mode: std::sync::Mutex<AppMode>,
     pub engine_push: Arc<EnginePush>,
     // Set once at startup. The reverse of the MIDI dispatch closure: that one
     // lets the controller reach the engine, this one lets the engine light the
@@ -133,7 +137,29 @@ pub struct AppState {
     cue_feedback: std::sync::Mutex<Option<CueFeedback>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppMode {
+    Performance,
+    Edit,
+    Session,
+}
+
 impl AppState {
+    pub(crate) fn app_mode(&self) -> AppMode {
+        *self
+            .app_mode
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn set_app_mode(&self, mode: AppMode) {
+        *self
+            .app_mode
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = mode;
+    }
+
     fn log(&self, event_type: &str, payload: serde_json::Value) {
         if let Some(logger) = self
             .session
@@ -178,6 +204,151 @@ impl AppState {
         Ok(())
     }
 
+    fn deck(&self, deck: &str) -> Result<Arc<std::sync::Mutex<audio::DeckState>>, String> {
+        self.audio
+            .deck(deck)
+            .ok_or_else(|| format!("unknown deck: {}", deck))
+    }
+
+    /// The transport counterpart of `set_deck_param`: the one path play, pause
+    /// and cue change through, so a controller press is logged and mirrored to
+    /// the UI on the same terms as a click.
+    pub(crate) fn toggle_play(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let payload = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            deck_state.toggle_play();
+            DeckSyncPayload::from_deck(&deck_state, false)
+        };
+        self.log(
+            if payload.is_playing { "play" } else { "stop" },
+            serde_json::json!({ "deck": deck }),
+        );
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        Ok(payload)
+    }
+
+    pub(crate) fn press_cue(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (outcome, payload) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            if deck_state.quantize {
+                if let Some(bpm) = deck_state.bpm {
+                    let sr = deck_state.device_sample_rate as f64;
+                    deck_state.main_pos = commands::quantize_to_beat(
+                        deck_state.main_pos,
+                        bpm,
+                        deck_state.beat_offset_frames,
+                        sr,
+                    );
+                }
+            }
+            let had_loop = deck_state.loop_end > 0.0;
+            let out = deck_state.press_cue();
+            let loop_cleared = matches!(out, audio::CuePressOutcome::CueMoved { .. }) && had_loop;
+            if loop_cleared {
+                deck_state.loop_active = false;
+                deck_state.loop_end = 0.0;
+            }
+            (out, DeckSyncPayload::from_deck(&deck_state, loop_cleared))
+        };
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        let (event, cue_sec) = match outcome {
+            audio::CuePressOutcome::NoTrack => return Ok(payload),
+            audio::CuePressOutcome::PreviewStarted => ("cue_preview_start", payload.cue_point_sec),
+            audio::CuePressOutcome::CueMoved { new_cue_point_sec } => {
+                ("cue_move", new_cue_point_sec)
+            }
+            audio::CuePressOutcome::StoppedAtCue { cue_point_sec } => {
+                ("stopped_at_cue", cue_point_sec)
+            }
+        };
+        self.log(
+            event,
+            serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
+        );
+        Ok(payload)
+    }
+
+    pub(crate) fn release_cue(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (was_cueing, payload) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let was = deck_state.is_cueing;
+            deck_state.release_cue();
+            (was, DeckSyncPayload::from_deck(&deck_state, false))
+        };
+        if was_cueing {
+            self.log(
+                "cue_preview_end",
+                serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
+            );
+        }
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        Ok(payload)
+    }
+
+    pub(crate) fn set_cue_and_stop(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (was_playing, payload) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let was = deck_state.is_playing;
+            deck_state.set_cue_and_stop();
+            (was, DeckSyncPayload::from_deck(&deck_state, false))
+        };
+        if was_playing {
+            self.log(
+                "cue_set_and_stop",
+                serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
+            );
+        }
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        Ok(payload)
+    }
+
+    pub(crate) fn stop_at_cue(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+    ) -> Result<DeckSyncPayload, String> {
+        let deck_arc = self.deck(deck)?;
+        let (was_playing, payload) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let was = deck_state.is_playing;
+            deck_state.stop_at_cue();
+            (was, DeckSyncPayload::from_deck(&deck_state, false))
+        };
+        if was_playing {
+            self.log(
+                "stop_at_cue",
+                serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
+            );
+        }
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
+        Ok(payload)
+    }
+
     /// Cue is headphone routing rather than a mixer move, so it is not a
     /// manifest param and does not go through `set_deck_param`. It is still
     /// logged, under its own event type.
@@ -194,6 +365,48 @@ impl AppState {
             .as_ref()
         {
             feedback(deck, active);
+        }
+    }
+
+    /// Position is one master value, but the gain it implies is per strip, so
+    /// every strip is re-resolved against its own assign on each move.
+    pub(crate) fn set_xfader_position(&self, origin: ParamOrigin, position: f32) {
+        self.audio.monitor.set_xfader_position(position);
+        self.resolve_xfader_gains();
+        self.log_param(None, "xfader", "position", position as f64);
+        self.engine_push.mark_xfader(origin);
+    }
+
+    pub(crate) fn set_xfader_assign(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        assign: session_core::XfaderAssign,
+    ) -> Result<(), String> {
+        self.audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {}", deck))?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_xfader_assign(assign);
+        self.log(
+            "set_xfader_assign",
+            serde_json::json!({ "deck": deck, "assign": assign.as_str() }),
+        );
+        self.engine_push.mark_xfader_assign(origin, deck);
+        Ok(())
+    }
+
+    fn resolve_xfader_gains(&self) {
+        let position = self.audio.monitor.xfader_position();
+        for deck in self.audio.deck_ids() {
+            let Some(strip) = self.audio.strip(&deck) else {
+                continue;
+            };
+            strip
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_xfader_position(position);
         }
     }
 
@@ -266,6 +479,7 @@ pub fn run() {
         session_track_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
+        app_mode: std::sync::Mutex::new(AppMode::Performance),
         engine_push: Arc::new(EnginePush::new()),
         cue_feedback: std::sync::Mutex::new(None),
     };
@@ -345,7 +559,11 @@ pub fn run() {
             midi::set_dispatch(
                 &app.state::<midi::MidiState>(),
                 Arc::new(move |data: &[u8]| {
-                    midi::apply(midi_handle.state::<AppState>().inner(), data);
+                    midi::apply(
+                        midi_handle.state::<AppState>().inner(),
+                        midi_handle.state::<midi::MidiState>().inner(),
+                        data,
+                    );
                 }),
             );
             let feedback_handle = app.handle().clone();
@@ -388,6 +606,9 @@ pub fn run() {
             commands::set_beat_grid,
             commands::set_bpm_range,
             commands::set_buffer_size,
+            commands::set_app_mode,
+            commands::set_xfader_position,
+            commands::set_xfader_assign,
             commands::set_cue_active,
             commands::set_cue_and_stop,
             commands::set_cue_device,

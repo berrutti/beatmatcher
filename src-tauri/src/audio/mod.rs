@@ -56,7 +56,7 @@ pub struct DeviceInfo {
 // The one mixer the live engine builds. The format supports others (see
 // `session_core::MANIFESTS`) and the offline renderer builds whichever a `.bms`
 // names, but nothing selects a different one at runtime.
-const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND;
+const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
 
 pub struct AppAudio {
     pub device_sample_rate: u32,
@@ -151,6 +151,10 @@ impl AppAudio {
 
     pub fn strip(&self, id: &str) -> Option<Arc<Mutex<ChannelStrip>>> {
         self.strips.get(id).cloned()
+    }
+
+    pub fn deck_ids(&self) -> Vec<String> {
+        self.strips.keys().cloned().collect()
     }
 
     pub fn list_devices(&self) -> Vec<DeviceInfo> {

@@ -1,7 +1,20 @@
-use crate::audio::{self, ChannelStrip, CuePressOutcome, DeviceInfo, TrackInfo};
+use crate::audio::{self, ChannelStrip, DeviceInfo, TrackInfo};
 use crate::{AppState, ParamOrigin};
 use std::sync::Arc;
 use tauri::Emitter;
+
+/// Mode is owned by the frontend; this is the mirror the MIDI thread reads.
+/// Clearing the halves is the same reasoning as on reconnect: a half stranded by
+/// a mode switch would join with the first message after the switch back.
+#[tauri::command]
+pub fn set_app_mode(
+    state: tauri::State<'_, AppState>,
+    midi: tauri::State<'_, crate::midi::MidiState>,
+    mode: crate::AppMode,
+) {
+    state.set_app_mode(mode);
+    midi.clear_halves();
+}
 
 pub(crate) fn get_deck(
     state: &tauri::State<'_, AppState>,
@@ -51,15 +64,15 @@ fn band_normalization_scale(band: &[f32]) -> f32 {
 //                       disappears). Only true when the cue point moves to a new
 //                       position (CueMoved) or loop_in is pressed, because those
 //                       actions invalidate the old loop_end.
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeckSyncPayload {
-    is_playing: bool,
-    is_cueing: bool,
-    cue_point_sec: f64,
-    position_sec: f64,
-    loop_active: bool,
-    loop_region_cleared: bool,
+    pub(crate) is_playing: bool,
+    pub(crate) is_cueing: bool,
+    pub(crate) cue_point_sec: f64,
+    pub(crate) position_sec: f64,
+    pub(crate) loop_active: bool,
+    pub(crate) loop_region_cleared: bool,
 }
 
 impl DeckSyncPayload {
@@ -349,36 +362,7 @@ pub(crate) fn press_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (outcome, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if deck_state.quantize {
-            if let Some(bpm) = deck_state.bpm {
-                let sr = deck_state.device_sample_rate as f64;
-                deck_state.main_pos =
-                    quantize_to_beat(deck_state.main_pos, bpm, deck_state.beat_offset_frames, sr);
-            }
-        }
-        let had_loop = deck_state.loop_end > 0.0;
-        let out = deck_state.press_cue();
-        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
-        if loop_cleared {
-            deck_state.loop_active = false;
-            deck_state.loop_end = 0.0;
-        }
-        (out, DeckSyncPayload::from_deck(&deck_state, loop_cleared))
-    };
-    let (event, cue_sec) = match outcome {
-        CuePressOutcome::NoTrack => return Ok(payload),
-        CuePressOutcome::PreviewStarted => ("cue_preview_start", payload.cue_point_sec),
-        CuePressOutcome::CueMoved { new_cue_point_sec } => ("cue_move", new_cue_point_sec),
-        CuePressOutcome::StoppedAtCue { cue_point_sec } => ("stopped_at_cue", cue_point_sec),
-    };
-    state.log(
-        event,
-        serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
-    );
-    Ok(payload)
+    state.press_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -386,20 +370,7 @@ pub(crate) fn release_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_cueing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_cueing;
-        deck_state.release_cue();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_cueing {
-        state.log(
-            "cue_preview_end",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.release_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -407,17 +378,7 @@ pub(crate) fn toggle_play(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.toggle_play();
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    state.log(
-        if payload.is_playing { "play" } else { "stop" },
-        serde_json::json!({ "deck": deck }),
-    );
-    Ok(payload)
+    state.toggle_play(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -425,20 +386,7 @@ pub(crate) fn set_cue_and_stop(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_playing;
-        deck_state.set_cue_and_stop();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_playing {
-        state.log(
-            "cue_set_and_stop",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.set_cue_and_stop(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -446,20 +394,7 @@ pub(crate) fn stop_at_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_playing;
-        deck_state.stop_at_cue();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_playing {
-        state.log(
-            "stop_at_cue",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.stop_at_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -1174,6 +1109,24 @@ pub(crate) fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
 }
 
 #[tauri::command]
+pub(crate) fn set_xfader_position(state: tauri::State<'_, AppState>, position: f32) {
+    state.set_xfader_position(ParamOrigin::Ui, position);
+}
+
+#[tauri::command]
+pub(crate) fn set_xfader_assign(
+    state: tauri::State<'_, AppState>,
+    deck: &str,
+    assign: &str,
+) -> Result<(), String> {
+    state.set_xfader_assign(
+        ParamOrigin::Ui,
+        deck,
+        session_core::XfaderAssign::from_str(assign),
+    )
+}
+
+#[tauri::command]
 pub(crate) fn set_cue_mix(state: tauri::State<'_, AppState>, mix: f32) {
     state.audio.monitor.set_cue_mix(mix);
 }
@@ -1391,7 +1344,7 @@ pub(crate) async fn get_track_amplitude_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio::DeckState;
+    use audio::{CuePressOutcome, DeckState};
 
     // Compile-time guard for the SendStream SAFETY contract (audio/stream.rs):
     // making any stream-mutating command async moves cpal::Stream drops onto
@@ -1511,7 +1464,7 @@ mod tests {
 
     // --- press_cue with quantize (command-layer logic) ---
 
-    // Mirrors the quantize-then-press sequence in the press_cue Tauri command.
+    // Mirrors the quantize-then-press sequence in `AppState::press_cue`.
     fn press_cue_quantized(deck_state: &mut DeckState) -> CuePressOutcome {
         if let Some(bpm) = deck_state.bpm {
             let sr = deck_state.device_sample_rate as f64;
@@ -1561,7 +1514,7 @@ mod tests {
         deck_state.loop_end = beat_dur() * 4.0;
         deck_state.loop_active = true;
         deck_state.main_pos = beat_dur() * 2.0;
-        // Simulate press_cue Tauri command: quantize then check loop_cleared
+        // Simulate AppState::press_cue: quantize then check loop_cleared
         let had_loop = deck_state.loop_end > 0.0;
         let out = press_cue_quantized(&mut deck_state);
         let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;

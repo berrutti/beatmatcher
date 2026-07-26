@@ -62,6 +62,7 @@ pub struct StripSim {
     pub eq_high: f32,
     pub filter_value: f32,
     pub filter_active: bool,
+    pub xfader_assign: crate::XfaderAssign,
 }
 
 impl Default for StripSim {
@@ -73,6 +74,7 @@ impl Default for StripSim {
             eq_high: 0.0,
             filter_value: 0.0,
             filter_active: false,
+            xfader_assign: crate::XfaderAssign::Thru,
         }
     }
 }
@@ -82,6 +84,7 @@ pub struct SimState {
     pub decks: HashMap<String, DeckSim>,
     pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
+    pub xfader_position: f32,
 }
 
 impl SimState {
@@ -90,6 +93,7 @@ impl SimState {
             decks: HashMap::new(),
             strips: HashMap::new(),
             master_gain: DEFAULT_MASTER_GAIN,
+            xfader_position: 0.0,
         }
     }
 }
@@ -118,6 +122,7 @@ pub struct StripSnap {
     pub eq_high: f32,
     pub filter_value: f32,
     pub filter_active: bool,
+    pub xfader_assign: crate::XfaderAssign,
 }
 
 impl Default for StripSnap {
@@ -129,6 +134,7 @@ impl Default for StripSnap {
             eq_high: 0.0,
             filter_value: 0.0,
             filter_active: false,
+            xfader_assign: crate::XfaderAssign::Thru,
         }
     }
 }
@@ -139,6 +145,7 @@ pub struct SessionSnapshot {
     pub decks: HashMap<String, DeckSnap>,
     pub strips: HashMap<String, StripSnap>,
     pub master_gain: f32,
+    pub xfader_position: f32,
 }
 
 // Continuous beat count at a playback position, given the track's beat grid.
@@ -207,6 +214,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
                     eq_high: s.eq_high,
                     filter_value: s.filter_value,
                     filter_active: s.filter_active,
+                    xfader_assign: s.xfader_assign,
                 },
             )
         })
@@ -216,6 +224,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         decks,
         strips,
         master_gain: snap.master_gain,
+        xfader_position: snap.xfader_position,
     }
 }
 
@@ -319,6 +328,13 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             sim.play_start_ms = event.elapsed_ms;
             sim.rate = rate.max(0.1);
         }
+        SessionCommand::SetXfaderAssign { deck, assign } => {
+            state
+                .strips
+                .entry(deck.to_string())
+                .or_default()
+                .xfader_assign = assign;
+        }
         SessionCommand::SetNudge { deck, percent } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
             sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
@@ -408,6 +424,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             (None, "gain", "gain") => {
                 state.master_gain = value as f32;
             }
+            (None, "xfader", "position") => {
+                state.xfader_position = value as f32;
+            }
             _ => {}
         },
         SessionCommand::SetBeatGrid {
@@ -485,6 +504,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
                     eq_high: s.eq_high,
                     filter_value: s.filter_value,
                     filter_active: s.filter_active,
+                    xfader_assign: s.xfader_assign,
                 },
             )
         })
@@ -495,6 +515,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         decks,
         strips,
         master_gain: state.master_gain,
+        xfader_position: state.xfader_position,
     }
 }
 

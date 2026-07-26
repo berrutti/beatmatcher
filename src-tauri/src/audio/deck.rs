@@ -10,6 +10,8 @@ use std::sync::{
 // have settled. One second is ~20 tau of the slowest (the filter's 50 ms bypass
 // crossfade) plus room for the IIR to reach the f32 noise floor.
 const SETTLE_SECONDS: f32 = 1.0;
+// Matches the fader's own smoothing, so a cut feels as immediate as the fader.
+const XFADER_SMOOTHING_TAU_SEC: f32 = 0.010;
 
 // Interleaved stereo, `frames * 2` long, accumulated into rather than
 // overwritten, since several decks mix into the same buffer.
@@ -31,6 +33,15 @@ pub struct ChannelStrip {
     slots: Vec<Slot>,
     fader_slot: usize,
     pub(crate) cue_active: bool,
+    // Not manifest params: the assign is an enum. Both halves live here so the
+    // resolved gain has one owner; the live engine, session playback and the
+    // offline renderer would otherwise each have to re-resolve at the same
+    // points, and any one of them missing a point is an audible divergence.
+    pub(crate) xfader_assign: session_core::XfaderAssign,
+    xfader_position: f32,
+    xfader_gain: f32,
+    xfader_gain_target: f32,
+    xfader_smooth_coeff: f32,
     level_l: Arc<AtomicU32>,
     level_r: Arc<AtomicU32>,
     settle_frames: usize,
@@ -87,11 +98,32 @@ impl ChannelStrip {
             slots,
             fader_slot,
             cue_active: false,
+            xfader_assign: session_core::XfaderAssign::Thru,
+            xfader_position: 0.0,
+            xfader_gain: 1.0,
+            xfader_gain_target: 1.0,
+            xfader_smooth_coeff: 1.0 - (-1.0 / (sample_rate * XFADER_SMOOTHING_TAU_SEC)).exp(),
             level_l: Arc::new(AtomicU32::new(0)),
             level_r: Arc::new(AtomicU32::new(0)),
             settle_frames: settle_window_frames,
             settle_window_frames,
         }
+    }
+
+    pub(crate) fn set_xfader_assign(&mut self, assign: session_core::XfaderAssign) {
+        self.xfader_assign = assign;
+        self.resolve_xfader();
+    }
+
+    pub(crate) fn set_xfader_position(&mut self, position: f32) {
+        self.xfader_position = position.clamp(-1.0, 1.0);
+        self.resolve_xfader();
+    }
+
+    fn resolve_xfader(&mut self) {
+        self.xfader_gain_target = self
+            .xfader_assign
+            .gain(f64::from(self.xfader_position)) as f32;
     }
 
     pub fn store_level(&self, l: f32, r: f32) {
@@ -192,7 +224,12 @@ impl ChannelStrip {
         for slot in &mut self.slots {
             (l, r) = slot.main.process(l, r);
         }
-        (l, r)
+        // Post-fader, and after the cue tap, so a deck crossfaded away is still
+        // audible in headphones. Smoothed on the same one-pole as the fader
+        // because a crossfader is thrown fast enough to click otherwise.
+        self.xfader_gain +=
+            (self.xfader_gain_target - self.xfader_gain) * self.xfader_smooth_coeff;
+        (l * self.xfader_gain, r * self.xfader_gain)
     }
 
     // Everything before the manifest's cue tap, gated by cue_active. Always
@@ -699,6 +736,63 @@ mod tests {
         let (l, r) = strip.process_main(1.0, 1.0);
         assert!(l > 0.99, "expected l near 1.0, got {}", l);
         assert!(r > 0.99, "expected r near 1.0, got {}", r);
+    }
+
+    fn settled_xfader_gain(strip: &mut ChannelStrip) -> f32 {
+        let mut left = 0.0;
+        for _ in 0..48000 {
+            left = strip.process_main(1.0, 1.0).0;
+        }
+        left
+    }
+
+    #[test]
+    fn a_thru_strip_is_untouched_wherever_the_crossfader_sits() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_position(-1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+    }
+
+    #[test]
+    fn an_assigned_strip_is_cut_at_the_far_end_and_open_at_its_own() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+
+        strip.set_xfader_position(-1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) < 0.001);
+    }
+
+    // The divergence this guards: assign and position are resolved by the strip
+    // itself, so a caller that changes only one of them still ends up correct.
+    // The live engine, session playback and the offline renderer each touch only
+    // one of the two, and any of them re-resolving late is audible.
+    #[test]
+    fn assigning_after_the_crossfader_moved_still_resolves() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_position(1.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        assert!(settled_xfader_gain(&mut strip) < 0.001);
+    }
+
+    // A hard cut has to ramp, not step, or it clicks. Centred and assigned is
+    // 0.707 rather than unity, which is what constant power means.
+    #[test]
+    fn the_crossfader_does_not_step_when_thrown() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        let settled = settled_xfader_gain(&mut strip);
+        assert!((settled - 0.707).abs() < 0.01, "centred gain was {settled}");
+
+        strip.set_xfader_position(1.0);
+        let first = strip.process_main(1.0, 1.0).0;
+        assert!(
+            (settled - first).abs() < 0.01,
+            "the cut stepped from {settled} to {first} in one sample"
+        );
     }
 
     #[test]

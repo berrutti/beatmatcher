@@ -55,6 +55,8 @@ type DeckSyncPayload = {
   loopRegionCleared: boolean;
 };
 
+type TransportPush = DeckSyncPayload & { deck: DeckId };
+
 // The deck header shows BPM with two decimals; the audible rate is computed
 // from the rounded value so display and playback always agree.
 function roundBpm(bpm: number): number {
@@ -359,6 +361,13 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
+    // Engine-originated transport, and deliberately does not invoke back: Rust
+    // never pushes a change the UI itself made, so anything arriving here moved
+    // the engine without passing through this store.
+    applyEngineTransport(payload: DeckSyncPayload) {
+      applyDeckState(payload);
+    },
+
     async togglePlay() {
       const payload = await invoke<DeckSyncPayload>('toggle_play', { deck: id });
       applyDeckState(payload);
@@ -540,6 +549,14 @@ export const useDecksStore = defineStore('decks', () => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
     deck.returnToCue();
+  });
+
+  listen<TransportPush[]>('engine-transport', (event) => {
+    for (const push of event.payload) {
+      const deck = decks[push.deck];
+      if (!deck) continue;
+      deck.applyEngineTransport(push);
+    }
   });
 
   async function ejectAll(): Promise<void> {

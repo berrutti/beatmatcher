@@ -212,7 +212,11 @@
   },
   "mixer": {
     "cue": "CUE",
-    "cueHint": "Toggle CUE: Space + number key"
+    "cueHint": "Toggle CUE: Space + number key",
+    "assignA": "A",
+    "assignB": "B",
+    "assignHint": "Crossfader assign: A or B, neither to bypass",
+    "xfaderHint": "Crossfader. Double-click to centre."
   },
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",

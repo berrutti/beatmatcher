@@ -212,7 +212,11 @@
   },
   "mixer": {
     "cue": "CUE",
-    "cueHint": "CUE umschalten: Leertaste + Zahl"
+    "cueHint": "CUE umschalten: Leertaste + Zahl",
+    "assignA": "A",
+    "assignB": "B",
+    "assignHint": "Crossfader-Zuweisung: A oder B, keins zum Umgehen",
+    "xfaderHint": "Crossfader. Doppelklick zum Zentrieren."
   },
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",

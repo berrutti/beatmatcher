@@ -21,6 +21,7 @@ vi.mock('@renderer/utils/storage', () => ({
 
 vi.mock('@renderer/stores/settings', () => ({
   DEFAULT_MIXER_ID: 'classic-3band',
+  LIVE_MIXER_ID: 'classic-3band-v2',
   useSettingsStore: () => ({
     pitchRange: 8,
     nudgeSensitivity: 4,
@@ -30,7 +31,7 @@ vi.mock('@renderer/stores/settings', () => ({
   })
 }));
 
-import { useMixerStore } from '../mixer';
+import { useMixerStore, type XfaderSide } from '../mixer';
 import { editConstants } from '@renderer/utils/sessionCore';
 
 const { eqMinDb: EQ_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
@@ -232,5 +233,111 @@ describe('applyEngineParam', () => {
 
     expect({ ...store.volume }).toEqual(before);
     expect(store.eq.A).toEqual({ low: 0, mid: 0, high: 0 });
+  });
+});
+
+describe('crossfader', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  // Thru and centre is what makes the crossfader inert until a deck is put on a
+  // side, which is why adding it did not change how existing sessions render.
+  it('starts centred with every deck through', () => {
+    const store = useMixerStore();
+
+    expect(store.xfaderPosition).toBe(0);
+    for (const deckId of ['A', 'B', 'C', 'D'] as const) {
+      expect(store.xfaderAssign[deckId]).toBe('thru');
+    }
+  });
+
+  it('clamps the position to the throw', () => {
+    const store = useMixerStore();
+
+    store.setXfaderPosition(-4);
+    expect(store.xfaderPosition).toBe(-1);
+    store.setXfaderPosition(4);
+    expect(store.xfaderPosition).toBe(1);
+  });
+
+  it('sends the position and the assign to Rust', () => {
+    const store = useMixerStore();
+
+    store.setXfaderPosition(0.5);
+    expect(mockedInvoke).toHaveBeenCalledWith('set_xfader_position', { position: 0.5 });
+
+    store.setXfaderAssign('B', 'a');
+    expect(mockedInvoke).toHaveBeenCalledWith('set_xfader_assign', { deck: 'B', assign: 'a' });
+  });
+
+  // Master scope arrives with no deck, so it has to be read before the deck
+  // guard that rejects everything else.
+  it('mirrors an engine-driven position that carries no deck', () => {
+    const store = useMixerStore();
+
+    store.applyEngineParam({ deck: '', slot: 'xfader', param: 'position', value: -0.75 });
+
+    expect(store.xfaderPosition).toBe(-0.75);
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it('mirrors an engine-driven assign back to its name', () => {
+    const store = useMixerStore();
+
+    store.applyEngineParam({ deck: 'C', slot: 'xfader', param: 'assign', value: 2 });
+    expect(store.xfaderAssign.C).toBe('b');
+
+    store.applyEngineParam({ deck: 'C', slot: 'xfader', param: 'assign', value: 0 });
+    expect(store.xfaderAssign.C).toBe('thru');
+  });
+
+  it('moves the deck between sides and clears it when the lit side is pressed again', () => {
+    const store = useMixerStore();
+
+    store.toggleXfaderAssign('A', 'a');
+    expect(store.xfaderAssign.A).toBe('a');
+
+    store.toggleXfaderAssign('A', 'b');
+    expect(store.xfaderAssign.A).toBe('b');
+
+    store.toggleXfaderAssign('A', 'b');
+    expect(store.xfaderAssign.A).toBe('thru');
+    expect(mockedInvoke).toHaveBeenLastCalledWith('set_xfader_assign', {
+      deck: 'A',
+      assign: 'thru'
+    });
+  });
+
+  // What the UI relies on to have no off button: it lights the side that is on,
+  // so two sides on at once would be a state it cannot draw.
+  it('never lights both sides, whatever the press order', () => {
+    const store = useMixerStore();
+    const sides: XfaderSide[] = ['a', 'b'];
+
+    for (const first of sides) {
+      for (const second of sides) {
+        for (const third of sides) {
+          store.setXfaderAssign('A', 'thru');
+          for (const side of [first, second, third]) {
+            store.toggleXfaderAssign('A', side);
+            const lit = sides.filter((candidate) => store.xfaderAssign.A === candidate);
+            expect(lit.length).toBeLessThanOrEqual(1);
+          }
+        }
+      }
+    }
+  });
+
+  it('returns to centre and through on reset', () => {
+    const store = useMixerStore();
+    store.setXfaderPosition(1);
+    store.setXfaderAssign('A', 'b');
+
+    store.reset();
+
+    expect(store.xfaderPosition).toBe(0);
+    expect(store.xfaderAssign.A).toBe('thru');
   });
 });

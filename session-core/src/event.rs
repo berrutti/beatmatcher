@@ -34,6 +34,8 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
@@ -159,6 +161,13 @@ pub enum SessionCommand<'a> {
         param: &'a str,
         value: f64,
     },
+    // Categorical, so it gets its own variant rather than riding SetParam as a
+    // number. Same reasoning as `set_cue_active`: per-strip state the manifest
+    // does not describe.
+    SetXfaderAssign {
+        deck: &'a str,
+        assign: crate::XfaderAssign,
+    },
     SetPlaybackRate {
         deck: &'a str,
         rate: f64,
@@ -210,6 +219,7 @@ impl<'a> SessionCommand<'a> {
             | Stop { deck }
             | StopAtCue { deck, .. }
             | Seek { deck, .. }
+            | SetXfaderAssign { deck, .. }
             | SetPlaybackRate { deck, .. }
             | SetNudge { deck, .. }
             | SetBeatGrid { deck, .. }
@@ -271,6 +281,10 @@ impl SessionEvent {
                 slot: self.slot.as_deref()?,
                 param: self.param.as_deref()?,
                 value: self.value? as f64,
+            },
+            "set_xfader_assign" => SetXfaderAssign {
+                deck: deck?,
+                assign: crate::XfaderAssign::from_str(self.assign.as_deref()?),
             },
             "set_playback_rate" => SetPlaybackRate {
                 deck: deck?,

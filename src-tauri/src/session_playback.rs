@@ -922,6 +922,7 @@ mod tests {
             SessionCommand::SetBeatGrid { .. } => ("set_beat_grid", false),
             // No mixer param affects position, hence the single false.
             SessionCommand::SetParam { .. } => ("set_param", false),
+            SessionCommand::SetXfaderAssign { .. } => ("set_xfader_assign", false),
         }
     }
 

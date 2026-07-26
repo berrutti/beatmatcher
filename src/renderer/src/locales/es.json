@@ -212,7 +212,11 @@
   },
   "mixer": {
     "cue": "CUE",
-    "cueHint": "Activar CUE: Espacio + número"
+    "cueHint": "Activar CUE: Espacio + número",
+    "assignA": "A",
+    "assignB": "B",
+    "assignHint": "Asignación del crossfader: A o B, ninguno para omitir",
+    "xfaderHint": "Crossfader. Doble clic para centrar."
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",

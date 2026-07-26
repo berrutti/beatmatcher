@@ -31,6 +31,9 @@ pub struct MasterMonitor {
     pub level_r: Arc<std::sync::atomic::AtomicU32>,
     pub master_gain: Arc<std::sync::atomic::AtomicU32>,
     pub cue_mix: Arc<std::sync::atomic::AtomicU32>,
+    // Held here rather than on the strips because it is one master value; the
+    // strips carry only the gain it resolves to against their own assign.
+    pub xfader_position: Arc<std::sync::atomic::AtomicU32>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
     // Free-running count of master output frames produced by the audio device.
@@ -48,6 +51,7 @@ impl MasterMonitor {
                 DEFAULT_MASTER_GAIN.to_bits(),
             )),
             cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
+            xfader_position: Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits())),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -73,6 +77,15 @@ impl MasterMonitor {
     pub fn set_cue_mix(&self, mix: f32) {
         self.cue_mix
             .store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_xfader_position(&self, position: f32) {
+        self.xfader_position
+            .store(position.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn xfader_position(&self) -> f32 {
+        f32::from_bits(self.xfader_position.load(Ordering::Relaxed))
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {
