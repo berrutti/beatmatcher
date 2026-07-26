@@ -130,32 +130,24 @@ pub(crate) fn apply_deck_command(
             deck.compensate_late_start(overshoot_f);
         }
 
-        SessionCommand::SetVolume { gain, .. } => {
-            strip.set_gain(gain);
-        }
-
-        SessionCommand::SetEq { band, db, .. } => {
-            strip.set_eq_band(band, db);
-        }
-
-        SessionCommand::SetFilter { value, .. } => {
-            strip.set_filter(value);
-        }
-
-        SessionCommand::SetFilterActive { active, .. } => {
-            strip.set_filter_active(active);
-        }
+        // Master scope never reaches here: it has no deck, so callers route it
+        // separately.
+        SessionCommand::SetParam {
+            slot, param, value, ..
+        } => match (slot, param) {
+            ("fader", "gain") => strip.set_gain(value as f32),
+            ("eq", band) => strip.set_eq_band(band, value as f32),
+            ("filter", "value") => strip.set_filter(value as f32),
+            ("filter", "active") => strip.set_filter_active(value != 0.0),
+            _ => {}
+        },
 
         SessionCommand::SetPlaybackRate { rate, .. } => {
             deck.playback_rate = rate.max(0.1);
         }
 
         SessionCommand::SetNudge { percent, .. } => {
-            deck.nudge_factor = 1.0 + percent / 100.0;
-        }
-
-        SessionCommand::SetMasterGain { .. } => {
-            unreachable!("SetMasterGain has no deck; callers dispatch it separately")
+            deck.set_nudge_percent(percent);
         }
 
         SessionCommand::SetBeatGrid {

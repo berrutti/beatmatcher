@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { useTimelineGestures, type GestureDeps } from '@renderer/composables/useTimelineGestures';
 import type { SceneItem, Hit, ViewContext } from '@renderer/utils/timelineEngine';
+import type { Intent } from '@renderer/utils/timelineIntents';
 
 function fakeItem(hit: Hit | null): SceneItem {
   return {
@@ -60,5 +61,120 @@ describe('cursorFor', () => {
 
   it('falls back to the default cursor with nothing under the pointer', () => {
     expect(cursorFor(null)).toBe('');
+  });
+});
+
+const VIEW_CONTEXT = {
+  view: { start: 0, duration: 1000 },
+  scrollY: 0,
+  canvasW: 1000,
+  canvasH: 1000,
+  trackW: 800,
+  msToX: (ms: number) => ms,
+  xToMs: (x: number) => x,
+  mixerId: 'classic-3band',
+  laneOriginY: 0,
+  scrollViewport: { top: 0, bottom: 1000 }
+} as ViewContext;
+
+function gestureHarness(hit: Hit) {
+  const intents: Intent[] = [];
+  const deps: GestureDeps = {
+    camera: {
+      currentView: () => ({ start: 0, duration: 1000 }),
+      panByPixels: () => {},
+      panByMsDelta: () => {},
+      zoomAt: () => {},
+      maxScrollY: () => 0
+    } as unknown as GestureDeps['camera'],
+    emit: (intent) => intents.push(intent),
+    getItems: () => [fakeItem(hit)],
+    getRows: () => [],
+    getVc: () => VIEW_CONTEXT,
+    getClips: () => [],
+    getEvents: () => [],
+    getDeckLanes: () => ({}),
+    laneHeight: () => 64,
+    waveformHeight: () => 80,
+    isEditMode: () => true,
+    durationMs: () => 1000,
+    nudgeDirectionAt: () => 1,
+    nudgeSensitivity: () => 1,
+    accentFor: () => '#ffffff',
+    requestRender: () => {},
+    setCursor: () => {}
+  };
+  return { gestures: useTimelineGestures(deps), intents };
+}
+
+const RECT = { left: 0, top: 0 } as DOMRect;
+const mouseAt = (x: number, y: number) => ({ clientX: x, clientY: y }) as MouseEvent;
+
+describe('drag detection across a full mousedown/move/up/click sequence', () => {
+  it('a vertical-only lane resize does not seek or clear the selection', () => {
+    const { gestures, intents } = gestureHarness({ target: 'laneSeparator' });
+    gestures.onMouseDown(mouseAt(400, 100), RECT);
+    gestures.onMouseMove(mouseAt(400, 160), RECT);
+    gestures.onMouseUp();
+    gestures.onClick(mouseAt(400, 160), RECT);
+
+    expect(intents.map((intent) => intent.type)).toEqual(['lane.resize', 'lane.resize']);
+  });
+
+  it('a vertical-only waveform resize does not seek or clear the selection', () => {
+    const { gestures, intents } = gestureHarness({ target: 'waveformSeparator' });
+    gestures.onMouseDown(mouseAt(400, 100), RECT);
+    gestures.onMouseMove(mouseAt(400, 160), RECT);
+    gestures.onMouseUp();
+    gestures.onClick(mouseAt(400, 160), RECT);
+
+    expect(intents.map((intent) => intent.type)).toEqual(['waveform.resize', 'waveform.resize']);
+  });
+
+  it('a click with no movement still seeks', () => {
+    const { gestures, intents } = gestureHarness({ target: 'clipBand', deck: 'A', data: {} });
+    gestures.onMouseDown(mouseAt(400, 100), RECT);
+    gestures.onMouseUp();
+    gestures.onClick(mouseAt(400, 100), RECT);
+
+    expect(intents.map((intent) => intent.type)).toContain('seek');
+  });
+});
+
+describe('filter region edge', () => {
+  const span = { startMs: 100, endMs: 500 };
+
+  it('a click on the edge selects without resizing', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'filterRegion',
+      deck: 'A',
+      part: 'start',
+      data: span
+    });
+    gestures.onMouseDown(mouseAt(104, 50), RECT);
+    gestures.onMouseUp();
+    gestures.onClick(mouseAt(104, 50), RECT);
+
+    expect(intents.map((intent) => intent.type)).not.toContain('filterRegion.resize');
+  });
+
+  it('an actual drag on the edge resizes', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'filterRegion',
+      deck: 'A',
+      part: 'start',
+      data: span
+    });
+    gestures.onMouseDown(mouseAt(104, 50), RECT);
+    gestures.onMouseMove(mouseAt(200, 50), RECT);
+    gestures.onMouseUp();
+
+    expect(intents).toContainEqual({
+      type: 'filterRegion.resize',
+      deck: 'A',
+      span,
+      edge: 'start',
+      newMs: 200
+    });
   });
 });

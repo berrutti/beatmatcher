@@ -13,6 +13,10 @@ export type BufferSizeOption = (typeof BUFFER_SIZE_OPTIONS)[number];
 export const RECORDING_FORMAT_OPTIONS = ['wav-16', 'wav-32', 'flac', 'session'] as const;
 export type RecordingFormatOption = (typeof RECORDING_FORMAT_OPTIONS)[number];
 
+// Sessions written before the .bms carried a mixer header were all played on
+// this one, so it is the fallback when a file names none.
+export const DEFAULT_MIXER_ID = 'classic-3band';
+
 type Stored = {
   keybindings?: Keybindings;
   limiterEnabled?: boolean;

@@ -376,35 +376,40 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         SessionCommand::EjectTrack { deck } => {
             state.decks.remove(deck);
         }
-        SessionCommand::SetVolume { deck, gain } => {
-            state.strips.entry(deck.to_string()).or_default().gain = gain;
-        }
-        SessionCommand::SetEq { deck, band, db } => {
-            let strip = state.strips.entry(deck.to_string()).or_default();
-            match band {
-                "low" => strip.eq_low = db,
-                "mid" => strip.eq_mid = db,
-                "high" => strip.eq_high = db,
-                _ => {}
+        SessionCommand::SetParam {
+            deck, slot, param, value, ..
+        } => match (deck, slot, param) {
+            (Some(deck), "fader", "gain") => {
+                state.strips.entry(deck.to_string()).or_default().gain = value as f32;
             }
-        }
-        SessionCommand::SetFilter { deck, value } => {
-            state
-                .strips
-                .entry(deck.to_string())
-                .or_default()
-                .filter_value = value;
-        }
-        SessionCommand::SetFilterActive { deck, active } => {
-            state
-                .strips
-                .entry(deck.to_string())
-                .or_default()
-                .filter_active = active;
-        }
-        SessionCommand::SetMasterGain { gain } => {
-            state.master_gain = gain;
-        }
+            (Some(deck), "eq", band) => {
+                let strip = state.strips.entry(deck.to_string()).or_default();
+                match band {
+                    "low" => strip.eq_low = value as f32,
+                    "mid" => strip.eq_mid = value as f32,
+                    "high" => strip.eq_high = value as f32,
+                    _ => {}
+                }
+            }
+            (Some(deck), "filter", "value") => {
+                state
+                    .strips
+                    .entry(deck.to_string())
+                    .or_default()
+                    .filter_value = value as f32;
+            }
+            (Some(deck), "filter", "active") => {
+                state
+                    .strips
+                    .entry(deck.to_string())
+                    .or_default()
+                    .filter_active = value != 0.0;
+            }
+            (None, "gain", "gain") => {
+                state.master_gain = value as f32;
+            }
+            _ => {}
+        },
         SessionCommand::SetBeatGrid {
             deck,
             bpm,
@@ -974,15 +979,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_set_volume_updates_strip_gain() {
+    fn apply_fader_gain_updates_strip_gain() {
         let mut state = SimState::new();
         sim_apply_event(
-            &SessionEvent {
-                event_type: "set_volume".to_string(),
-                deck: Some("A".to_string()),
-                gain: Some(0.5),
-                ..Default::default()
-            },
+            &SessionEvent::param(0.0, Some("A"), "fader", "gain", 0.5),
             &mut state,
             &HashMap::new(),
             SAMPLE_RATE,
@@ -991,17 +991,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_set_eq_updates_all_three_bands() {
+    fn apply_eq_params_update_all_three_bands() {
         let mut state = SimState::new();
         for (band, db) in [("low", -3.0f32), ("mid", -6.0), ("high", -9.0)] {
             sim_apply_event(
-                &SessionEvent {
-                    event_type: "set_eq".to_string(),
-                    deck: Some("A".to_string()),
-                    band: Some(band.to_string()),
-                    db: Some(db),
-                    ..Default::default()
-                },
+                &SessionEvent::param(0.0, Some("A"), "eq", band, db as f64),
                 &mut state,
                 &HashMap::new(),
                 SAMPLE_RATE,
@@ -1013,14 +1007,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_set_master_gain() {
+    fn apply_master_gain_param() {
         let mut state = SimState::new();
         sim_apply_event(
-            &SessionEvent {
-                event_type: "set_master_gain".to_string(),
-                gain: Some(0.5),
-                ..Default::default()
-            },
+            &SessionEvent::param(0.0, None, "gain", "gain", 0.5),
             &mut state,
             &HashMap::new(),
             SAMPLE_RATE,
@@ -1105,14 +1095,7 @@ mod tests {
 
     #[test]
     fn eq_change_captured_in_post_event_snapshot() {
-        let events = vec![SessionEvent {
-            event_type: "set_eq".to_string(),
-            elapsed_ms: 3000.0,
-            deck: Some("A".to_string()),
-            band: Some("low".to_string()),
-            db: Some(-6.0),
-            ..Default::default()
-        }];
+        let events = vec![SessionEvent::param(3000.0, Some("A"), "eq", "low", -6.0)];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         assert_eq!(
             snaps[0].strips.get("A").map(|s| s.eq_low).unwrap_or(0.0),
@@ -1153,14 +1136,7 @@ mod tests {
                 deck: Some("A".to_string()),
                 ..Default::default()
             },
-            SessionEvent {
-                event_type: "set_eq".to_string(),
-                elapsed_ms: 5000.0,
-                deck: Some("A".to_string()),
-                band: Some("low".to_string()),
-                db: Some(-6.0),
-                ..Default::default()
-            },
+            SessionEvent::param(5000.0, Some("A"), "eq", "low", -6.0),
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         // At 3000ms: after play, before EQ change.
@@ -1400,10 +1376,8 @@ mod tests {
     #[test]
     fn edited_volume_applies_inside_range_and_restores_after() {
         let cache: SampleCache = HashMap::new();
-        let vol = |ms: f64, gain: f32| SessionEvent {
-            gain: Some(gain),
-            ..deck_ev("set_volume", ms, "A")
-        };
+        let vol =
+            |ms: f64, gain: f64| SessionEvent::param(ms, Some("A"), "fader", "gain", gain);
 
         let original = vec![vol(1000.0, 0.8)];
         // Splice result of drawing 0.4 over [5000, 8000]: inserted points plus
@@ -1585,14 +1559,8 @@ mod tests {
     #[test]
     fn filter_change_captured_in_post_event_snapshot() {
         let events = vec![
-            SessionEvent {
-                value: Some(-0.5),
-                ..deck_ev("set_filter", 1000.0, "A")
-            },
-            SessionEvent {
-                active: Some(true),
-                ..deck_ev("set_filter_active", 2000.0, "A")
-            },
+            SessionEvent::param(1000.0, Some("A"), "filter", "value", -0.5),
+            SessionEvent::param(2000.0, Some("A"), "filter", "active", 1.0),
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
@@ -1606,10 +1574,7 @@ mod tests {
         // (center/bypass), matching the timeline's DEFAULT_FILTER_VALUE. A stale
         // non-zero default would audibly filter where the drawn curve reads 0
         // (e.g. after stretching an active region back over an un-drawn stretch).
-        let events = vec![SessionEvent {
-            active: Some(true),
-            ..deck_ev("set_filter_active", 1000.0, "A")
-        }];
+        let events = vec![SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0)];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
         assert_eq!(strip.filter_value, 0.0);

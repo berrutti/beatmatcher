@@ -5,6 +5,7 @@ mod io;
 mod recording;
 mod session_apply;
 mod stream;
+mod unit;
 
 pub use analysis::{
     compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
@@ -52,6 +53,11 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
+// The one mixer the live engine builds. The format supports others (see
+// `session_core::MANIFESTS`) and the offline renderer builds whichever a `.bms`
+// names, but nothing selects a different one at runtime.
+const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND;
+
 pub struct AppAudio {
     pub device_sample_rate: u32,
     decks: HashMap<String, Arc<Mutex<DeckState>>>,
@@ -69,6 +75,7 @@ pub struct AppAudio {
     _cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
     recording: Mutex<Option<RecordingState>>,
+    mixer: &'static session_core::MixerManifest,
 }
 
 // Required because AppAudio contains SendStream (see stream.rs for the safety argument).
@@ -97,7 +104,10 @@ impl AppAudio {
             decks.insert(id.to_string(), Arc::new(Mutex::new(deck)));
             strips.insert(
                 id.to_string(),
-                Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))),
+                Arc::new(Mutex::new(ChannelStrip::from_manifest(
+                    MIXER,
+                    device_sample_rate as f32,
+                ))),
             );
         }
 
@@ -131,6 +141,7 @@ impl AppAudio {
             _cue_stream: Mutex::new(None),
             monitor,
             recording: Mutex::new(None),
+            mixer: MIXER,
         })
     }
 
@@ -203,6 +214,13 @@ impl AppAudio {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = channel_offset;
         self.rebuild_streams()
+    }
+
+    /// What every strip is built on, so a recording is stamped with the mixer it
+    /// was actually played through and a `.bms` naming another one can be
+    /// refused rather than replayed against the wrong parameter scales.
+    pub fn mixer(&self) -> &'static session_core::MixerManifest {
+        self.mixer
     }
 
     pub fn set_bpm_range(&self, min: u32, max: u32) {

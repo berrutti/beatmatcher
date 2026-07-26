@@ -26,6 +26,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useMidiStore } from '@renderer/stores/midi';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
@@ -42,6 +43,9 @@ const { t } = useI18n();
 const decksStore = useDecksStore();
 const settingsStore = useSettingsStore();
 const appMode = useAppModeStore();
+// Created here so a plugged-in controller reconnects at launch rather than on
+// the first visit to Settings.
+useMidiStore();
 const sessionStore = useSessionStore();
 const sessionEditStore = useSessionEditStore();
 

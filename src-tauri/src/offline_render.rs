@@ -327,13 +327,22 @@ pub fn render_session(
     sample_rate: u32,
     reference_len: usize,
 ) -> Result<Vec<f32>, String> {
+    // Refused rather than rendered on a best guess: a mixer this build cannot
+    // reproduce would diverge from the recording without saying so.
+    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+
     let mut decks: HashMap<String, DeckState> = DECK_IDS
         .iter()
         .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
         .collect();
     let mut strips: HashMap<String, ChannelStrip> = DECK_IDS
         .iter()
-        .map(|&id| (id.to_string(), ChannelStrip::new(sample_rate as f32)))
+        .map(|&id| {
+            (
+                id.to_string(),
+                ChannelStrip::from_manifest(manifest, sample_rate as f32),
+            )
+        })
         .collect();
     let mut master_gain = crate::audio::DEFAULT_MASTER_GAIN;
 
@@ -418,14 +427,23 @@ fn apply_event(
     master_gain: &mut f32,
     sr: u32,
 ) -> Result<(), String> {
-    if let SessionCommand::SetMasterGain { gain } = cmd {
-        *master_gain = gain.clamp(0.0, 1.0);
+    if let SessionCommand::SetParam {
+        scope: session_core::ParamScope::Master,
+        slot,
+        param,
+        value,
+        ..
+    } = cmd
+    {
+        if (slot, param) == ("gain", "gain") {
+            *master_gain = (value as f32).clamp(0.0, 1.0);
+        }
         return Ok(());
     }
 
     let id = cmd
         .deck_id()
-        .expect("non-SetMasterGain commands target a deck");
+        .expect("master-scope commands are handled above; the rest target a deck");
     let d = decks
         .get_mut(id)
         .ok_or_else(|| format!("unknown deck: {id}"))?;
@@ -447,4 +465,519 @@ fn apply_event(
     // The offline renderer never compensates for buffer-aligned overshoot
     // (no live audio thread to catch up with), so overshoot is always 0.
     audio::apply_deck_command(&cmd, d, s, sr, 0.0, &mut load_samples)
+}
+
+// The DSP tests elsewhere are property tests, so they still pass after a change
+// to a filter Q or a reordered cascade. This pins the actual numbers.
+#[cfg(test)]
+mod golden {
+    use super::*;
+
+    pub(super) const SAMPLE_RATE: u32 = 44_100;
+    // Prime, so probes never align with the chunk size or the filter's
+    // coefficient refresh interval.
+    const PROBE_STRIDE: usize = 997;
+    // Loose enough to survive libm differences between architectures. Not a
+    // bit-for-bit hash, so a platform difference reads as a near miss.
+    const EPSILON: f32 = 1e-6;
+
+    // Integer arithmetic only, so the stimulus is bit-identical everywhere;
+    // broadband so any EQ or filter change shows up in the probes.
+    fn source_samples(frames: usize) -> Vec<f32> {
+        let mut state: u32 = 0x1234_5678;
+        let mut out = Vec::with_capacity(frames * 2);
+        for _ in 0..frames * 2 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            out.push(((state >> 8) as f32 / 8_388_608.0 - 1.0) * 0.6);
+        }
+        out
+    }
+
+    // Built once per test process. Tests run in parallel and every one of them
+    // needs this file, so rewriting it per call let one test decode a WAV
+    // another was still writing, which showed up as a render that changed
+    // between runs. Written under a unique name and renamed into place, so a
+    // stale file from an interrupted run cannot be read as a valid one either.
+    pub(super) fn source_wav_path() -> String {
+        static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SOURCE
+            .get_or_init(|| {
+                let dir = std::env::temp_dir();
+                let final_path = dir.join("beatmatcher_golden_source.wav");
+                let staging = dir.join(format!(
+                    "beatmatcher_golden_source.{}.partial",
+                    std::process::id()
+                ));
+                let staging = staging.to_string_lossy().to_string();
+                write_wav_f32(
+                    &staging,
+                    &source_samples(SAMPLE_RATE as usize * 3),
+                    SAMPLE_RATE,
+                    2,
+                )
+                .expect("write golden source wav");
+                std::fs::rename(&staging, &final_path).expect("publish golden source wav");
+                final_path.to_string_lossy().to_string()
+            })
+            .clone()
+    }
+
+    // Touches every mixer param so the golden covers the whole strip.
+    fn session_json(source: &str) -> String {
+        format!(
+            r#"{{"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512}},
+{{"elapsed_ms":0,"type":"load_track","deck":"A","path":"{source}"}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.9}},
+{{"elapsed_ms":50,"type":"play","deck":"A","sec":0.0}},
+{{"elapsed_ms":200,"type":"set_param","deck":"A","slot":"eq","param":"low","value":6.0}},
+{{"elapsed_ms":300,"type":"set_param","deck":"A","slot":"eq","param":"mid","value":-8.0}},
+{{"elapsed_ms":400,"type":"set_param","deck":"A","slot":"eq","param":"high","value":3.0}},
+{{"elapsed_ms":600,"type":"set_param","deck":"A","slot":"filter","param":"value","value":-0.5}},
+{{"elapsed_ms":600,"type":"set_param","deck":"A","slot":"filter","param":"active","value":1}},
+{{"elapsed_ms":900,"type":"set_playback_rate","deck":"A","rate":1.03}},
+{{"elapsed_ms":1100,"type":"set_param","slot":"gain","param":"gain","value":0.9}},
+{{"elapsed_ms":1300,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.4}},
+{{"elapsed_ms":1500,"type":"stop","deck":"A"}}
+]}}"#
+        )
+    }
+
+    fn render_golden() -> Vec<f32> {
+        let source = source_wav_path();
+        let session: SessionFile =
+            serde_json::from_str(&session_json(&source)).expect("parse golden session");
+        render_session(&session, SAMPLE_RATE, 0).expect("render golden session")
+    }
+
+    fn probes(rendered: &[f32]) -> Vec<[f32; 2]> {
+        (0..rendered.len() / 2)
+            .step_by(PROBE_STRIDE)
+            .map(|frame| [rendered[frame * 2], rendered[frame * 2 + 1]])
+            .collect()
+    }
+
+    const EXPECTED_FRAMES: usize = 110762;
+
+    #[rustfmt::skip]
+    const EXPECTED: &[[f32; 2]] = &[
+    [0.000000000e0, 0.000000000e0],
+    [0.000000000e0, 0.000000000e0],
+    [0.000000000e0, 0.000000000e0],
+    [-2.451000959e-1, 5.901873484e-2],
+    [-2.505692542e-1, 3.483803570e-1],
+    [4.144902229e-1, 1.363246739e-1],
+    [2.867051363e-1, -6.976687163e-2],
+    [3.088264167e-1, 4.218139946e-1],
+    [-4.852249473e-2, -3.039745092e-1],
+    [2.889249027e-1, -4.354272783e-2],
+    [2.175512761e-1, 8.366455138e-2],
+    [7.661589980e-2, 7.354977727e-2],
+    [-3.339681923e-1, -1.062664986e-1],
+    [6.372825056e-2, -4.276291728e-1],
+    [2.327685058e-1, -4.337161183e-1],
+    [-1.450516731e-1, -2.980370224e-1],
+    [3.238647580e-1, -1.438434273e-1],
+    [2.921864092e-1, 1.848343611e-1],
+    [-1.533872038e-1, 1.448842138e-1],
+    [3.356818557e-1, -1.758697033e-1],
+    [3.726332188e-1, -1.758898348e-1],
+    [2.787356377e-1, -1.152877510e-1],
+    [1.496326029e-1, 1.740391999e-1],
+    [5.103135016e-3, -5.228232741e-1],
+    [6.187922135e-2, -7.287115441e-4],
+    [-2.032785118e-1, -2.200358361e-1],
+    [-1.169534773e-1, -3.876072764e-1],
+    [-4.612441957e-1, 1.024869755e-1],
+    [1.462605689e-2, -1.081024185e-1],
+    [-1.207130626e-1, -2.175824717e-2],
+    [8.697897196e-2, -1.538363192e-2],
+    [-6.098339707e-2, 1.977091655e-3],
+    [-2.911472879e-2, -4.009400308e-2],
+    [6.872564554e-3, -7.661297917e-2],
+    [-3.052919358e-2, 7.985739410e-2],
+    [-8.226661012e-3, -2.259023674e-2],
+    [-3.305252641e-3, -2.806737833e-2],
+    [-3.595979139e-2, 8.348593861e-2],
+    [1.068090275e-1, -1.128901169e-2],
+    [-9.921358526e-2, -2.878186107e-2],
+    [3.761157766e-2, -1.024523377e-2],
+    [7.390890270e-2, -5.045744125e-3],
+    [-7.625438273e-2, -2.468623593e-2],
+    [9.565004148e-3, -7.895661145e-2],
+    [-5.038611591e-2, 5.505527928e-2],
+    [2.241421863e-2, 4.992699251e-2],
+    [-1.033405364e-1, -6.859005988e-2],
+    [2.144930512e-2, -4.674372729e-3],
+    [9.866585582e-2, 1.321795862e-2],
+    [3.132421151e-2, 1.580000110e-2],
+    [-9.638462216e-2, -2.132372372e-2],
+    [-5.619725212e-2, 1.177554205e-1],
+    [-5.118168890e-2, -2.968073823e-2],
+    [-6.163563952e-2, -2.499517240e-2],
+    [-1.085192859e-1, -5.895833299e-2],
+    [-3.507367894e-2, 3.893722594e-2],
+    [-1.008736994e-2, -1.312026531e-1],
+    [5.520540848e-2, 8.512823284e-2],
+    [-5.959639326e-3, -4.617065191e-2],
+    [-2.793667093e-2, -3.583819792e-2],
+    [6.615174469e-3, 2.479417250e-2],
+    [1.736316830e-2, 2.793413587e-2],
+    [2.758023562e-3, -1.472204272e-2],
+    [-2.803458832e-2, 2.378807031e-2],
+    [4.275193438e-2, -8.863956667e-3],
+    [-4.347468261e-3, 3.275054041e-3],
+    [-7.611770183e-3, -5.339054763e-2],
+    [-2.637581201e-4, 2.055271616e-4],
+    [-1.424212527e-12, 2.707137032e-12],
+    [4.487154647e-20, 2.069526729e-21],
+    [1.353209609e-27, -5.111582258e-28],
+    [2.288240520e-35, -1.189554007e-35],
+    [9.528829557e-44, -1.373272495e-43],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    [-7.244713061e-43, 2.802596929e-45],
+    ];
+
+    #[test]
+    fn golden_session_renders_identically() {
+        let rendered = render_golden();
+        assert_eq!(
+            rendered.len() / 2,
+            EXPECTED_FRAMES,
+            "rendered length changed"
+        );
+
+        let actual = probes(&rendered);
+        assert_eq!(actual.len(), EXPECTED.len(), "probe count changed");
+        for (index, (got, want)) in actual.iter().zip(EXPECTED).enumerate() {
+            let frame = index * PROBE_STRIDE;
+            assert!(
+                (got[0] - want[0]).abs() <= EPSILON && (got[1] - want[1]).abs() <= EPSILON,
+                "frame {frame}: got [{:+e}, {:+e}], want [{:+e}, {:+e}]",
+                got[0],
+                got[1],
+                want[0],
+                want[1]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "generator, not a check: run with --ignored --nocapture to reprint DIGESTS"]
+    fn print_corpus_digests() {
+        for (name, json) in super::corpus::CORPUS {
+            let digest = super::corpus::digest_of(name, json);
+            println!(
+                "    (\"{name}\", Digest {{ frames: {}, peak: {:.9e}, rms: {:.9e}, probes: [{}] }}),",
+                digest.frames,
+                digest.peak,
+                digest.rms,
+                digest
+                    .probes
+                    .iter()
+                    .map(|value| format!("{value:.9e}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "generator, not a check: run with --ignored --nocapture to reprint EXPECTED"]
+    fn print_golden_table() {
+        let rendered = render_golden();
+        println!("frames={}", rendered.len() / 2);
+        for [l, r] in probes(&rendered) {
+            println!("    [{l:+.9e}, {r:+.9e}],");
+        }
+    }
+}
+
+// Each fixture carries `__SOURCE__` where a track path goes; the test
+// substitutes a synthesized WAV so the corpus stays self-contained.
+#[cfg(test)]
+pub(crate) mod corpus {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    pub(crate) const CORPUS: &[(&str, &str)] = &[
+        (
+            "transport",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/corpus/transport.bms"
+            )),
+        ),
+        (
+            "loops",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/corpus/loops.bms"
+            )),
+        ),
+        (
+            "mixer",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/corpus/mixer.bms"
+            )),
+        ),
+        (
+            "rate_and_multideck",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/corpus/rate_and_multideck.bms"
+            )),
+        ),
+    ];
+
+    // Events that carry no audio consequence, so `command()` returning None for
+    // them is correct rather than a dropped variant.
+    const NOT_REPLAYED: &[&str] = &[
+        "recording_start",
+        "recording_stop",
+        "cue_move",
+        "set_cue_active",
+        "set_cue_mix",
+    ];
+
+    const PROBE_COUNT: usize = 8;
+    const EPSILON: f32 = 1e-6;
+
+    pub(super) struct Digest {
+        pub frames: usize,
+        pub peak: f32,
+        pub rms: f32,
+        pub probes: [f32; PROBE_COUNT],
+    }
+
+    fn parse(name: &str, json: &str) -> SessionFile {
+        let patched = json.replace("__SOURCE__", &source_wav_path());
+        serde_json::from_str(&patched).unwrap_or_else(|err| panic!("{name}: parse failed: {err}"))
+    }
+
+    pub(super) fn digest_of(name: &str, json: &str) -> Digest {
+        let session = parse(name, json);
+        let rendered = render_session(&session, SAMPLE_RATE, 0)
+            .unwrap_or_else(|err| panic!("{name}: render failed: {err}"));
+
+        let frames = rendered.len() / 2;
+        let peak = rendered.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        let rms = (rendered.iter().map(|s| (*s as f64).powi(2)).sum::<f64>()
+            / rendered.len() as f64)
+            .sqrt() as f32;
+
+        let mut probes = [0.0f32; PROBE_COUNT];
+        for (index, probe) in probes.iter_mut().enumerate() {
+            *probe = rendered[(frames / (PROBE_COUNT + 1)) * (index + 1) * 2];
+        }
+        Digest {
+            frames,
+            peak,
+            rms,
+            probes,
+        }
+    }
+
+    #[rustfmt::skip]
+    const DIGESTS: &[(&str, Digest)] = &[
+    ("transport", Digest { frames: 146042, peak: 4.050964117e-1, rms: 1.623620540e-1, probes: [1.472007632e-1, -3.464962840e-1, 0.000000000e0, 1.398182660e-1, 2.248586267e-1, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+    ("loops", Digest { frames: 176912, peak: 3.812676072e-1, rms: 1.841667891e-1, probes: [-2.260529250e-1, -2.055428736e-2, 1.592096984e-1, -2.008791417e-1, -3.016780913e-1, 1.546460688e-1, 0.000000000e0, 0.000000000e0] }),
+    ("mixer", Digest { frames: 154862, peak: 9.900000095e-1, rms: 1.587662995e-1, probes: [-1.562566310e-1, -1.870270371e-1, 2.016435117e-1, 1.079092326e-4, -1.447821558e-1, -1.325588091e-3, -8.002644863e-18, 4.311292583e-29] }),
+    ("rate_and_multideck", Digest { frames: 146042, peak: 6.129323840e-1, rms: 1.628303677e-1, probes: [7.014070451e-2, 1.297436953e-1, 1.324779540e-2, 9.184795618e-2, -3.289961070e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+    ];
+
+    #[test]
+    fn every_event_maps_to_a_command() {
+        for (name, json) in CORPUS {
+            let session = parse(name, json);
+            assert!(!session.events.is_empty(), "{name}: no events");
+            for event in &session.events {
+                if NOT_REPLAYED.contains(&event.event_type.as_str()) {
+                    continue;
+                }
+                assert!(
+                    event.command().is_some(),
+                    "{name}: '{}' at {} ms no longer maps to a SessionCommand",
+                    event.event_type,
+                    event.elapsed_ms
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn corpus_renders_identically() {
+        for (name, json) in CORPUS {
+            let expected = DIGESTS
+                .iter()
+                .find(|(id, _)| id == name)
+                .map(|(_, digest)| digest)
+                .unwrap_or_else(|| panic!("{name}: no expected digest"));
+            let actual = digest_of(name, json);
+
+            assert_eq!(
+                actual.frames, expected.frames,
+                "{name}: frame count changed"
+            );
+            assert!(
+                (actual.peak - expected.peak).abs() <= EPSILON,
+                "{name}: peak {:e} != {:e}",
+                actual.peak,
+                expected.peak
+            );
+            assert!(
+                (actual.rms - expected.rms).abs() <= EPSILON,
+                "{name}: rms {:e} != {:e}",
+                actual.rms,
+                expected.rms
+            );
+            for (index, (got, want)) in actual.probes.iter().zip(&expected.probes).enumerate() {
+                assert!(
+                    (got - want).abs() <= EPSILON,
+                    "{name}: probe {index} {got:e} != {want:e}"
+                );
+            }
+        }
+    }
+}
+
+// Guards on the param axis now that `set_param` is the only spelling.
+#[cfg(test)]
+mod param_addressing {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    fn render(events: &str) -> Vec<f32> {
+        let json = format!(r#"{{"events":[{events}]}}"#).replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(&session, SAMPLE_RATE, 0).expect("render session")
+    }
+
+    const PREAMBLE: &str = r#"
+{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512},
+{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"},
+{"elapsed_ms":50,"type":"play","deck":"A","sec":0.0},"#;
+
+    const FADER_DOWN: &str = r#"{"elapsed_ms":100,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.3},"#;
+    const STOP: &str = r#"{"elapsed_ms":900,"type":"stop","deck":"A"}"#;
+
+    // An unknown param must be inert, not fatal: a session recorded against a
+    // mixer this build does not have still has to replay everything else.
+    #[test]
+    fn an_unknown_param_is_ignored_rather_than_failing_the_render() {
+        let without = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
+        let with_unknown = render(&format!(
+            r#"{PREAMBLE}{FADER_DOWN}
+{{"elapsed_ms":300,"type":"set_param","deck":"A","slot":"reverb","param":"mix","value":0.5}},
+{STOP}"#
+        ));
+        assert_eq!(without, with_unknown, "an unknown param changed the render");
+    }
+
+    #[test]
+    fn a_session_recorded_on_a_mixer_this_build_lacks_is_refused() {
+        let json = format!(
+            r#"{{"mixer":{{"id":"isolator","hash":"deadbeefdeadbeef"}},"events":[{PREAMBLE}{STOP}]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        let error = render_session(&session, SAMPLE_RATE, 0).expect_err("should refuse");
+        assert!(error.contains("isolator"), "{error}");
+    }
+
+    // The point of resolving the manifest is that the renderer builds the strip
+    // from it. Rendering the same events on both mixers must differ, or the
+    // header is being read and then ignored.
+    #[test]
+    fn the_resolved_manifest_is_the_one_the_renderer_builds() {
+        let render_on = |manifest: &session_core::MixerManifest| {
+            let header = serde_json::to_string(&manifest.header()).expect("header");
+            let json = format!(
+                r#"{{"mixer":{header},"events":[{PREAMBLE}
+{{"elapsed_ms":100,"type":"set_param","deck":"A","slot":"eq","param":"low","value":0.0}},
+{STOP}]}}"#
+            )
+            .replace("__SOURCE__", &source_wav_path());
+            let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+            render_session(&session, SAMPLE_RATE, 0).expect("render")
+        };
+        // 0.0 is a flat shelf on the classic mixer and a full kill on the
+        // isolator, so the same event has to produce different audio.
+        assert_ne!(
+            render_on(&session_core::CLASSIC_3BAND),
+            render_on(&session_core::ISOLATOR_3BAND)
+        );
+    }
+
+    #[test]
+    fn a_session_stamped_with_the_current_mixer_renders() {
+        let header = serde_json::to_string(&session_core::CLASSIC_3BAND.header()).expect("header");
+        let stamped = format!(r#"{{"mixer":{header},"events":[{PREAMBLE}{STOP}]}}"#)
+            .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&stamped).expect("parse session");
+        assert_eq!(
+            render_session(&session, SAMPLE_RATE, 0).expect("render"),
+            render(&format!("{PREAMBLE}{STOP}")),
+            "the header changed the render"
+        );
+    }
+
+    // Without this the comparison above would hold trivially on two renders
+    // where nothing the fader does is audible.
+    #[test]
+    fn the_fader_param_in_that_comparison_actually_moves_the_output() {
+        let quiet = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
+        let full = render(&format!("{PREAMBLE}{STOP}"));
+        // Windowed between the fader move and the stop: before 100 ms both
+        // renders are at full gain, and after 900 ms both are silent.
+        let sample_at = |ms: usize| ms * SAMPLE_RATE as usize / 1000 * 2;
+        let window_rms = |frames: &[f32]| {
+            let window = &frames[sample_at(400)..sample_at(880)];
+            (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt()
+        };
+        assert!(
+            window_rms(&quiet) < window_rms(&full) * 0.5,
+            "fader move was inaudible: {} vs {}",
+            window_rms(&quiet),
+            window_rms(&full)
+        );
+    }
 }

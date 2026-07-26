@@ -136,7 +136,21 @@ pub(crate) async fn update_session_events(
     let events: Vec<SessionEvent> =
         serde_json::from_str(&events_json).map_err(|e| format!("parse error: {e}"))?;
 
-    index_session(&state, path, crate::offline_render::SessionFile { events }).await;
+    // Editing events does not change which mixer the session was played on, so
+    // the header carries over from the file that was loaded.
+    let mixer = state
+        .session_files
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&path)
+        .and_then(|session| session.mixer.clone());
+
+    index_session(
+        &state,
+        path,
+        crate::offline_render::SessionFile { events, mixer },
+    )
+    .await;
 
     Ok(())
 }
@@ -204,6 +218,17 @@ pub(crate) async fn start_session_playback(
         let _ = handle.await;
     }
 
+    // The live strips are built on one manifest. Playing a session recorded on
+    // another would silently differ from what the offline renderer produces for
+    // the same file, so refuse rather than replay it against the wrong scales.
+    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+    if manifest.id != state.audio.mixer().id {
+        return Err(format!(
+            "this session was recorded on mixer '{}', which this build cannot play live",
+            manifest.id
+        ));
+    }
+
     let audio = state.audio.clone();
     let sr = audio.device_sample_rate;
 
@@ -253,16 +278,7 @@ pub(crate) async fn start_session_playback(
         for ev in sorted_events.iter().filter(|e| {
             e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
         }) {
-            if matches!(
-                ev.command(),
-                Some(
-                    SessionCommand::SetVolume { .. }
-                        | SessionCommand::SetEq { .. }
-                        | SessionCommand::SetFilter { .. }
-                        | SessionCommand::SetFilterActive { .. }
-                        | SessionCommand::SetMasterGain { .. }
-                )
-            ) {
+            if matches!(ev.command(), Some(SessionCommand::SetParam { .. })) {
                 apply_event_live(ev, &audio, sr, &cache, 0);
             }
             sim_apply_event(ev, &mut sim, &cache, sr);
@@ -536,8 +552,15 @@ fn apply_event_live(
     let Some(cmd) = ev.command() else { return };
 
     let Some(id) = cmd.deck_id() else {
-        if let SessionCommand::SetMasterGain { gain } = cmd {
-            audio.monitor.set_master_gain(gain);
+        if let SessionCommand::SetParam {
+            scope: session_core::ParamScope::Master,
+            slot: "gain",
+            param: "gain",
+            value,
+            ..
+        } = cmd
+        {
+            audio.monitor.set_master_gain(value as f32);
         }
         return;
     };
@@ -662,6 +685,44 @@ mod tests {
         };
         audio::apply_deck_command(&cmd, d, s, SR, 0.0, &mut load_samples)
             .expect("apply_deck_command failed in parity test");
+    }
+
+    fn param_ev(elapsed_ms: f64, slot: &str, param: &str, value: f32) -> SessionEvent {
+        SessionEvent {
+            slot: Some(slot.to_string()),
+            param: Some(param.to_string()),
+            value: Some(value),
+            ..deck_ev("set_param", elapsed_ms, "A")
+        }
+    }
+
+    #[test]
+    fn an_unknown_slot_or_param_is_skipped_and_the_rest_still_applies() {
+        let events = [
+            param_ev(0.0, "resonator", "drive", 0.9),
+            param_ev(10.0, "eq", "sub", 1.0),
+            param_ev(20.0, "fader", "gain", 0.25),
+        ];
+
+        let cache: SampleCache = HashMap::new();
+        let mut deck = DeckState::empty(SR);
+        let mut strip = ChannelStrip::new(SR_F as f32);
+        let mut sim = SimState::new();
+        for event in &events {
+            apply_deck_event(&mut deck, &mut strip, event, &cache);
+            sim_apply_event(event, &mut sim, &cache, SR);
+        }
+
+        assert!(
+            (strip.target_gain() - 0.25).abs() < 1e-6,
+            "engine stopped at the unknown params, gain is {}",
+            strip.target_gain()
+        );
+        assert!(
+            (sim.strips["A"].gain - 0.25).abs() < 1e-6,
+            "sim stopped at the unknown params, gain is {}",
+            sim.strips["A"].gain
+        );
     }
 
     fn check_sim_vs_engine(events: &[SessionEvent], cache: &SampleCache, seconds: usize) {
@@ -859,11 +920,8 @@ mod tests {
             SessionCommand::CuePreviewStart { .. } => ("cue_preview_start", true),
             SessionCommand::CuePreviewEnd { .. } => ("cue_preview_end", true),
             SessionCommand::SetBeatGrid { .. } => ("set_beat_grid", false),
-            SessionCommand::SetVolume { .. } => ("set_volume", false),
-            SessionCommand::SetEq { .. } => ("set_eq", false),
-            SessionCommand::SetFilter { .. } => ("set_filter", false),
-            SessionCommand::SetFilterActive { .. } => ("set_filter_active", false),
-            SessionCommand::SetMasterGain { .. } => ("set_master_gain", false),
+            // No mixer param affects position, hence the single false.
+            SessionCommand::SetParam { .. } => ("set_param", false),
         }
     }
 
@@ -917,27 +975,11 @@ mod tests {
                 percent: Some(0.0),
                 ..deck_ev("set_nudge", 3500.0, "A")
             },
-            SessionEvent {
-                gain: Some(0.8),
-                ..deck_ev("set_volume", 4000.0, "A")
-            },
-            SessionEvent {
-                band: Some("low".to_string()),
-                db: Some(-3.0),
-                ..deck_ev("set_eq", 4100.0, "A")
-            },
-            SessionEvent {
-                value: Some(0.5),
-                ..deck_ev("set_filter", 4200.0, "A")
-            },
-            SessionEvent {
-                active: Some(true),
-                ..deck_ev("set_filter_active", 4300.0, "A")
-            },
-            SessionEvent {
-                gain: Some(0.9),
-                ..deck_ev("set_master_gain", 4500.0, "A")
-            },
+            SessionEvent::param(4000.0, Some("A"), "fader", "gain", 0.8),
+            SessionEvent::param(4100.0, Some("A"), "eq", "low", -3.0),
+            SessionEvent::param(4200.0, Some("A"), "filter", "value", 0.5),
+            SessionEvent::param(4300.0, Some("A"), "filter", "active", 1.0),
+            SessionEvent::param(4500.0, None, "gain", "gain", 0.9),
             SessionEvent {
                 cue_sec: Some(5.0),
                 ..deck_ev("loop_in", 5000.0, "A")

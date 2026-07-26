@@ -20,6 +20,7 @@ vi.mock('@renderer/utils/storage', () => ({
 }));
 
 vi.mock('@renderer/stores/settings', () => ({
+  DEFAULT_MIXER_ID: 'classic-3band',
   useSettingsStore: () => ({
     pitchRange: 8,
     nudgeSensitivity: 4,
@@ -29,7 +30,10 @@ vi.mock('@renderer/stores/settings', () => ({
   })
 }));
 
-import { useMixerStore, EQ_MIN_DB, EQ_MAX_DB } from '../mixer';
+import { useMixerStore } from '../mixer';
+import { editConstants } from '@renderer/utils/sessionCore';
+
+const { eqMinDb: EQ_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
 import { invoke } from '@tauri-apps/api/core';
 
 const mockedInvoke = vi.mocked(invoke);
@@ -70,6 +74,26 @@ describe('setEq', () => {
   });
 });
 
+// The sliders bind to these, so a descriptor change has to reach the UI rather
+// than the store restating the range.
+describe('eq specs', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('come from the mixer manifest', () => {
+    const store = useMixerStore();
+    expect(store.eqSpecs.map((spec) => spec.param)).toEqual(['low', 'mid', 'high']);
+    for (const spec of store.eqSpecs) {
+      expect(spec.min).toBe(EQ_MIN_DB);
+      expect(spec.max).toBe(EQ_MAX_DB);
+      expect(spec.defaultValue).toBe(0);
+      expect(spec.step).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('reset', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -90,7 +114,7 @@ describe('reset', () => {
     expect(store.volume.D).toBe(1);
   });
 
-  it('resets all EQ bands to 0 for all live decks', () => {
+  it('resets all EQ bands to the mixer default for all live decks', () => {
     const store = useMixerStore();
     store.setEq('A', 'low', 5);
     store.setEq('B', 'high', -10);
@@ -99,9 +123,9 @@ describe('reset', () => {
     store.reset();
 
     for (const deckId of ['A', 'B', 'C', 'D'] as const) {
-      expect(store.eq[deckId].low).toBe(0);
-      expect(store.eq[deckId].mid).toBe(0);
-      expect(store.eq[deckId].high).toBe(0);
+      expect(store.eq[deckId].low).toBe(store.eqDefault('low'));
+      expect(store.eq[deckId].mid).toBe(store.eqDefault('mid'));
+      expect(store.eq[deckId].high).toBe(store.eqDefault('high'));
     }
   });
 
@@ -167,5 +191,46 @@ describe('reset', () => {
       deck: 'E',
       gain: expect.anything()
     });
+  });
+});
+
+describe('applyEngineParam', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('mirrors every deck param the mixer holds', () => {
+    const store = useMixerStore();
+
+    store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'low', value: -6 });
+    store.applyEngineParam({ deck: 'B', slot: 'fader', param: 'gain', value: 0.25 });
+    store.applyEngineParam({ deck: 'C', slot: 'filter', param: 'value', value: -0.5 });
+    store.applyEngineParam({ deck: 'D', slot: 'filter', param: 'active', value: 1 });
+
+    expect(store.eq.A.low).toBe(-6);
+    expect(store.volume.B).toBe(0.25);
+    expect(store.filter.C).toBe(-0.5);
+    expect(store.filterEnabled.D).toBe(true);
+  });
+
+  // The whole point of origin tagging: a push applies locally and stops there.
+  // Invoking back would send an engine value straight back into the engine.
+  it('does not invoke the backend', () => {
+    const store = useMixerStore();
+    store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'low', value: -6 });
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it('ignores an address the store does not hold', () => {
+    const store = useMixerStore();
+    const before = { ...store.volume };
+
+    store.applyEngineParam({ deck: 'Z', slot: 'fader', param: 'gain', value: 0 });
+    store.applyEngineParam({ deck: 'A', slot: 'nope', param: 'gain', value: 0 });
+    store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'sub', value: 0 });
+
+    expect({ ...store.volume }).toEqual(before);
+    expect(store.eq.A).toEqual({ low: 0, mid: 0, high: 0 });
   });
 });

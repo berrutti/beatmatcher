@@ -768,8 +768,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     for ev in events {
         let deck_id = ev.deck.as_deref();
         match ev.event_type.as_str() {
-            "set_volume" => {
-                if let (Some(id), Some(gain)) = (deck_id, ev.gain) {
+            "set_param" => match (deck_id, ev.slot.as_deref(), ev.param.as_deref(), ev.value) {
+                (Some(id), Some("fader"), Some("gain"), Some(value)) => {
                     ensure_deck(
                         id,
                         &mut deck_lanes,
@@ -779,13 +779,11 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     );
                     deck_lanes.get_mut(id).unwrap().gain.push(LanePoint {
                         ms: ev.elapsed_ms,
-                        value: gain as f64,
+                        value: value as f64,
                     });
                 }
-            }
 
-            "set_eq" => {
-                if let (Some(id), Some(band), Some(db)) = (deck_id, ev.band.as_deref(), ev.db) {
+                (Some(id), Some("eq"), Some(band), Some(value)) => {
                     ensure_deck(
                         id,
                         &mut deck_lanes,
@@ -801,13 +799,11 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     };
                     lane.push(LanePoint {
                         ms: ev.elapsed_ms,
-                        value: db as f64,
+                        value: value as f64,
                     });
                 }
-            }
 
-            "set_filter" => {
-                if let (Some(id), Some(value)) = (deck_id, ev.value) {
+                (Some(id), Some("filter"), Some("value"), Some(value)) => {
                     ensure_deck(
                         id,
                         &mut deck_lanes,
@@ -820,7 +816,45 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                         value: value as f64,
                     });
                 }
-            }
+
+                (Some(id), Some("filter"), Some("active"), Some(value)) => {
+                    ensure_deck(
+                        id,
+                        &mut deck_lanes,
+                        &mut filter_active_since_ms,
+                        &mut nudge_since,
+                        &mut deck_nudges,
+                    );
+                    let active = value != 0.0;
+                    let since = filter_active_since_ms.get_mut(id).unwrap();
+                    if active && since.is_none() {
+                        *since = Some(ev.elapsed_ms);
+                    } else if !active {
+                        if let Some(start) = *since {
+                            deck_lanes
+                                .get_mut(id)
+                                .unwrap()
+                                .filter_active
+                                .push(FilterActiveSpan {
+                                    start_ms: start,
+                                    end_ms: ev.elapsed_ms,
+                                });
+                            *since = None;
+                        }
+                    }
+                }
+
+                (None, Some("gain"), Some("gain"), Some(value)) => {
+                    master_lanes.gain.push(LanePoint {
+                        ms: ev.elapsed_ms,
+                        value: value as f64,
+                    });
+                }
+
+                _ => {}
+            },
+
+
 
             "deck_snapshot" => {
                 if let (Some(id), Some(rate)) = (deck_id, ev.playback_rate) {
@@ -854,33 +888,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                 }
             }
 
-            "set_filter_active" => {
-                if let (Some(id), Some(active)) = (deck_id, ev.active) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let since = filter_active_since_ms.get_mut(id).unwrap();
-                    if active && since.is_none() {
-                        *since = Some(ev.elapsed_ms);
-                    } else if !active {
-                        if let Some(start) = *since {
-                            deck_lanes
-                                .get_mut(id)
-                                .unwrap()
-                                .filter_active
-                                .push(FilterActiveSpan {
-                                    start_ms: start,
-                                    end_ms: ev.elapsed_ms,
-                                });
-                            *since = None;
-                        }
-                    }
-                }
-            }
 
             // A nudge interval runs from the first non-zero `percent` event to
             // the following `percent: 0` event for that deck (mirrors
@@ -911,14 +918,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                 }
             }
 
-            "set_master_gain" => {
-                if let Some(gain) = ev.gain {
-                    master_lanes.gain.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: gain as f64,
-                    });
-                }
-            }
 
             _ => {}
         }
@@ -1647,10 +1646,7 @@ mod tests {
 
     #[test]
     fn seeds_a_deck_with_default_lane_values() {
-        let events = vec![SessionEvent {
-            gain: Some(1.0),
-            ..ev("set_volume", 0.0, Some("A"))
-        }];
+        let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         let a = &deck_lanes["A"];
         assert_eq!(
@@ -1676,14 +1672,8 @@ mod tests {
     #[test]
     fn extends_every_lane_to_session_end() {
         let events = vec![
-            SessionEvent {
-                gain: Some(1.0),
-                ..ev("set_volume", 0.0, Some("A"))
-            },
-            SessionEvent {
-                gain: Some(0.5),
-                ..ev("set_volume", 2000.0, Some("A"))
-            },
+            SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0),
+            SessionEvent::param(2000.0, Some("A"), "fader", "gain", 0.5),
         ];
         let LanesBuild {
             deck_lanes,
@@ -1702,11 +1692,8 @@ mod tests {
     }
 
     #[test]
-    fn appends_gain_points_for_set_volume() {
-        let events = vec![SessionEvent {
-            gain: Some(0.7),
-            ..ev("set_volume", 1000.0, Some("A"))
-        }];
+    fn appends_gain_points_for_fader_gain() {
+        let events = vec![SessionEvent::param(1000.0, Some("A"), "fader", "gain", 0.7)];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         let gain = &deck_lanes["A"].gain;
         assert_eq!(gain.len(), 3);
@@ -1726,23 +1713,11 @@ mod tests {
     }
 
     #[test]
-    fn routes_set_eq_points_to_band_lane() {
+    fn routes_eq_params_to_their_band_lane() {
         let events = vec![
-            SessionEvent {
-                band: Some("low".to_string()),
-                db: Some(-3.0),
-                ..ev("set_eq", 100.0, Some("A"))
-            },
-            SessionEvent {
-                band: Some("mid".to_string()),
-                db: Some(2.0),
-                ..ev("set_eq", 200.0, Some("A"))
-            },
-            SessionEvent {
-                band: Some("high".to_string()),
-                db: Some(4.0),
-                ..ev("set_eq", 300.0, Some("A"))
-            },
+            SessionEvent::param(100.0, Some("A"), "eq", "low", -3.0),
+            SessionEvent::param(200.0, Some("A"), "eq", "mid", 2.0),
+            SessionEvent::param(300.0, Some("A"), "eq", "high", 4.0),
         ];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(deck_lanes["A"].eq_low[1].value, -3.0);
@@ -1752,10 +1727,7 @@ mod tests {
 
     #[test]
     fn appends_master_gain_points_regardless_of_deck() {
-        let events = vec![SessionEvent {
-            gain: Some(0.5),
-            ..ev("set_master_gain", 1500.0, None)
-        }];
+        let events = vec![SessionEvent::param(1500.0, None, "gain", "gain", 0.5)];
         let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(master_lanes.gain[1].value, 0.5);
         assert_eq!(master_lanes.gain[1].ms, 1500.0);
@@ -1765,14 +1737,8 @@ mod tests {
     #[test]
     fn pairs_filter_active_transition_into_span() {
         let events = vec![
-            SessionEvent {
-                active: Some(true),
-                ..ev("set_filter_active", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                active: Some(false),
-                ..ev("set_filter_active", 4000.0, Some("A"))
-            },
+            SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0),
+            SessionEvent::param(4000.0, Some("A"), "filter", "active", 0.0),
         ];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
@@ -1787,18 +1753,9 @@ mod tests {
     #[test]
     fn ignores_redundant_active_while_already_active() {
         let events = vec![
-            SessionEvent {
-                active: Some(true),
-                ..ev("set_filter_active", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                active: Some(true),
-                ..ev("set_filter_active", 2000.0, Some("A"))
-            },
-            SessionEvent {
-                active: Some(false),
-                ..ev("set_filter_active", 4000.0, Some("A"))
-            },
+            SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0),
+            SessionEvent::param(2000.0, Some("A"), "filter", "active", 1.0),
+            SessionEvent::param(4000.0, Some("A"), "filter", "active", 0.0),
         ];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
@@ -1812,10 +1769,7 @@ mod tests {
 
     #[test]
     fn closes_unfinished_filter_span_at_session_end() {
-        let events = vec![SessionEvent {
-            active: Some(true),
-            ..ev("set_filter_active", 7000.0, Some("A"))
-        }];
+        let events = vec![SessionEvent::param(7000.0, Some("A"), "filter", "active", 1.0)];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
@@ -1994,10 +1948,7 @@ mod tests {
                 rate: Some(1.09),
                 ..ev("set_playback_rate", 100.0, Some("A"))
             },
-            SessionEvent {
-                gain: Some(0.5),
-                ..ev("set_volume", 200.0, Some("B"))
-            },
+            SessionEvent::param(200.0, Some("B"), "fader", "gain", 0.5),
         ];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.9).abs() < 1e-9);
@@ -2008,10 +1959,7 @@ mod tests {
 
     #[test]
     fn rate_range_defaults_to_smallest_when_neutral() {
-        let events = vec![SessionEvent {
-            gain: Some(1.0),
-            ..ev("set_volume", 0.0, Some("A"))
-        }];
+        let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.92).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 1.08).abs() < 1e-9);

@@ -27,7 +27,7 @@ const MIN_VIEW_MS = 200;
 const ZOOM_SENSITIVITY = 0.0015;
 const FOLLOW_LEAD_IN_FRACTION = 0.1;
 
-export function useTimelineView(durationMs: () => number) {
+export function useTimelineView(durationMs: () => number, mixerId: () => string) {
   const viewStartMs = ref(0);
   const viewDurationMs = ref(1);
   const scrollY = ref(0);
@@ -68,6 +68,7 @@ export function useTimelineView(durationMs: () => number) {
       trackW,
       msToX,
       xToMs: (x: number) => fracToMs(clampFrac((x - LABEL_W) / (trackW || 1)), view),
+      mixerId: mixerId(),
       laneOriginY: TICK_H - scrollY.value,
       scrollViewport: { top: TICK_H, bottom: canvasH - OVERVIEW_H - OVERVIEW_GAP }
     };

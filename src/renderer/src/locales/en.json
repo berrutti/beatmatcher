@@ -54,6 +54,13 @@
       "default": "Default",
       "hint": "Frames per audio callback. Smaller values reduce latency but increase CPU load. Changing this causes a brief audio gap."
     },
+    "midi": {
+      "title": "MIDI controller",
+      "none": "None",
+      "rescan": "Rescan",
+      "waiting": "Waiting for MIDI. Move a control on the connected device.",
+      "hint": "Shows raw incoming MIDI while this window is open. EQ, filter, volume and cue are mapped on a connected controller."
+    },
     "bpmRange": {
       "title": "BPM detection range",
       "min": "Min",

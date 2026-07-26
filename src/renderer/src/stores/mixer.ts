@@ -1,24 +1,24 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { DECKS_DISPOSITION, type DeckId } from './decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { useSettingsStore } from '@renderer/stores/settings';
+import { useSettingsStore, DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
+type ParamChange = { deck: string; slot: string; param: string; value: number };
 type EqBand = 'low' | 'mid' | 'high';
 type EqState = { low: number; mid: number; high: number };
-
-// Defined in session-core; copies exist here because WASM is not initialized
-// at module-evaluation time. Pinned by the editConstants parity test.
-export const DEFAULT_MASTER_GAIN = 0.7943;
-export const EQ_MIN_DB = -26;
-export const EQ_MAX_DB = 6;
-export const FILTER_DEAD_ZONE = 0.05;
+export type EqBandSpec = MixerParamSpec & { param: EqBand };
 
 const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
 
 export const useMixerStore = defineStore('mixer', () => {
+  // Store setup runs on first use, which is after the app's async init().
+  const { defaultMasterGain } = editConstants();
+
   const outputDevices = ref<DeviceInfo[]>([]);
   const devicesLoaded = ref(false);
   const mainDeviceId = ref('');
@@ -43,12 +43,27 @@ export const useMixerStore = defineStore('mixer', () => {
     D: false,
     E: false // can never be active
   });
+  const EQ_BANDS: EqBand[] = ['low', 'mid', 'high'];
+
+  // The live engine builds every strip on this one manifest. Ranges, steps and
+  // defaults come from its descriptors rather than being restated here.
+  const deckParams = mixerParams(DEFAULT_MIXER_ID);
+
   const eq = reactive<Record<DeckId, EqState>>({
-    A: { low: 0, mid: 0, high: 0 },
-    B: { low: 0, mid: 0, high: 0 },
-    C: { low: 0, mid: 0, high: 0 },
-    D: { low: 0, mid: 0, high: 0 },
-    E: { low: 0, mid: 0, high: 0 }
+    A: defaultEqState(),
+    B: defaultEqState(),
+    C: defaultEqState(),
+    D: defaultEqState(),
+    E: defaultEqState()
+  });
+
+  function defaultEqState(): EqState {
+    return { low: eqDefault('low'), mid: eqDefault('mid'), high: eqDefault('high') };
+  }
+
+  const eqSpecs: EqBandSpec[] = EQ_BANDS.flatMap((band) => {
+    const spec = deckParams[`eq/${band}`];
+    return spec ? [{ ...spec, param: band }] : [];
   });
 
   const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
@@ -75,7 +90,7 @@ export const useMixerStore = defineStore('mixer', () => {
     storageSet(STORAGE_KEYS.showWaveformStrip, showWaveformStrip.value);
   }
 
-  const masterGain = ref(DEFAULT_MASTER_GAIN);
+  const masterGain = ref(defaultMasterGain);
 
   function setMasterGain(gain: number) {
     masterGain.value = Math.max(0, Math.min(1, gain));
@@ -131,17 +146,59 @@ export const useMixerStore = defineStore('mixer', () => {
     invoke('set_filter_active', { deck: deckId, active: filterEnabled[deckId] });
   }
 
-  function setEq(deckId: DeckId, band: EqBand, db: number) {
-    eq[deckId][band] = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
+  function setEq(deckId: DeckId, band: EqBand, value: number) {
+    const spec = deckParams[`eq/${band}`];
+    if (!spec) return;
+    eq[deckId][band] = Math.max(spec.min, Math.min(spec.max, value));
     invoke('set_eq', { deck: deckId, band, db: eq[deckId][band] });
   }
+
+  function eqDefault(band: EqBand): number {
+    return deckParams[`eq/${band}`]?.defaultValue ?? 0;
+  }
+
+  function isDeckId(id: string): id is DeckId {
+    return Object.prototype.hasOwnProperty.call(volume, id);
+  }
+
+  function isEqBand(param: string): param is EqBand {
+    return EQ_BANDS.some((band) => band === param);
+  }
+
+  // Engine-originated only, and deliberately does not invoke back: Rust never
+  // pushes a value the UI itself wrote, so anything arriving here is a move the
+  // store has not already made.
+  function applyEngineParam(change: ParamChange): void {
+    if (!isDeckId(change.deck)) return;
+    if (change.slot === 'eq' && isEqBand(change.param)) {
+      eq[change.deck][change.param] = change.value;
+      return;
+    }
+    if (change.slot === 'fader' && change.param === 'gain') {
+      volume[change.deck] = change.value;
+      return;
+    }
+    if (change.slot === 'filter' && change.param === 'value') {
+      filter[change.deck] = change.value;
+      return;
+    }
+    if (change.slot === 'filter' && change.param === 'active') {
+      filterEnabled[change.deck] = change.value !== 0;
+      return;
+    }
+    if (change.slot === 'cue' && change.param === 'active') {
+      cueActive[change.deck] = change.value !== 0;
+    }
+  }
+
+  listen<ParamChange[]>('engine-params', (event) => {
+    event.payload.forEach(applyEngineParam);
+  });
 
   function reset(): void {
     for (const deckId of LIVE_DECKS) {
       setVolume(deckId, 1);
-      setEq(deckId, 'low', 0);
-      setEq(deckId, 'mid', 0);
-      setEq(deckId, 'high', 0);
+      for (const band of EQ_BANDS) setEq(deckId, band, eqDefault(band));
       setFilter(deckId, 0);
       filterEnabled[deckId] = false;
       invoke('set_filter_active', { deck: deckId, active: false });
@@ -325,6 +382,8 @@ export const useMixerStore = defineStore('mixer', () => {
 
   return {
     activeDecks,
+    eqDefault,
+    eqSpecs,
     cueActive,
     cueChannelOffset,
     cueDeviceId,
@@ -346,6 +405,7 @@ export const useMixerStore = defineStore('mixer', () => {
     isRecording,
     playedPaths,
     markPlayed,
+    applyEngineParam,
     discardRecording,
     getDeckLevels,
     getMasterLevel,

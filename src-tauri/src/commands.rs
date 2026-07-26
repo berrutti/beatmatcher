@@ -1,5 +1,5 @@
 use crate::audio::{self, ChannelStrip, CuePressOutcome, DeviceInfo, TrackInfo};
-use crate::AppState;
+use crate::{AppState, ParamOrigin};
 use std::sync::Arc;
 use tauri::Emitter;
 
@@ -610,15 +610,13 @@ pub(crate) fn set_volume(
     deck: String,
     gain: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_gain(gain);
-    state.log(
-        "set_volume",
-        serde_json::json!({ "deck": deck, "gain": gain }),
-    );
-    Ok(())
+    state.set_deck_param(
+        ParamOrigin::Ui,
+        &deck,
+        session_core::FADER_GAIN.0,
+        session_core::FADER_GAIN.1,
+        gain,
+    )
 }
 
 // Session-view mute/solo. Not logged: it is a monitoring control, not a
@@ -662,7 +660,7 @@ pub(crate) fn set_nudge(
     let result = {
         let deck_arc = get_deck(&state, &deck)?;
         let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.nudge_factor = 1.0 + percent / 100.0;
+        deck_state.set_nudge_percent(percent);
         NudgeResult {
             position_sec: deck_state.position_sec(),
             effective_rate: deck_state.playback_rate * deck_state.nudge_factor,
@@ -695,15 +693,7 @@ pub(crate) fn set_eq(
     band: String,
     db: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_eq_band(&band, db);
-    state.log(
-        "set_eq",
-        serde_json::json!({ "deck": deck, "band": band, "db": db }),
-    );
-    Ok(())
+    state.set_deck_param(ParamOrigin::Ui, &deck, "eq", &band, db)
 }
 
 #[tauri::command]
@@ -712,15 +702,7 @@ pub(crate) fn set_filter(
     deck: String,
     value: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_filter(value);
-    state.log(
-        "set_filter",
-        serde_json::json!({ "deck": deck, "value": value }),
-    );
-    Ok(())
+    state.set_deck_param(ParamOrigin::Ui, &deck, "filter", "value", value)
 }
 
 #[tauri::command]
@@ -729,15 +711,13 @@ pub(crate) fn set_filter_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_filter_active(active);
-    state.log(
-        "set_filter_active",
-        serde_json::json!({ "deck": deck, "active": active }),
-    );
-    Ok(())
+    state.set_deck_param(
+        ParamOrigin::Ui,
+        &deck,
+        "filter",
+        "active",
+        if active { 1.0 } else { 0.0 },
+    )
 }
 
 // Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
@@ -805,15 +785,7 @@ pub(crate) fn set_cue_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .cue_active = active;
-    state.log(
-        "set_cue_active",
-        serde_json::json!({ "deck": deck, "active": active }),
-    );
-    Ok(())
+    state.set_cue_active(ParamOrigin::Ui, &deck, active)
 }
 
 #[tauri::command]
@@ -876,7 +848,7 @@ pub(crate) fn start_recording(
     {
         let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
         *session = if record_session {
-            Some(crate::SessionLogger::new())
+            Some(crate::SessionLogger::new(state.audio.mixer()))
         } else {
             None
         };
@@ -997,6 +969,39 @@ fn cue_timecode(elapsed_ms: f64) -> String {
     format!("{minutes:02}:{seconds:02}:{frames:02}")
 }
 
+// Tag lookup is injected so a test can pin the formatting without the filesystem.
+fn cue_sheet_text(
+    file_name: &str,
+    set_title: &str,
+    points: &[session_core::CuePoint],
+    tags_for: impl Fn(&str) -> audio::TrackTags,
+) -> String {
+    let mut sheet = String::new();
+    sheet.push_str(&format!("TITLE \"{}\"\n", cue_escape(set_title)));
+    sheet.push_str(&format!("FILE \"{}\" WAVE\n", cue_escape(file_name)));
+    for (index, point) in points.iter().enumerate() {
+        let tags = tags_for(&point.track_path);
+        let fallback = std::path::Path::new(&point.track_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(CUE_TRACK_TITLE_FALLBACK)
+            .to_string();
+        sheet.push_str(&format!("  TRACK {:02} AUDIO\n", index + 1));
+        sheet.push_str(&format!(
+            "    TITLE \"{}\"\n",
+            cue_escape(&tags.title.unwrap_or(fallback))
+        ));
+        if let Some(artist) = tags.artist {
+            sheet.push_str(&format!("    PERFORMER \"{}\"\n", cue_escape(&artist)));
+        }
+        sheet.push_str(&format!(
+            "    INDEX 01 {}\n",
+            cue_timecode(point.elapsed_ms)
+        ));
+    }
+    sheet
+}
+
 // Writes a CUE sheet next to `audio_path` (same stem, .cue extension) listing
 // when each track entered the mix. FILE references the audio by name only, so
 // the .cue must sit beside it; name collisions go through unique_path like the
@@ -1022,29 +1027,7 @@ fn write_cue_sheet(audio_path: &str, events: &[session_core::SessionEvent]) {
         .and_then(|s| s.to_str())
         .unwrap_or(CUE_SET_TITLE_FALLBACK);
 
-    let mut sheet = String::new();
-    sheet.push_str(&format!("TITLE \"{}\"\n", cue_escape(set_title)));
-    sheet.push_str(&format!("FILE \"{}\" WAVE\n", cue_escape(file_name)));
-    for (index, point) in points.iter().enumerate() {
-        let tags = audio::read_tags(&point.track_path);
-        let fallback = std::path::Path::new(&point.track_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(CUE_TRACK_TITLE_FALLBACK)
-            .to_string();
-        sheet.push_str(&format!("  TRACK {:02} AUDIO\n", index + 1));
-        sheet.push_str(&format!(
-            "    TITLE \"{}\"\n",
-            cue_escape(&tags.title.unwrap_or(fallback))
-        ));
-        if let Some(artist) = tags.artist {
-            sheet.push_str(&format!("    PERFORMER \"{}\"\n", cue_escape(&artist)));
-        }
-        sheet.push_str(&format!(
-            "    INDEX 01 {}\n",
-            cue_timecode(point.elapsed_ms)
-        ));
-    }
+    let sheet = cue_sheet_text(file_name, set_title, &points, audio::read_tags);
 
     let cue_path = unique_path(&audio_file.with_extension("cue").to_string_lossy());
     match std::fs::write(&cue_path, sheet.as_bytes()) {
@@ -1187,7 +1170,7 @@ pub(crate) fn save_session(path: String, content: String) -> Result<(), String> 
 #[tauri::command]
 pub(crate) fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
     state.audio.monitor.set_master_gain(gain);
-    state.log("set_master_gain", serde_json::json!({ "gain": gain }));
+    state.log_param(None, "gain", "gain", gain as f64);
 }
 
 #[tauri::command]
@@ -1958,5 +1941,74 @@ mod tests {
         deck_state.loop_active = true;
         assert!(deck_state.loop_active);
         assert!((deck_state.main_pos - beat_dur() * 4.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod cue_fixture {
+    use super::*;
+    use crate::offline_render::corpus::CORPUS;
+
+    // Falls back to the file stem, so the expected text is machine independent.
+    fn no_tags(_path: &str) -> audio::TrackTags {
+        audio::TrackTags::default()
+    }
+
+    fn sheet_for(json: &str) -> String {
+        let session: session_core::SessionFile =
+            serde_json::from_str(json).expect("parse corpus fixture");
+        let points = session_core::build_cue_points(&session.events);
+        cue_sheet_text("set.wav", "set", &points, no_tags)
+    }
+
+    fn sheet_named(name: &str) -> String {
+        let (_, json) = CORPUS
+            .iter()
+            .find(|(id, _)| *id == name)
+            .unwrap_or_else(|| panic!("no corpus fixture named {name}"));
+        sheet_for(json)
+    }
+
+    #[test]
+    fn transport_fixture_cue_sheet_is_unchanged() {
+        assert_eq!(
+            sheet_named("transport"),
+            "TITLE \"set\"\n\
+             FILE \"set.wav\" WAVE\n\
+             \x20 TRACK 01 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:08\n"
+        );
+    }
+
+    #[test]
+    fn multideck_fixture_lists_each_deck_once_in_audible_order() {
+        assert_eq!(
+            sheet_named("rate_and_multideck"),
+            "TITLE \"set\"\n\
+             FILE \"set.wav\" WAVE\n\
+             \x20 TRACK 01 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:00\n\
+             \x20 TRACK 02 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:30\n"
+        );
+    }
+
+    #[test]
+    fn every_corpus_fixture_produces_a_stable_sheet() {
+        for (name, json) in CORPUS {
+            let sheet = sheet_for(json);
+            assert!(
+                sheet.starts_with("TITLE \"set\"\nFILE \"set.wav\" WAVE\n"),
+                "{name}: header changed"
+            );
+            assert_eq!(
+                sheet,
+                sheet_for(json),
+                "{name}: sheet generation is not deterministic"
+            );
+        }
     }
 }

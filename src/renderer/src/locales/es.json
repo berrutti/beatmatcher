@@ -54,6 +54,13 @@
       "default": "Por defecto",
       "hint": "Frames por callback de audio. Valores menores reducen la latencia pero aumentan la carga del procesador. Cambiar esto causa una breve interrupción del audio."
     },
+    "midi": {
+      "title": "Controlador MIDI",
+      "none": "Ninguno",
+      "rescan": "Volver a buscar",
+      "waiting": "Esperando MIDI. Mueve un control del dispositivo conectado.",
+      "hint": "Muestra el MIDI entrante en bruto mientras esta ventana está abierta. El EQ, el filtro, el volumen y el cue están asignados en un controlador conectado."
+    },
     "bpmRange": {
       "title": "Rango de detección de BPM",
       "min": "Mín",

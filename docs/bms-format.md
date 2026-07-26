@@ -6,6 +6,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 {
   "version": 1,
   "startedAt": "2026-06-06T14:00:00Z",
+  "mixer": { "id": "classic-3band", "hash": "a1b2c3d4e5f60718" },
   "events": [
     { "elapsed_ms": 0,      "type": "recording_start", "buffer_size_frames": 512 },
     { "elapsed_ms": 0,      "type": "deck_snapshot", "deck": "A", "path": "/...", "position_sec": 12.3, "cue_point_sec": 0, "is_playing": false, "bpm": 128.0, "playback_rate": 1.0, "loop_active": false, "loop_end_sec": 0 },
@@ -18,6 +19,8 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 ```
 
 `elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp.
+
+`mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` event means (slot order, unit ids, param ids, ranges, defaults, steps, dead zones), but not display labels, so renaming a knob does not invalidate existing sessions. Rendering refuses a session whose mixer this build does not have, or whose mixer has changed shape since, rather than producing output that silently differs from the recording. Sessions written before manifests existed have no `mixer` field and replay on the classic mixer.
 
 ## Event types
 
@@ -35,11 +38,26 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 | `set_nudge`                                | `deck`, `percent`                                                                                                    | nudge started or released                                         |
 | `loop_in` / `loop_out` / `set_loop_region` | `deck`, `start_sec`, `end_sec`                                                                                       | loop points changed                                               |
 | `set_loop_active`                          | `deck`, `active`                                                                                                     | loop toggled                                                      |
-| `set_volume`                               | `deck`, `value`                                                                                                      | channel fader                                                     |
-| `set_eq`                                   | `deck`, `band` (`low`/`mid`/`high`), `db`                                                                            | EQ band                                                           |
-| `set_filter`                               | `deck`, `value`                                                                                                      | filter frequency (0-1)                                            |
-| `set_filter_active`                        | `deck`, `active`                                                                                                     | filter on/off                                                     |
-| `set_master_gain`                          | `gain`                                                                                                               | master output level                                               |
+| `set_param`                                | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                    |
+
+## Mixer parameters
+
+Every mixer parameter is one `set_param` event addressed as **deck / slot / param**. `slot` is the position in the channel strip, not the unit filling it, so replacing the unit in a slot keeps existing automation pointing at the same place. Omitting `deck` addresses master scope.
+
+| slot     | param                  | scope  | value                                |
+| -------- | ---------------------- | ------ | ------------------------------------ |
+| `fader`  | `gain`                 | deck   | 0-1, channel fader                   |
+| `eq`     | `low` / `mid` / `high` | deck   | dB, -26 to +6                        |
+| `filter` | `value`                | deck   | -1 to +1, negative LPF, positive HPF |
+| `filter` | `active`               | deck   | 0 or 1, filter on/off                |
+| `gain`   | `gain`                 | master | 0-1, master output level             |
+
+```json
+{ "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
+{ "elapsed_ms": 4900.0, "type": "set_param", "slot": "gain", "param": "gain", "value": 0.7943 }
+```
+
+The table above is the `classic-3band` manifest. The slot and param set, and the range each value is read in, come from whichever manifest the `mixer` header names: `isolator-3band` uses the same addresses but reads `eq` bands as 0-1 kill amounts rather than dB. This is why the header carries a hash, and why a value cannot be interpreted without resolving the manifest first. A `set_param` naming a slot or param that manifest does not have is ignored, so the rest of the session still replays.
 
 ## Latency compensation
 

@@ -15,22 +15,23 @@
         }}</span>
 
         <div class="mixer__eq">
-          <div v-for="band in ['low', 'mid', 'high'] as const" :key="band" class="mixer__eq-band">
+          <div v-for="spec in mixer.eqSpecs" :key="spec.param" class="mixer__eq-band">
             <input
               type="range"
               class="mixer__eq-slider"
-              :min="EQ_MIN_DB"
-              :max="EQ_MAX_DB"
-              step="0.5"
-              :value="mixer.eq[deckId][band]"
+              :min="spec.min"
+              :max="spec.max"
+              :step="spec.step"
+              :value="mixer.eq[deckId][spec.param]"
               orient="vertical"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
               @input="
-                (e) => onEqInput(deckId, band, parseFloat((e.target as HTMLInputElement).value))
+                (e) =>
+                  onEqInput(deckId, spec.param, parseFloat((e.target as HTMLInputElement).value))
               "
-              @dblclick="onEqReset(deckId, band)"
+              @dblclick="onEqReset(deckId, spec.param)"
             />
-            <span class="mixer__eq-label">{{ band[0].toUpperCase() }}</span>
+            <span class="mixer__eq-label">{{ spec.param[0].toUpperCase() }}</span>
           </div>
         </div>
 
@@ -107,7 +108,7 @@
 
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { useMixerStore, EQ_MIN_DB, EQ_MAX_DB } from '@renderer/stores/mixer';
+import { useMixerStore } from '@renderer/stores/mixer';
 import type { DeckId } from '@renderer/stores/decks';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
@@ -213,10 +214,11 @@ function onEqInput(deckId: DeckId, band: 'high' | 'mid' | 'low', newVal: number)
 }
 
 function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
+  const defaultValue = mixer.eqDefault(band);
   if (mixer.swarmMode) {
-    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, 0);
+    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, defaultValue);
   } else {
-    mixer.setEq(deckId, band, 0);
+    mixer.setEq(deckId, band, defaultValue);
   }
 }
 </script>

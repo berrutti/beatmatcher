@@ -40,6 +40,9 @@ export type ViewContext = {
   trackW: number;
   msToX: (ms: number) => number;
   xToMs: (x: number) => number;
+  // The open session's mixer. Lane ranges, labels and units are read from it,
+  // so it travels with the projection rather than being looked up per drawer.
+  mixerId: string;
   // Canvas-y of where the (scrolled) deck rows begin, and the band they occupy.
   laneOriginY: number;
   scrollViewport: { top: number; bottom: number };

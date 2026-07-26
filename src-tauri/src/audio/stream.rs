@@ -1,4 +1,4 @@
-use super::deck::{ChannelStrip, DeckState};
+use super::deck::{ChannelStrip, DeckState, RenderTargets};
 use super::dsp::LimiterState;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
@@ -383,30 +383,35 @@ fn fill_output(
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    let deck_tick: fn(&mut DeckState) -> (f32, f32) = if is_cue {
-        DeckState::cue_tick
-    } else {
-        DeckState::main_tick
-    };
-    let strip_process: fn(&mut ChannelStrip, f32, f32) -> (f32, f32) = if is_cue {
-        ChannelStrip::process_cue
-    } else {
-        ChannelStrip::process_main
-    };
+    let mut scratch = vec![0.0f32; frames * 2];
 
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut sum_l = 0.0f32;
-        let mut sum_r = 0.0f32;
-        for i in 0..frames {
-            let (raw_l, raw_r) = deck_tick(&mut deck);
-            let (l, r) = strip_process(&mut strip, raw_l, raw_r);
-            if !is_cue {
-                sum_l += l.abs();
-                sum_r += r.abs();
+        // Per deck, not one shared mix: `mix_frame`'s mono fold averages l and
+        // r before summing, so folding a combined mix would round differently.
+        scratch.fill(0.0);
+        let targets = if is_cue {
+            RenderTargets {
+                main: None,
+                cue: Some(&mut scratch),
             }
-            mix_frame(data, i, output_channels, channel_offset, l, r);
+        } else {
+            RenderTargets {
+                main: Some(&mut scratch),
+                cue: None,
+            }
+        };
+        let (sum_l, sum_r) = deck.render_block(&mut strip, frames, targets);
+        for i in 0..frames {
+            mix_frame(
+                data,
+                i,
+                output_channels,
+                channel_offset,
+                scratch[i * 2],
+                scratch[i * 2 + 1],
+            );
         }
         if !is_cue {
             strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
@@ -463,21 +468,14 @@ fn fill_cue_with_master_tap(
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut sum_l = 0.0f32;
-        let mut sum_r = 0.0f32;
-        for i in 0..frames {
-            let (l, r) = deck.main_tick();
-            let (ml, mr) = strip.process_main(l, r);
-            sum_l += ml.abs();
-            sum_r += mr.abs();
-            master_mix[i * 2] += ml;
-            master_mix[i * 2 + 1] += mr;
-
-            let (l, r) = deck.cue_tick();
-            let (cl, cr) = strip.process_cue(l, r);
-            cue_buf[i * 2] += cl;
-            cue_buf[i * 2 + 1] += cr;
-        }
+        let (sum_l, sum_r) = deck.render_block(
+            &mut strip,
+            frames,
+            RenderTargets {
+                main: Some(master_mix),
+                cue: Some(cue_buf),
+            },
+        );
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
 
@@ -543,27 +541,30 @@ fn fill_output_combined(
     ctx.cue_buf.resize(frames * 2, 0.0);
     ctx.cue_buf.fill(0.0);
 
+    let mut main_scratch = vec![0.0f32; frames * 2];
+
     for (deck_arc, strip_arc) in ctx.channels {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
 
-        let mut sum_l = 0.0f32;
-        let mut sum_r = 0.0f32;
-
+        main_scratch.fill(0.0);
+        let (sum_l, sum_r) = deck.render_block(
+            &mut strip,
+            frames,
+            RenderTargets {
+                main: Some(&mut main_scratch),
+                cue: Some(ctx.cue_buf),
+            },
+        );
         for i in 0..frames {
-            let (l, r) = deck.main_tick();
-            let (ml, mr) = strip.process_main(l, r);
-
-            sum_l += ml.abs();
-            sum_r += mr.abs();
-
-            mix_frame(data, i, output_channels, ctx.main_offset, ml, mr);
-
-            let (l, r) = deck.cue_tick();
-            let (cl, cr) = strip.process_cue(l, r);
-
-            ctx.cue_buf[i * 2] += cl;
-            ctx.cue_buf[i * 2 + 1] += cr;
+            mix_frame(
+                data,
+                i,
+                output_channels,
+                ctx.main_offset,
+                main_scratch[i * 2],
+                main_scratch[i * 2 + 1],
+            );
         }
 
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);

@@ -3,6 +3,8 @@
 // offline render) all match exhaustively on `SessionCommand`, so adding a
 // variant forces a compile error in each until its behavior is decided.
 
+use crate::param::ParamScope;
+
 // Serializes back to the same shape the frontend writes to .bms: only the
 // fields actually set appear (skip_serializing_if), so edit ops that synthesize
 // events round-trip to clean JSON without a wall of nulls.
@@ -21,6 +23,10 @@ pub struct SessionEvent {
     pub gain: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,11 +76,40 @@ impl SessionEvent {
             ..Default::default()
         }
     }
+
+    // `deck` is None for master scope, which is how the scope is inferred back.
+    pub fn param(
+        elapsed_ms: f64,
+        deck: Option<&str>,
+        slot: &str,
+        param: &str,
+        value: f64,
+    ) -> SessionEvent {
+        SessionEvent {
+            elapsed_ms,
+            event_type: "set_param".to_string(),
+            deck: deck.map(str::to_string),
+            slot: Some(slot.to_string()),
+            param: Some(param.to_string()),
+            value: Some(value as f32),
+            ..Default::default()
+        }
+    }
+
+    pub fn is_param(&self, deck: Option<&str>, slot: &str, param: &str) -> bool {
+        self.event_type == "set_param"
+            && self.deck.as_deref() == deck
+            && self.slot.as_deref() == Some(slot)
+            && self.param.as_deref() == Some(param)
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionFile {
     pub events: Vec<SessionEvent>,
+    // Absent in sessions recorded before manifests existed.
+    #[serde(default)]
+    pub mixer: Option<crate::param::MixerHeader>,
 }
 
 // Every replayable command, with the fields each one actually consumes.
@@ -115,22 +150,14 @@ pub enum SessionCommand<'a> {
         deck: &'a str,
         sec: f64,
     },
-    SetVolume {
-        deck: &'a str,
-        gain: f32,
-    },
-    SetEq {
-        deck: &'a str,
-        band: &'a str,
-        db: f32,
-    },
-    SetFilter {
-        deck: &'a str,
-        value: f32,
-    },
-    SetFilterActive {
-        deck: &'a str,
-        active: bool,
+    // Only this axis is string-addressed; transport stays one variant per
+    // command so the three interpreters fail to compile when one is added.
+    SetParam {
+        scope: ParamScope,
+        deck: Option<&'a str>,
+        slot: &'a str,
+        param: &'a str,
+        value: f64,
     },
     SetPlaybackRate {
         deck: &'a str,
@@ -139,9 +166,6 @@ pub enum SessionCommand<'a> {
     SetNudge {
         deck: &'a str,
         percent: f64,
-    },
-    SetMasterGain {
-        gain: f32,
     },
     SetBeatGrid {
         deck: &'a str,
@@ -178,7 +202,7 @@ impl<'a> SessionCommand<'a> {
     pub fn deck_id(&self) -> Option<&'a str> {
         use SessionCommand::*;
         match *self {
-            SetMasterGain { .. } => None,
+            SetParam { deck, .. } => deck,
             DeckSnapshot { deck, .. }
             | LoadTrack { deck, .. }
             | EjectTrack { deck }
@@ -186,10 +210,6 @@ impl<'a> SessionCommand<'a> {
             | Stop { deck }
             | StopAtCue { deck, .. }
             | Seek { deck, .. }
-            | SetVolume { deck, .. }
-            | SetEq { deck, .. }
-            | SetFilter { deck, .. }
-            | SetFilterActive { deck, .. }
             | SetPlaybackRate { deck, .. }
             | SetNudge { deck, .. }
             | SetBeatGrid { deck, .. }
@@ -241,22 +261,16 @@ impl SessionEvent {
                 deck: deck?,
                 sec: self.sec?,
             },
-            "set_volume" => SetVolume {
-                deck: deck?,
-                gain: self.gain?,
-            },
-            "set_eq" => SetEq {
-                deck: deck?,
-                band: self.band.as_deref()?,
-                db: self.db?,
-            },
-            "set_filter" => SetFilter {
-                deck: deck?,
-                value: self.value?,
-            },
-            "set_filter_active" => SetFilterActive {
-                deck: deck?,
-                active: self.active?,
+            "set_param" => SetParam {
+                scope: if self.deck.is_some() {
+                    ParamScope::Deck
+                } else {
+                    ParamScope::Master
+                },
+                deck,
+                slot: self.slot.as_deref()?,
+                param: self.param.as_deref()?,
+                value: self.value? as f64,
             },
             "set_playback_rate" => SetPlaybackRate {
                 deck: deck?,
@@ -266,7 +280,6 @@ impl SessionEvent {
                 deck: deck?,
                 percent: self.percent?,
             },
-            "set_master_gain" => SetMasterGain { gain: self.gain? },
             "set_beat_grid" => SetBeatGrid {
                 deck: deck?,
                 bpm: self.bpm,
@@ -337,13 +350,8 @@ mod tests {
             "stopped_at_cue",
             "stop_at_cue",
             "seek",
-            "set_volume",
-            "set_eq",
-            "set_filter",
-            "set_filter_active",
             "set_playback_rate",
             "set_nudge",
-            "set_master_gain",
             "set_beat_grid",
             "loop_in",
             "loop_out",
@@ -393,7 +401,7 @@ mod tests {
     #[test]
     fn missing_required_fields_convert_to_none() {
         assert!(make_event("seek").command().is_none(), "seek without sec");
-        assert!(make_event("set_volume").command().is_none(), "set_volume w/o gain");
+        assert!(make_event("set_param").command().is_none(), "set_param w/o slot");
         assert!(make_event("deck_snapshot").command().is_none(), "snapshot w/o path");
         assert!(make_event("load_track").command().is_none(), "load_track w/o path");
         let no_deck = SessionEvent {

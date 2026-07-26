@@ -10,6 +10,9 @@ export type SessionEvent = {
   gain?: number;
   band?: string;
   db?: number;
+  // On `set_param` events, `value` carries 0/1 for a toggle.
+  slot?: string;
+  param?: string;
   value?: number;
   active?: boolean;
   rate?: number;
@@ -28,8 +31,12 @@ export type SessionEvent = {
   duration?: number;
 };
 
-export type EditableLaneKey =
-  'gain' | 'eqLow' | 'eqMid' | 'eqHigh' | 'filter' | 'rate' | 'masterGain';
+// masterGain is master-scope and has no deck row, so it is excluded from the
+// per-deck picker but is still an editable lane.
+export const DECK_LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
+export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, 'masterGain'] as const;
+
+export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips

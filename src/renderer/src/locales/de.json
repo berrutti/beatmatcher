@@ -54,6 +54,13 @@
       "default": "Standard",
       "hint": "Samples pro Audio-Callback. Kleinere Werte reduzieren die Latenz, erhöhen aber die CPU-Last. Eine Änderung verursacht eine kurze Audiopause."
     },
+    "midi": {
+      "title": "MIDI-Controller",
+      "none": "Keiner",
+      "rescan": "Neu suchen",
+      "waiting": "Warte auf MIDI. Bewege ein Bedienelement am verbundenen Gerät.",
+      "hint": "Zeigt eingehende MIDI-Rohdaten, solange dieses Fenster offen ist. EQ, Filter, Lautstärke und Cue sind auf einem verbundenen Controller belegt."
+    },
     "bpmRange": {
       "title": "BPM-Erkennungsbereich",
       "min": "Min",

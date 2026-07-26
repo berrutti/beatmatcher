@@ -1,13 +1,17 @@
 mod audio;
 mod broadcast;
 mod commands;
+mod engine_push;
+mod midi;
 pub mod offline_render;
 mod session_playback;
 
 use audio::AppAudio;
+use engine_push::{EnginePush, ParamOrigin};
 use std::sync::Arc;
 
 type TrackCache = std::sync::Mutex<session_playback::SampleCache>;
+type CueFeedback = Box<dyn Fn(&str, bool) + Send + Sync>;
 use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
@@ -64,15 +68,17 @@ fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
 struct SessionLogger {
     start: std::time::Instant,
     start_wall: std::time::SystemTime,
+    mixer: &'static session_core::MixerManifest,
     events: Vec<serde_json::Value>,
     pending: Option<String>,
 }
 
 impl SessionLogger {
-    fn new() -> Self {
+    fn new(mixer: &'static session_core::MixerManifest) -> Self {
         Self {
             start: std::time::Instant::now(),
             start_wall: std::time::SystemTime::now(),
+            mixer,
             events: Vec::new(),
             pending: None,
         }
@@ -94,6 +100,7 @@ impl SessionLogger {
         let log = serde_json::json!({
             "version": 1,
             "startedAt": started_at,
+            "mixer": self.mixer.header(),
             "events": std::mem::take(&mut self.events),
         });
         self.pending = serde_json::to_string_pretty(&log).ok();
@@ -119,6 +126,11 @@ pub struct AppState {
         std::collections::HashMap<String, Arc<crate::offline_render::SessionFile>>,
     >,
     session: std::sync::Mutex<Option<SessionLogger>>,
+    pub engine_push: Arc<EnginePush>,
+    // Set once at startup. The reverse of the MIDI dispatch closure: that one
+    // lets the controller reach the engine, this one lets the engine light the
+    // controller's buttons without `AppState` knowing about `MidiState`.
+    cue_feedback: std::sync::Mutex<Option<CueFeedback>>,
 }
 
 impl AppState {
@@ -131,6 +143,97 @@ impl AppState {
         {
             logger.log(event_type, payload);
         }
+    }
+
+    fn log_param(&self, deck: Option<&str>, slot: &str, param: &str, value: f64) {
+        let mut payload = serde_json::Map::new();
+        if let Some(deck) = deck {
+            payload.insert("deck".into(), serde_json::json!(deck));
+        }
+        payload.insert("slot".into(), serde_json::json!(slot));
+        payload.insert("param".into(), serde_json::json!(param));
+        payload.insert("value".into(), serde_json::json!(value));
+        self.log("set_param", serde_json::Value::Object(payload));
+    }
+
+    /// The one path a deck param changes through, whoever moved it. Logging from
+    /// here is what puts a MIDI move in the `.bms` on the same terms as a mouse
+    /// move, and what stops a second control path from bypassing the log.
+    pub(crate) fn set_deck_param(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        slot: &str,
+        param: &str,
+        value: f32,
+    ) -> Result<(), String> {
+        self.audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {}", deck))?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_param(slot, param, value);
+        self.log_param(Some(deck), slot, param, value as f64);
+        self.engine_push.mark(origin, deck, slot, param);
+        Ok(())
+    }
+
+    /// Cue is headphone routing rather than a mixer move, so it is not a
+    /// manifest param and does not go through `set_deck_param`. It is still
+    /// logged, under its own event type.
+    fn apply_cue_active(&self, origin: ParamOrigin, deck: &str, active: bool) {
+        self.log(
+            "set_cue_active",
+            serde_json::json!({ "deck": deck, "active": active }),
+        );
+        self.engine_push.mark_cue(origin, deck);
+        if let Some(feedback) = self
+            .cue_feedback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            feedback(deck, active);
+        }
+    }
+
+    pub(crate) fn set_cue_feedback(&self, feedback: CueFeedback) {
+        *self
+            .cue_feedback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(feedback);
+    }
+
+    pub(crate) fn set_cue_active(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        active: bool,
+    ) -> Result<(), String> {
+        self.audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {}", deck))?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cue_active = active;
+        self.apply_cue_active(origin, deck, active);
+        Ok(())
+    }
+
+    /// Read and write under one lock: the controller sends a press, not a
+    /// state, so the engine is the only thing that knows what it toggles from.
+    pub(crate) fn toggle_cue_active(&self, origin: ParamOrigin, deck: &str) -> Result<(), String> {
+        let strip = self
+            .audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {}", deck))?;
+        let active = {
+            let mut guard = strip.lock().unwrap_or_else(|error| error.into_inner());
+            guard.cue_active = !guard.cue_active;
+            guard.cue_active
+        };
+        self.apply_cue_active(origin, deck, active);
+        Ok(())
     }
 }
 
@@ -163,14 +266,19 @@ pub fn run() {
         session_track_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
+        engine_push: Arc::new(EnginePush::new()),
+        cue_feedback: std::sync::Mutex::new(None),
     };
 
     // Cloned before `.manage()` consumes app_state, so the broadcaster thread
     // can read every deck's live state (same reason ended_flags is cloned above).
     let audio_for_broadcast = Arc::clone(&app_state.audio);
+    let audio_for_push = Arc::clone(&app_state.audio);
+    let engine_push = Arc::clone(&app_state.engine_push);
 
     tauri::Builder::default()
         .manage(app_state)
+        .manage(midi::MidiState::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(move |app| {
@@ -229,6 +337,22 @@ pub fn run() {
                 Ok(data_dir) => broadcast::start(data_dir, audio_for_broadcast),
                 Err(error) => log::warn!("performer broadcast disabled: {error}"),
             }
+
+            engine_push::start(app.handle().clone(), audio_for_push, engine_push);
+
+            midi::start_monitor(app.handle().clone(), &app.state::<midi::MidiState>());
+            let midi_handle = app.handle().clone();
+            midi::set_dispatch(
+                &app.state::<midi::MidiState>(),
+                Arc::new(move |data: &[u8]| {
+                    midi::apply(midi_handle.state::<AppState>().inner(), data);
+                }),
+            );
+            let feedback_handle = app.handle().clone();
+            app.state::<AppState>()
+                .set_cue_feedback(Box::new(move |deck: &str, active: bool| {
+                    midi::send_cue_led(&feedback_handle.state::<midi::MidiState>(), deck, active);
+                }));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -247,6 +371,10 @@ pub fn run() {
             commands::get_track_amplitude_region,
             commands::list_audio_devices,
             commands::load_track,
+            midi::get_midi_input,
+            midi::list_midi_inputs,
+            midi::set_midi_input,
+            midi::set_midi_monitor,
             commands::pick_save_path,
             commands::play,
             commands::press_cue,
@@ -359,7 +487,7 @@ mod tests {
 
     #[test]
     fn session_logger_records_events_in_order() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.log("first", serde_json::json!({}));
         logger.log("second", serde_json::json!({}));
         logger.log("third", serde_json::json!({}));
@@ -371,7 +499,7 @@ mod tests {
 
     #[test]
     fn session_logger_merges_payload_fields() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.log("play", serde_json::json!({ "deck": "A", "rate": 1.0 }));
         let event = &logger.events[0];
         assert_eq!(event["type"], "play");
@@ -381,7 +509,7 @@ mod tests {
 
     #[test]
     fn session_logger_timestamps_are_non_negative() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.log("e", serde_json::json!({}));
         let elapsed_ms = logger.events[0]["elapsed_ms"].as_f64().unwrap();
         assert!(elapsed_ms >= 0.0);
@@ -389,7 +517,7 @@ mod tests {
 
     #[test]
     fn session_logger_stop_produces_valid_json() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.log("recording_start", serde_json::json!({}));
         logger.stop();
         let pending = logger
@@ -402,9 +530,43 @@ mod tests {
         assert_eq!(parsed["events"].as_array().unwrap().len(), 1);
     }
 
+    // A recording has to name the mixer it was played on, or the renderer has
+    // nothing to check against and falls back to assuming the classic one.
+    #[test]
+    fn session_logger_stamps_the_mixer_it_recorded_on() {
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        logger.stop();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
+        assert_eq!(parsed["mixer"]["id"], "classic-3band");
+        assert_eq!(
+            parsed["mixer"]["hash"],
+            session_core::CLASSIC_3BAND.content_hash()
+        );
+
+        let round_tripped: session_core::SessionFile =
+            serde_json::from_value(parsed).expect("parses back as a session");
+        assert!(session_core::resolve_manifest(round_tripped.mixer.as_ref()).is_ok());
+    }
+
+    // Stamping a constant would pass the test above while mislabelling any
+    // recording made on a mixer other than the one that constant names.
+    #[test]
+    fn session_logger_stamps_the_mixer_it_was_given() {
+        let mut logger = SessionLogger::new(&session_core::ISOLATOR_3BAND);
+        logger.stop();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
+        assert_eq!(parsed["mixer"]["id"], "isolator-3band");
+        assert_eq!(
+            parsed["mixer"]["hash"],
+            session_core::ISOLATOR_3BAND.content_hash()
+        );
+    }
+
     #[test]
     fn session_logger_take_pending_clears_state() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.stop();
         assert!(logger.take_pending().is_some());
         assert!(logger.take_pending().is_none());
@@ -412,7 +574,7 @@ mod tests {
 
     #[test]
     fn session_logger_stop_clears_events() {
-        let mut logger = SessionLogger::new();
+        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
         logger.log("a", serde_json::json!({}));
         logger.log("b", serde_json::json!({}));
         logger.stop();

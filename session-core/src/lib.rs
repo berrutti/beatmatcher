@@ -7,6 +7,7 @@ pub mod clip_edit;
 pub mod cue;
 pub mod event;
 pub mod lane_edit;
+pub mod param;
 pub mod sim;
 pub mod timeline;
 
@@ -17,12 +18,17 @@ pub use clip_edit::{
     DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use event::{SessionCommand, SessionEvent, SessionFile};
+pub use param::{
+    is_fader_gain, manifest_by_id, resolve_manifest, MixerHeader, MixerManifest, ParamDescriptor,
+    ParamKind, ParamScope, ParamUnit, SlotDescriptor, Taper, CLASSIC_3BAND, FADER_GAIN,
+    ISOLATOR_3BAND, MANIFESTS, REQUIRED_STRIP_ROLES,
+};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
-    paint_nudge_range, relocate_event_paths, resize_filter_active_span, set_rate_at, set_rate_span,
-    splice_lane_events, toggle_filter_active_range,
-    EditableLane, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span, set_rate_at,
+    set_rate_span, splice_lane_events, toggle_filter_active_range,
+    EditableLane, LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
@@ -113,6 +119,71 @@ mod wasm {
             })
         });
         serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    // A build that dropped a mixer still has to draw a session that names it,
+    // so the editor falls back rather than refusing to render. Rendering audio
+    // does not: `resolve_manifest` is strict on that path.
+    fn resolve_mixer(id: &str) -> &'static crate::MixerManifest {
+        crate::manifest_by_id(id).unwrap_or(&crate::CLASSIC_3BAND)
+    }
+
+    /// Every editable lane's spec for one mixer, keyed by lane key. Rate carries
+    /// its default range; a caller with a clip-specific range overrides min/max.
+    #[wasm_bindgen(js_name = laneSpecs)]
+    pub fn lane_specs(mixer_id: &str) -> String {
+        let mixer = resolve_mixer(mixer_id);
+        let map: serde_json::Map<String, serde_json::Value> = crate::EditableLane::ALL
+            .into_iter()
+            .map(|lane| {
+                let spec = crate::lane_spec_for(lane, mixer, None, None);
+                let display = lane.display(mixer);
+                (
+                    lane.key().to_string(),
+                    serde_json::json!({
+                        "key": lane.key(),
+                        "min": spec.min,
+                        "max": spec.max,
+                        "defaultValue": spec.default_value,
+                        "epsilon": spec.epsilon,
+                        "shortLabel": display.short_label,
+                        "laneGroup": display.lane_group,
+                        "unit": display.unit,
+                    }),
+                )
+            })
+            .collect();
+        serde_json::Value::Object(map).to_string()
+    }
+
+    /// A mixer's deck-scope params, keyed `"slot/param"`, so the performance
+    /// mixer's knobs take their range from the manifest the engine is running
+    /// rather than from constants that only describe the classic one. Unknown
+    /// ids fall back to the classic mixer, which is also what the engine loads.
+    #[wasm_bindgen(js_name = mixerParams)]
+    pub fn mixer_params(id: &str) -> String {
+        let manifest = resolve_mixer(id);
+        let map: serde_json::Map<String, serde_json::Value> = manifest
+            .strip
+            .iter()
+            .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param)))
+            .map(|(slot, param)| {
+                (
+                    format!("{slot}/{}", param.id),
+                    serde_json::json!({
+                        "slot": slot,
+                        "param": param.id,
+                        "label": param.label,
+                        "shortLabel": param.short_label,
+                        "min": param.min,
+                        "max": param.max,
+                        "defaultValue": param.default,
+                        "step": param.step,
+                    }),
+                )
+            })
+            .collect();
+        serde_json::Value::Object(map).to_string()
     }
 
     /// The shared edit/mixer constants, from the one place they are defined.
@@ -222,9 +293,15 @@ mod wasm {
             .ok_or_else(|| JsError::new(&format!("invalid lane: {lane_key}")))
     }
 
-    fn lane_spec(lane_key: &str, rate_min: f64, rate_max: f64) -> Result<crate::LaneSpec, JsError> {
+    fn lane_spec(
+        lane_key: &str,
+        mixer_id: &str,
+        rate_min: f64,
+        rate_max: f64,
+    ) -> Result<crate::LaneSpec, JsError> {
         Ok(crate::lane_spec_for(
             parse_lane(lane_key)?,
+            resolve_mixer(mixer_id),
             Some(rate_min),
             Some(rate_max),
         ))
@@ -255,13 +332,14 @@ mod wasm {
     pub fn original_value_at(
         events_json: &str,
         lane_key: &str,
+        mixer_id: &str,
         deck: &str,
         ms: f64,
         rate_min: f64,
         rate_max: f64,
     ) -> Result<f64, JsError> {
         let events = parse_events(events_json)?;
-        let spec = lane_spec(lane_key, rate_min, rate_max)?;
+        let spec = lane_spec(lane_key, mixer_id, rate_min, rate_max)?;
         Ok(crate::original_value_at(&events, &spec, deck, ms))
     }
 
@@ -271,6 +349,7 @@ mod wasm {
     pub fn splice_lane_events(
         events_json: &str,
         lane_key: &str,
+        mixer_id: &str,
         deck: &str,
         range_start_ms: f64,
         range_end_ms: f64,
@@ -279,7 +358,7 @@ mod wasm {
         rate_max: f64,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        let spec = lane_spec(lane_key, rate_min, rate_max)?;
+        let spec = lane_spec(lane_key, mixer_id, rate_min, rate_max)?;
         let points = parse_points(points_json)?;
         events_to_json(crate::splice_lane_events(
             &events,

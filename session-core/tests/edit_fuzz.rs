@@ -64,8 +64,10 @@ fn random_session(rng: &mut Rng) -> Vec<SessionEvent> {
                     ..make_event(ms, "set_playback_rate", deck)
                 }),
                 4 => events.push(SessionEvent {
-                    gain: Some(rng.range(0.0, 1.0) as f32),
-                    ..make_event(ms, "set_volume", deck)
+                    slot: Some("fader".to_string()),
+                    param: Some("gain".to_string()),
+                    value: Some(rng.range(0.0, 1.0) as f32),
+                    ..make_event(ms, "set_param", deck)
                 }),
                 _ => {
                     if playing {

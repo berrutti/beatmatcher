@@ -10,7 +10,7 @@ graph TD
 
     subgraph Frontend ["Frontend (Renderer - Vue 3 + Pinia)"]
         UI["UI Components\n(Vue SFCs)"]:::frontend
-        Stores["Pinia Stores\n(decks, settings, library)"]:::frontend
+        Stores["Pinia Stores\n(decks, settings, library, ...)"]:::frontend
     end
 
     subgraph IPC ["Tauri IPC Layer"]
@@ -60,6 +60,8 @@ graph LR
     MasterMix --> Outputs
 ```
 
+`DeckState::render_block` is the single entry point the stream callbacks use to fill a buffer. It takes the main and cue outputs as independently optional, so both stream routings below share one renderer rather than each carrying its own copy of the mixing loop.
+
 ## Stream routing
 
 ```mermaid
@@ -70,9 +72,9 @@ flowchart TD
 
     Decision{{"Main and cue\non same device?"}}:::decision
 
-    Decision -- "No" --> SepMain["Separate main stream\n(device A, ch offset main)"]:::separate
-    Decision -- "No" --> SepCue["Separate cue stream\n(device B, ch offset cue)"]:::separate
-    Decision -- "Yes" --> Combined["Combined stream\n(single callback on device A,\nch main_off+0/1 for main,\nch cue_off+0/1 for cue)"]:::combined
+    Decision -- "No" --> SepMain["build_stream\n(device A, ch offset main)"]:::separate
+    Decision -- "No" --> SepCue["build_cue_stream\n(device B, ch offset cue)"]:::separate
+    Decision -- "Yes" --> Combined["build_combined_stream\n(one callback on device A,\nch main_off+0/1 for main,\nch cue_off+0/1 for cue)"]:::combined
 ```
 
 ## CUE state machine
@@ -103,7 +105,7 @@ stateDiagram-v2
 
 ## Shared session-core crate (Rust + WASM)
 
-The session event model, replay simulation, timeline (clips/lanes), edit operations (clip move/trim/delete, lane automation, filter-region and nudge range edits), and CUE-sheet track-point derivation live in `session-core`, a Rust crate (serde as its only dependency) shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This removes the previous split where the frontend's TypeScript reimplemented the same simulation/edit logic as the Rust engine and could silently drift out of sync.
+The session event model, replay simulation, timeline (clips/lanes), edit operations (clip move/trim/delete, lane automation, filter-region and nudge range edits), and CUE-sheet track-point derivation live in `session-core`, a Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This keeps TypeScript from reimplementing the same simulation/edit logic as the Rust engine, where the two could silently drift out of sync.
 
 ```mermaid
 graph TD

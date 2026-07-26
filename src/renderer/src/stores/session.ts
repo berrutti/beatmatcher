@@ -4,11 +4,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 
 export type ParsedSession = {
   version: number;
   startedAt: string;
+  // The mixer this session was played on. Lane ranges, labels and units come
+  // from it, so it is not interchangeable with whatever the engine has loaded.
+  mixerId: string;
   events: SessionEvent[];
   durationMs: number;
   filename: string;
@@ -155,7 +159,7 @@ export const useSessionStore = defineStore('session', () => {
   );
 
   // Audition-only mute/solo for session playback. Lives in the strip's mute
-  // gain in Rust (independent of replayed set_volume events) and never affects
+  // gain in Rust (independent of replayed fader events) and never affects
   // the offline render. Solo wins: when any deck is soloed, only soloed decks
   // are audible regardless of their mute state.
   const mutedDecks = ref<Set<string>>(new Set());
@@ -217,7 +221,12 @@ export const useSessionStore = defineStore('session', () => {
   );
 
   async function loadFromFile(path: string, content: string): Promise<boolean> {
-    let raw: { version: number; startedAt: string; events: SessionEvent[] };
+    let raw: {
+      version: number;
+      startedAt: string;
+      mixer?: { id?: string };
+      events: SessionEvent[];
+    };
     try {
       raw = JSON.parse(content);
     } catch {
@@ -236,6 +245,9 @@ export const useSessionStore = defineStore('session', () => {
     session.value = {
       version: raw.version ?? 1,
       startedAt: raw.startedAt ?? '',
+      // Sessions written before manifests existed have no header, and every one
+      // of those was played on the classic mixer.
+      mixerId: raw.mixer?.id ?? DEFAULT_MIXER_ID,
       events,
       durationMs,
       filename,

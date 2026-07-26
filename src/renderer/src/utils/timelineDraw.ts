@@ -4,10 +4,12 @@ import type {
   LoadedSpan,
   DeckLanes,
   LanePoint,
-  NudgeSpan
+  NudgeSpan,
+  EditableLaneKey
 } from '@renderer/utils/types';
+import { DECK_LANE_KEYS } from '@renderer/utils/types';
 import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
-import { EQ_MIN_DB, EQ_MAX_DB, FILTER_DEAD_ZONE } from '@renderer/stores/mixer';
+import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
 import { formatMs } from '@renderer/utils/time';
 import {
   overlapsRange,
@@ -38,25 +40,7 @@ export const MASTER_ROW_H = SUBLANE_H * 2;
 export const OVERVIEW_H = 22;
 export const OVERVIEW_GAP = 4;
 
-export const LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
-export type LaneKey = (typeof LANE_KEYS)[number];
-
-const LANE_GROUP: Record<LaneKey, number> = {
-  gain: 0,
-  filter: 1,
-  rate: 2,
-  eqLow: 3,
-  eqMid: 3,
-  eqHigh: 3
-};
-const LANE_SHORT_LABELS: Record<LaneKey, string> = {
-  gain: 'G',
-  filter: 'F',
-  rate: 'RT',
-  eqLow: 'LO',
-  eqMid: 'MD',
-  eqHigh: 'HI'
-};
+export type LaneKey = (typeof DECK_LANE_KEYS)[number];
 
 const BAR_HALF_HEIGHT_FRACTION = 0.45;
 const BEAT_LINE_COLOR = '#ffffff1f';
@@ -82,8 +66,6 @@ const FILTER_LPF_COLOR = '#38bdf8';
 const FILTER_NEUTRAL_COLOR = '#666666';
 const FRAME_GUTTER_COLOR = '#2a2a2a';
 const GAIN_COLOR = '#e5e5e5';
-const GAIN_MIN = 0;
-const GAIN_MAX = 1;
 const GESTURE_LABEL_CURSOR_GAP_PX = 8;
 const GESTURE_PREVIEW_LINE_COLOR = '#ffffffcc';
 const GESTURE_PREVIEW_LINE_WIDTH = 1.5;
@@ -215,8 +197,9 @@ export function yToValue(
 }
 
 function filterColorFor(value: number): string {
-  if (value < -FILTER_DEAD_ZONE) return FILTER_LPF_COLOR;
-  if (value > FILTER_DEAD_ZONE) return FILTER_HPF_COLOR;
+  const { filterDeadZone } = editConstants();
+  if (value < -filterDeadZone) return FILTER_LPF_COLOR;
+  if (value > filterDeadZone) return FILTER_HPF_COLOR;
   return FILTER_NEUTRAL_COLOR;
 }
 
@@ -447,7 +430,8 @@ function drawFilterLane(
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ): void {
   for (const span of deckData.filterActive) {
     if (!overlapsRange(span.startMs, span.endMs, viewStart, viewEnd)) continue;
@@ -457,16 +441,18 @@ function drawFilterLane(
     ctx.fillRect(spanX, laneY, spanWidth, laneH);
   }
 
+  const { min, max, defaultValue } = specs.filter;
+
   // Center line marks the bypass position (knob = 0); LPF sweeps below it, HPF above.
-  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, -1, 1, 0);
+  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, min, max, defaultValue);
 
   drawLaneSteps(
     ctx,
     deckData.filter,
     laneY,
     laneH,
-    -1,
-    1,
+    min,
+    max,
     filterColorFor,
     msToX,
     viewStart,
@@ -521,7 +507,8 @@ function drawRateLane(
   );
 }
 
-function drawEqLane(
+function drawSpecLane(
+  key: LaneKey,
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   color: string,
@@ -529,10 +516,14 @@ function drawEqLane(
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ): void {
-  drawLaneSteps(ctx, points, laneY, laneH, EQ_MIN_DB, EQ_MAX_DB, color, msToX, viewStart, viewEnd);
+  const { min, max } = specs[key];
+  drawLaneSteps(ctx, points, laneY, laneH, min, max, color, msToX, viewStart, viewEnd);
 }
+
+type LaneSpecs = Record<EditableLaneKey, LaneSpec>;
 
 type LaneDrawer = (
   ctx: CanvasRenderingContext2D,
@@ -542,20 +533,65 @@ type LaneDrawer = (
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ) => void;
 
 const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawLaneSteps(ctx, deckData.gain, laneY, laneH, 0, 1, GAIN_COLOR, msToX, viewStart, viewEnd),
+  gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'gain',
+      ctx,
+      deckData.gain,
+      GAIN_COLOR,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
   filter: drawFilterLane,
   rate: drawRateLane,
-  eqLow: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS_LOW, laneY, laneH, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS_MID, laneY, laneH, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS_HIGH, laneY, laneH, msToX, viewStart, viewEnd)
+  eqLow: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqLow',
+      ctx,
+      deckData.eqLow,
+      EQ_BAND_COLORS_LOW,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
+  eqMid: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqMid',
+      ctx,
+      deckData.eqMid,
+      EQ_BAND_COLORS_MID,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
+  eqHigh: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqHigh',
+      ctx,
+      deckData.eqHigh,
+      EQ_BAND_COLORS_HIGH,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    )
 };
 
 // Clip drawing to one lane's rect. The single place lane-bounded drawing is
@@ -584,12 +620,14 @@ export function drawDeckLanes(
   deckData: DeckLanes | undefined,
   sublanes: SublaneLayout[],
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  mixerId: string
 ): void {
+  const specs = laneSpecs(mixerId);
   for (let laneIdx = 0; laneIdx < sublanes.length; laneIdx++) {
     const { key, top, height } = sublanes[laneIdx];
-    const group = LANE_GROUP[key];
-    const prevGroup = laneIdx > 0 ? LANE_GROUP[sublanes[laneIdx - 1].key] : -1;
+    const group = specs[key].laneGroup;
+    const prevGroup = laneIdx > 0 ? specs[sublanes[laneIdx - 1].key].laneGroup : -1;
     const trackW = canvasWidth - LABEL_W - PADDING;
 
     ctx.fillStyle = group % 2 === 0 ? LANE_GROUP_BG_COLOR_EVEN : LANE_GROUP_BG_COLOR_ODD;
@@ -619,7 +657,8 @@ export function drawDeckLanes(
         height - 2 * pad,
         msToX,
         viewStart,
-        viewEnd
+        viewEnd,
+        specs
       )
     );
   }
@@ -800,18 +839,20 @@ export function drawMasterGainLane(
   canvasWidth: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  mixerId: string
 ): void {
   // Clip to the track area like the deck lanes do, so the level line never
   // bleeds left into the "M" label gutter or right into the padding.
+  const { min, max } = laneSpecs(mixerId).masterGain;
   withLaneClip(ctx, masterTopY, masterRowH, canvasWidth, () =>
     drawLaneSteps(
       ctx,
       points,
       masterTopY + MASTER_GAIN_INSET_Y,
       masterRowH - 2 * MASTER_GAIN_INSET_Y,
-      GAIN_MIN,
-      GAIN_MAX,
+      min,
+      max,
       GAIN_COLOR,
       msToX,
       viewStart,
@@ -891,7 +932,8 @@ export function drawDeckRowChrome(
   ctx: CanvasRenderingContext2D,
   row: RowLayout,
   canvasW: number,
-  chrome: DeckRowChrome
+  chrome: DeckRowChrome,
+  mixerId: string
 ): void {
   ctx.fillStyle =
     chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
@@ -920,7 +962,11 @@ export function drawDeckRowChrome(
     const centerY = lane.top + lane.height / 2;
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
     ctx.font = BOLD_LABEL_FONT;
-    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, centerY - LANE_LABEL_OFFSET_PX);
+    ctx.fillText(
+      laneSpecs(mixerId)[lane.key].shortLabel,
+      LABEL_W / 2,
+      centerY - LANE_LABEL_OFFSET_PX
+    );
     ctx.font = SUB_LABEL_FONT;
     ctx.fillText('▾', LABEL_W / 2, centerY + LANE_CARET_OFFSET_PX);
   }

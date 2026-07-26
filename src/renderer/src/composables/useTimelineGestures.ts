@@ -26,6 +26,7 @@ import {
 } from '@renderer/utils/timelineView';
 import { ghostSpan, clipGestureDeltaSec, marqueeTargets } from '@renderer/utils/timelineLayout';
 import { laneSpecFor, formatLaneValue } from '@renderer/utils/sessionEditOps';
+import type { LaneSpec } from '@renderer/utils/sessionCore';
 import {
   blockBounds,
   blocksForDeck,
@@ -153,6 +154,7 @@ type ActiveGesture =
 export function useTimelineGestures(deps: GestureDeps) {
   let active: ActiveGesture | null = null;
   let startClientX = 0;
+  let startClientY = 0;
   let dragged = false;
 
   const fracAtClientLocalX = (x: number, viewContext: ViewContext) =>
@@ -166,9 +168,16 @@ export function useTimelineGestures(deps: GestureDeps) {
     return hitScene(deps.getItems(), point, deps.getVc(), hitPriority);
   }
 
-  function laneRange(lane: EditableLaneKey, deck: string): { min: number; max: number } {
+  function laneSpec(lane: EditableLaneKey, deck: string): LaneSpec {
     const deckLanes = deps.getDeckLanes()[deck];
-    const spec = laneSpecFor(lane, { rateMin: deckLanes?.rateMin, rateMax: deckLanes?.rateMax });
+    return laneSpecFor(lane, deps.getVc().mixerId, {
+      rateMin: deckLanes?.rateMin,
+      rateMax: deckLanes?.rateMax
+    });
+  }
+
+  function laneRange(lane: EditableLaneKey, deck: string): { min: number; max: number } {
+    const spec = laneSpec(lane, deck);
     return { min: spec.min, max: spec.max };
   }
 
@@ -178,6 +187,7 @@ export function useTimelineGestures(deps: GestureDeps) {
     const point = pointFrom(event, rect);
     const hit = hitAt(point);
     startClientX = event.clientX;
+    startClientY = event.clientY;
     dragged = false;
     active = null;
     if (!hit) return;
@@ -333,7 +343,13 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (!active) return;
     const viewContext = deps.getVc();
     const point = pointFrom(event, rect);
-    if (Math.abs(event.clientX - startClientX) > DRAG_THRESHOLD_PX) dragged = true;
+    // Both axes: the separators resize vertically, and an X-only test let the
+    // trailing click fall through to the seek branch.
+    if (
+      Math.abs(event.clientX - startClientX) > DRAG_THRESHOLD_PX ||
+      Math.abs(event.clientY - startClientY) > DRAG_THRESHOLD_PX
+    )
+      dragged = true;
 
     switch (active.kind) {
       case 'track-pan':
@@ -471,6 +487,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         dragged = true;
         break;
       case 'filter-resize':
+        if (!dragged) break; // a plain edge click just selects, like the body
         deps.emit({
           type: 'filterRegion.resize',
           deck: gesture.deck,
@@ -683,7 +700,7 @@ export function useTimelineGestures(deps: GestureDeps) {
             ctx,
             gesture,
             gesture.normalized,
-            formatLaneValue(gesture.lane, cursor.value),
+            formatLaneValue(laneSpec(gesture.lane, gesture.deck), cursor.value),
             cursor.ms,
             msToX,
             viewContext.canvasW

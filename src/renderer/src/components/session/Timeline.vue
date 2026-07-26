@@ -69,7 +69,7 @@
         <span class="lane-menu__arrow">▶</span>
         <div class="lane-menu__submenu">
           <button
-            v-for="key in LANE_KEYS"
+            v-for="key in DECK_LANE_KEYS"
             :key="key"
             class="lane-menu__item"
             @click="onPickLaneFromMenu(key)"
@@ -96,7 +96,12 @@
       :style="{ left: lanePicker.x + 'px', top: lanePicker.y + 'px' }"
       @click.stop
     >
-      <button v-for="key in LANE_KEYS" :key="key" class="lane-menu__item" @click="onPickLane(key)">
+      <button
+        v-for="key in DECK_LANE_KEYS"
+        :key="key"
+        class="lane-menu__item"
+        @click="onPickLane(key)"
+      >
         {{ $t(`session.lanes.${key}`) }}
         <span class="lane-menu__check">{{
           controller.laneFor(lanePicker.deck) === key ? '✓' : ''
@@ -141,9 +146,9 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
+import { DECK_LANE_KEYS } from '@renderer/utils/types';
 import {
   DECK_ORDER,
-  LANE_KEYS,
   LABEL_W,
   PADDING,
   makeMsToX,
@@ -159,7 +164,7 @@ import { useTimelineGestures } from '@renderer/composables/useTimelineGestures';
 import { buildScene } from '@renderer/composables/useTimelineScene';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { useSettingsStore } from '@renderer/stores/settings';
+import { useSettingsStore, DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import type { BpmContext } from '@renderer/utils/timelineIntents';
 
@@ -194,7 +199,10 @@ const scrollEl = ref<HTMLDivElement | null>(null);
 const sizerEl = ref<HTMLDivElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 
-const camera = useTimelineView(() => props.durationMs);
+const camera = useTimelineView(
+  () => props.durationMs,
+  () => sessionStore.session?.mixerId ?? DEFAULT_MIXER_ID
+);
 const controller = useTimelineController({
   camera,
   getClips: () => props.clips,

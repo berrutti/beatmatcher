@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "events": [
+    { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
+    { "elapsed_ms": 0, "type": "load_track", "deck": "A", "path": "__SOURCE__" },
+    { "elapsed_ms": 0, "type": "set_param", "deck": "A", "slot": "fader", "param": "gain", "value": 0.85 },
+    { "elapsed_ms": 100, "type": "play", "deck": "A", "sec": 0.0 },
+    { "elapsed_ms": 500, "type": "seek", "deck": "A", "sec": 1.2 },
+    { "elapsed_ms": 800, "type": "cue_preview_start", "deck": "A", "cue_point_sec": 0.4 },
+    { "elapsed_ms": 1000, "type": "cue_preview_end", "deck": "A", "cue_point_sec": 0.4 },
+    { "elapsed_ms": 1200, "type": "play", "deck": "A", "sec": 0.4 },
+    { "elapsed_ms": 1600, "type": "stopped_at_cue", "deck": "A", "cue_point_sec": 0.4 },
+    { "elapsed_ms": 1800, "type": "play", "deck": "A" },
+    { "elapsed_ms": 2100, "type": "stop", "deck": "A" },
+    { "elapsed_ms": 2200, "type": "eject_track", "deck": "A" },
+    { "elapsed_ms": 2300, "type": "recording_stop" }
+  ]
+}

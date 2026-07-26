@@ -78,7 +78,7 @@ function sessionContent(...trackPaths: string[]): string {
         is_playing: true,
         position_sec: 0
       })),
-      { elapsed_ms: 1000, type: 'set_volume', deck: 'A', gain: 0.8 },
+      { elapsed_ms: 1000, type: 'set_param', deck: 'A', slot: 'fader', param: 'gain', value: 0.8 },
       { elapsed_ms: 5000, type: 'stop', deck: 'A' }
     ]
   });
@@ -197,6 +197,50 @@ describe('missing track detection and relocation', () => {
     await editStore.locateMissingTracks();
 
     expect(store.missingTracks).toEqual(['/music/a.mp3']);
+    expect(editStore.dirty).toBe(false);
+  });
+});
+
+describe('edits rejected by session-core', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    fakeFs = { '/music/a.mp3': 100 };
+    fakeScan = {};
+    fakeBms = {};
+    dialogResult = null;
+    installInvokeMock();
+  });
+
+  it('a rejected gesture leaves the session, the undo stack and the redo stack untouched', async () => {
+    const store = useSessionStore();
+    const editStore = useSessionEditStore();
+    fakeBms['/sessions/mix.bms'] = sessionContent('/music/a.mp3');
+    await store.openSessionFromPath('/sessions/mix.bms');
+
+    await editStore.commitGesture(
+      'A',
+      'gain',
+      [
+        { ms: 1000, value: 0.5 },
+        { ms: 3000, value: 0.9 }
+      ],
+      1000,
+      3000
+    );
+    expect(editStore.canUndo).toBe(true);
+
+    editStore.undo();
+    expect(editStore.canUndo).toBe(false);
+    expect(editStore.canRedo).toBe(true);
+
+    const before = store.session?.events;
+    // Shorter than MIN_GESTURE_MS, so session-core returns its input.
+    await editStore.commitGesture('A', 'gain', [{ ms: 1000, value: 0.5 }], 1000, 1010);
+
+    expect(store.session?.events).toBe(before);
+    expect(editStore.canUndo).toBe(false);
+    expect(editStore.canRedo).toBe(true);
     expect(editStore.dirty).toBe(false);
   });
 });

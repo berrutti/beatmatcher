@@ -28,7 +28,9 @@ import init, {
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
-  editConstants as wasmEditConstants
+  editConstants as wasmEditConstants,
+  laneSpecs as wasmLaneSpecs,
+  mixerParams as wasmMixerParams
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
@@ -160,8 +162,61 @@ export type EditConstants = {
   minGestureMs: number;
 };
 
+// Read on first use because a module-level `export const` cannot await, and the
+// WASM module is only initialized inside the app's async init(). Memoized
+// because the timeline renderer reads these on every draw.
+let editConstantsCache: EditConstants | undefined;
+
 export function editConstants(): EditConstants {
-  return parse(wasmEditConstants());
+  const constants = editConstantsCache ?? parse<EditConstants>(wasmEditConstants());
+  editConstantsCache = constants;
+  return constants;
+}
+
+export type LaneSpec = {
+  key: EditableLaneKey;
+  min: number;
+  max: number;
+  defaultValue: number;
+  epsilon: number;
+  shortLabel: string;
+  laneGroup: number;
+  unit: LaneUnit;
+};
+
+export type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
+
+const laneSpecCache = new Map<string, Record<EditableLaneKey, LaneSpec>>();
+
+// Keyed by mixer because a lane's range is a property of the manifest the
+// session was recorded on, not of the lane.
+export function laneSpecs(mixerId: string): Record<EditableLaneKey, LaneSpec> {
+  const cached = laneSpecCache.get(mixerId);
+  if (cached) return cached;
+  const specs = parse<Record<EditableLaneKey, LaneSpec>>(wasmLaneSpecs(mixerId));
+  laneSpecCache.set(mixerId, specs);
+  return specs;
+}
+
+export type MixerParamSpec = {
+  slot: string;
+  param: string;
+  label: string;
+  shortLabel: string;
+  min: number;
+  max: number;
+  defaultValue: number;
+  step: number;
+};
+
+const mixerParamCache = new Map<string, Record<string, MixerParamSpec>>();
+
+export function mixerParams(mixerId: string): Record<string, MixerParamSpec> {
+  const cached = mixerParamCache.get(mixerId);
+  if (cached) return cached;
+  const specs = parse<Record<string, MixerParamSpec>>(wasmMixerParams(mixerId));
+  mixerParamCache.set(mixerId, specs);
+  return specs;
 }
 
 export function moveTransportBlock(
@@ -229,6 +284,7 @@ export function deleteTransportRanges(
 export function spliceLaneEvents(
   events: SessionEvent[],
   laneKey: EditableLaneKey,
+  mixerId: string,
   deck: string,
   t0: number,
   t1: number,
@@ -240,6 +296,7 @@ export function spliceLaneEvents(
     wasmSplice(
       JSON.stringify(events),
       laneKey,
+      mixerId,
       deck,
       t0,
       t1,

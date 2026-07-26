@@ -93,6 +93,48 @@
       </section>
 
       <section class="settings-section">
+        <div class="settings-section-label">{{ $t('settings.midi.title') }}</div>
+        <div class="settings-row">
+          <button
+            class="btn-secondary settings-chip"
+            :class="{ 'settings-chip--active': midi.selectedInput === null }"
+            @click="midi.selectInput(null)"
+          >
+            {{ $t('settings.midi.none') }}
+          </button>
+          <button
+            v-for="port in midi.inputs"
+            :key="port"
+            class="btn-secondary settings-chip"
+            :class="{ 'settings-chip--active': midi.selectedInput === port }"
+            @click="midi.selectInput(port)"
+          >
+            {{ port }}
+          </button>
+          <button class="btn-secondary settings-chip" @click="midi.loadInputs()">
+            {{ $t('settings.midi.rescan') }}
+          </button>
+        </div>
+        <span v-if="midi.error" class="settings-error">{{ midi.error }}</span>
+        <div class="settings-midi-monitor">
+          <p v-if="midi.messages.length === 0" class="settings-hint">
+            {{ $t('settings.midi.waiting') }}
+          </p>
+          <div
+            v-for="(message, index) in midi.messages"
+            :key="`${message.timestampUs}-${index}`"
+            class="settings-midi-line"
+          >
+            <span class="settings-midi-bytes">{{ message.data.map(hex).join(' ') }}</span>
+            <span>{{ describeMidiMessage(message.data) }}</span>
+          </div>
+        </div>
+        <p class="settings-hint">
+          {{ $t('settings.midi.hint') }}
+        </p>
+      </section>
+
+      <section class="settings-section">
         <div class="settings-section-label">{{ $t('settings.bpmRange.title') }}</div>
         <div class="settings-row">
           <label class="settings-range-label">{{ $t('settings.bpmRange.min') }}</label>
@@ -286,6 +328,8 @@ import {
 } from '@renderer/stores/settings';
 import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { useMidiStore } from '@renderer/stores/midi';
+import { describeMidiMessage, hex } from '@renderer/utils/midi';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
 
 const { t, locale } = useI18n();
@@ -315,6 +359,7 @@ const RECORDING_FORMAT_HINTS = computed((): Record<RecordingFormatOption, string
 const settings = useSettingsStore();
 const decks = useDecksStore();
 const mixer = useMixerStore();
+const midi = useMidiStore();
 
 const COMMAND_LAYOUT: [Command, Command][] = [
   [commands.NUDGE_BACK, commands.NUDGE_FORWARD],
@@ -502,13 +547,16 @@ function onWindowKeydown(e: KeyboardEvent) {
   capturingSlot.value = null;
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('keydown', onWindowKeydown, { capture: true });
   focusableElements()[0]?.focus();
+  await midi.loadInputs();
+  await midi.startMonitor();
 });
-onUnmounted(() => {
+onUnmounted(async () => {
   window.removeEventListener('keydown', onWindowKeydown, { capture: true });
   if (conflictTimer) clearTimeout(conflictTimer);
+  await midi.stopMonitor();
 });
 </script>
 
@@ -857,6 +905,31 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 8px;
   min-height: 22px;
+}
+
+.settings-midi-monitor {
+  height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-midi-line {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.settings-midi-bytes {
+  color: var(--color-muted);
+  min-width: 76px;
 }
 
 .settings-error {

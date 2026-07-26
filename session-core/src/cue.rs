@@ -4,6 +4,7 @@
 // processing; tag lookup and CUE text formatting stay in the audio crate.
 
 use crate::event::{SessionCommand, SessionEvent};
+use crate::param::is_fader_gain;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,7 +26,7 @@ struct DeckAudible {
 impl Default for DeckAudible {
     fn default() -> Self {
         // The mixer fader rests at unity, so a deck is audible the moment it
-        // plays unless a set_volume event says otherwise.
+        // plays unless a fader/gain event says otherwise.
         Self {
             loaded_path: None,
             is_playing: false,
@@ -82,8 +83,14 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
             SessionCommand::Stop { deck } | SessionCommand::StopAtCue { deck, .. } => {
                 decks.entry(deck.to_string()).or_default().is_playing = false;
             }
-            SessionCommand::SetVolume { deck, gain } => {
-                decks.entry(deck.to_string()).or_default().gain = gain;
+            SessionCommand::SetParam {
+                deck: Some(deck),
+                slot,
+                param,
+                value,
+                ..
+            } if is_fader_gain(slot, param) => {
+                decks.entry(deck.to_string()).or_default().gain = value as f32;
             }
             _ => {}
         }
@@ -149,19 +156,13 @@ mod tests {
     #[test]
     fn fader_down_delays_audible_time() {
         let events = vec![
-            SessionEvent {
-                gain: Some(0.0),
-                ..make_event(0.0, "set_volume", "A")
-            },
+            SessionEvent::param(0.0, Some("A"), "fader", "gain", 0.0),
             SessionEvent {
                 path: Some("/a.wav".to_string()),
                 ..make_event(100.0, "load_track", "A")
             },
             make_event(200.0, "play", "A"),
-            SessionEvent {
-                gain: Some(0.8),
-                ..make_event(5000.0, "set_volume", "A")
-            },
+            SessionEvent::param(5000.0, Some("A"), "fader", "gain", 0.8),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
@@ -179,10 +180,7 @@ mod tests {
                 gain: Some(0.0),
                 ..make_event(0.0, "deck_snapshot", "A")
             },
-            SessionEvent {
-                gain: Some(1.0),
-                ..make_event(8000.0, "set_volume", "A")
-            },
+            SessionEvent::param(8000.0, Some("A"), "fader", "gain", 1.0),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
@@ -210,14 +208,8 @@ mod tests {
                 ..make_event(0.0, "load_track", "A")
             },
             make_event(100.0, "play", "A"),
-            SessionEvent {
-                gain: Some(0.0),
-                ..make_event(2000.0, "set_volume", "A")
-            },
-            SessionEvent {
-                gain: Some(1.0),
-                ..make_event(4000.0, "set_volume", "A")
-            },
+            SessionEvent::param(2000.0, Some("A"), "fader", "gain", 0.0),
+            SessionEvent::param(4000.0, Some("A"), "fader", "gain", 1.0),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);

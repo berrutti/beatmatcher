@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "events": [
+    { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
+    { "elapsed_ms": 0, "type": "load_track", "deck": "C", "path": "__SOURCE__" },
+    { "elapsed_ms": 0, "type": "set_param", "deck": "C", "slot": "fader", "param": "gain", "value": 1.0 },
+    { "elapsed_ms": 100, "type": "play", "deck": "C", "sec": 0.0 },
+    { "elapsed_ms": 300, "type": "set_param", "deck": "C", "slot": "eq", "param": "low", "value": -26.0 },
+    { "elapsed_ms": 500, "type": "set_param", "deck": "C", "slot": "eq", "param": "mid", "value": 6.0 },
+    { "elapsed_ms": 700, "type": "set_param", "deck": "C", "slot": "eq", "param": "high", "value": -12.0 },
+    { "elapsed_ms": 900, "type": "set_param", "deck": "C", "slot": "filter", "param": "value", "value": 0.75 },
+    { "elapsed_ms": 900, "type": "set_param", "deck": "C", "slot": "filter", "param": "active", "value": 1 },
+    { "elapsed_ms": 1300, "type": "set_param", "deck": "C", "slot": "filter", "param": "value", "value": -0.9 },
+    { "elapsed_ms": 1700, "type": "set_param", "deck": "C", "slot": "filter", "param": "active", "value": 0 },
+    { "elapsed_ms": 1900, "type": "set_param", "slot": "gain", "param": "gain", "value": 0.5 },
+    { "elapsed_ms": 2100, "type": "set_param", "deck": "C", "slot": "fader", "param": "gain", "value": 0.2 },
+    { "elapsed_ms": 2400, "type": "stop", "deck": "C" },
+    { "elapsed_ms": 2500, "type": "recording_stop" }
+  ]
+}
