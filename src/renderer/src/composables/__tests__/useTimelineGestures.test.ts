@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { useTimelineGestures, type GestureDeps } from '@renderer/composables/useTimelineGestures';
 import type { SceneItem, Hit, ViewContext } from '@renderer/utils/timelineEngine';
-import type { Intent } from '@renderer/utils/timelineIntents';
+import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
+import type { Clip } from '@renderer/utils/types';
 
 function fakeItem(hit: Hit | null): SceneItem {
   return {
@@ -77,11 +78,11 @@ const VIEW_CONTEXT = {
   scrollViewport: { top: 0, bottom: 1000 }
 } as ViewContext;
 
-function gestureHarness(hit: Hit) {
+function gestureHarness(hit: Hit, clips: Clip[] = [], view = { start: 0, duration: 1000 }) {
   const intents: Intent[] = [];
   const deps: GestureDeps = {
     camera: {
-      currentView: () => ({ start: 0, duration: 1000 }),
+      currentView: () => view,
       panByPixels: () => {},
       panByMsDelta: () => {},
       zoomAt: () => {},
@@ -91,7 +92,7 @@ function gestureHarness(hit: Hit) {
     getItems: () => [fakeItem(hit)],
     getRows: () => [],
     getVc: () => VIEW_CONTEXT,
-    getClips: () => [],
+    getClips: () => clips,
     getEvents: () => [],
     getDeckLanes: () => ({}),
     laneHeight: () => 64,
@@ -176,5 +177,73 @@ describe('filter region edge', () => {
       edge: 'start',
       newMs: 200
     });
+  });
+});
+
+describe('the tempo context under a right-click', () => {
+  const BOUNDARY_MS = 1000;
+
+  function clipAt(startMs: number, endMs: number, bpm: number | null): Clip {
+    return {
+      blockId: startMs,
+      bpm,
+      waveSegments: [],
+      beatOffsetSec: 0,
+      deck: 'A',
+      loop: null,
+      playbackRate: 1,
+      sessionStartMs: startMs,
+      sessionEndMs: endMs,
+      trackName: 'name',
+      trackPath: '/track.mp3',
+      trackStartSec: 0
+    };
+  }
+
+  function bpmFromMenuAt(clips: Clip[], ms: number): BpmContext | null {
+    const block = { deck: 'A', startMs: clips[0].sessionStartMs, endMs: clips[0].sessionEndMs };
+    const { gestures, intents } = gestureHarness(
+      { target: 'clip', deck: 'A', data: { block, rowTop: 0 } },
+      clips
+    );
+    gestures.onContextMenu(mouseAt(ms, 10), RECT);
+    const menu = intents.find((intent) => intent.type === 'menu.deck');
+    return menu?.type === 'menu.deck' ? menu.bpm : null;
+  }
+
+  it('takes the grid from a later clip when an earlier one has none', () => {
+    const context = bpmFromMenuAt(
+      [clipAt(0, BOUNDARY_MS, null), clipAt(BOUNDARY_MS, 2000, 128)],
+      BOUNDARY_MS
+    );
+
+    expect(context?.trackBpm).toBe(128);
+  });
+
+  it('reports no tempo when nothing under the pointer has a grid', () => {
+    expect(bpmFromMenuAt([clipAt(0, BOUNDARY_MS, null)], 500)).toBeNull();
+  });
+});
+
+describe('overview drag from outside the viewport', () => {
+  it('recentres on the pointer and keeps the zoom level', () => {
+    const { gestures, intents } = gestureHarness(
+      { target: 'overview', part: 'outside', data: 0.1 },
+      [],
+      { start: 0, duration: 200 }
+    );
+
+    gestures.onMouseDown(mouseAt(100, 5), RECT);
+    gestures.onMouseMove(mouseAt(500, 5), RECT);
+
+    const views = intents.filter((intent) => intent.type === 'view.set');
+    expect(views).toHaveLength(2);
+    const last = views[views.length - 1];
+    if (last.type !== 'view.set') throw new Error('expected a view.set');
+    // The overview spans the track area, so x=500 is (500 - LABEL_W) / 800 = 0.585
+    // of a 1000ms session: centred in a 200ms window, at the zoom the press
+    // started from rather than at the whole-session zoom.
+    expect(last.view.duration).toBe(200);
+    expect(last.view.start).toBe(485);
   });
 });

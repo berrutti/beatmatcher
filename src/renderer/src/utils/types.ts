@@ -31,10 +31,20 @@ export type SessionEvent = {
   duration?: number;
 };
 
-// masterGain is master-scope and has no deck row, so it is excluded from the
-// per-deck picker but is still an editable lane.
+// Master-scope lanes have no deck row, so they are excluded from the per-deck
+// picker and offered on the master row instead.
 export const DECK_LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
-export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, 'masterGain'] as const;
+export const MASTER_LANE_KEYS = ['masterGain', 'xfader'] as const;
+export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
+
+export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
+
+// Stands where a deck id goes, so a hit or a lane pick can name the master row.
+export const MASTER_ROW_ID = 'master';
+
+export function isMasterLaneKey(key: EditableLaneKey): key is MasterLaneKey {
+  return MASTER_LANE_KEYS.some((master) => master === key);
+}
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
@@ -105,4 +115,6 @@ export type DeckLanes = {
 
 export type MasterLanes = {
   gain: LanePoint[];
+  // Empty for a session recorded on a mixer with no crossfader.
+  xfader: LanePoint[];
 };

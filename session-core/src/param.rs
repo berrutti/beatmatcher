@@ -340,6 +340,12 @@ const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
     }],
 };
 
+/// The crossfader's own descriptor, reachable even from a manifest whose master has
+/// no crossfader slot, so the editor can draw the lane for every session.
+pub fn xfader_position_descriptor() -> &'static ParamDescriptor {
+    &XFADER_SLOT.params[0]
+}
+
 /// Which crossfader bus a strip is multiplied by. `Thru` is the default so a
 /// session that predates the crossfader, or never assigns one, is unaffected.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -647,7 +653,8 @@ mod tests {
     fn every_mixer_lane_resolves_to_a_descriptor() {
         for manifest in MANIFESTS {
             for lane in EditableLane::ALL {
-                if lane.slot_param().is_none() {
+                // Rate has no slot, and the v1 manifests have no crossfader one.
+                if lane.slot_param().is_none() || lane == EditableLane::Xfader {
                     continue;
                 }
                 assert!(
@@ -657,6 +664,21 @@ mod tests {
                     manifest.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_mixer_resolves_the_crossfader_lane_to_its_own_range() {
+        for manifest in MANIFESTS {
+            let spec = lane_spec_for(EditableLane::Xfader, manifest, None, None);
+            assert_eq!((spec.min, spec.max), (-1.0, 1.0), "{}", manifest.id);
+            assert_eq!(spec.default_value, 0.0, "{}", manifest.id);
+            assert_eq!(
+                EditableLane::Xfader.display(manifest).short_label,
+                "X",
+                "{}",
+                manifest.id
+            );
         }
     }
 

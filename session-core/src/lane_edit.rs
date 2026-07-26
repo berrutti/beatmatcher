@@ -44,10 +44,11 @@ pub enum EditableLane {
     Filter,
     Rate,
     MasterGain,
+    Xfader,
 }
 
 impl EditableLane {
-    pub const ALL: [EditableLane; 7] = [
+    pub const ALL: [EditableLane; 8] = [
         Self::Gain,
         Self::Filter,
         Self::Rate,
@@ -55,6 +56,7 @@ impl EditableLane {
         Self::EqMid,
         Self::EqHigh,
         Self::MasterGain,
+        Self::Xfader,
     ];
 
     pub fn key(&self) -> &'static str {
@@ -66,6 +68,7 @@ impl EditableLane {
             Self::Filter => "filter",
             Self::Rate => "rate",
             Self::MasterGain => "masterGain",
+            Self::Xfader => "xfader",
         }
     }
 
@@ -82,13 +85,14 @@ impl EditableLane {
             Self::EqHigh => ("eq", "high"),
             Self::Filter => ("filter", "value"),
             Self::MasterGain => ("gain", "gain"),
+            Self::Xfader => ("xfader", "position"),
             Self::Rate => return None,
         })
     }
 
     pub fn scope(&self) -> ParamScope {
         match self {
-            Self::MasterGain => ParamScope::Master,
+            Self::MasterGain | Self::Xfader => ParamScope::Master,
             _ => ParamScope::Deck,
         }
     }
@@ -100,9 +104,17 @@ impl EditableLane {
         mixer.descriptor(self.scope(), slot, param)
     }
 
+    /// Lets the frozen v1 manifests, which have no crossfader slot, still draw the lane.
+    fn canonical_descriptor(&self) -> Option<&'static ParamDescriptor> {
+        match self {
+            Self::Xfader => Some(crate::param::xfader_position_descriptor()),
+            _ => None,
+        }
+    }
+
     // Rate is transport, so it has no descriptor to carry its display metadata.
     pub fn display(&self, mixer: &'static MixerManifest) -> LaneDisplay {
-        match self.descriptor(mixer) {
+        match self.descriptor(mixer).or_else(|| self.canonical_descriptor()) {
             Some(descriptor) => LaneDisplay {
                 short_label: descriptor.short_label,
                 lane_group: descriptor.lane_group,
@@ -152,10 +164,10 @@ pub fn lane_spec_for(
     rate_min: Option<f64>,
     rate_max: Option<f64>,
 ) -> LaneSpec {
-    // Rate is the only lane without a descriptor;
+    // Rate is the only lane without a descriptor of its own;
     // `every_mixer_lane_resolves_to_a_descriptor` is what stops a manifest
     // missing a mixer lane from silently landing here.
-    let Some(descriptor) = lane.descriptor(mixer) else {
+    let Some(descriptor) = lane.descriptor(mixer).or_else(|| lane.canonical_descriptor()) else {
         return rate_lane_spec(rate_min, rate_max);
     };
     LaneSpec {
@@ -181,9 +193,9 @@ impl LaneSpec {
     }
 
     fn event_deck<'a>(&self, deck: &'a str) -> Option<&'a str> {
-        match self.lane {
-            EditableLane::MasterGain => None,
-            _ => Some(deck),
+        match self.lane.scope() {
+            ParamScope::Master => None,
+            ParamScope::Deck => Some(deck),
         }
     }
 

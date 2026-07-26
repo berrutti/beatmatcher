@@ -5,7 +5,8 @@ import type {
   DeckLanes,
   LanePoint,
   NudgeSpan,
-  EditableLaneKey
+  EditableLaneKey,
+  MasterLaneKey
 } from '@renderer/utils/types';
 import { DECK_LANE_KEYS } from '@renderer/utils/types';
 import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
@@ -831,9 +832,10 @@ export function drawOverview(
   return { y: stripY, h: OVERVIEW_H };
 }
 
-export function drawMasterGainLane(
+export function drawMasterLane(
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
+  lane: MasterLaneKey,
   masterTopY: number,
   masterRowH: number,
   canvasWidth: number,
@@ -844,7 +846,7 @@ export function drawMasterGainLane(
 ): void {
   // Clip to the track area like the deck lanes do, so the level line never
   // bleeds left into the "M" label gutter or right into the padding.
-  const { min, max } = laneSpecs(mixerId).masterGain;
+  const { min, max } = laneSpecs(mixerId)[lane];
   withLaneClip(ctx, masterTopY, masterRowH, canvasWidth, () =>
     drawLaneSteps(
       ctx,
@@ -976,7 +978,9 @@ export function drawMasterRowChrome(
   ctx: CanvasRenderingContext2D,
   top: number,
   height: number,
-  canvasW: number
+  canvasW: number,
+  lane: MasterLaneKey,
+  mixerId: string
 ): void {
   ctx.fillStyle = MASTER_ROW_BG_COLOR;
   ctx.fillRect(0, top, canvasW, height);
@@ -984,7 +988,15 @@ export function drawMasterRowChrome(
   ctx.fillStyle = MASTER_LABEL_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('M', LABEL_W / 2, top + height / 2);
+  ctx.fillText('M', LABEL_W / 2, top + height / 2 - LANE_LABEL_OFFSET_PX);
+  // Which of the master lanes is drawn, as a dropdown like the deck rows'.
+  ctx.fillStyle = LANE_DROPDOWN_COLOR;
+  ctx.font = SUB_LABEL_FONT;
+  ctx.fillText(
+    `${laneSpecs(mixerId)[lane].shortLabel} ▾`,
+    LABEL_W / 2,
+    top + height / 2 + LANE_CARET_OFFSET_PX
+  );
   drawRowDivider(ctx, top + height - ROW_DIVIDER_H, canvasW);
 }
 

@@ -13,7 +13,7 @@ import {
   drawTickRow,
   drawDeckRowChrome,
   drawMasterRowChrome,
-  drawMasterGainLane,
+  drawMasterLane,
   drawDeckLanes,
   drawClip,
   drawClipBpmLabels,
@@ -36,9 +36,11 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
+  MasterLaneKey,
   NudgeSpan,
   FilterActiveSpan
 } from '@renderer/utils/types';
+import { MASTER_ROW_ID } from '@renderer/utils/types';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 // Thin grab tolerance for edges/separators, in pixels.
@@ -349,14 +351,21 @@ export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
   };
 }
 
-export function masterItem(top: number, height: number, gain: MasterLanes): SceneItem {
+export function masterItem(
+  top: number,
+  height: number,
+  lanes: MasterLanes,
+  lane: MasterLaneKey
+): SceneItem {
+  const points = lane === 'xfader' ? lanes.xfader : lanes.gain;
   return {
     bounds: (viewContext) => ({ x: 0, y: top, w: viewContext.canvasW, h: height }),
     draw: (ctx, viewContext) => {
-      drawMasterRowChrome(ctx, top, height, viewContext.canvasW);
-      drawMasterGainLane(
+      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane, viewContext.mixerId);
+      drawMasterLane(
         ctx,
-        gain.gain,
+        points,
+        lane,
         top,
         height,
         viewContext.canvasW,
@@ -367,9 +376,11 @@ export function masterItem(top: number, height: number, gain: MasterLanes): Scen
       );
     },
     hitTest: (point, viewContext) => {
-      if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
       if (point.y < top + 2 || point.y > top + height - 2) return null;
-      return { target: 'master', deck: 'master', part: 'masterGain' };
+      // Label column opens the dropdown, track area is the lane, as on a deck row.
+      if (point.x < LABEL_W) return { target: 'laneDropdown', deck: MASTER_ROW_ID };
+      if (point.x > LABEL_W + viewContext.trackW) return null;
+      return { target: 'master', deck: MASTER_ROW_ID, part: lane };
     }
   };
 }

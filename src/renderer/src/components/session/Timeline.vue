@@ -97,15 +97,13 @@
       @click.stop
     >
       <button
-        v-for="key in DECK_LANE_KEYS"
+        v-for="key in lanePicker.deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS"
         :key="key"
         class="lane-menu__item"
         @click="onPickLane(key)"
       >
         {{ $t(`session.lanes.${key}`) }}
-        <span class="lane-menu__check">{{
-          controller.laneFor(lanePicker.deck) === key ? '✓' : ''
-        }}</span>
+        <span class="lane-menu__check">{{ pickedLane(lanePicker.deck) === key ? '✓' : '' }}</span>
       </button>
     </div>
     <div
@@ -146,7 +144,13 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
-import { DECK_LANE_KEYS } from '@renderer/utils/types';
+import {
+  DECK_LANE_KEYS,
+  MASTER_LANE_KEYS,
+  MASTER_ROW_ID,
+  isMasterLaneKey,
+  type EditableLaneKey
+} from '@renderer/utils/types';
 import {
   DECK_ORDER,
   LABEL_W,
@@ -288,6 +292,7 @@ function render(): void {
     durationMs: props.durationMs,
     editMode: editStore.editMode,
     laneFor: controller.laneFor,
+    masterLane: controller.selectedMasterLane.value,
     laneHeight: controller.laneHeight.value,
     waveformHeight: controller.waveformHeight.value,
     accentFor: controller.accentFor,
@@ -407,8 +412,19 @@ function onPickLaneFromMenu(lane: LaneKey): void {
   deckMenu.value = null;
 }
 
-function onPickLane(lane: LaneKey): void {
-  if (lanePicker.value) controller.setDeckLane(lanePicker.value.deck, lane);
+function pickedLane(deck: string): EditableLaneKey {
+  return deck === MASTER_ROW_ID ? controller.selectedMasterLane.value : controller.laneFor(deck);
+}
+
+// One picker serves both row kinds, so the pick is routed by which row opened it.
+function onPickLane(lane: EditableLaneKey): void {
+  const picker = lanePicker.value;
+  if (!picker) return;
+  if (picker.deck === MASTER_ROW_ID) {
+    if (isMasterLaneKey(lane)) controller.setMasterLane(lane);
+    return;
+  }
+  if (!isMasterLaneKey(lane)) controller.setDeckLane(picker.deck, lane);
 }
 
 function onDeleteFilterRegion(): void {

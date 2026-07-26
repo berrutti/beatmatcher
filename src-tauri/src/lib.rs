@@ -137,9 +137,8 @@ pub struct AppState {
     cue_feedback: std::sync::Mutex<Option<CueFeedback>>,
 }
 
-/// Matches the `step` on the frontend's pitch slider. A 14-bit fader resolves far
-/// finer than that, and rate is not a manifest param, so nothing else quantizes it:
-/// without this one sweep logs thousands of events that no slider drag could.
+/// Matches the pitch slider's `step`. Rate has no descriptor, so nothing else
+/// quantizes it and one 14-bit sweep would log thousands of events.
 const PITCH_STEPS_PER_PERCENT: f64 = 100.0;
 
 const MIN_PLAYBACK_RATE: f64 = 0.1;
@@ -386,12 +385,10 @@ impl AppState {
         deck: &str,
         position: f64,
     ) -> Result<(), String> {
-        // Clamped here as well as in the setter, so a rate the deck would refuse
-        // still compares equal to the one it is already holding.
+        // Clamped here too, so a rate the deck would refuse still compares equal.
         let rate =
             rate_from_fader(position, self.audio.pitch_range_percent()).max(MIN_PLAYBACK_RATE);
-        // Several fader positions land on one step, so without this the quantization
-        // in `rate_from_fader` would shorten no event list: it would repeat values.
+        // Several fader positions land on one step, so quantizing alone repeats values.
         if self
             .deck(deck)?
             .lock()

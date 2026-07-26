@@ -30,7 +30,7 @@ export function useSessionTimeline(
         clips: [],
         loadedSpans: [],
         deckLanes: {},
-        masterLanes: { gain: [] },
+        masterLanes: { gain: [], xfader: [] },
         deckNudges: {}
       };
     }

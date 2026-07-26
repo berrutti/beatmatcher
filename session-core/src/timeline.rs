@@ -581,6 +581,8 @@ pub const DEFAULT_GAIN: f64 = 1.0;
 pub const DEFAULT_EQ_DB: f64 = 0.0;
 pub const DEFAULT_FILTER_VALUE: f64 = 0.0;
 pub const DEFAULT_RATE: f64 = 1.0;
+// Centre. A constant because `build_lanes` derives lanes without a manifest.
+pub const DEFAULT_XFADER_POSITION: f64 = 0.0;
 
 // A lane narrower than this is unreadable, so a flat (or barely-pitched) session
 // still draws at +/-8%. This is a timeline-drawing floor, not a pitch setting.
@@ -650,6 +652,9 @@ pub struct DeckLanes {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct MasterLanes {
     pub gain: Vec<LanePoint>,
+    // Empty on a mixer with no crossfader, which is every session recorded before
+    // one existed.
+    pub xfader: Vec<LanePoint>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -746,6 +751,10 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
         gain: vec![LanePoint {
             ms: 0.0,
             value: DEFAULT_MASTER_GAIN as f64,
+        }],
+        xfader: vec![LanePoint {
+            ms: 0.0,
+            value: DEFAULT_XFADER_POSITION,
         }],
     };
 
@@ -851,6 +860,13 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     });
                 }
 
+                (None, Some("xfader"), Some("position"), Some(value)) => {
+                    master_lanes.xfader.push(LanePoint {
+                        ms: ev.elapsed_ms,
+                        value: value as f64,
+                    });
+                }
+
                 _ => {}
             },
 
@@ -945,6 +961,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
         extend_to_end(&mut auto.rate, duration_ms);
     }
     extend_to_end(&mut master_lanes.gain, duration_ms);
+    extend_to_end(&mut master_lanes.xfader, duration_ms);
 
     let mut max_rate_deviation_pct = 0.0f64;
     for auto in deck_lanes.values() {
@@ -1667,6 +1684,26 @@ mod tests {
     fn seeds_master_gain_default_at_ms_zero() {
         let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
         assert_eq!(master_lanes.gain[0].ms, 0.0);
+    }
+
+    #[test]
+    fn a_session_with_no_crossfader_move_reads_centre_throughout() {
+        let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
+        assert_eq!(master_lanes.xfader.first().map(|point| point.value), Some(0.0));
+        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(10_000.0));
+    }
+
+    #[test]
+    fn appends_crossfader_points_from_master_scope_events() {
+        let events = vec![
+            SessionEvent::param(1500.0, None, "xfader", "position", -1.0),
+            SessionEvent::param(3000.0, None, "xfader", "position", 1.0),
+        ];
+        let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        assert_eq!(master_lanes.xfader[1].value, -1.0);
+        assert_eq!(master_lanes.xfader[1].ms, 1500.0);
+        assert_eq!(master_lanes.xfader[2].value, 1.0);
+        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(5000.0));
     }
 
     #[test]

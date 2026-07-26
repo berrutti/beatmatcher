@@ -718,6 +718,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_cue_path_keeps_pace_with_the_main_path_whether_cue_is_on_or_off() {
+        for cue_active in [false, true] {
+            let mut deck = DeckState::loaded_for_testing(SR, 5.0);
+            let mut strip = ChannelStrip::new(SR as f32);
+            strip.cue_active = cue_active;
+            deck.is_playing = true;
+            let mut main = vec![0.0f32; 512 * 2];
+            let mut cue = vec![0.0f32; 512 * 2];
+
+            deck.render_block(
+                &mut strip,
+                512,
+                RenderTargets {
+                    main: Some(&mut main),
+                    cue: Some(&mut cue),
+                },
+            );
+
+            assert_eq!(deck.cue_pos, deck.main_pos, "cue_active = {cue_active}");
+            assert!(deck.cue_pos > 0.0, "cue_active = {cue_active}");
+        }
+    }
+
     // read_at used to extrapolate off the front of the buffer for a negative
     // position: interp_factor became the (large, negative) position itself, so
     // a -44100 read produced samples ~2700x full scale.

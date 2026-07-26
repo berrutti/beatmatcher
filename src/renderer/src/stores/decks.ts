@@ -213,7 +213,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const pitchRange = useSettingsStore().pitchRange;
       const minBpm = state.trackBpm * (1 - pitchRange / 100);
       const maxBpm = state.trackBpm * (1 + pitchRange / 100);
-      const clamped = roundBpm(Math.max(minBpm, Math.min(maxBpm, value)));
+      // Rounding up at the top of the range would otherwise leave it.
+      const rounded = roundBpm(Math.max(minBpm, Math.min(maxBpm, value)));
+      const clamped = Math.max(minBpm, Math.min(maxBpm, rounded));
       state.targetBpm = clamped;
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
       syncPosition();
@@ -235,7 +237,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
       if (state.trackBpm === null) return;
       const pitchRange = useSettingsStore().pitchRange;
       state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
-      state.targetBpm = roundBpm(state.trackBpm * (1 + state.pitchOffset / 100));
+      const minBpm = state.trackBpm * (1 - pitchRange / 100);
+      const maxBpm = state.trackBpm * (1 + pitchRange / 100);
+      // The rate below comes from this bpm, and rounding can cross the range edge.
+      const rounded = roundBpm(state.trackBpm * (1 + state.pitchOffset / 100));
+      state.targetBpm = Math.max(minBpm, Math.min(maxBpm, rounded));
       syncPosition();
       localRate = state.targetBpm / state.trackBpm;
       invoke('set_playback_rate', { deck: id, rate: localRate });

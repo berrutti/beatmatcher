@@ -216,3 +216,23 @@ describe('applyEngineTransport', () => {
     expect(decks.deckB.loopRegion).toEqual(region);
   });
 });
+
+describe('a displayed bpm is exactly reachable', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('sets 129.05 with no rounding drift', () => {
+    const decks = useDecksStore();
+    decks.deckA.setTrackBpm(120);
+
+    decks.deckA.setTargetBpm(129.05);
+
+    expect(decks.deckA.targetBpm).toBe(129.05);
+    expect(mockedInvoke).toHaveBeenCalledWith('set_playback_rate', {
+      deck: 'A',
+      rate: 129.05 / 120
+    });
+  });
+});

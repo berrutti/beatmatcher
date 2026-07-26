@@ -148,8 +148,7 @@ pub(crate) async fn update_session_events(
     index_session(
         &state,
         path,
-        // Current rather than carried over: whatever version the file was read as,
-        // loading ported its events, so what the editor holds is this vocabulary.
+        // Current, not carried over: loading ported these events forward.
         crate::offline_render::SessionFile {
             version: session_core::BMS_VERSION,
             events,

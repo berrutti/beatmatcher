@@ -227,7 +227,9 @@
       "rate": "Pitch",
       "eqLow": "EQ Graves",
       "eqMid": "EQ Medios",
-      "eqHigh": "EQ Agudos"
+      "eqHigh": "EQ Agudos",
+      "masterGain": "Master",
+      "xfader": "Crossfader"
     },
     "rendering": "Renderizando...",
     "renderWav": "Renderizar WAV",

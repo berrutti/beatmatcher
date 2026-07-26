@@ -47,6 +47,7 @@ import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents'
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
 import type { SessionEvent } from '@renderer/utils/types';
+import { MASTER_ROW_ID } from '@renderer/utils/types';
 
 const MIN_VIEW_MS = 200;
 
@@ -617,7 +618,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     for (const clip of deps.getClips()) {
       if (clip.deck !== deck || clip.loop) continue;
       if (ms < clip.sessionStartMs || ms > clip.sessionEndMs) continue;
-      if (!clip.bpm || clip.bpm <= 0) return null;
+      // Both bounds are inclusive, so at a shared millisecond two clips both match.
+      if (!clip.bpm || clip.bpm <= 0) continue;
       const seg = clip.waveSegments.find(
         (segment) => ms >= segment.wallStartMs && ms <= segment.wallEndMs
       );
@@ -649,7 +651,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       });
       return;
     }
-    if (hit.deck && hit.deck !== 'master') {
+    if (hit.deck && hit.deck !== MASTER_ROW_ID) {
       deps.emit({
         type: 'menu.deck',
         deck: hit.deck,

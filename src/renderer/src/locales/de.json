@@ -227,7 +227,9 @@
       "rate": "Pitch",
       "eqLow": "EQ Bass",
       "eqMid": "EQ Mitten",
-      "eqHigh": "EQ Höhen"
+      "eqHigh": "EQ Höhen",
+      "masterGain": "Master",
+      "xfader": "Crossfader"
     },
     "rendering": "Wird gerendert...",
     "renderWav": "Als WAV rendern",
