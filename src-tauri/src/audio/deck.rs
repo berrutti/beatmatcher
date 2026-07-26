@@ -121,9 +121,7 @@ impl ChannelStrip {
     }
 
     fn resolve_xfader(&mut self) {
-        self.xfader_gain_target = self
-            .xfader_assign
-            .gain(f64::from(self.xfader_position)) as f32;
+        self.xfader_gain_target = self.xfader_assign.gain(f64::from(self.xfader_position)) as f32;
     }
 
     pub fn store_level(&self, l: f32, r: f32) {
@@ -227,8 +225,7 @@ impl ChannelStrip {
         // Post-fader, and after the cue tap, so a deck crossfaded away is still
         // audible in headphones. Smoothed on the same one-pole as the fader
         // because a crossfader is thrown fast enough to click otherwise.
-        self.xfader_gain +=
-            (self.xfader_gain_target - self.xfader_gain) * self.xfader_smooth_coeff;
+        self.xfader_gain += (self.xfader_gain_target - self.xfader_gain) * self.xfader_smooth_coeff;
         (l * self.xfader_gain, r * self.xfader_gain)
     }
 

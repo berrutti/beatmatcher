@@ -920,7 +920,8 @@ mod param_addressing {
 
     const ASSIGN_A: &str =
         r#"{"elapsed_ms":100,"type":"set_xfader_assign","deck":"A","assign":"a"},"#;
-    const XFADER_RIGHT: &str = r#"{"elapsed_ms":110,"type":"set_param","slot":"xfader","param":"position","value":1.0},"#;
+    const XFADER_RIGHT: &str =
+        r#"{"elapsed_ms":110,"type":"set_param","slot":"xfader","param":"position","value":1.0},"#;
 
     // The renderer has to honour the crossfader, or a recorded set renders as
     // something the DJ never played.

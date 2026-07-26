@@ -547,7 +547,9 @@ pub(crate) fn apply(state: &crate::AppState, midi: &MidiState, data: &[u8]) {
     match moved {
         None => {}
         Some(Move::Cue { deck }) => {
-            state.toggle_cue_active(crate::ParamOrigin::Midi, &deck).ok();
+            state
+                .toggle_cue_active(crate::ParamOrigin::Midi, &deck)
+                .ok();
         }
         Some(Move::Xfader { position }) => {
             let Some(descriptor) = state.audio.mixer().descriptor(
@@ -910,15 +912,24 @@ mod tests {
                 deck: "B".to_string()
             })
         );
-        assert_eq!(resolve_move(&profile, &mut halves, &note_on(1, 84, 0)), None);
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(1, 84, 0)),
+            None
+        );
     }
 
     #[test]
     fn an_unmapped_message_is_no_move() {
         let profile = ddj_flx6();
         let mut halves = HighResolution::default();
-        assert_eq!(resolve_move(&profile, &mut halves, &control_change(9, 99, 64)), None);
-        assert_eq!(resolve_move(&profile, &mut halves, &note_on(9, 60, 127)), None);
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(9, 99, 64)),
+            None
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(9, 60, 127)),
+            None
+        );
         // Clock, a running-status runt, and an empty buffer.
         assert_eq!(resolve_move(&profile, &mut halves, &[0xF8]), None);
         assert_eq!(resolve_move(&profile, &mut halves, &[0xB0, 20]), None);
