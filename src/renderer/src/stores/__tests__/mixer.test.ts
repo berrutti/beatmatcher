@@ -341,3 +341,47 @@ describe('crossfader', () => {
     expect(store.xfaderAssign.A).toBe('thru');
   });
 });
+
+describe('scrub mute', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('restores each deck to its own volume when two scrubs overlap', () => {
+    const store = useMixerStore();
+    store.setVolume('A', 0.8);
+    store.setVolume('B', 0.3);
+
+    store.startScrubMute('A');
+    store.startScrubMute('B');
+    expect(store.volume.A).toBe(0);
+    expect(store.volume.B).toBe(0);
+
+    store.endScrubMute('A');
+    store.endScrubMute('B');
+
+    expect(store.volume.A).toBe(0.8);
+    expect(store.volume.B).toBe(0.3);
+  });
+
+  it('keeps the first saved volume when a scrub end is lost and another starts', () => {
+    const store = useMixerStore();
+    store.setVolume('A', 0.6);
+
+    store.startScrubMute('A');
+    store.startScrubMute('A');
+    store.endScrubMute('A');
+
+    expect(store.volume.A).toBe(0.6);
+  });
+
+  it('does nothing on an end without a start', () => {
+    const store = useMixerStore();
+    store.setVolume('C', 0.5);
+
+    store.endScrubMute('C');
+
+    expect(store.volume.C).toBe(0.5);
+  });
+});

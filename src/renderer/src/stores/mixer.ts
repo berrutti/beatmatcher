@@ -144,6 +144,23 @@ export const useMixerStore = defineStore('mixer', () => {
     invoke('set_volume', { deck: deckId, gain: volume[deckId] });
   }
 
+  // Per deck, because scrubs overlap: two decks scrubbed at once, or a scrub whose
+  // end is lost to a window blur, used to restore one deck's volume onto another
+  // and leave the second silent.
+  const scrubSavedVolume: Partial<Record<DeckId, number>> = {};
+
+  function startScrubMute(deckId: DeckId) {
+    if (scrubSavedVolume[deckId] === undefined) scrubSavedVolume[deckId] = volume[deckId];
+    setVolume(deckId, 0);
+  }
+
+  function endScrubMute(deckId: DeckId) {
+    const saved = scrubSavedVolume[deckId];
+    if (saved === undefined) return;
+    delete scrubSavedVolume[deckId];
+    setVolume(deckId, saved);
+  }
+
   function setXfaderPosition(position: number) {
     xfaderPosition.value = Math.max(-1, Math.min(1, position));
     invoke('set_xfader_position', { position: xfaderPosition.value });
@@ -428,6 +445,8 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   return {
+    startScrubMute,
+    endScrubMute,
     activeDecks,
     eqDefault,
     eqSpecs,

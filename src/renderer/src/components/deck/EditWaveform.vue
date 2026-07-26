@@ -284,6 +284,9 @@ function ensureBitmap(canvasW: number, canvasH: number) {
 function pxToSec(localX: number): number {
   const canvas = canvasEl.value;
   if (!canvas) return 0;
+  // A collapsed canvas divides by zero, and localX 0 makes that NaN rather than
+  // Infinity, which the caller's clamp cannot catch: it would reach `seek`.
+  if (canvas.clientWidth <= 0) return viewStartSec;
   return viewStartSec + (localX / canvas.clientWidth) * (viewEndSec - viewStartSec);
 }
 
@@ -291,6 +294,7 @@ function secToPx(sec: number): number {
   const canvas = canvasEl.value;
   if (!canvas) return 0;
   const span = viewEndSec - viewStartSec;
+  if (span <= 0) return 0;
   return ((sec - viewStartSec) / span) * canvas.clientWidth;
 }
 

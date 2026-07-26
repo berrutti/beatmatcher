@@ -62,11 +62,8 @@ const decksStore = useDecksStore();
 const mixerStore = useMixerStore();
 const collectionStore = useCollectionStore();
 
-let scrubSavedVolume: number | null = null;
-
 function onScrubStart(deckId: DeckId) {
-  scrubSavedVolume = mixerStore.volume[deckId];
-  mixerStore.setVolume(deckId, 0);
+  mixerStore.startScrubMute(deckId);
 }
 
 function onScrub(deckId: DeckId, sec: number) {
@@ -74,9 +71,7 @@ function onScrub(deckId: DeckId, sec: number) {
 }
 
 function onScrubEnd(deckId: DeckId) {
-  if (scrubSavedVolume === null) return;
-  mixerStore.setVolume(deckId, scrubSavedVolume);
-  scrubSavedVolume = null;
+  mixerStore.endScrubMute(deckId);
 }
 </script>
 
