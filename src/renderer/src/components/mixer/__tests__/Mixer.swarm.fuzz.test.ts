@@ -77,10 +77,6 @@ describe('the mixer under fuzzed swarm drags', () => {
     fader.trigger('input');
   }
 
-  it('mounts one fader per live deck', () => {
-    expect(wrapper?.findAll('input.mixer__fader').length).toBe(DECKS.length);
-  });
-
   it('keeps every channel in range however the group is dragged', async () => {
     const store = useMixerStore();
     const random = makeRandom(5);

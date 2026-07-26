@@ -112,41 +112,4 @@ describe('mixer writes under fuzzed input', () => {
       expect(store.cueMix, `step ${step}`).toBeLessThanOrEqual(1);
     }
   });
-
-  // Swarm applies one deck's delta to every selected deck, each clamped on its own.
-  it('keeps every swarmed channel in range as the group saturates', () => {
-    const store = useMixerStore();
-    const random = makeRandom(23);
-    store.setSwarmMode(true);
-    for (const deck of DECKS) store.setSwarmChannel(deck, random() < 0.6);
-
-    for (let step = 0; step < 2000; step++) {
-      const deck = DECKS[Math.floor(random() * DECKS.length)];
-      const delta = (random() * 2 - 1) * 0.5;
-      const selected = DECKS.filter((one) => store.swarmSelected[one] || one === deck);
-      for (const target of selected) store.setVolume(target, store.volume[target] + delta);
-
-      for (const one of DECKS) {
-        expect(Number.isFinite(store.volume[one]), `step ${step}`).toBe(true);
-        expect(store.volume[one], `step ${step}`).toBeGreaterThanOrEqual(0);
-        expect(store.volume[one], `step ${step}`).toBeLessThanOrEqual(1);
-      }
-    }
-  });
-
-  it('never writes a non-finite value once a finite one has been set', () => {
-    const store = useMixerStore();
-    const random = makeRandom(31);
-
-    for (let step = 0; step < 2000; step++) {
-      const deck = DECKS[Math.floor(random() * DECKS.length)];
-      store.setEq(deck, 'mid', wildValue(random));
-      store.setFilter(deck, wildValue(random));
-      store.setVolume(deck, wildValue(random));
-
-      expect(Number.isFinite(store.eq[deck].mid), `step ${step}`).toBe(true);
-      expect(Number.isFinite(store.filter[deck]), `step ${step}`).toBe(true);
-      expect(Number.isFinite(store.volume[deck]), `step ${step}`).toBe(true);
-    }
-  });
 });

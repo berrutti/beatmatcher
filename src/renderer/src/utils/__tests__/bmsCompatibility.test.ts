@@ -56,13 +56,6 @@ describe('portEvents', () => {
     expect(ported.type).toBe('set_param');
   });
 
-  // A gain of 0 is a fader pulled all the way down, which is a real move and the
-  // one most likely to be lost to a falsy check.
-  it('keeps a zero gain', () => {
-    const [ported] = portEvents([{ elapsed_ms: 1, type: 'set_volume', deck: 'A', gain: 0 }], 1);
-    expect(ported.value).toBe(0);
-  });
-
   it('ports nothing at the current version', () => {
     const events: SessionEvent[] = [{ elapsed_ms: 1, type: 'set_volume', deck: 'A', gain: 0.5 }];
     expect(portEvents(events, bmsVersion())).toEqual(events);

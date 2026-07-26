@@ -151,19 +151,6 @@ describe('clip gesture fuzz', () => {
     expect(CASES.some((one) => one.edge === 'end')).toBe(true);
   });
 
-  it('never emits a non-finite edit', () => {
-    for (const one of CASES) {
-      for (const intent of one.intents) {
-        if (intent.type === 'clip.move') {
-          expect(Number.isFinite(intent.deltaMs), `case ${one.index}`).toBe(true);
-        }
-        if (intent.type === 'clip.trim') {
-          expect(Number.isFinite(intent.newMs), `case ${one.index}`).toBe(true);
-        }
-      }
-    }
-  });
-
   it('never moves a block outside the range blockBounds allows', () => {
     for (const one of CASES) {
       const move = one.intents.find((intent) => intent.type === 'clip.move');

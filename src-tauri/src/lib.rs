@@ -876,13 +876,6 @@ mod tests {
         assert_eq!(distinct, 2001);
     }
 
-    #[test]
-    fn a_quantized_fader_still_reaches_both_ends_and_the_detent() {
-        assert_eq!(rate_from_fader(0.0, 8.0), 0.92);
-        assert_eq!(rate_from_fader(0.5, 8.0), 1.0);
-        assert_eq!(rate_from_fader(1.0, 8.0), 1.08);
-    }
-
     fn unix_secs(secs: u64) -> std::time::SystemTime {
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
     }

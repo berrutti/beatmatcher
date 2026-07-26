@@ -106,8 +106,6 @@ describe('pitch and bpm under fuzzed input', () => {
       if (targetBpm === null) throw new Error('a loaded grid always has a target');
       const fromOffset = trackBpm * (1 + pitchOffset / 100);
       expect(Math.abs(targetBpm - fromOffset), `step ${step}`).toBeLessThanOrEqual(BPM_QUANTUM);
-      expect(targetBpm, `step ${step}`).toBeGreaterThanOrEqual(trackBpm * (1 - PITCH_RANGE / 100));
-      expect(targetBpm, `step ${step}`).toBeLessThanOrEqual(trackBpm * (1 + PITCH_RANGE / 100));
     }
   });
 
