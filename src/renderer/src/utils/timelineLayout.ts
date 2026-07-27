@@ -1,5 +1,5 @@
 import type { Clip, TransportBlock, WaveSegment } from '@renderer/utils/types';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { ROW_H, type LaneKey, type RowLayout, type SublaneLayout } from './timelineDraw';
 
 // Pure geometry for the session timeline: everything draw() needs to know

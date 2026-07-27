@@ -13,7 +13,10 @@ export const useMidiStore = defineStore('midi', () => {
   const messages = ref<MidiMessage[]>([]);
   const error = ref<string>('');
 
-  let unlisten: UnlistenFn | null = null;
+  // The pending promise, not the resolved handle: two overlapping calls would both
+  // pass a `!unlisten` check before either finished registering, and the first
+  // listener would leak and double every batch.
+  let listening: Promise<UnlistenFn> | null = null;
 
   async function loadInputs(): Promise<void> {
     error.value = '';
@@ -64,18 +67,20 @@ export const useMidiStore = defineStore('midi', () => {
   connectPreferred();
 
   async function startMonitor(): Promise<void> {
-    if (!unlisten) {
-      unlisten = await listen<MidiMessage[]>('midi-messages', (event) => {
+    if (!listening) {
+      listening = listen<MidiMessage[]>('midi-messages', (event) => {
         receive(event.payload);
       });
     }
+    await listening;
     await invoke('set_midi_monitor', { enabled: true });
   }
 
   async function stopMonitor(): Promise<void> {
     await invoke('set_midi_monitor', { enabled: false });
-    unlisten?.();
-    unlisten = null;
+    const pending = listening;
+    listening = null;
+    if (pending) (await pending)();
   }
 
   function clearMessages(): void {

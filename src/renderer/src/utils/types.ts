@@ -39,6 +39,16 @@ export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
 
 export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
 
+export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
+
+export const DECK_ACCENTS: Readonly<Record<string, string>> = {
+  A: '#3b82f6',
+  B: '#f97316',
+  C: '#208043',
+  D: '#d631b0',
+  E: '#a855f7'
+};
+
 // Stands where a deck id goes, so a hit or a lane pick can name the master row.
 export const MASTER_ROW_ID = 'master';
 

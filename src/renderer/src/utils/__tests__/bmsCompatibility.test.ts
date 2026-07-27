@@ -56,6 +56,18 @@ describe('portEvents', () => {
     expect(ported.type).toBe('set_param');
   });
 
+  it('rewrites the master fader, which carries no deck', () => {
+    const [ported] = portEvents([{ elapsed_ms: 1, type: 'set_master_gain', gain: 0.6 }], 1);
+    expect(ported).toEqual({
+      elapsed_ms: 1,
+      type: 'set_param',
+      gain: 0.6,
+      slot: 'gain',
+      param: 'gain',
+      value: 0.6
+    });
+  });
+
   it('ports nothing at the current version', () => {
     const events: SessionEvent[] = [{ elapsed_ms: 1, type: 'set_volume', deck: 'A', gain: 0.5 }];
     expect(portEvents(events, bmsVersion())).toEqual(events);

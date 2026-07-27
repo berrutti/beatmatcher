@@ -44,7 +44,7 @@ vi.mock('@renderer/utils/storage', () => ({
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useAppModeStore } from '@renderer/stores/appMode';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 
 const DIGITS = ['Digit1', 'Digit2', 'Digit3', 'Digit4'] as const;
 const DIGIT_DECK: Record<string, DeckId> = {

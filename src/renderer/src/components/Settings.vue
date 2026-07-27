@@ -326,7 +326,8 @@ import {
   RECORDING_FORMAT_OPTIONS,
   type RecordingFormatOption
 } from '@renderer/stores/settings';
-import { useDecksStore, DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useMidiStore } from '@renderer/stores/midi';
 import { describeMidiMessage, hex } from '@renderer/utils/midi';

@@ -139,8 +139,8 @@
 
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { useMixerStore, type XfaderSide } from '@renderer/stores/mixer';
-import type { DeckId } from '@renderer/stores/decks';
+import { useMixerStore, type EqBand, type XfaderSide } from '@renderer/stores/mixer';
+import type { DeckId } from '@renderer/utils/types';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 
@@ -208,54 +208,24 @@ function swarmChannelClass(deckId: DeckId) {
   };
 }
 
-function swarmAffected(deckId: DeckId): DeckId[] {
-  const selected = mixer.activeDecks.filter((ch) => mixer.swarmSelected[ch]);
-  if (!selected.includes(deckId)) selected.push(deckId);
-  return selected;
-}
-
 function onVolumeInput(deckId: DeckId, newVal: number) {
-  if (mixer.swarmMode) {
-    const delta = newVal - mixer.volume[deckId];
-    for (const ch of swarmAffected(deckId)) mixer.setVolume(ch, mixer.volume[ch] + delta);
-  } else {
-    mixer.setVolume(deckId, newVal);
-  }
+  mixer.swarmAdjust(deckId, { slot: 'volume' }, newVal);
 }
 
 function onFilterInput(deckId: DeckId, newVal: number) {
-  if (mixer.swarmMode) {
-    const delta = newVal - mixer.filter[deckId];
-    for (const ch of swarmAffected(deckId)) mixer.setFilter(ch, mixer.filter[ch] + delta);
-  } else {
-    mixer.setFilter(deckId, newVal);
-  }
+  mixer.swarmAdjust(deckId, { slot: 'filter' }, newVal);
 }
 
 function onFilterReset(deckId: DeckId) {
-  if (mixer.swarmMode) {
-    for (const ch of swarmAffected(deckId)) mixer.setFilter(ch, 0);
-  } else {
-    mixer.setFilter(deckId, 0);
-  }
+  mixer.swarmReset(deckId, { slot: 'filter' }, 0);
 }
 
-function onEqInput(deckId: DeckId, band: 'high' | 'mid' | 'low', newVal: number) {
-  if (mixer.swarmMode) {
-    const delta = newVal - mixer.eq[deckId][band];
-    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, mixer.eq[ch][band] + delta);
-  } else {
-    mixer.setEq(deckId, band, newVal);
-  }
+function onEqInput(deckId: DeckId, band: EqBand, newVal: number) {
+  mixer.swarmAdjust(deckId, { slot: 'eq', band }, newVal);
 }
 
-function onEqReset(deckId: DeckId, band: 'high' | 'mid' | 'low') {
-  const defaultValue = mixer.eqDefault(band);
-  if (mixer.swarmMode) {
-    for (const ch of swarmAffected(deckId)) mixer.setEq(ch, band, defaultValue);
-  } else {
-    mixer.setEq(deckId, band, defaultValue);
-  }
+function onEqReset(deckId: DeckId, band: EqBand) {
+  mixer.swarmReset(deckId, { slot: 'eq', band }, mixer.eqDefault(band));
 }
 </script>
 

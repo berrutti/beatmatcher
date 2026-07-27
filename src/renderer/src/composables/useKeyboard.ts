@@ -1,5 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue';
-import { Deck, useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { Deck, useDecksStore } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';

@@ -72,6 +72,19 @@ impl ParamDescriptor {
     }
 }
 
+impl ParamDescriptor {
+    /// Everything that changes what a recorded value means. Labels and lane
+    /// grouping are excluded for the same reason `content_hash` excludes them.
+    fn same_semantics(&self, other: &ParamDescriptor) -> bool {
+        self.min == other.min
+            && self.max == other.max
+            && self.default == other.default
+            && self.step == other.step
+            && self.dead_zone == other.dead_zone
+            && self.automatable == other.automatable
+    }
+}
+
 pub struct SlotDescriptor {
     pub slot: &'static str,
     pub unit_id: &'static str,
@@ -116,6 +129,41 @@ impl MixerManifest {
             ParamScope::Deck => self.strip_slot(slot)?.param(param),
             ParamScope::Master => self.master_slot(slot)?.param(param),
         }
+    }
+
+    /// Whether this manifest can replay everything a session recorded on `other`
+    /// can contain, with identical meaning. A newer manifest that only adds slots
+    /// hosts its predecessor, which is what lets sessions recorded before a mixer
+    /// grew a slot still play on the live engine.
+    pub fn can_host(&self, other: &MixerManifest) -> bool {
+        if self.cue_tap != other.cue_tap {
+            return false;
+        }
+        let scopes = [
+            (ParamScope::Deck, other.strip, self.strip),
+            (ParamScope::Master, other.master, self.master),
+        ];
+        for (scope, theirs, mine_slots) in scopes {
+            for slot in theirs {
+                // The unit decides how a value sounds, so the same range filled by a
+                // different unit is not the same address.
+                let same_unit = mine_slots
+                    .iter()
+                    .any(|entry| entry.slot == slot.slot && entry.unit_id == slot.unit_id);
+                if !same_unit {
+                    return false;
+                }
+                for param in slot.params {
+                    let Some(mine) = self.descriptor(scope, slot.slot, param.id) else {
+                        return false;
+                    };
+                    if !mine.same_semantics(param) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -647,6 +695,35 @@ mod tests {
             master: &[],
         };
         assert!(BAD_TAP.validate().is_err());
+    }
+
+    // Every session recorded before the crossfader existed has no mixer header and
+    // resolves to the classic manifest, so refusing to host it would make the live
+    // engine unable to play any of them.
+    #[test]
+    fn the_live_manifest_hosts_the_version_it_replaced() {
+        assert!(CLASSIC_3BAND_V2.can_host(&CLASSIC_3BAND));
+        assert!(ISOLATOR_3BAND_V2.can_host(&ISOLATOR_3BAND));
+    }
+
+    #[test]
+    fn a_manifest_cannot_host_one_with_addresses_it_lacks() {
+        assert!(!CLASSIC_3BAND.can_host(&CLASSIC_3BAND_V2));
+    }
+
+    // Same slot, same param ids, different unit: an isolator kill is not a shelf,
+    // so replaying one on the other would sound wrong while looking compatible.
+    #[test]
+    fn a_manifest_cannot_host_another_units_slot() {
+        assert!(!CLASSIC_3BAND_V2.can_host(&ISOLATOR_3BAND));
+        assert!(!ISOLATOR_3BAND_V2.can_host(&CLASSIC_3BAND));
+    }
+
+    #[test]
+    fn every_manifest_hosts_itself() {
+        for manifest in MANIFESTS {
+            assert!(manifest.can_host(manifest), "{}", manifest.id);
+        }
     }
 
     #[test]

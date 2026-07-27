@@ -4,18 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { currentBeat as coreCurrentBeat } from '@renderer/utils/sessionCore';
-
-export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
+import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
-
-export const DECK_ACCENTS: Readonly<Record<string, string>> = {
-  A: '#3b82f6',
-  B: '#f97316',
-  C: '#208043',
-  D: '#d631b0',
-  E: '#a855f7'
-};
 
 type LoopRegion = {
   startSec: number;

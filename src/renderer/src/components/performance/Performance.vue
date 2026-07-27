@@ -50,7 +50,8 @@
 </template>
 
 <script setup lang="ts">
-import { useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useCollectionStore } from '@renderer/stores/collection';
 import Deck from '@renderer/components/deck/Deck.vue';

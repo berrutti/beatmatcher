@@ -2,6 +2,8 @@ import type { SessionEvent } from './types';
 
 type ParamMapping = {
   slot: string;
+  // Master-scope events carry no deck, and a deck-scope one is not portable without.
+  scope: 'deck' | 'master';
   param: (event: SessionEvent) => string | undefined;
   value: (event: SessionEvent) => number | undefined;
 };
@@ -12,29 +14,40 @@ type ParamMapping = {
 const V1_PARAM_MAPPINGS: Record<string, ParamMapping> = {
   set_volume: {
     slot: 'fader',
+    scope: 'deck',
     param: () => 'gain',
     value: (event) => event.gain
   },
   set_eq: {
     slot: 'eq',
+    scope: 'deck',
     param: (event) => event.band,
     value: (event) => event.db
   },
   set_filter: {
     slot: 'filter',
+    scope: 'deck',
     param: () => 'value',
     value: (event) => event.value
   },
   set_filter_active: {
     slot: 'filter',
+    scope: 'deck',
     param: () => 'active',
     value: (event) => (event.active === undefined ? undefined : event.active ? 1 : 0)
+  },
+  set_master_gain: {
+    slot: 'gain',
+    scope: 'master',
+    param: () => 'gain',
+    value: (event) => event.gain
   }
 };
 
 function portedFromV1(event: SessionEvent): SessionEvent {
   const mapping = V1_PARAM_MAPPINGS[event.type];
-  if (!mapping || event.deck === undefined) return event;
+  if (!mapping) return event;
+  if (mapping.scope === 'deck' ? event.deck === undefined : event.deck !== undefined) return event;
   const param = mapping.param(event);
   const value = mapping.value(event);
   if (param === undefined || value === undefined) return event;

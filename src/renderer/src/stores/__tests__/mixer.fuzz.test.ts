@@ -35,7 +35,7 @@ import { useMixerStore } from '../mixer';
 import { mixerParams } from '@renderer/utils/sessionCore';
 import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { invoke } from '@tauri-apps/api/core';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 
 const mockedInvoke = vi.mocked(invoke);
 

@@ -106,18 +106,23 @@ impl SessionEvent {
     }
 
     fn port_v1_to_v2(&mut self) -> bool {
+        let deck_scoped = self.deck.is_some();
         let (slot, param, value) = match self.event_type.as_str() {
-            "set_volume" => ("fader".to_string(), "gain".to_string(), self.gain),
-            "set_eq" => match (self.band.clone(), self.db) {
+            "set_volume" if deck_scoped => ("fader".to_string(), "gain".to_string(), self.gain),
+            "set_eq" if deck_scoped => match (self.band.clone(), self.db) {
                 (Some(band), Some(db)) => ("eq".to_string(), band, Some(db)),
                 _ => return false,
             },
-            "set_filter" => ("filter".to_string(), "value".to_string(), self.value),
-            "set_filter_active" => (
+            "set_filter" if deck_scoped => ("filter".to_string(), "value".to_string(), self.value),
+            "set_filter_active" if deck_scoped => (
                 "filter".to_string(),
                 "active".to_string(),
                 self.active.map(|active| if active { 1.0 } else { 0.0 }),
             ),
+            // Master scope, so it carries no deck and the master slot is named "gain".
+            "set_master_gain" if !deck_scoped => {
+                ("gain".to_string(), "gain".to_string(), self.gain)
+            }
             _ => return false,
         };
         let Some(value) = value else {
@@ -134,7 +139,7 @@ impl SessionEvent {
 fn port_v1_events(events: &mut [SessionEvent]) -> usize {
     let mut ported = 0;
     for event in events.iter_mut() {
-        if event.deck.is_some() && event.port_v1_to_v2() {
+        if event.port_v1_to_v2() {
             ported += 1;
         }
     }
@@ -499,6 +504,33 @@ mod tests {
         assert_eq!(events[0].event_type, "set_volume");
         assert_eq!(events[1].event_type, "set_eq");
         assert_eq!(events[2].event_type, "set_volume");
+    }
+
+    // Master gain is the one v1 event with no deck. It was skipped outright before,
+    // so a session's master fader automation vanished on load and, once saved at the
+    // current version, could never be recovered.
+    #[test]
+    fn the_v1_master_gain_ports_onto_the_master_slot() {
+        let mut events = vec![SessionEvent {
+            gain: Some(0.6),
+            deck: None,
+            ..make_event("set_master_gain")
+        }];
+        assert_eq!(port_events(&mut events, 1), 1);
+        assert!(events[0].is_param(None, "gain", "gain"));
+        assert_eq!(events[0].value, Some(0.6));
+        assert!(events[0].command().is_some(), "it has to replay");
+    }
+
+    #[test]
+    fn a_deck_scoped_v1_event_still_needs_its_deck() {
+        let mut events = vec![SessionEvent {
+            gain: Some(0.5),
+            deck: None,
+            ..make_event("set_volume")
+        }];
+        assert_eq!(port_events(&mut events, 1), 0);
+        assert_eq!(events[0].event_type, "set_volume");
     }
 
     #[test]

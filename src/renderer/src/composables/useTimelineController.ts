@@ -6,7 +6,8 @@
 
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { DECK_ACCENTS, type DeckId, useDecksStore } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
+import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
 import {

@@ -6,10 +6,10 @@ import type {
   LanePoint,
   NudgeSpan,
   EditableLaneKey,
-  MasterLaneKey
+  MasterLaneKey,
+  DeckId
 } from '@renderer/utils/types';
-import { DECK_LANE_KEYS } from '@renderer/utils/types';
-import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
+import { DECK_ACCENTS, DECK_LANE_KEYS } from '@renderer/utils/types';
 import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
 import { formatMs } from '@renderer/utils/time';
 import {

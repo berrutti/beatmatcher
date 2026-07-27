@@ -36,7 +36,8 @@ vi.mock('@renderer/stores/settings', () => ({
 
 import Mixer from '@renderer/components/mixer/Mixer.vue';
 import { useMixerStore } from '@renderer/stores/mixer';
-import { DECKS_DISPOSITION, type DeckId } from '@renderer/stores/decks';
+import { DECKS_DISPOSITION } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 
 function makeRandom(seed: number): () => number {
   let state = seed >>> 0;

@@ -223,11 +223,14 @@ pub(crate) async fn start_session_playback(
         let _ = handle.await;
     }
 
-    // The live strips are built on one manifest. Playing a session recorded on
-    // another would silently differ from what the offline renderer produces for
-    // the same file, so refuse rather than replay it against the wrong scales.
+    // The live strips are built on one manifest. Playing a session recorded on one
+    // whose addresses it cannot reproduce would silently differ from what the
+    // offline renderer produces for the same file, so refuse that rather than
+    // replay it against the wrong scales. An id match is too strict: every session
+    // recorded before the mixer was versioned resolves to the older manifest, and
+    // the live one hosts it unchanged.
     let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
-    if manifest.id != state.audio.mixer().id {
+    if !state.audio.mixer().can_host(manifest) {
         return Err(format!(
             "this session was recorded on mixer '{}', which this build cannot play live",
             manifest.id
@@ -283,7 +286,7 @@ pub(crate) async fn start_session_playback(
         for ev in sorted_events.iter().filter(|e| {
             e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
         }) {
-            if matches!(ev.command(), Some(SessionCommand::SetParam { .. })) {
+            if reconstructs_mixer_state(ev) {
                 apply_event_live(ev, &audio, sr, &cache, 0);
             }
             sim_apply_event(ev, &mut sim, &cache, sr);
@@ -474,6 +477,16 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
     }
 }
 
+/// Mixer state a mid-session start has to rebuild by replaying the events before
+/// it. Transport is excluded: deck positions come from the snapshot and `sim_pos`,
+/// not from replaying every play and stop.
+fn reconstructs_mixer_state(ev: &SessionEvent) -> bool {
+    matches!(
+        ev.command(),
+        Some(SessionCommand::SetParam { .. } | SessionCommand::SetXfaderAssign { .. })
+    )
+}
+
 fn reset_all(audio: &audio::AppAudio) {
     for id in ["A", "B", "C", "D"] {
         if let Some(deck_arc) = audio.deck(id) {
@@ -498,6 +511,8 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
             s.set_eq_band("high", snap.eq_high);
             s.set_filter(snap.filter_value);
             s.set_filter_active(snap.filter_active);
+            s.set_xfader_assign(snap.xfader_assign);
+            s.set_xfader_position(sim.xfader_position);
         }
     }
 }
@@ -557,15 +572,31 @@ fn apply_event_live(
     let Some(cmd) = ev.command() else { return };
 
     let Some(id) = cmd.deck_id() else {
-        if let SessionCommand::SetParam {
-            scope: session_core::ParamScope::Master,
-            slot: "gain",
-            param: "gain",
-            value,
-            ..
-        } = cmd
-        {
-            audio.monitor.set_master_gain(value as f32);
+        match cmd {
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot: "gain",
+                param: "gain",
+                value,
+                ..
+            } => audio.monitor.set_master_gain(value as f32),
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot: "xfader",
+                param: "position",
+                value,
+                ..
+            } => {
+                for id in ["A", "B", "C", "D"] {
+                    if let Some(strip_arc) = audio.strip(id) {
+                        strip_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_xfader_position(value as f32);
+                    }
+                }
+            }
+            _ => {}
         }
         return;
     };
@@ -600,6 +631,23 @@ mod tests {
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;
+
+    // A deck assigned to a bus at t=10s and started from t=60s used to play as
+    // `Thru`, because an assign is its own command rather than a `SetParam`.
+    #[test]
+    fn a_mid_session_start_rebuilds_assigns_as_well_as_params() {
+        let assign = SessionEvent {
+            assign: Some("a".to_string()),
+            ..deck_ev("set_xfader_assign", 10_000.0, "A")
+        };
+        let param = SessionEvent::param(11_000.0, Some("A"), "fader", "gain", 0.5);
+        let position = SessionEvent::param(12_000.0, None, "xfader", "position", -1.0);
+
+        assert!(reconstructs_mixer_state(&assign));
+        assert!(reconstructs_mixer_state(&param));
+        assert!(reconstructs_mixer_state(&position));
+        assert!(!reconstructs_mixer_state(&deck_ev("play", 13_000.0, "A")));
+    }
 
     fn deck_ev(event_type: &str, elapsed_ms: f64, deck: &str) -> SessionEvent {
         SessionEvent {

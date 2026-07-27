@@ -32,7 +32,7 @@ import {
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import type {
   Clip,
   LoadedSpan,

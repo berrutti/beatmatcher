@@ -113,11 +113,15 @@ impl ChannelStrip {
     pub(crate) fn set_xfader_assign(&mut self, assign: session_core::XfaderAssign) {
         self.xfader_assign = assign;
         self.resolve_xfader();
+        self.restart_settle();
     }
 
     pub(crate) fn set_xfader_position(&mut self, position: f32) {
         self.xfader_position = position.clamp(-1.0, 1.0);
         self.resolve_xfader();
+        // A settled strip renders nothing, so without this the smoothing ramp would
+        // not run until playback resumed and the first samples would use the old gain.
+        self.restart_settle();
     }
 
     fn resolve_xfader(&mut self) {
@@ -213,6 +217,11 @@ impl ChannelStrip {
                 self.set_param(slot.slot, param.id, param.default as f32);
             }
         }
+        // The crossfader is master scope, so the strip loop above never reaches it.
+        // Session playback resets strips to reconstruct state, and a throw left over
+        // from performance mode would silence a deck for the whole session.
+        self.set_xfader_assign(session_core::XfaderAssign::Thru);
+        self.set_xfader_position(0.0);
     }
 
     // The full strip, in manifest order.
@@ -511,10 +520,16 @@ impl DeckState {
         let RenderTargets { main, cue } = targets;
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
+        // A separate cue device gives this deck two callbacks per period, one per
+        // stream. Everything consumed once per period belongs to the main one, or
+        // the wheel drains twice and a paused scrub travels double distance.
+        let owns_period = main.is_some();
 
         // Ahead of the settled check below, because scrubbing a paused deck is
         // the one thing that has to happen on a block that renders no audio.
-        self.consume_jog();
+        if owns_period {
+            self.consume_jog();
+        }
 
         // Not gated on `cue_active`: the cue path is silenced at its output,
         // and its filter state has to keep tracking the main path.
@@ -522,7 +537,9 @@ impl DeckState {
             if strip.settled() {
                 return (0.0, 0.0);
             }
-            strip.consume_settle(frames);
+            if owns_period {
+                strip.consume_settle(frames);
+            }
         } else {
             strip.restart_settle();
         }
@@ -718,6 +735,46 @@ mod tests {
         );
     }
 
+    // A separate cue device renders this deck from two callbacks per period. The
+    // wheel is consumed once, so scrubbing must not depend on how many outputs are
+    // configured.
+    #[test]
+    fn a_scrub_moves_the_same_distance_with_a_separate_cue_device() {
+        fn scrubbed(separate_cue: bool) -> f64 {
+            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut strip = ChannelStrip::new(SR as f32);
+            deck.is_playing = false;
+            deck.main_pos = 44_100.0;
+            deck.jog_pending = 20.0;
+            let mut main = vec![0.0f32; 512 * 2];
+            let mut cue = vec![0.0f32; 512 * 2];
+
+            deck.render_block(
+                &mut strip,
+                512,
+                RenderTargets {
+                    main: Some(&mut main),
+                    cue: if separate_cue { None } else { Some(&mut cue) },
+                },
+            );
+            if separate_cue {
+                deck.render_block(
+                    &mut strip,
+                    512,
+                    RenderTargets {
+                        main: None,
+                        cue: Some(&mut cue),
+                    },
+                );
+            }
+            deck.main_pos
+        }
+
+        let one_stream = scrubbed(false);
+        assert!(one_stream > 44_100.0, "the wheel should have scrubbed");
+        assert!((scrubbed(true) - one_stream).abs() < 1e-9);
+    }
+
     #[test]
     fn the_cue_path_keeps_pace_with_the_main_path_whether_cue_is_on_or_off() {
         for cue_active in [false, true] {
@@ -899,6 +956,34 @@ mod tests {
             left = strip.process_main(1.0, 1.0).0;
         }
         left
+    }
+
+    // A stopped deck's strip settles and stops processing, so a crossfader thrown
+    // while it is paused has to reopen the window or the first samples after play
+    // come through at the old gain.
+    #[test]
+    fn reset_returns_the_crossfader_to_thru_at_centre() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) < 0.01);
+
+        strip.reset();
+
+        assert_eq!(strip.xfader_assign, session_core::XfaderAssign::Thru);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+    }
+
+    #[test]
+    fn a_crossfader_move_while_stopped_still_converges() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        strip.consume_settle(usize::MAX);
+        assert!(strip.settled(), "the strip should have settled");
+
+        strip.set_xfader_position(1.0);
+        assert!(!strip.settled(), "the throw must reopen the window");
+        assert!(settled_xfader_gain(&mut strip) < 0.01);
     }
 
     #[test]

@@ -266,16 +266,17 @@ pub(crate) fn build_stream(
         config.sample_rate().0
     );
     let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    let mut scratch: Vec<f32> = Vec::new();
     build_float_stream(device, config, stream_config, move |data| {
-        fill_output(
-            data,
-            output_channels,
-            &channels,
+        let mut ctx = MixContext {
+            channels: &channels,
             is_cue,
             channel_offset,
-            monitor.as_ref(),
-            &mut limiter,
-        );
+            monitor: monitor.as_ref(),
+            limiter: &mut limiter,
+            scratch: &mut scratch,
+        };
+        fill_output(data, output_channels, &mut ctx);
     })
 }
 
@@ -302,6 +303,7 @@ pub(crate) fn build_cue_stream(
     );
     let mut master_mix: Vec<f32> = Vec::new();
     let mut cue_buf: Vec<f32> = Vec::new();
+    let mut scratch: Vec<f32> = Vec::new();
     let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
     build_float_stream(device, config, stream_config, move |data| match &monitor {
         Some(m) => fill_cue_with_master_tap(
@@ -314,15 +316,17 @@ pub(crate) fn build_cue_stream(
             &mut cue_buf,
             &mut limiter,
         ),
-        None => fill_output(
-            data,
-            output_channels,
-            &channels,
-            true,
-            channel_offset,
-            None,
-            &mut limiter,
-        ),
+        None => {
+            let mut ctx = MixContext {
+                channels: &channels,
+                is_cue: true,
+                channel_offset,
+                monitor: None,
+                limiter: &mut limiter,
+                scratch: &mut scratch,
+            };
+            fill_output(data, output_channels, &mut ctx)
+        }
     })
 }
 
@@ -332,6 +336,7 @@ struct CombinedMixContext<'a> {
     cue_offset: usize,
     monitor: &'a MasterMonitor,
     cue_buf: &'a mut Vec<f32>,
+    main_scratch: &'a mut Vec<f32>,
     limiter: &'a mut LimiterState,
 }
 
@@ -371,6 +376,7 @@ pub(crate) fn build_combined_stream(
         config.sample_rate().0
     );
     let mut cue_buf: Vec<f32> = Vec::new();
+    let mut main_scratch: Vec<f32> = Vec::new();
     let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
     build_float_stream(device, config, stream_config, move |data| {
         let mut ctx = CombinedMixContext {
@@ -379,26 +385,39 @@ pub(crate) fn build_combined_stream(
             cue_offset,
             monitor: &monitor,
             cue_buf: &mut cue_buf,
+            main_scratch: &mut main_scratch,
             limiter: &mut limiter,
         };
         fill_output_combined(data, output_channels, &mut ctx);
     })
 }
 
-fn fill_output(
-    data: &mut [f32],
-    output_channels: usize,
-    channels: &[ChannelPair],
+struct MixContext<'a> {
+    channels: &'a [ChannelPair],
     is_cue: bool,
     channel_offset: usize,
-    monitor: Option<&MasterMonitor>,
-    limiter: &mut LimiterState,
-) {
+    monitor: Option<&'a MasterMonitor>,
+    limiter: &'a mut LimiterState,
+    // Reused across callbacks: allocating per callback would put `malloc` on the
+    // audio thread, which is not real-time safe.
+    scratch: &'a mut Vec<f32>,
+}
+
+fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_>) {
+    let MixContext {
+        channels,
+        is_cue,
+        channel_offset,
+        monitor,
+        limiter,
+        scratch,
+    } = ctx;
+    let (is_cue, channel_offset) = (*is_cue, *channel_offset);
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
-    let mut scratch = vec![0.0f32; frames * 2];
+    scratch.resize(frames * 2, 0.0);
 
-    for (deck_arc, strip_arc) in channels {
+    for (deck_arc, strip_arc) in channels.iter() {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
         // Per deck, not one shared mix: `mix_frame`'s mono fold averages l and
@@ -407,11 +426,11 @@ fn fill_output(
         let targets = if is_cue {
             RenderTargets {
                 main: None,
-                cue: Some(&mut scratch),
+                cue: Some(scratch),
             }
         } else {
             RenderTargets {
-                main: Some(&mut scratch),
+                main: Some(scratch),
                 cue: None,
             }
         };
@@ -554,18 +573,18 @@ fn fill_output_combined(
     ctx.cue_buf.resize(frames * 2, 0.0);
     ctx.cue_buf.fill(0.0);
 
-    let mut main_scratch = vec![0.0f32; frames * 2];
+    ctx.main_scratch.resize(frames * 2, 0.0);
 
     for (deck_arc, strip_arc) in ctx.channels {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
 
-        main_scratch.fill(0.0);
+        ctx.main_scratch.fill(0.0);
         let (sum_l, sum_r) = deck.render_block(
             &mut strip,
             frames,
             RenderTargets {
-                main: Some(&mut main_scratch),
+                main: Some(ctx.main_scratch),
                 cue: Some(ctx.cue_buf),
             },
         );
@@ -575,8 +594,8 @@ fn fill_output_combined(
                 i,
                 output_channels,
                 ctx.main_offset,
-                main_scratch[i * 2],
-                main_scratch[i * 2 + 1],
+                ctx.main_scratch[i * 2],
+                ctx.main_scratch[i * 2 + 1],
             );
         }
 

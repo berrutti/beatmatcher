@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { LABEL_W, type LaneKey } from '@renderer/utils/timelineDraw';
 import type { MasterLaneKey } from '@renderer/utils/types';
 

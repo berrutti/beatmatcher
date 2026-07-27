@@ -2,18 +2,20 @@ import { defineStore } from 'pinia';
 import { computed, reactive, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DECKS_DISPOSITION, type DeckId } from './decks';
+import { DECKS_DISPOSITION } from './decks';
+import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 type ParamChange = { deck: string; slot: string; param: string; value: number };
-type EqBand = 'low' | 'mid' | 'high';
+export type EqBand = 'low' | 'mid' | 'high';
 export type XfaderAssign = 'thru' | 'a' | 'b';
 export type XfaderSide = 'a' | 'b';
 type EqState = { low: number; mid: number; high: number };
 type EqBandSpec = MixerParamSpec & { param: EqBand };
+export type SwarmTarget = { slot: 'volume' } | { slot: 'filter' } | { slot: 'eq'; band: EqBand };
 
 const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
 
@@ -201,6 +203,42 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function eqDefault(band: EqBand): number {
     return deckParams[`eq/${band}`]?.defaultValue ?? 0;
+  }
+
+  function swarmAffected(deckId: DeckId): DeckId[] {
+    const selected = activeDecks.value.filter((candidate) => swarmSelected[candidate]);
+    if (!selected.includes(deckId)) selected.push(deckId);
+    return selected;
+  }
+
+  function swarmValue(deckId: DeckId, target: SwarmTarget): number {
+    if (target.slot === 'volume') return volume[deckId];
+    if (target.slot === 'filter') return filter[deckId];
+    return eq[deckId][target.band];
+  }
+
+  function swarmWrite(deckId: DeckId, target: SwarmTarget, value: number) {
+    if (target.slot === 'volume') setVolume(deckId, value);
+    else if (target.slot === 'filter') setFilter(deckId, value);
+    else setEq(deckId, target.band, value);
+  }
+
+  // A drag carries the gesture's delta to every selected channel, so they keep
+  // the offsets the DJ set between them instead of collapsing onto one value.
+  function swarmAdjust(deckId: DeckId, target: SwarmTarget, value: number) {
+    if (!swarmMode.value) {
+      swarmWrite(deckId, target, value);
+      return;
+    }
+    const delta = value - swarmValue(deckId, target);
+    for (const affected of swarmAffected(deckId)) {
+      swarmWrite(affected, target, swarmValue(affected, target) + delta);
+    }
+  }
+
+  function swarmReset(deckId: DeckId, target: SwarmTarget, value: number) {
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) swarmWrite(deck, target, value);
   }
 
   function isDeckId(id: string): id is DeckId {
@@ -493,6 +531,8 @@ export const useMixerStore = defineStore('mixer', () => {
     setMasterGain,
     setSwarmChannel,
     setSwarmMode,
+    swarmAdjust,
+    swarmReset,
     setXfaderAssign,
     setXfaderPosition,
     toggleXfaderAssign,

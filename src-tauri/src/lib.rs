@@ -205,12 +205,20 @@ impl AppState {
         param: &str,
         value: f32,
     ) -> Result<(), String> {
-        self.audio
+        let strip_arc = self
+            .audio
             .strip(deck)
-            .ok_or_else(|| format!("unknown deck: {}", deck))?
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .set_param(slot, param, value);
+            .ok_or_else(|| format!("unknown deck: {}", deck))?;
+        {
+            let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
+            // A 14-bit control resolves a move on each half, so the same value
+            // arrives twice per physical move. Logging both would write an event
+            // nothing can hear.
+            if strip.param(slot, param) == Some(value) {
+                return Ok(());
+            }
+            strip.set_param(slot, param, value);
+        }
         self.log_param(Some(deck), slot, param, value as f64);
         self.engine_push.mark(origin, deck, slot, param);
         Ok(())
