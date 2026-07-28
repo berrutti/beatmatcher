@@ -3,7 +3,9 @@ import {
   filterSelectionItem,
   clipBandItem,
   blockAtPoint,
-  waveformSeparatorItem
+  waveformSeparatorItem,
+  overviewItem,
+  readOverviewHit
 } from '@renderer/utils/timelineItems';
 import {
   LABEL_W,
@@ -104,5 +106,36 @@ describe('waveformSeparatorItem', () => {
     expect(separator.hitTest({ x: 100, y: 80 }, vc)?.target).toBe('waveformSeparator');
     expect(separator.hitTest({ x: 100, y: 82 }, vc)?.target).toBe('waveformSeparator');
     expect(separator.hitTest({ x: 100, y: 90 }, vc)).toBeNull();
+  });
+});
+
+describe('readOverviewHit', () => {
+  const overviewVc = {
+    canvasW: 1000,
+    canvasH: 400,
+    trackW: 800,
+    view: { start: 200, duration: 300 },
+    msToX: (ms: number) => ms
+  } as ViewContext;
+
+  it('reads back every hit the overview item produces', () => {
+    const item = overviewItem(1000, [], 0, {});
+
+    for (let x = 0; x <= 1000; x++) {
+      const hit = item.hitTest({ x, y: 380 }, overviewVc);
+      if (!hit) continue;
+      const overview = readOverviewHit(hit);
+      expect(overview, `x=${x}`).not.toBeNull();
+      expect(typeof overview?.frac, `x=${x}`).toBe('number');
+      expect(Number.isFinite(overview?.frac), `x=${x}`).toBe(true);
+    }
+  });
+
+  it('rejects a hit that is not the overview, or carries no fraction', () => {
+    expect(readOverviewHit({ target: 'clip', part: 'move', data: 0.5 })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move' })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move', data: 'half' })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move', data: NaN })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'wobble', data: 0.5 })).toBeNull();
   });
 });

@@ -4,7 +4,7 @@
 // by the engine, so nothing here guards its own edges. Items hold no gesture
 // state; what to do with a hit is the gesture/controller layer's job.
 
-import type { SceneItem, Rect, ViewContext } from '@renderer/utils/timelineEngine';
+import type { SceneItem, Rect, ViewContext, Hit } from '@renderer/utils/timelineEngine';
 import type { RowLayout, SublaneLayout } from '@renderer/utils/timelineDraw';
 import {
   LABEL_W,
@@ -28,7 +28,12 @@ import {
   laneValuePad,
   type DeckRowChrome
 } from '@renderer/utils/timelineDraw';
-import { overlapsRange, hitTestOverview } from '@renderer/utils/timelineView';
+import {
+  overlapsRange,
+  hitTestOverview,
+  OVERVIEW_PARTS,
+  type OverviewHit
+} from '@renderer/utils/timelineView';
 import { blocksForDeck } from '@renderer/utils/sessionCore';
 import type {
   TransportBlock,
@@ -423,6 +428,16 @@ export function frameGuttersItem(): SceneItem {
     draw: (ctx, viewContext) => drawFrameGutters(ctx, viewContext.canvasW, viewContext.canvasH),
     hitTest: () => null
   };
+}
+
+// The engine's `Hit.data` is `unknown` so the engine stays domain-free; this is
+// where the overview's payload regains its type, beside the item that writes it.
+export function readOverviewHit(hit: Hit): { part: OverviewHit; frac: number } | null {
+  if (hit.target !== 'overview') return null;
+  const frac = hit.data;
+  if (typeof frac !== 'number' || !Number.isFinite(frac)) return null;
+  const part = OVERVIEW_PARTS.find((candidate) => candidate === hit.part);
+  return part ? { part, frac } : null;
 }
 
 export function overviewItem(

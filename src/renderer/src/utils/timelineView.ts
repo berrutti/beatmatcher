@@ -4,15 +4,21 @@
 
 export type ViewWindow = { start: number; duration: number };
 
+function finiteOr(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+// One NaN reaching the view blanks the entire timeline, because every scene
+// item projects through it and a NaN coordinate draws nothing.
 export function clampView(
   start: number,
   duration: number,
   totalMs: number,
   minViewMs: number
 ): ViewWindow {
-  const total = Math.max(totalMs, minViewMs);
-  const dur = Math.max(minViewMs, Math.min(duration, total));
-  const start2 = Math.max(0, Math.min(start, total - dur));
+  const total = Math.max(finiteOr(totalMs, minViewMs), minViewMs);
+  const dur = Math.max(minViewMs, Math.min(finiteOr(duration, total), total));
+  const start2 = Math.max(0, Math.min(finiteOr(start, 0), total - dur));
   return { start: start2, duration: dur };
 }
 
@@ -132,7 +138,9 @@ export function clampFrac(frac: number): number {
   return Math.max(0, Math.min(1, frac));
 }
 
-export type OverviewHit = 'resize-left' | 'resize-right' | 'move' | 'outside';
+export const OVERVIEW_PARTS = ['resize-left', 'resize-right', 'move', 'outside'] as const;
+
+export type OverviewHit = (typeof OVERVIEW_PARTS)[number];
 
 // `frac` and `edgeTolerance` are fractions of the full session duration (0..1),
 // matching how the overview strip maps the whole session across its width.

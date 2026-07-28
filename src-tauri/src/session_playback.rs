@@ -47,9 +47,17 @@ pub(crate) async fn open_session_dialog() -> Option<OpenedFile> {
 
 #[tauri::command]
 pub(crate) async fn preload_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let reporter = LoadReporter {
+        app: &app,
+        path: path.clone(),
+    };
+    reporter.phase("reading");
+
     let json = tokio::task::spawn_blocking({
         let p = path.clone();
         move || std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
@@ -57,10 +65,21 @@ pub(crate) async fn preload_session(
     .await
     .map_err(|e| e.to_string())??;
 
-    let session = crate::offline_render::SessionFile::parse(&json)
-        .map_err(|e| format!("parse error: {e}"))?;
+    reporter.phase("parsing");
+    // Off the async thread: a long session's event array takes seconds to
+    // deserialize, and blocking here stalls every other command including the
+    // progress events this load is emitting.
+    let session = tokio::task::spawn_blocking(move || {
+        crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
-    index_session(&state, path, session).await;
+    index_session(&state, path, session, Some(&app)).await;
+    log::info!(
+        "preload_session: ready in {}ms",
+        started.elapsed().as_millis()
+    );
 
     Ok(())
 }
@@ -71,10 +90,19 @@ async fn index_session(
     state: &tauri::State<'_, AppState>,
     path: String,
     session: crate::offline_render::SessionFile,
+    app: Option<&tauri::AppHandle>,
 ) {
     let sr = state.audio.device_sample_rate;
     let paths = session_track_paths(&session.events);
-    populate_track_cache(state, paths, sr).await;
+    let reporter = app.map(|app| LoadReporter {
+        app,
+        path: path.clone(),
+    });
+    populate_track_cache(state, paths, sr, reporter.as_ref()).await;
+
+    if let Some(reporter) = &reporter {
+        reporter.phase("indexing");
+    }
 
     // Build state snapshots with the now-complete cache.
     let snapshots = {
@@ -94,7 +122,21 @@ async fn index_session(
         .session_files
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(path, Arc::new(session));
+        .insert(path.clone(), Arc::new(session));
+
+    // Only here: scrubbing and playback both need the snapshots, so a `done`
+    // sent when the last track finished decoding would open the gate early.
+    if let Some(reporter) = &reporter {
+        reporter.emit(SessionLoadProgress {
+            path,
+            phase: "done",
+            loaded_bytes: 0,
+            total_bytes: 0,
+            loaded_tracks: 0,
+            total_tracks: 0,
+            done: true,
+        });
+    }
 }
 
 // Frees everything cached for a session when it is ejected: decoded track
@@ -154,6 +196,7 @@ pub(crate) async fn update_session_events(
             events,
             mixer,
         },
+        None,
     )
     .await;
 
@@ -242,7 +285,7 @@ pub(crate) async fn start_session_playback(
 
     // Ensure cache is populated (fast path if preload already ran).
     let paths = session_track_paths(&session.events);
-    populate_track_cache(&state, paths, sr).await;
+    populate_track_cache(&state, paths, sr, None).await;
     let cache: Arc<SampleCache> = Arc::new(
         state
             .session_track_cache
@@ -430,7 +473,116 @@ fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
         .collect()
 }
 
-async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<String>, sr: u32) {
+pub(crate) type TrackEntry = (Arc<Vec<f32>>, usize);
+pub(crate) type TrackLoads = Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<String, Arc<tokio::sync::OnceCell<Option<TrackEntry>>>>,
+    >,
+>;
+
+/// The one place a track is decoded. The waveform strip and the session preload
+/// both want the same samples at the same moment, and decoding per caller had
+/// them racing for cores: 13 tracks became 26 competing decodes.
+pub(crate) async fn load_track(
+    cache: &crate::TrackCache,
+    loads: &TrackLoads,
+    permits: &Arc<tokio::sync::Semaphore>,
+    path: &str,
+    sr: u32,
+) -> Option<TrackEntry> {
+    if let Some(hit) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+    {
+        return Some(hit);
+    }
+
+    let cell = {
+        let mut loads = loads.lock().unwrap_or_else(|e| e.into_inner());
+        loads
+            .entry(path.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+            .clone()
+    };
+
+    // Whoever gets here first decodes; everyone else waits on that same decode
+    // rather than starting their own.
+    let entry = cell
+        .get_or_init(|| async {
+            let permit = permits.clone().acquire_owned().await;
+            let owned = path.to_string();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let (raw, channels, native_sr) = audio::decode_audio(&owned).ok()?;
+                let resampled = if native_sr == sr {
+                    raw
+                } else {
+                    audio::resample_linear(&raw, channels, native_sr, sr)
+                };
+                Some((Arc::new(resampled), channels))
+            })
+            .await
+            .ok()
+            .flatten()
+        })
+        .await
+        .clone();
+
+    if let Some(entry) = &entry {
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_string(), entry.clone());
+    }
+    loads.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+    entry
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionLoadProgress {
+    pub path: String,
+    pub phase: &'static str,
+    pub loaded_bytes: u64,
+    pub total_bytes: u64,
+    pub loaded_tracks: usize,
+    pub total_tracks: usize,
+    pub done: bool,
+}
+
+struct LoadReporter<'a> {
+    app: &'a tauri::AppHandle,
+    path: String,
+}
+
+impl LoadReporter<'_> {
+    fn emit(&self, progress: SessionLoadProgress) {
+        self.app.emit("session-load-progress", progress).ok();
+    }
+
+    // The read and the parse each take seconds on a long session and report no
+    // increments, so they are announced rather than left as a still bar.
+    fn phase(&self, phase: &'static str) {
+        self.emit(SessionLoadProgress {
+            path: self.path.clone(),
+            phase,
+            loaded_bytes: 0,
+            total_bytes: 0,
+            loaded_tracks: 0,
+            total_tracks: 0,
+            done: false,
+        });
+    }
+}
+
+async fn populate_track_cache(
+    state: &tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    sr: u32,
+    reporter: Option<&LoadReporter<'_>>,
+) {
     let missing: Vec<String> = {
         let cache = state
             .session_track_cache
@@ -442,38 +594,71 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
             .collect()
     };
 
-    let handles: Vec<_> = missing
-        .iter()
+    // Byte-weighted so a session of one long track and three short ones does not
+    // sit at 25% for most of the wait, and smallest-first so the earliest slots
+    // free soonest.
+    let mut sized: Vec<(String, u64)> = missing
+        .into_iter()
         .map(|p| {
-            let p = p.clone();
-            tokio::task::spawn_blocking(move || -> Result<(String, Vec<f32>, usize), String> {
-                let (raw, channels, native_sr) =
-                    audio::decode_audio(&p).map_err(|e| e.to_string())?;
-                let resampled = if native_sr == sr {
-                    raw
-                } else {
-                    audio::resample_linear(&raw, channels, native_sr, sr)
-                };
-                Ok((p, resampled, channels))
+            let bytes = std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0);
+            (p, bytes)
+        })
+        .collect();
+    sized.sort_by_key(|(_, bytes)| *bytes);
+
+    let total_bytes: u64 = sized.iter().map(|(_, bytes)| bytes).sum();
+    let total_tracks = sized.len();
+    let mut loaded_bytes: u64 = 0;
+    let mut loaded_tracks: usize = 0;
+
+    if let Some(reporter) = &reporter {
+        reporter.emit(SessionLoadProgress {
+            path: reporter.path.clone(),
+            phase: "decoding",
+            loaded_bytes: 0,
+            total_bytes,
+            loaded_tracks: 0,
+            total_tracks,
+            done: false,
+        });
+    }
+
+    // Every decode in the app shares one permit pool, so a burst of waveform
+    // requests cannot crowd out the load the modal is reporting on.
+    let handles: Vec<_> = sized
+        .iter()
+        .map(|(p, _)| {
+            let path = p.clone();
+            let cache = state.session_track_cache.clone();
+            let loads = state.session_track_loads.clone();
+            let permits = state.decode_permits.clone();
+            tokio::spawn(async move {
+                load_track(&cache, &loads, &permits, &path, sr)
+                    .await
+                    .is_some()
             })
         })
         .collect();
 
-    let mut newly_loaded = Vec::new();
-    for handle in handles {
-        match handle.await {
-            Ok(Ok((p, s, c))) => newly_loaded.push((p, s, c)),
-            Ok(Err(e)) => eprintln!("session_playback: track load failed: {e}"),
-            Err(e) => eprintln!("session_playback: spawn_blocking panic: {e}"),
+    for (handle, (path, bytes)) in handles.into_iter().zip(sized.iter()) {
+        // Counted even when it fails: a track that cannot be decoded is never
+        // coming, and a bar that stops short of 100% reads as a hang.
+        loaded_bytes += bytes;
+        if !matches!(handle.await, Ok(true)) {
+            eprintln!("session_playback: track load failed: {path}");
         }
-    }
-
-    let mut cache = state
-        .session_track_cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    for (p, samples, channels) in newly_loaded {
-        cache.insert(p, (Arc::new(samples), channels));
+        loaded_tracks += 1;
+        if let Some(reporter) = &reporter {
+            reporter.emit(SessionLoadProgress {
+                path: reporter.path.clone(),
+                phase: "decoding",
+                loaded_bytes,
+                total_bytes,
+                loaded_tracks,
+                total_tracks,
+                done: false,
+            });
+        }
     }
 }
 

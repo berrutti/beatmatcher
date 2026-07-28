@@ -20,10 +20,12 @@ import {
 import { yToValue, makeMsToX, laneValuePad } from '@renderer/utils/timelineDraw';
 import {
   clampFrac,
+  panByMs,
   recenterOn,
   resizeLeftEdge,
   resizeRightEdge
 } from '@renderer/utils/timelineView';
+import { readOverviewHit } from '@renderer/utils/timelineItems';
 import { ghostSpan, clipGestureDeltaSec, marqueeTargets } from '@renderer/utils/timelineLayout';
 import { laneSpecFor, formatLaneValue } from '@renderer/utils/sessionEditOps';
 import type { LaneSpec } from '@renderer/utils/sessionCore';
@@ -91,6 +93,7 @@ type ActiveGesture =
       kind: 'overview';
       mode: 'move' | 'resize-left' | 'resize-right';
       startView: { start: number; duration: number };
+      grabFrac: number;
     }
   | {
       kind: 'lane-draw';
@@ -195,19 +198,25 @@ export function useTimelineGestures(deps: GestureDeps) {
 
     switch (hit.target) {
       case 'overview': {
-        const part = hit.part as 'move' | 'resize-left' | 'resize-right' | 'outside';
+        const overview = readOverviewHit(hit);
+        if (!overview) return;
+        const { part, frac: grabFrac } = overview;
         if (part === 'outside') {
           // Recenter immediately, then drag as move.
-          const frac = hit.data as number;
           const total = deps.durationMs() || 1;
           deps.emit({
             type: 'view.set',
-            view: recenterOn(deps.camera.currentView(), frac * total, total, MIN_VIEW_MS)
+            view: recenterOn(deps.camera.currentView(), grabFrac * total, total, MIN_VIEW_MS)
           });
-          active = { kind: 'overview', mode: 'move', startView: deps.camera.currentView() };
+          active = {
+            kind: 'overview',
+            mode: 'move',
+            startView: deps.camera.currentView(),
+            grabFrac
+          };
           return;
         }
-        active = { kind: 'overview', mode: part, startView: deps.camera.currentView() };
+        active = { kind: 'overview', mode: part, startView: deps.camera.currentView(), grabFrac };
         return;
       }
       case 'laneSeparator': {
@@ -959,5 +968,12 @@ function overviewDrag(
     return resizeLeftEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
   if (gesture.mode === 'resize-right')
     return resizeRightEdge(gesture.startView, ms, total || 1, MIN_VIEW_MS);
-  return recenterOn(gesture.startView, ms, total || 1, MIN_VIEW_MS);
+  // Carries the pointer's offset within the rectangle, so grabbing it off-centre
+  // does not snap its middle to the cursor.
+  return panByMs(
+    gesture.startView,
+    (frac - gesture.grabFrac) * (total || 1),
+    total || 1,
+    MIN_VIEW_MS
+  );
 }

@@ -244,3 +244,66 @@ describe('edits rejected by session-core', () => {
     expect(editStore.dirty).toBe(false);
   });
 });
+
+describe('playback gate while a session is decoding', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  function loading(store: ReturnType<typeof useSessionStore>, done: boolean, bytes = 0) {
+    store.loadProgress = {
+      path: '/s.bms',
+      phase: 'decoding',
+      loadedBytes: bytes,
+      totalBytes: 100,
+      loadedTracks: done ? 4 : 1,
+      totalTracks: 4,
+      done
+    };
+  }
+
+  it('reports loading until the backend says every track is decoded', () => {
+    const store = useSessionStore();
+    expect(store.isLoading).toBe(false);
+    loading(store, false);
+    expect(store.isLoading).toBe(true);
+    loading(store, true);
+    expect(store.isLoading).toBe(false);
+  });
+
+  it('refuses to start playback while still decoding', async () => {
+    const store = useSessionStore();
+    loading(store, false);
+    await store.play(0);
+
+    expect(store.isPlaying).toBe(false);
+    expect(vi.mocked(invoke).mock.calls.some((c) => c[0] === 'start_session_playback')).toBe(false);
+  });
+
+  it('weights progress by bytes, not by track count', () => {
+    const store = useSessionStore();
+    loading(store, false, 30);
+    expect(store.loadedFraction).toBeCloseTo(0.3, 6);
+  });
+
+  it('falls back to track count when no byte total is known', () => {
+    const store = useSessionStore();
+    store.loadProgress = {
+      path: '/s.bms',
+      phase: 'decoding',
+      loadedBytes: 0,
+      totalBytes: 0,
+      loadedTracks: 1,
+      totalTracks: 4,
+      done: false
+    };
+    expect(store.loadedFraction).toBeCloseTo(0.25, 6);
+  });
+
+  it('reads as fully loaded when nothing is being tracked', () => {
+    const store = useSessionStore();
+    expect(store.loadedFraction).toBe(1);
+    expect(store.isLoading).toBe(false);
+  });
+});

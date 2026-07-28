@@ -32,6 +32,7 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
   const viewDurationMs = ref(1);
   const scrollY = ref(0);
   let maxScrollY = 0;
+  let followSuspended = false;
 
   function currentView(): ViewWindow {
     return { start: viewStartMs.value, duration: viewDurationMs.value };
@@ -47,10 +48,20 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
     viewDurationMs.value = clamped.duration;
   }
 
+  // Moving the view by hand aims it somewhere the playhead is not, so follow
+  // would drag it straight back on the next transport tick.
+  function setViewFromUser(next: ViewWindow): void {
+    followSuspended = true;
+    setView(next);
+  }
+
   // Reset to the whole session whenever the duration becomes known/changes.
   watch(
     () => durationMs(),
-    (duration) => setView({ start: 0, duration: duration || 1 }),
+    (duration) => {
+      followSuspended = false;
+      setView({ start: 0, duration: duration || 1 });
+    },
     { immediate: true }
   );
 
@@ -81,7 +92,7 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
   }
 
   function panByPixels(dxPx: number, trackW: number): void {
-    setView(
+    setViewFromUser(
       panByMs(
         currentView(),
         -dxPx * (currentView().duration / (trackW || 1)),
@@ -92,17 +103,17 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
   }
 
   function panByMsDelta(deltaMs: number): void {
-    setView(panByMs(currentView(), deltaMs, durationMs(), MIN_VIEW_MS));
+    setViewFromUser(panByMs(currentView(), deltaMs, durationMs(), MIN_VIEW_MS));
   }
 
   function followPlayhead(ms: number): void {
-    const next = followTarget(
-      currentView(),
-      ms,
-      FOLLOW_LEAD_IN_FRACTION,
-      durationMs() || 1,
-      MIN_VIEW_MS
-    );
+    if (!Number.isFinite(ms)) return;
+    const view = currentView();
+    if (followSuspended) {
+      if (ms < view.start || ms > view.start + view.duration) return;
+      followSuspended = false;
+    }
+    const next = followTarget(view, ms, FOLLOW_LEAD_IN_FRACTION, durationMs() || 1, MIN_VIEW_MS);
     if (next) setView(next);
   }
 
@@ -119,6 +130,7 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
     currentView,
     fullView,
     setView,
+    setViewFromUser,
     viewContext,
     zoomAt,
     panByPixels,

@@ -249,7 +249,14 @@
     "splitClip": "Split clip here",
     "mute": "Mute",
     "solo": "Solo",
-    "lanesMenu": "Lanes"
+    "lanesMenu": "Lanes",
+    "loadingTitle": "Loading session",
+    "loadingBody": "Decoding tracks. Playback starts when every track is ready.",
+    "loadingTracks": "{loaded} of {total} tracks",
+    "loadingPhaseReading": "Reading session file",
+    "loadingPhaseParsing": "Parsing events",
+    "loadingPhaseDecoding": "Decoding tracks",
+    "loadingPhaseIndexing": "Building scrub index"
   },
   "quitModal": {
     "title": "Quit Beatmatcher?",

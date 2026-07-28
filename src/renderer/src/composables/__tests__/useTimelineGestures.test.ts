@@ -234,16 +234,82 @@ describe('overview drag from outside the viewport', () => {
     );
 
     gestures.onMouseDown(mouseAt(100, 5), RECT);
+
+    const views = intents.filter((intent) => intent.type === 'view.set');
+    const first = views[0];
+    if (first.type !== 'view.set') throw new Error('expected a view.set');
+    // data 0.1 of a 1000ms session is 100ms, centred in a 200ms window and then
+    // clamped to the session start, at the zoom the press started from.
+    expect(first.view.duration).toBe(200);
+    expect(first.view.start).toBe(0);
+  });
+
+  it('drags by how far the pointer moved, not to where it landed', () => {
+    const { gestures, intents } = gestureHarness(
+      { target: 'overview', part: 'outside', data: 0.1 },
+      [],
+      { start: 0, duration: 200 }
+    );
+
+    gestures.onMouseDown(mouseAt(100, 5), RECT);
     gestures.onMouseMove(mouseAt(500, 5), RECT);
 
     const views = intents.filter((intent) => intent.type === 'view.set');
     expect(views).toHaveLength(2);
     const last = views[views.length - 1];
     if (last.type !== 'view.set') throw new Error('expected a view.set');
-    // The overview spans the track area, so x=500 is (500 - LABEL_W) / 800 = 0.585
-    // of a 1000ms session: centred in a 200ms window, at the zoom the press
-    // started from rather than at the whole-session zoom.
+    // x=500 is (500 - LABEL_W) / 800 = 0.585, so the pointer travelled
+    // 0.585 - 0.1 = 0.485 of a 1000ms session from where it was pressed.
     expect(last.view.duration).toBe(200);
     expect(last.view.start).toBe(485);
+  });
+});
+
+describe('overview drag grabbed off-centre', () => {
+  // Pressed at 0.5 of the session with the window covering 0..200ms, so the
+  // pointer sits far to the right of the rectangle's own centre.
+  const grabbed = { target: 'overview', part: 'move', data: 0.5 } as const;
+
+  it('does not snap the rectangle centre to the pointer on the first move', () => {
+    const { gestures, intents } = gestureHarness(grabbed, [], { start: 0, duration: 200 });
+
+    gestures.onMouseDown(mouseAt(432, 5), RECT);
+    gestures.onMouseMove(mouseAt(440, 5), RECT);
+
+    const views = intents.filter((intent) => intent.type === 'view.set');
+    const last = views[views.length - 1];
+    if (last.type !== 'view.set') throw new Error('expected a view.set');
+    // x=440 is 0.51 of the session, 0.01 past the press: a 10ms nudge, not a
+    // jump to a window centred on 500ms.
+    expect(last.view.start).toBeCloseTo(10, 6);
+    expect(last.view.duration).toBe(200);
+  });
+
+  it('holds the grab offset across a multi-step drag', () => {
+    const { gestures, intents } = gestureHarness(grabbed, [], { start: 0, duration: 200 });
+
+    gestures.onMouseDown(mouseAt(432, 5), RECT);
+    for (const x of [500, 600, 700, 640]) gestures.onMouseMove(mouseAt(x, 5), RECT);
+
+    const views = intents.filter((intent) => intent.type === 'view.set');
+    const last = views[views.length - 1];
+    if (last.type !== 'view.set') throw new Error('expected a view.set');
+    // Every move is measured from the press, so the last one alone decides:
+    // x=640 is 0.76, which is 0.26 past the press.
+    expect(last.view.start).toBeCloseTo(260, 6);
+    expect(last.view.duration).toBe(200);
+  });
+
+  it('leaves the view where it was when the pointer returns to the press point', () => {
+    const { gestures, intents } = gestureHarness(grabbed, [], { start: 300, duration: 200 });
+
+    gestures.onMouseDown(mouseAt(432, 5), RECT);
+    gestures.onMouseMove(mouseAt(600, 5), RECT);
+    gestures.onMouseMove(mouseAt(432, 5), RECT);
+
+    const views = intents.filter((intent) => intent.type === 'view.set');
+    const last = views[views.length - 1];
+    if (last.type !== 'view.set') throw new Error('expected a view.set');
+    expect(last.view.start).toBeCloseTo(300, 6);
   });
 });

@@ -1275,36 +1275,20 @@ pub(crate) async fn get_track_amplitude_region(
     num_points: usize,
 ) -> Result<Vec<f32>, String> {
     let sr = state.audio.device_sample_rate;
-    let cached = {
-        let cache = state
-            .session_track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache
-            .get(&path)
-            .map(|(samples, channels)| (samples.clone(), *channels))
-    };
-
-    if let Some((samples, channels)) = cached {
-        return tokio::task::spawn_blocking(move || {
-            let start_frame = (start_sec * sr as f64).max(0.0) as usize;
-            let end_frame = (end_sec * sr as f64).max(0.0) as usize;
-            Ok(audio::compute_amplitude_region(
-                &samples,
-                channels,
-                start_frame,
-                end_frame,
-                num_points,
-            ))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    // Shares the session preload's decode rather than starting a competing one.
+    let (samples, channels) = crate::session_playback::load_track(
+        &state.session_track_cache,
+        &state.session_track_loads,
+        &state.decode_permits,
+        &path,
+        sr,
+    )
+    .await
+    .ok_or_else(|| format!("could not decode {path}"))?;
 
     tokio::task::spawn_blocking(move || {
-        let (samples, channels, file_sr) = audio::decode_audio(&path).map_err(|e| e.to_string())?;
-        let start_frame = (start_sec * file_sr as f64).max(0.0) as usize;
-        let end_frame = (end_sec * file_sr as f64).max(0.0) as usize;
+        let start_frame = (start_sec * sr as f64).max(0.0) as usize;
+        let end_frame = (end_sec * sr as f64).max(0.0) as usize;
         Ok(audio::compute_amplitude_region(
             &samples,
             channels,

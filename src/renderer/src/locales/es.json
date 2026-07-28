@@ -249,7 +249,14 @@
     "splitClip": "Dividir clip aquí",
     "mute": "Silenciar",
     "solo": "Solo",
-    "lanesMenu": "Carriles"
+    "lanesMenu": "Carriles",
+    "loadingTitle": "Cargando sesión",
+    "loadingBody": "Decodificando pistas. La reproducción empezará cuando todas estén listas.",
+    "loadingTracks": "{loaded} de {total} pistas",
+    "loadingPhaseReading": "Leyendo el archivo de sesión",
+    "loadingPhaseParsing": "Analizando eventos",
+    "loadingPhaseDecoding": "Decodificando pistas",
+    "loadingPhaseIndexing": "Construyendo el índice"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",

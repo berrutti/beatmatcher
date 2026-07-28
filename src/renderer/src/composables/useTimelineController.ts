@@ -171,7 +171,7 @@ export function useTimelineController(opts: {
         opts.emitSeek(intent.ms);
         break;
       case 'view.set':
-        opts.camera.setView(intent.view);
+        opts.camera.setViewFromUser(intent.view);
         break;
       case 'lane.openDropdown':
         lanePicker.value = { deck: intent.deck, x: intent.clientX, y: intent.clientY };

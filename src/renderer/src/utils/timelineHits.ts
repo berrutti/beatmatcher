@@ -3,9 +3,9 @@
 // Items report a `Hit` with a `target` (which element) and optional `part`
 // (which region of it). When several items claim the same point, the engine
 // picks the one ranked highest here. Precedence is intentionally per-`target:part`
-// so behaviour can differ by region: e.g. a filter region's resize EDGE beats a
-// nudge, while its BODY does not. Edit this ONE list to change precedence; do not
-// rely on draw order.
+// so behaviour can differ by region: e.g. a clip's trim EDGE beats a nudge, while
+// its BODY does not. Edit this ONE list to change precedence; do not rely on draw
+// order.
 //
 // Listed front (top) to back. Earlier = higher priority = wins.
 

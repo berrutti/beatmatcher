@@ -11,7 +11,7 @@ use commands::DeckSyncPayload;
 use engine_push::{EnginePush, ParamOrigin};
 use std::sync::Arc;
 
-type TrackCache = std::sync::Mutex<session_playback::SampleCache>;
+type TrackCache = Arc<std::sync::Mutex<session_playback::SampleCache>>;
 type CueFeedback = Box<dyn Fn(&str, bool) + Send + Sync>;
 use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
@@ -117,6 +117,8 @@ pub struct AppState {
     pub session_playback_cancel: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
     pub session_playback_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub session_track_cache: TrackCache,
+    pub session_track_loads: session_playback::TrackLoads,
+    pub decode_permits: Arc<tokio::sync::Semaphore>,
     pub session_snapshots: std::sync::Mutex<
         std::collections::HashMap<String, Vec<crate::session_playback::SessionSnapshot>>,
     >,
@@ -663,7 +665,13 @@ pub fn run() {
         session: std::sync::Mutex::new(None),
         session_playback_cancel: std::sync::Mutex::new(None),
         session_playback_handle: std::sync::Mutex::new(None),
-        session_track_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        session_track_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        session_track_loads: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        decode_permits: Arc::new(tokio::sync::Semaphore::new(
+            std::thread::available_parallelism()
+                .map(|cores| cores.get())
+                .unwrap_or(4),
+        )),
         session_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
         app_mode: std::sync::Mutex::new(AppMode::Performance),

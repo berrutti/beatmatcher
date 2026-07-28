@@ -249,7 +249,14 @@
     "splitClip": "Clip hier teilen",
     "mute": "Mute",
     "solo": "Solo",
-    "lanesMenu": "Parameter"
+    "lanesMenu": "Parameter",
+    "loadingTitle": "Session wird geladen",
+    "loadingBody": "Tracks werden dekodiert. Die Wiedergabe startet, sobald alle bereit sind.",
+    "loadingTracks": "{loaded} von {total} Tracks",
+    "loadingPhaseReading": "Session-Datei wird gelesen",
+    "loadingPhaseParsing": "Events werden gelesen",
+    "loadingPhaseDecoding": "Tracks werden dekodiert",
+    "loadingPhaseIndexing": "Index wird erstellt"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",

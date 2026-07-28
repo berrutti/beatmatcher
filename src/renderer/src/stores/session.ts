@@ -24,9 +24,31 @@ export type ParsedSession = {
   raw: Record<string, unknown>;
 };
 
+export type SessionLoadPhase = 'reading' | 'parsing' | 'decoding' | 'indexing' | 'done';
+
+export type SessionLoadProgress = {
+  path: string;
+  phase: SessionLoadPhase;
+  loadedBytes: number;
+  totalBytes: number;
+  loadedTracks: number;
+  totalTracks: number;
+  done: boolean;
+};
+
+// Two frames: the first only schedules a callback ahead of the paint that puts
+// the modal on screen, so the caller must wait for the one after it.
+function nextPaint(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return Promise.resolve();
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
+  const loadProgress = ref<SessionLoadProgress | null>(null);
   // Per-track waveform region [startSec, endSec] at some point density. Zoom-
   // driven LOD (Timeline.vue) refetches a tighter range at higher density as the
   // user zooms in, so the visible span always renders near one point per pixel.
@@ -223,6 +245,19 @@ export const useSessionStore = defineStore('session', () => {
   );
 
   async function loadFromFile(path: string, content: string): Promise<boolean> {
+    // Opened before the parse below, which blocks the main thread for seconds on
+    // a long session: set after it, the window sits frozen with nothing on screen.
+    loadProgress.value = {
+      path,
+      phase: 'parsing',
+      loadedBytes: 0,
+      totalBytes: 0,
+      loadedTracks: 0,
+      totalTracks: 0,
+      done: false
+    };
+    await nextPaint();
+
     let raw: {
       version: number;
       startedAt: string;
@@ -232,6 +267,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       raw = JSON.parse(content);
     } catch {
+      loadProgress.value = null;
       return false;
     }
 
@@ -257,7 +293,9 @@ export const useSessionStore = defineStore('session', () => {
       raw: raw as unknown as Record<string, unknown>
     };
 
-    invoke('preload_session', { path }).catch(() => {});
+    invoke('preload_session', { path }).catch(() => {
+      loadProgress.value = null;
+    });
 
     return true;
   }
@@ -278,8 +316,27 @@ export const useSessionStore = defineStore('session', () => {
     isPlaying.value = false;
   }).catch(() => {});
 
+  listen<SessionLoadProgress>('session-load-progress', (event) => {
+    if (event.payload.path !== session.value?.path) return;
+    loadProgress.value = event.payload;
+  }).catch(() => {});
+
+  // Every track has to be decoded before the scheduler can place it, so playback
+  // is refused rather than queued: a press that silently starts seconds later
+  // reads as a broken button.
+  const isLoading = computed(() => loadProgress.value !== null && !loadProgress.value.done);
+
+  const loadedFraction = computed(() => {
+    const progress = loadProgress.value;
+    if (!progress) return 1;
+    if (progress.done) return 1;
+    if (progress.totalBytes > 0) return progress.loadedBytes / progress.totalBytes;
+    if (progress.totalTracks > 0) return progress.loadedTracks / progress.totalTracks;
+    return 0;
+  });
+
   async function play(fromMs = 0): Promise<void> {
-    if (!session.value) return;
+    if (!session.value || isLoading.value) return;
     isPlaying.value = true;
     try {
       await invoke('start_session_playback', { path: session.value.path, fromMs });
@@ -298,6 +355,7 @@ export const useSessionStore = defineStore('session', () => {
     clearAudibility();
     const path = session.value?.path;
     session.value = null;
+    loadProgress.value = null;
     waveforms.value = new Map();
     waveformTarget.clear();
     if (path) await invoke('unload_session', { path }).catch(() => {});
@@ -310,6 +368,9 @@ export const useSessionStore = defineStore('session', () => {
   return {
     session,
     isPlaying,
+    loadProgress,
+    isLoading,
+    loadedFraction,
     waveforms,
     durationMs,
     hasTrackInfo,
