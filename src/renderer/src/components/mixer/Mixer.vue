@@ -22,14 +22,11 @@
               :min="spec.min"
               :max="spec.max"
               :step="spec.step"
-              :value="mixer.eq[deckId][spec.param]"
+              :value="mixer.paramValue(deckId, keyOf(spec))"
               orient="vertical"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
-              @input="
-                (e) =>
-                  onEqInput(deckId, spec.param, parseFloat((e.target as HTMLInputElement).value))
-              "
-              @dblclick="onEqReset(deckId, spec.param)"
+              @input="(e) => onInput(deckId, spec, e)"
+              @dblclick="onReset(deckId, spec)"
             />
             <span class="mixer__eq-label">{{ spec.param[0].toUpperCase() }}</span>
           </div>
@@ -38,23 +35,23 @@
         <div class="mixer__filter">
           <button
             class="mixer__filter-btn"
-            :class="{ 'mixer__filter-btn--active': mixer.filterEnabled[deckId] }"
+            :class="{ 'mixer__filter-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
             tabindex="-1"
-            @click="mixer.toggleFilter(deckId)"
+            @click="mixer.toggleParam(deckId, FILTER_ACTIVE)"
           >
             F
           </button>
           <input
             type="range"
             class="mixer__filter-slider"
-            min="-1"
-            max="1"
-            step="0.01"
-            :value="mixer.filter[deckId]"
+            :min="mixer.filterSpec.min"
+            :max="mixer.filterSpec.max"
+            :step="mixer.filterSpec.step"
+            :value="mixer.paramValue(deckId, FILTER_VALUE)"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            @input="(e) => onFilterInput(deckId, parseFloat((e.target as HTMLInputElement).value))"
-            @dblclick="onFilterReset(deckId)"
+            @input="(e) => onInput(deckId, mixer.filterSpec, e)"
+            @dblclick="onReset(deckId, mixer.filterSpec)"
           />
           <button
             class="mixer__filter-btn mixer__filter-btn--ghost"
@@ -70,13 +67,13 @@
           <input
             type="range"
             class="mixer__fader"
-            min="0"
-            max="1"
-            step="0.01"
-            :value="mixer.volume[deckId]"
+            :min="mixer.faderSpec.min"
+            :max="mixer.faderSpec.max"
+            :step="mixer.faderSpec.step"
+            :value="mixer.paramValue(deckId, FADER_GAIN)"
             orient="vertical"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            @input="(e) => onVolumeInput(deckId, parseFloat((e.target as HTMLInputElement).value))"
+            @input="(e) => onInput(deckId, mixer.faderSpec, e)"
           />
           <div class="mixer__meter">
             <div
@@ -139,10 +136,18 @@
 
 <script setup lang="ts">
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { useMixerStore, type EqBand, type XfaderSide } from '@renderer/stores/mixer';
+import {
+  useMixerStore,
+  paramKey,
+  FADER_GAIN,
+  FILTER_VALUE,
+  FILTER_ACTIVE,
+  type XfaderSide
+} from '@renderer/stores/mixer';
 import type { DeckId } from '@renderer/utils/types';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
+import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
@@ -208,24 +213,17 @@ function swarmChannelClass(deckId: DeckId) {
   };
 }
 
-function onVolumeInput(deckId: DeckId, newVal: number) {
-  mixer.swarmAdjust(deckId, { slot: 'volume' }, newVal);
+function keyOf(spec: MixerParamSpec): string {
+  return paramKey(spec.slot, spec.param);
 }
 
-function onFilterInput(deckId: DeckId, newVal: number) {
-  mixer.swarmAdjust(deckId, { slot: 'filter' }, newVal);
+function onInput(deckId: DeckId, spec: MixerParamSpec, event: Event) {
+  if (!(event.target instanceof HTMLInputElement)) return;
+  mixer.swarmAdjust(deckId, keyOf(spec), parseFloat(event.target.value));
 }
 
-function onFilterReset(deckId: DeckId) {
-  mixer.swarmReset(deckId, { slot: 'filter' }, 0);
-}
-
-function onEqInput(deckId: DeckId, band: EqBand, newVal: number) {
-  mixer.swarmAdjust(deckId, { slot: 'eq', band }, newVal);
-}
-
-function onEqReset(deckId: DeckId, band: EqBand) {
-  mixer.swarmReset(deckId, { slot: 'eq', band }, mixer.eqDefault(band));
+function onReset(deckId: DeckId, spec: MixerParamSpec) {
+  mixer.swarmReset(deckId, keyOf(spec), spec.defaultValue);
 }
 </script>
 

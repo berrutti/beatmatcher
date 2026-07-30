@@ -31,7 +31,7 @@ vi.mock('@renderer/stores/settings', () => ({
   })
 }));
 
-import { useMixerStore } from '../mixer';
+import { useMixerStore, paramKey } from '../mixer';
 import { mixerParams } from '@renderer/utils/sessionCore';
 import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { invoke } from '@tauri-apps/api/core';
@@ -76,35 +76,36 @@ describe('mixer writes under fuzzed input', () => {
     for (let step = 0; step < 3000; step++) {
       const deck = DECKS[Math.floor(random() * DECKS.length)];
       const band = BANDS[Math.floor(random() * BANDS.length)];
-      const value = wildValue(random);
-      store.setEq(deck, band, value);
+      const key = paramKey('eq', band);
+      store.setParam(deck, key, wildValue(random));
 
-      expect(store.eq[deck][band], `step ${step}`).toBeGreaterThanOrEqual(min);
-      expect(store.eq[deck][band], `step ${step}`).toBeLessThanOrEqual(max);
+      expect(store.paramValue(deck, key), `step ${step}`).toBeGreaterThanOrEqual(min);
+      expect(store.paramValue(deck, key), `step ${step}`).toBeLessThanOrEqual(max);
       const last = mockedInvoke.mock.calls[mockedInvoke.mock.calls.length - 1];
-      const payload = last[1] as { db: number };
-      expect(payload.db, `step ${step}`).toBe(store.eq[deck][band]);
+      const payload = last[1] as { value: number };
+      expect(payload.value, `step ${step}`).toBe(store.paramValue(deck, key));
     }
   });
 
-  it('keeps volume, filter and the crossfader inside their ranges', () => {
+  // Every deck-scope address, looped from the manifest, so a param the mixer
+  // gains is fuzzed without this test naming it.
+  it('keeps every manifest param and the crossfader inside their ranges', () => {
     const store = useMixerStore();
     const random = makeRandom(11);
+    const specs = Object.values(mixerParams(LIVE_MIXER_ID));
 
     for (let step = 0; step < 3000; step++) {
       const deck = DECKS[Math.floor(random() * DECKS.length)];
-      store.setVolume(deck, wildValue(random));
-      store.setFilter(deck, wildValue(random));
       store.setXfaderPosition(wildValue(random));
       store.setMasterGain(wildValue(random));
       store.setCueMix(wildValue(random));
 
-      const fader = rangeOf('fader', 'gain');
-      const filter = rangeOf('filter', 'value');
-      expect(store.volume[deck], `step ${step}`).toBeGreaterThanOrEqual(fader.min);
-      expect(store.volume[deck], `step ${step}`).toBeLessThanOrEqual(fader.max);
-      expect(store.filter[deck], `step ${step}`).toBeGreaterThanOrEqual(filter.min);
-      expect(store.filter[deck], `step ${step}`).toBeLessThanOrEqual(filter.max);
+      for (const spec of specs) {
+        const key = paramKey(spec.slot, spec.param);
+        store.setParam(deck, key, wildValue(random));
+        expect(store.paramValue(deck, key), `step ${step} ${key}`).toBeGreaterThanOrEqual(spec.min);
+        expect(store.paramValue(deck, key), `step ${step} ${key}`).toBeLessThanOrEqual(spec.max);
+      }
       expect(Math.abs(store.xfaderPosition), `step ${step}`).toBeLessThanOrEqual(1);
       expect(store.masterGain, `step ${step}`).toBeGreaterThanOrEqual(0);
       expect(store.masterGain, `step ${step}`).toBeLessThanOrEqual(1);

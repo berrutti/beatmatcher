@@ -339,6 +339,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
                 .or_default()
                 .xfader_assign = assign;
         }
+        SessionCommand::SetFaderCurve { curve } => {
+            state.fader_curve = curve;
+        }
         SessionCommand::SetNudge { deck, percent } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
             sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
@@ -430,9 +433,6 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             }
             (None, "xfader", "position") => {
                 state.xfader_position = value as f32;
-            }
-            (None, "fader_curve", "shape") => {
-                state.fader_curve = crate::FaderCurve::from_param(value);
             }
             _ => {}
         },

@@ -9,22 +9,33 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 }));
 
 import { FADER_CURVE_OPTIONS } from '../settings';
-import { faderCurvePlots } from '@renderer/utils/sessionCore';
+import { faderCurveGain } from '@renderer/utils/sessionCore';
 
-// The settings screen looks each curve up by the name it stores, and the engine
-// names them independently. A mismatch draws an empty box rather than failing.
+// The settings screen asks for each curve by the name it stores, and the engine
+// names them independently. A mismatch silently draws a linear line.
 describe('fader curve options', () => {
-  it('names every curve the engine plots, and no others', () => {
-    const plotted = Object.keys(faderCurvePlots(4)).sort();
-    expect([...FADER_CURVE_OPTIONS].sort()).toEqual(plotted);
+  it('names a curve the engine recognises, for every option', () => {
+    const shapes = FADER_CURVE_OPTIONS.map((curve) => faderCurveGain(curve, 0.5));
+    expect(new Set(shapes).size).toBe(FADER_CURVE_OPTIONS.length);
   });
 
-  it('plots one more point than the sample count, spanning the whole throw', () => {
-    const plots = faderCurvePlots(4);
+  it('holds both ends of the throw on every curve', () => {
     for (const curve of FADER_CURVE_OPTIONS) {
-      expect(plots[curve]).toHaveLength(5);
-      expect(plots[curve][0]).toBe(0);
-      expect(plots[curve][4]).toBe(1);
+      expect(faderCurveGain(curve, 0), curve).toBe(0);
+      expect(faderCurveGain(curve, 1), curve).toBe(1);
+    }
+  });
+
+  it('orders the curves from quietest to loudest across the throw', () => {
+    const [exponential, linear, logarithmic] = FADER_CURVE_OPTIONS;
+    for (let step = 1; step < 10; step++) {
+      const position = step / 10;
+      expect(faderCurveGain(exponential, position)).toBeLessThan(
+        faderCurveGain(linear, position)
+      );
+      expect(faderCurveGain(linear, position)).toBeLessThan(
+        faderCurveGain(logarithmic, position)
+      );
     }
   });
 });

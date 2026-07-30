@@ -24,12 +24,6 @@ pub enum Taper {
     Bipolar { center: f64 },
 }
 
-pub enum ParamKind {
-    Knob,
-    Fader,
-    Toggle,
-}
-
 pub struct ParamDescriptor {
     pub id: &'static str,
     pub label: &'static str,
@@ -41,7 +35,6 @@ pub struct ParamDescriptor {
     pub unit: ParamUnit,
     pub taper: Taper,
     pub dead_zone: Option<f64>,
-    pub kind: ParamKind,
     pub automatable: bool,
     pub lane_group: u8,
 }
@@ -108,9 +101,6 @@ pub struct MixerManifest {
 // The cue sheet decides a track is audible from the fader, not from the mix, so
 // every manifest has to provide this address whatever unit fills the slot.
 pub const FADER_GAIN: (&str, &str) = ("fader", "gain");
-
-/// Master scope: one switch sets the taper of every channel fader, as on a mixer.
-pub const FADER_CURVE_SHAPE: (&str, &str) = ("fader_curve", "shape");
 
 pub const REQUIRED_STRIP_ROLES: &[(&str, &str)] = &[FADER_GAIN];
 
@@ -307,7 +297,6 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
             unit: ParamUnit::Normalized,
             taper: Taper::Bipolar { center: 0.0 },
             dead_zone: Some(crate::FILTER_DEAD_ZONE),
-            kind: ParamKind::Knob,
             automatable: true,
             lane_group: 1,
         },
@@ -322,7 +311,6 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
             unit: ParamUnit::Bool,
             taper: Taper::Linear,
             dead_zone: None,
-            kind: ParamKind::Toggle,
             automatable: false,
             lane_group: 1,
         },
@@ -343,7 +331,6 @@ const FADER_SLOT: SlotDescriptor = SlotDescriptor {
         unit: ParamUnit::Normalized,
         taper: Taper::Linear,
         dead_zone: None,
-        kind: ParamKind::Fader,
         automatable: true,
         lane_group: 0,
     }],
@@ -363,7 +350,6 @@ const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
         unit: ParamUnit::Normalized,
         taper: Taper::Linear,
         dead_zone: None,
-        kind: ParamKind::Fader,
         automatable: true,
         lane_group: 0,
     }],
@@ -385,7 +371,6 @@ const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
         unit: ParamUnit::Normalized,
         taper: Taper::Linear,
         dead_zone: None,
-        kind: ParamKind::Fader,
         automatable: true,
         lane_group: 0,
     }],
@@ -453,28 +438,8 @@ pub fn xfader_gains(position: f64) -> (f64, f64) {
     (angle.cos(), angle.sin())
 }
 
-const FADER_CURVE_SLOT: SlotDescriptor = SlotDescriptor {
-    slot: FADER_CURVE_SHAPE.0,
-    unit_id: "fader_curve",
-    params: &[ParamDescriptor {
-        id: FADER_CURVE_SHAPE.1,
-        label: "Fader curve",
-        short_label: "FC",
-        min: FaderCurve::Exponential.as_param(),
-        max: FaderCurve::Logarithmic.as_param(),
-        default: FaderCurve::Linear.as_param(),
-        step: 1.0,
-        unit: ParamUnit::Ratio,
-        taper: Taper::Linear,
-        dead_zone: None,
-        kind: ParamKind::Toggle,
-        automatable: false,
-        lane_group: 0,
-    }],
-};
-
-/// How a channel fader's throw maps to gain. Ordered from the steepest taper to
-/// the shallowest, so the param reads as one axis.
+/// How a channel fader's throw maps to gain. Categorical, so it travels by name
+/// and gets its own event, the way `XfaderAssign` does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FaderCurve {
@@ -499,23 +464,13 @@ impl FaderCurve {
         }
     }
 
-    pub const fn as_param(self) -> f64 {
-        match self {
-            Self::Exponential => 0.0,
-            Self::Linear => 1.0,
-            Self::Logarithmic => 2.0,
-        }
-    }
-
-    /// Infallible so a session written by a newer build plays on a linear fader
-    /// rather than failing to load.
-    pub fn from_param(value: f64) -> Self {
-        if value <= Self::Exponential.as_param() {
-            Self::Exponential
-        } else if value >= Self::Logarithmic.as_param() {
-            Self::Logarithmic
-        } else {
-            Self::Linear
+    /// Infallible so a session naming a curve this build does not have plays on a
+    /// linear fader rather than failing to load.
+    pub fn from_str_or_linear(value: &str) -> Self {
+        match value {
+            "exponential" => Self::Exponential,
+            "logarithmic" => Self::Logarithmic,
+            _ => Self::Linear,
         }
     }
 
@@ -531,7 +486,7 @@ impl FaderCurve {
 
 const MASTER_SLOTS: &[SlotDescriptor] = &[MASTER_GAIN_SLOT];
 
-const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT, FADER_CURVE_SLOT];
+const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT];
 
 // The same strip as the classic mixer with a different unit in the `eq` slot:
 // full kill instead of a shelf, so the params share their ids but not their
@@ -592,7 +547,6 @@ const fn isolator_param(
         unit: ParamUnit::Normalized,
         taper: Taper::Linear,
         dead_zone: None,
-        kind: ParamKind::Knob,
         automatable: true,
         lane_group: 3,
     }
@@ -616,7 +570,6 @@ const fn eq_param(
         // though the kill side is far longer than the boost side.
         taper: Taper::Bipolar { center: 0.0 },
         dead_zone: None,
-        kind: ParamKind::Knob,
         automatable: true,
         lane_group: 3,
     }
@@ -643,7 +596,6 @@ mod tests {
             unit: ParamUnit::Normalized,
             taper: Taper::Linear,
             dead_zone: None,
-            kind: ParamKind::Fader,
             automatable: true,
             lane_group: 0,
         }
@@ -672,33 +624,31 @@ mod tests {
         }
     }
 
-    // Serde deserializes the name the frontend sends; `as_str` produces the name it
-    // plots by. Nothing else holds the two in step.
+    // Three ways in and out of the same name: serde for the Tauri command, and
+    // `as_str`/`from_str_or_linear` for the WASM boundary. Nothing else holds them
+    // in step.
     #[test]
-    fn every_fader_curve_deserializes_from_the_name_it_reports() {
+    fn every_fader_curve_round_trips_through_the_name_it_reports() {
         for curve in [
             FaderCurve::Exponential,
             FaderCurve::Linear,
             FaderCurve::Logarithmic,
         ] {
-            let json = format!("\"{}\"", curve.as_str());
+            let name = curve.as_str();
+            assert_eq!(FaderCurve::from_str_or_linear(name), curve);
             assert_eq!(
-                serde_json::from_str::<FaderCurve>(&json).expect("a curve name"),
+                serde_json::from_str::<FaderCurve>(&format!("\"{name}\"")).expect("a curve name"),
                 curve
             );
         }
     }
 
-    // A session recorded before the param existed carries no shape event, and
+    // A session recorded before the curve existed carries no curve event, and
     // resolving it to anything but linear would re-render every one of them.
     #[test]
     fn the_fader_curve_defaults_to_linear() {
         assert_eq!(FaderCurve::default(), FaderCurve::Linear);
-        assert_eq!(
-            FADER_CURVE_SLOT.params[0].default,
-            FaderCurve::Linear.as_param()
-        );
-        assert_eq!(FaderCurve::from_param(f64::NAN), FaderCurve::Linear);
+        assert_eq!(FaderCurve::from_str_or_linear("sawtooth"), FaderCurve::Linear);
     }
 
     // Exactly zero, not merely small: `cue.rs` decides audibility with `> 0.0`,
@@ -818,7 +768,6 @@ mod tests {
                     unit: ParamUnit::Normalized,
                     taper: Taper::Linear,
                     dead_zone: None,
-                    kind: ParamKind::Fader,
                     automatable: true,
                     lane_group: 0,
                 }],

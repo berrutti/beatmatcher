@@ -130,11 +130,12 @@ pub(crate) fn apply_deck_command(
             deck.compensate_late_start(overshoot_f);
         }
 
-        // Master scope never reaches here: it has no deck, so callers route it
-        // separately.
         SessionCommand::SetXfaderAssign { assign, .. } => {
             strip.set_xfader_assign(assign);
         }
+        // Master scope never reaches here: it has no deck, so callers route it
+        // separately.
+        SessionCommand::SetFaderCurve { .. } => {}
         SessionCommand::SetParam {
             slot, param, value, ..
         } => match (slot, param) {

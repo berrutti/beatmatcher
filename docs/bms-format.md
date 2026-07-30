@@ -44,6 +44,7 @@ An older version is never rejected. Reading a session ports it: every event in a
 | `set_loop_active`                          | `deck`, `active`                                                                                                     | loop toggled                                                      |
 | `set_param`                                | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                    |
 | `set_xfader_assign`                        | `deck`, `assign`                                                                                                     | which crossfader bus a channel is on                              |
+| `set_fader_curve`                          | `curve`                                                                                                              | the taper every channel fader runs on                             |
 
 ## Mixer parameters
 
@@ -57,7 +58,6 @@ Every mixer parameter is one `set_param` event addressed as **deck / slot / para
 | `filter`      | `active`               | deck   | 0 or 1, filter on/off                  |
 | `gain`        | `gain`                 | master | 0-1, master output level               |
 | `xfader`      | `position`             | master | -1 to +1, -1 full A, +1 full B         |
-| `fader_curve` | `shape`                | master | 0 exponential, 1 linear, 2 logarithmic |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
@@ -83,13 +83,15 @@ The crossfader arrived in the `-v2` manifests. The `classic-3band` and `isolator
 
 ## Channel fader curve
 
-`fader/gain` records the throw of the fader, not the gain it produces. How that throw maps to gain is `fader_curve/shape`, one master-scope value that sets the taper of every channel at once, the way one switch does on a mixer.
+`fader/gain` records the throw of the fader, not the gain it produces. How that throw maps to gain is the curve, one setting that applies to every channel at once, the way one switch does on a mixer. Like `set_xfader_assign`, it is a choice between named alternatives rather than a number, so it is its own event and not a `set_param`:
 
 ```json
-{ "elapsed_ms": 0.0, "type": "set_param", "slot": "fader_curve", "param": "shape", "value": 0.0 }
+{ "elapsed_ms": 0.0, "type": "set_fader_curve", "curve": "exponential" }
 ```
 
-Linear is the default, so a session that never sets a shape renders exactly as it did before the parameter existed. Recording writes the shape once at `recording_start`, because the curve is a setting rather than something performed: nothing else in the session would say which taper the fader moves were played on. All three curves hold both ends of the throw exactly, so a fader at zero is silent and a fader at the top is unity whichever is selected, and the CUE sheet's audibility test is unaffected by the choice.
+`curve` is `exponential`, `linear` or `logarithmic`. An unrecognized value reads as `linear`, so a session written by a newer build plays on a straight fader rather than failing to load. Linear is also the default, so a session that never names a curve renders exactly as it did before curves existed.
+
+Recording writes the curve once at `recording_start`, because it is a setting rather than something performed: nothing else in the session would say which taper the fader moves were played through. All three curves hold both ends of the throw exactly, so a fader at zero is silent and a fader at the top is unity whichever is selected, and the CUE sheet's audibility test is unaffected by the choice.
 
 ## Latency compensation
 

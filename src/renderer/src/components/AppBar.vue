@@ -145,5 +145,4 @@ async function onConfirm() {
   border-color: var(--color-text);
   color: var(--color-text);
 }
-
 </style>

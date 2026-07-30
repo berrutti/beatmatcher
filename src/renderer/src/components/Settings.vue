@@ -365,7 +365,7 @@ import {
   type JogRotationSpeedOption,
   type FaderCurveOption
 } from '@renderer/stores/settings';
-import { faderCurvePlots } from '@renderer/utils/sessionCore';
+import { faderCurveGain } from '@renderer/utils/sessionCore';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
@@ -395,16 +395,13 @@ const FADER_CURVE_LABELS = computed((): Record<FaderCurveOption, string> => ({
 
 const CURVE_PLOT_SAMPLES = 24;
 const CURVE_PLOT_SIZE = 100;
-const curvePlots = faderCurvePlots(CURVE_PLOT_SAMPLES);
 
 function curvePlot(curve: FaderCurveOption): string {
-  const gains = curvePlots[curve] ?? [];
-  return gains
-    .map((gain, index) => {
-      const x = (index / (gains.length - 1)) * CURVE_PLOT_SIZE;
-      return `${x},${CURVE_PLOT_SIZE - gain * CURVE_PLOT_SIZE}`;
-    })
-    .join(' ');
+  return Array.from({ length: CURVE_PLOT_SAMPLES + 1 }, (_unused, index) => {
+    const position = index / CURVE_PLOT_SAMPLES;
+    const gain = faderCurveGain(curve, position);
+    return `${position * CURVE_PLOT_SIZE},${CURVE_PLOT_SIZE - gain * CURVE_PLOT_SIZE}`;
+  }).join(' ');
 }
 
 const RECORDING_FORMAT_LABELS = computed((): Record<RecordingFormatOption, string> => ({

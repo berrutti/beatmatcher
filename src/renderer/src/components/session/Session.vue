@@ -451,5 +451,4 @@ onUnmounted(() => {
   color: var(--color-text);
   border-color: var(--color-text);
 }
-
 </style>

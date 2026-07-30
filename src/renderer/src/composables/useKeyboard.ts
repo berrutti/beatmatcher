@@ -2,7 +2,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { Deck, useDecksStore } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/utils/types';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useMixerStore } from '@renderer/stores/mixer';
+import { useMixerStore, FADER_GAIN, FILTER_ACTIVE } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
@@ -145,7 +145,7 @@ export function useKeyboard() {
       if (spaceHeld.value) {
         mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
       } else if (e.shiftKey) {
-        mixer.toggleFilter(digitDeck);
+        mixer.toggleParam(digitDeck, FILTER_ACTIVE);
       } else if (mixer.activeDecks.includes(digitDeck)) {
         mixer.setSwarmMode(true);
         mixer.setSwarmChannel(digitDeck, true);
@@ -213,7 +213,9 @@ export function useKeyboard() {
     e.preventDefault();
     const delta = e.deltaY * SWARM_SWIPE_SENSITIVITY;
     for (const deckId of Object.keys(mixer.swarmSelected) as DeckId[]) {
-      if (mixer.swarmSelected[deckId]) mixer.setVolume(deckId, mixer.volume[deckId] + delta);
+      if (mixer.swarmSelected[deckId]) {
+        mixer.setParam(deckId, FADER_GAIN, mixer.paramValue(deckId, FADER_GAIN) + delta);
+      }
     }
   }
 

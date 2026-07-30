@@ -456,11 +456,12 @@ fn apply_event(
             *xfader_position = (value as f32).clamp(-1.0, 1.0);
             resolve_xfader_gains(strips, *xfader_position);
         }
-        if (slot, param) == session_core::FADER_CURVE_SHAPE {
-            let curve = session_core::FaderCurve::from_param(value);
-            for strip in strips.values_mut() {
-                strip.set_fader_curve(curve);
-            }
+        return Ok(());
+    }
+
+    if let SessionCommand::SetFaderCurve { curve } = cmd {
+        for strip in strips.values_mut() {
+            strip.set_fader_curve(curve);
         }
         return Ok(());
     }

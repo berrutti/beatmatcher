@@ -35,7 +35,7 @@ vi.mock('@renderer/stores/settings', () => ({
 }));
 
 import Mixer from '@renderer/components/mixer/Mixer.vue';
-import { useMixerStore } from '@renderer/stores/mixer';
+import { useMixerStore, FADER_GAIN } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/utils/types';
 
@@ -89,9 +89,9 @@ describe('the mixer under fuzzed swarm drags', () => {
       await Promise.resolve();
 
       for (const deck of DECKS) {
-        expect(Number.isFinite(store.volume[deck]), `step ${step}`).toBe(true);
-        expect(store.volume[deck], `step ${step}`).toBeGreaterThanOrEqual(0);
-        expect(store.volume[deck], `step ${step}`).toBeLessThanOrEqual(1);
+        expect(Number.isFinite(store.paramValue(deck, FADER_GAIN)), `step ${step}`).toBe(true);
+        expect(store.paramValue(deck, FADER_GAIN), `step ${step}`).toBeGreaterThanOrEqual(0);
+        expect(store.paramValue(deck, FADER_GAIN), `step ${step}`).toBeLessThanOrEqual(1);
       }
     }
   });
@@ -111,7 +111,7 @@ describe('the mixer under fuzzed swarm drags', () => {
       dragFader(index, target);
       await Promise.resolve();
 
-      expect(store.volume[DECKS[index]], `step ${step}`).toBeCloseTo(target, 10);
+      expect(store.paramValue(DECKS[index], FADER_GAIN), `step ${step}`).toBeCloseTo(target, 10);
     }
   });
 
@@ -121,20 +121,20 @@ describe('the mixer under fuzzed swarm drags', () => {
     store.setSwarmChannel(DECKS[0], true);
     for (const deck of DECKS.slice(1)) store.setSwarmChannel(deck, false);
     const untouched = DECKS[2];
-    store.setVolume(untouched, 0.42);
+    store.setParam(untouched, FADER_GAIN, 0.42);
 
     dragFader(0, 0.1);
     await Promise.resolve();
     dragFader(0, 0.9);
     await Promise.resolve();
 
-    expect(store.volume[untouched]).toBe(0.42);
+    expect(store.paramValue(untouched, FADER_GAIN)).toBe(0.42);
   });
 
   it('moves only the dragged channel with swarm off', async () => {
     const store = useMixerStore();
     const random = makeRandom(13);
-    for (const deck of DECKS) store.setVolume(deck, 0.5);
+    for (const deck of DECKS) store.setParam(deck, FADER_GAIN, 0.5);
 
     for (let step = 0; step < 300; step++) {
       const index = Math.floor(random() * DECKS.length);
@@ -142,11 +142,11 @@ describe('the mixer under fuzzed swarm drags', () => {
       dragFader(index, target);
       await Promise.resolve();
 
-      expect(store.volume[DECKS[index]], `step ${step}`).toBeCloseTo(target, 10);
+      expect(store.paramValue(DECKS[index], FADER_GAIN), `step ${step}`).toBeCloseTo(target, 10);
       for (const [other, deck] of DECKS.entries()) {
-        if (other !== index) expect(store.volume[deck], `step ${step}`).toBe(0.5);
+        if (other !== index) expect(store.paramValue(deck, FADER_GAIN), `step ${step}`).toBe(0.5);
       }
-      store.setVolume(DECKS[index], 0.5);
+      store.setParam(DECKS[index], FADER_GAIN, 0.5);
     }
   });
 });

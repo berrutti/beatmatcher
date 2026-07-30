@@ -531,19 +531,18 @@ pub(crate) fn clear_loop_region(
     Ok(())
 }
 
+/// Every deck-scope mixer move, addressed the way the manifest addresses it. An
+/// address the manifest does not describe is ignored rather than refused, the
+/// same way a session recorded on a richer mixer replays everything else.
 #[tauri::command]
-pub(crate) fn set_volume(
+pub(crate) fn set_deck_param(
     state: tauri::State<'_, AppState>,
     deck: String,
-    gain: f32,
+    slot: String,
+    param: String,
+    value: f32,
 ) -> Result<(), String> {
-    state.set_deck_param(
-        ParamOrigin::Ui,
-        &deck,
-        session_core::FADER_GAIN.0,
-        session_core::FADER_GAIN.1,
-        gain,
-    )
+    state.set_deck_param(ParamOrigin::Ui, &deck, &slot, &param, value)
 }
 
 // Session-view mute/solo. Not logged: it is a monitoring control, not a
@@ -621,40 +620,6 @@ pub(crate) fn set_quantize(
         .unwrap_or_else(|e| e.into_inner())
         .quantize = quantize;
     Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn set_eq(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    band: String,
-    db: f32,
-) -> Result<(), String> {
-    state.set_deck_param(ParamOrigin::Ui, &deck, "eq", &band, db)
-}
-
-#[tauri::command]
-pub(crate) fn set_filter(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    value: f32,
-) -> Result<(), String> {
-    state.set_deck_param(ParamOrigin::Ui, &deck, "filter", "value", value)
-}
-
-#[tauri::command]
-pub(crate) fn set_filter_active(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    active: bool,
-) -> Result<(), String> {
-    state.set_deck_param(
-        ParamOrigin::Ui,
-        &deck,
-        "filter",
-        "active",
-        if active { 1.0 } else { 0.0 },
-    )
 }
 
 // Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
@@ -789,12 +754,8 @@ pub(crate) fn start_recording(
             // A setting rather than a performed move, so nothing else in the
             // session would ever say which curve the fader moves were played on.
             logger.log(
-                "set_param",
-                serde_json::json!({
-                    "slot": session_core::FADER_CURVE_SHAPE.0,
-                    "param": session_core::FADER_CURVE_SHAPE.1,
-                    "value": state.audio.monitor.fader_curve().as_param(),
-                }),
+                "set_fader_curve",
+                serde_json::json!({ "curve": state.audio.monitor.fader_curve().as_str() }),
             );
             for deck_id in ["A", "B", "C", "D"] {
                 let Some(arc) = state.audio.deck(deck_id) else {

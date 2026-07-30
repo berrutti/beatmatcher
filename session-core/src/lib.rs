@@ -20,9 +20,9 @@ pub use clip_edit::{
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use param::{
     is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, MixerHeader, MixerManifest,
-    ParamDescriptor, xfader_gains, ParamKind, ParamScope, ParamUnit, SlotDescriptor, Taper,
-    XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_CURVE_SHAPE, FADER_GAIN, ISOLATOR_3BAND,
-    ISOLATOR_3BAND_V2, MANIFESTS, REQUIRED_STRIP_ROLES,
+    ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
+    XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2,
+    MANIFESTS, REQUIRED_STRIP_ROLES,
 };
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
@@ -192,24 +192,11 @@ mod wasm {
         crate::BMS_VERSION
     }
 
-    /// Each fader curve sampled over its throw, so the settings screen plots what
-    /// the engine applies instead of a JS copy of the taper.
-    #[wasm_bindgen(js_name = faderCurvePlots)]
-    pub fn fader_curve_plots(samples: usize) -> String {
-        let map: serde_json::Map<String, serde_json::Value> = [
-            crate::FaderCurve::Exponential,
-            crate::FaderCurve::Linear,
-            crate::FaderCurve::Logarithmic,
-        ]
-        .into_iter()
-        .map(|curve| {
-            let gains: Vec<f64> = (0..=samples)
-                .map(|step| curve.gain(step as f64 / samples as f64))
-                .collect();
-            (curve.as_str().to_string(), serde_json::json!(gains))
-        })
-        .collect();
-        serde_json::Value::Object(map).to_string()
+    /// The gain a curve puts on a fader position, so a caller can show the taper
+    /// the engine actually applies without reimplementing it.
+    #[wasm_bindgen(js_name = faderCurveGain)]
+    pub fn fader_curve_gain(curve: &str, position: f64) -> f64 {
+        crate::FaderCurve::from_str_or_linear(curve).gain(position)
     }
 
     /// The shared edit/mixer constants, from the one place they are defined.

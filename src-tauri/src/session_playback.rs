@@ -782,14 +782,7 @@ fn apply_event_live(
                     }
                 }
             }
-            SessionCommand::SetParam {
-                scope: session_core::ParamScope::Master,
-                slot: "fader_curve",
-                param: "shape",
-                value,
-                ..
-            } => {
-                let curve = session_core::FaderCurve::from_param(value);
+            SessionCommand::SetFaderCurve { curve } => {
                 for id in ["A", "B", "C", "D"] {
                     if let Some(strip_arc) = audio.strip(id) {
                         strip_arc
@@ -1179,6 +1172,7 @@ mod tests {
             // No mixer param affects position, hence the single false.
             SessionCommand::SetParam { .. } => ("set_param", false),
             SessionCommand::SetXfaderAssign { .. } => ("set_xfader_assign", false),
+            SessionCommand::SetFaderCurve { .. } => ("set_fader_curve", false),
         }
     }
 

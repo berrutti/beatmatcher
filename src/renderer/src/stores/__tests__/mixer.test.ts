@@ -31,47 +31,70 @@ vi.mock('@renderer/stores/settings', () => ({
   })
 }));
 
-import { useMixerStore, type XfaderSide } from '../mixer';
-import { editConstants } from '@renderer/utils/sessionCore';
+import { useMixerStore, paramKey, FADER_GAIN, type XfaderSide } from '../mixer';
+import { editConstants, mixerParams } from '@renderer/utils/sessionCore';
+import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 
 const { eqMinDb: EQ_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
 import { invoke } from '@tauri-apps/api/core';
 
 const mockedInvoke = vi.mocked(invoke);
 
-describe('setEq', () => {
+const EQ_LOW = paramKey('eq', 'low');
+const EQ_MID = paramKey('eq', 'mid');
+const EQ_HIGH = paramKey('eq', 'high');
+
+// Looped from the manifest rather than named, so a param the mixer gains is
+// covered here without this file being edited. That is the whole point of the
+// store holding one record instead of a field per address.
+const LIVE_SPECS = Object.values(mixerParams(LIVE_MIXER_ID));
+
+describe('setParam', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
   });
 
-  it('updates eq state and invokes set_eq', () => {
+  it('holds and invokes every deck-scope address the manifest describes', () => {
     const store = useMixerStore();
-    store.setEq('A', 'high', 3);
-    expect(store.eq.A.high).toBe(3);
-    expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck: 'A', band: 'high', db: 3 });
+    for (const spec of LIVE_SPECS) {
+      const key = paramKey(spec.slot, spec.param);
+      const midpoint = (spec.min + spec.max) / 2;
+      store.setParam('A', key, midpoint);
+      expect(store.paramValue('A', key), key).toBe(midpoint);
+      expect(mockedInvoke).toHaveBeenCalledWith('set_deck_param', {
+        deck: 'A',
+        slot: spec.slot,
+        param: spec.param,
+        value: midpoint
+      });
+    }
   });
 
-  it('clamps below EQ_MIN_DB', () => {
+  it('clamps every address to its own descriptor', () => {
     const store = useMixerStore();
-    store.setEq('B', 'low', EQ_MIN_DB - 10);
-    expect(store.eq.B.low).toBe(EQ_MIN_DB);
-    expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck: 'B', band: 'low', db: EQ_MIN_DB });
+    for (const spec of LIVE_SPECS) {
+      const key = paramKey(spec.slot, spec.param);
+      store.setParam('B', key, spec.max + 100);
+      expect(store.paramValue('B', key), key).toBe(spec.max);
+      store.setParam('B', key, spec.min - 100);
+      expect(store.paramValue('B', key), key).toBe(spec.min);
+    }
   });
 
-  it('clamps above EQ_MAX_DB', () => {
+  it('ignores an address the manifest does not describe', () => {
     const store = useMixerStore();
-    store.setEq('C', 'mid', EQ_MAX_DB + 10);
-    expect(store.eq.C.mid).toBe(EQ_MAX_DB);
-    expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck: 'C', band: 'mid', db: EQ_MAX_DB });
+    store.setParam('A', paramKey('eq', 'sub'), 5);
+    expect(store.paramValue('A', paramKey('eq', 'sub'))).toBe(0);
+    expect(mockedInvoke).not.toHaveBeenCalled();
   });
 
-  it('does not affect other decks or bands', () => {
+  it('does not affect other decks or params', () => {
     const store = useMixerStore();
-    store.setEq('A', 'low', 4);
-    expect(store.eq.A.mid).toBe(0);
-    expect(store.eq.A.high).toBe(0);
-    expect(store.eq.B.low).toBe(0);
+    store.setParam('A', EQ_LOW, 4);
+    expect(store.paramValue('A', EQ_MID)).toBe(0);
+    expect(store.paramValue('A', EQ_HIGH)).toBe(0);
+    expect(store.paramValue('B', EQ_LOW)).toBe(0);
   });
 });
 
@@ -93,6 +116,14 @@ describe('eq specs', () => {
       expect(spec.step).toBeGreaterThan(0);
     }
   });
+
+  it('gives the filter and fader sliders their range too', () => {
+    const store = useMixerStore();
+    expect(store.filterSpec.min).toBe(-1);
+    expect(store.filterSpec.max).toBe(1);
+    expect(store.faderSpec.min).toBe(0);
+    expect(store.faderSpec.max).toBe(1);
+  });
 });
 
 describe('reset', () => {
@@ -101,56 +132,22 @@ describe('reset', () => {
     vi.clearAllMocks();
   });
 
-  it('resets volume to 1 for all live decks', () => {
+  it('returns every param on every live deck to its descriptor default', () => {
     const store = useMixerStore();
-    store.setVolume('A', 0.3);
-    store.setVolume('B', 0.5);
-    vi.clearAllMocks();
-
-    store.reset();
-
-    expect(store.volume.A).toBe(1);
-    expect(store.volume.B).toBe(1);
-    expect(store.volume.C).toBe(1);
-    expect(store.volume.D).toBe(1);
-  });
-
-  it('resets all EQ bands to the mixer default for all live decks', () => {
-    const store = useMixerStore();
-    store.setEq('A', 'low', 5);
-    store.setEq('B', 'high', -10);
-    vi.clearAllMocks();
-
-    store.reset();
-
-    for (const deckId of ['A', 'B', 'C', 'D'] as const) {
-      expect(store.eq[deckId].low).toBe(store.eqDefault('low'));
-      expect(store.eq[deckId].mid).toBe(store.eqDefault('mid'));
-      expect(store.eq[deckId].high).toBe(store.eqDefault('high'));
+    for (const spec of LIVE_SPECS) {
+      const key = paramKey(spec.slot, spec.param);
+      for (const deckId of ['A', 'B', 'C', 'D'] as const) store.setParam(deckId, key, spec.max);
     }
-  });
-
-  it('resets filter to 0 for all live decks', () => {
-    const store = useMixerStore();
-    store.setFilter('A', 0.8);
     vi.clearAllMocks();
 
     store.reset();
 
-    expect(store.filter.A).toBe(0);
-    expect(store.filter.B).toBe(0);
-  });
-
-  it('resets filterEnabled to false for all live decks', () => {
-    const store = useMixerStore();
-    store.toggleFilter('A');
-    store.toggleFilter('C');
-    vi.clearAllMocks();
-
-    store.reset();
-
-    expect(store.filterEnabled.A).toBe(false);
-    expect(store.filterEnabled.C).toBe(false);
+    for (const spec of LIVE_SPECS) {
+      const key = paramKey(spec.slot, spec.param);
+      for (const deckId of ['A', 'B', 'C', 'D'] as const) {
+        expect(store.paramValue(deckId, key), `${deckId} ${key}`).toBe(spec.defaultValue);
+      }
+    }
   });
 
   it('resets cueActive to false for all live decks', () => {
@@ -170,28 +167,30 @@ describe('reset', () => {
     store.reset();
 
     for (const deck of ['A', 'B', 'C', 'D']) {
-      expect(mockedInvoke).toHaveBeenCalledWith('set_volume', { deck, gain: 1 });
-      expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck, band: 'low', db: 0 });
-      expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck, band: 'mid', db: 0 });
-      expect(mockedInvoke).toHaveBeenCalledWith('set_eq', { deck, band: 'high', db: 0 });
-      expect(mockedInvoke).toHaveBeenCalledWith('set_filter', { deck, value: 0 });
-      expect(mockedInvoke).toHaveBeenCalledWith('set_filter_active', { deck, active: false });
+      for (const spec of LIVE_SPECS) {
+        expect(mockedInvoke).toHaveBeenCalledWith('set_deck_param', {
+          deck,
+          slot: spec.slot,
+          param: spec.param,
+          value: spec.defaultValue
+        });
+      }
       expect(mockedInvoke).toHaveBeenCalledWith('set_cue_active', { deck, active: false });
     }
   });
 
   it('does not touch deck E', () => {
     const store = useMixerStore();
-    store.setVolume('E', 0.5);
+    store.setParam('E', FADER_GAIN, 0.5);
     vi.clearAllMocks();
 
     store.reset();
 
-    expect(store.volume.E).toBe(0.5);
-    expect(mockedInvoke).not.toHaveBeenCalledWith('set_volume', {
-      deck: 'E',
-      gain: expect.anything()
-    });
+    expect(store.paramValue('E', FADER_GAIN)).toBe(0.5);
+    expect(mockedInvoke).not.toHaveBeenCalledWith(
+      'set_deck_param',
+      expect.objectContaining({ deck: 'E' })
+    );
   });
 });
 
@@ -201,18 +200,16 @@ describe('applyEngineParam', () => {
     vi.clearAllMocks();
   });
 
+  // Looped, like the setter tests: a push for a param the mixer gained has to
+  // land without this file naming it.
   it('mirrors every deck param the mixer holds', () => {
     const store = useMixerStore();
 
-    store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'low', value: -6 });
-    store.applyEngineParam({ deck: 'B', slot: 'fader', param: 'gain', value: 0.25 });
-    store.applyEngineParam({ deck: 'C', slot: 'filter', param: 'value', value: -0.5 });
-    store.applyEngineParam({ deck: 'D', slot: 'filter', param: 'active', value: 1 });
-
-    expect(store.eq.A.low).toBe(-6);
-    expect(store.volume.B).toBe(0.25);
-    expect(store.filter.C).toBe(-0.5);
-    expect(store.filterEnabled.D).toBe(true);
+    for (const spec of LIVE_SPECS) {
+      const key = paramKey(spec.slot, spec.param);
+      store.applyEngineParam({ deck: 'A', slot: spec.slot, param: spec.param, value: spec.max });
+      expect(store.paramValue('A', key), key).toBe(spec.max);
+    }
   });
 
   // The whole point of origin tagging: a push applies locally and stops there.
@@ -225,14 +222,14 @@ describe('applyEngineParam', () => {
 
   it('ignores an address the store does not hold', () => {
     const store = useMixerStore();
-    const before = { ...store.volume };
+    store.setParam('A', FADER_GAIN, 0.7);
+    const before = { ...store.params.A };
 
     store.applyEngineParam({ deck: 'Z', slot: 'fader', param: 'gain', value: 0 });
     store.applyEngineParam({ deck: 'A', slot: 'nope', param: 'gain', value: 0 });
     store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'sub', value: 0 });
 
-    expect({ ...store.volume }).toEqual(before);
-    expect(store.eq.A).toEqual({ low: 0, mid: 0, high: 0 });
+    expect({ ...store.params.A }).toEqual(before);
   });
 });
 
@@ -350,38 +347,38 @@ describe('scrub mute', () => {
 
   it('restores each deck to its own volume when two scrubs overlap', () => {
     const store = useMixerStore();
-    store.setVolume('A', 0.8);
-    store.setVolume('B', 0.3);
+    store.setParam('A', FADER_GAIN, 0.8);
+    store.setParam('B', FADER_GAIN, 0.3);
 
     store.startScrubMute('A');
     store.startScrubMute('B');
-    expect(store.volume.A).toBe(0);
-    expect(store.volume.B).toBe(0);
+    expect(store.paramValue('A', FADER_GAIN)).toBe(0);
+    expect(store.paramValue('B', FADER_GAIN)).toBe(0);
 
     store.endScrubMute('A');
     store.endScrubMute('B');
 
-    expect(store.volume.A).toBe(0.8);
-    expect(store.volume.B).toBe(0.3);
+    expect(store.paramValue('A', FADER_GAIN)).toBe(0.8);
+    expect(store.paramValue('B', FADER_GAIN)).toBe(0.3);
   });
 
   it('keeps the first saved volume when a scrub end is lost and another starts', () => {
     const store = useMixerStore();
-    store.setVolume('A', 0.6);
+    store.setParam('A', FADER_GAIN, 0.6);
 
     store.startScrubMute('A');
     store.startScrubMute('A');
     store.endScrubMute('A');
 
-    expect(store.volume.A).toBe(0.6);
+    expect(store.paramValue('A', FADER_GAIN)).toBe(0.6);
   });
 
   it('does nothing on an end without a start', () => {
     const store = useMixerStore();
-    store.setVolume('C', 0.5);
+    store.setParam('C', FADER_GAIN, 0.5);
 
     store.endScrubMute('C');
 
-    expect(store.volume.C).toBe(0.5);
+    expect(store.paramValue('C', FADER_GAIN)).toBe(0.5);
   });
 });

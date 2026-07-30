@@ -36,6 +36,8 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assign: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
@@ -228,6 +230,11 @@ pub enum SessionCommand<'a> {
         deck: &'a str,
         assign: crate::XfaderAssign,
     },
+    // Categorical for the same reason, and master scope: one switch sets the
+    // taper of every channel fader.
+    SetFaderCurve {
+        curve: crate::FaderCurve,
+    },
     SetPlaybackRate {
         deck: &'a str,
         rate: f64,
@@ -272,6 +279,7 @@ impl<'a> SessionCommand<'a> {
         use SessionCommand::*;
         match *self {
             SetParam { deck, .. } => deck,
+            SetFaderCurve { .. } => None,
             DeckSnapshot { deck, .. }
             | LoadTrack { deck, .. }
             | EjectTrack { deck }
@@ -345,6 +353,9 @@ impl SessionEvent {
             "set_xfader_assign" => SetXfaderAssign {
                 deck: deck?,
                 assign: crate::XfaderAssign::from_str_or_thru(self.assign.as_deref()?),
+            },
+            "set_fader_curve" => SetFaderCurve {
+                curve: crate::FaderCurve::from_str_or_linear(self.curve.as_deref()?),
             },
             "set_playback_rate" => SetPlaybackRate {
                 deck: deck?,

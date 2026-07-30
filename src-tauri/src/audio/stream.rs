@@ -19,7 +19,6 @@ type ChannelPairs = Vec<ChannelPair>;
 
 pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
-//
 // Shared between AppAudio and every master stream callback via Arc clones.
 // level_l/r are peak values from the last audio buffer, read by get_master_level.
 // record_tx is None when not recording; the callback does a try_lock so it
@@ -34,9 +33,9 @@ pub struct MasterMonitor {
     // Held here rather than on the strips because it is one master value; the
     // strips carry only the gain it resolves to against their own assign.
     pub xfader_position: Arc<std::sync::atomic::AtomicU32>,
-    // Also one master value the strips resolve against, held as its param number
-    // so the whole master scope reads back the same way.
-    pub fader_curve: Arc<std::sync::atomic::AtomicU32>,
+    // Also one master value the strips resolve against. Categorical, so it is not
+    // an atomic number; nothing on the audio thread reads it.
+    pub fader_curve: Arc<Mutex<session_core::FaderCurve>>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
     // Free-running count of master output frames produced by the audio device.
@@ -55,9 +54,7 @@ impl MasterMonitor {
             )),
             cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
             xfader_position: Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits())),
-            fader_curve: Arc::new(std::sync::atomic::AtomicU32::new(
-                (session_core::FaderCurve::default().as_param() as f32).to_bits(),
-            )),
+            fader_curve: Arc::new(Mutex::new(session_core::FaderCurve::default())),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -95,14 +92,17 @@ impl MasterMonitor {
     }
 
     pub fn set_fader_curve(&self, curve: session_core::FaderCurve) {
-        self.fader_curve
-            .store((curve.as_param() as f32).to_bits(), Ordering::Relaxed);
+        *self
+            .fader_curve
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = curve;
     }
 
     pub fn fader_curve(&self) -> session_core::FaderCurve {
-        session_core::FaderCurve::from_param(f64::from(f32::from_bits(
-            self.fader_curve.load(Ordering::Relaxed),
-        )))
+        *self
+            .fader_curve
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {

@@ -599,11 +599,9 @@ impl AppState {
                 .unwrap_or_else(|error| error.into_inner())
                 .set_fader_curve(curve);
         }
-        self.log_param(
-            None,
-            session_core::FADER_CURVE_SHAPE.0,
-            session_core::FADER_CURVE_SHAPE.1,
-            curve.as_param(),
+        self.log(
+            "set_fader_curve",
+            serde_json::json!({ "curve": curve.as_str() }),
         );
     }
 
@@ -833,9 +831,7 @@ pub fn run() {
             commands::set_cue_and_stop,
             commands::set_cue_device,
             commands::set_cue_mix,
-            commands::set_eq,
-            commands::set_filter_active,
-            commands::set_filter,
+            commands::set_deck_param,
             commands::set_limiter_enabled,
             commands::set_loop_active,
             commands::set_loop_in,
@@ -847,7 +843,6 @@ pub fn run() {
             commands::set_playback_rate,
             commands::set_quantize,
             commands::set_reloop,
-            commands::set_volume,
             commands::set_deck_muted,
             commands::start_recording,
             commands::stop_at_cue,
