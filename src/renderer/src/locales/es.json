@@ -45,6 +45,19 @@
       "title": "Sensibilidad del empuje",
       "hint": "Desplazamiento al mantener pulsada una tecla de empuje."
     },
+    "jog": {
+      "title": "Velocidad de giro del jog",
+      "hint": "Velocidad de plato que imita el jog. Una vuelta abarca 1,8 segundos de audio a 33 rpm y 1,33 a 45, por lo que 45 busca con más precisión.",
+      "rpm33": "33 rpm",
+      "rpm45": "45 rpm"
+    },
+    "faderCurve": {
+      "title": "Curva del fader de canal",
+      "hint": "Cómo el recorrido de un fader de canal se traduce en volumen. La lineal solo llega al silencio al final del recorrido; la exponencial cae mucho antes.",
+      "exponential": "Exponencial",
+      "linear": "Lineal",
+      "logarithmic": "Logarítmica"
+    },
     "pitch": {
       "title": "Rango de pitch",
       "hint": "Desviación máxima del slider de pitch respecto al BPM original."

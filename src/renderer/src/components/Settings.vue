@@ -16,7 +16,7 @@
             :class="{ 'settings-chip--active': locale === lang.code }"
             @click="locale = lang.code"
           >
-            {{ lang.label() }}
+            {{ lang.label }}
           </button>
         </div>
       </section>
@@ -56,6 +56,41 @@
           <span class="settings-value">{{ settings.nudgeSensitivity }}%</span>
         </div>
         <p class="settings-hint">{{ $t('settings.nudge.hint') }}</p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-label">{{ $t('settings.jog.title') }}</div>
+        <div class="settings-row">
+          <button
+            v-for="opt in JOG_ROTATION_SPEED_OPTIONS"
+            :key="opt"
+            class="btn-secondary settings-chip"
+            :class="{ 'settings-chip--active': settings.jogRotationSpeed === opt }"
+            @click="settings.setJogRotationSpeed(opt)"
+          >
+            {{ JOG_ROTATION_SPEED_LABELS[opt] }}
+          </button>
+        </div>
+        <p class="settings-hint">{{ $t('settings.jog.hint') }}</p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-label">{{ $t('settings.faderCurve.title') }}</div>
+        <div class="settings-row">
+          <button
+            v-for="opt in FADER_CURVE_OPTIONS"
+            :key="opt"
+            class="btn-secondary settings-chip settings-curve"
+            :class="{ 'settings-chip--active': settings.faderCurve === opt }"
+            @click="settings.setFaderCurve(opt)"
+          >
+            <svg class="settings-curve__plot" viewBox="-5 -5 110 110">
+              <polyline :points="curvePlot(opt)" />
+            </svg>
+            <span>{{ FADER_CURVE_LABELS[opt] }}</span>
+          </button>
+        </div>
+        <p class="settings-hint">{{ $t('settings.faderCurve.hint') }}</p>
       </section>
 
       <section class="settings-section">
@@ -324,11 +359,17 @@ import {
   PITCH_RANGE_OPTIONS,
   BUFFER_SIZE_OPTIONS,
   RECORDING_FORMAT_OPTIONS,
-  type RecordingFormatOption
+  JOG_ROTATION_SPEED_OPTIONS,
+  FADER_CURVE_OPTIONS,
+  type RecordingFormatOption,
+  type JogRotationSpeedOption,
+  type FaderCurveOption
 } from '@renderer/stores/settings';
+import { faderCurvePlots } from '@renderer/utils/sessionCore';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { SUPPORTED_LOCALES } from '@renderer/i18n';
 import { useMidiStore } from '@renderer/stores/midi';
 import { describeMidiMessage, hex } from '@renderer/utils/midi';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
@@ -337,11 +378,34 @@ const { t, locale } = useI18n();
 
 watch(locale, (val) => storageSet(STORAGE_KEYS.locale, val));
 
-const LANGUAGES = [
-  { code: 'en', label: () => t('settings.language.en') },
-  { code: 'de', label: () => t('settings.language.de') },
-  { code: 'es', label: () => t('settings.language.es') }
-] as const;
+const LANGUAGES = computed(() =>
+  SUPPORTED_LOCALES.map((code) => ({ code, label: t(`settings.language.${code}`) }))
+);
+
+const JOG_ROTATION_SPEED_LABELS = computed((): Record<JogRotationSpeedOption, string> => ({
+  rpm33: t('settings.jog.rpm33'),
+  rpm45: t('settings.jog.rpm45')
+}));
+
+const FADER_CURVE_LABELS = computed((): Record<FaderCurveOption, string> => ({
+  exponential: t('settings.faderCurve.exponential'),
+  linear: t('settings.faderCurve.linear'),
+  logarithmic: t('settings.faderCurve.logarithmic')
+}));
+
+const CURVE_PLOT_SAMPLES = 24;
+const CURVE_PLOT_SIZE = 100;
+const curvePlots = faderCurvePlots(CURVE_PLOT_SAMPLES);
+
+function curvePlot(curve: FaderCurveOption): string {
+  const gains = curvePlots[curve] ?? [];
+  return gains
+    .map((gain, index) => {
+      const x = (index / (gains.length - 1)) * CURVE_PLOT_SIZE;
+      return `${x},${CURVE_PLOT_SIZE - gain * CURVE_PLOT_SIZE}`;
+    })
+    .join(' ');
+}
 
 const RECORDING_FORMAT_LABELS = computed((): Record<RecordingFormatOption, string> => ({
   'wav-16': t('settings.recording.wav16'),
@@ -552,12 +616,10 @@ onMounted(async () => {
   window.addEventListener('keydown', onWindowKeydown, { capture: true });
   focusableElements()[0]?.focus();
   await midi.loadInputs();
-  await midi.startMonitor();
 });
-onUnmounted(async () => {
+onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeydown, { capture: true });
   if (conflictTimer) clearTimeout(conflictTimer);
-  await midi.stopMonitor();
 });
 </script>
 
@@ -778,6 +840,29 @@ onUnmounted(async () => {
   border-color: var(--color-text);
   color: var(--color-text);
   background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.settings-curve {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+}
+
+.settings-curve__plot {
+  width: 44px;
+  height: 44px;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  border-radius: 2px;
+}
+
+.settings-curve__plot polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .settings-range-label {

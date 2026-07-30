@@ -61,8 +61,8 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
 }
 
 // The master row is the only way to reach a master-scope lane, so its label
-// column has to open the picker and its track area has to report which lane is on
-// display, the way a deck row does.
+// column has to open the picker and its track area has to report the lane on
+// display under the same target a deck row uses, which is what makes it drawable.
 describe('the master row', () => {
   function hitsAt(items: SceneItem[], x: number, y: number) {
     return items.map((item) => item.hitTest?.({ x, y }, vc) ?? null).filter((hit) => hit !== null);
@@ -84,16 +84,12 @@ describe('the master row', () => {
     const xfader = buildScene(input([], 'xfader'));
     const trackX = LABEL_W + 10;
 
-    expect(hitsAt(gain.items, trackX, insideMasterRow)).toContainEqual({
-      target: 'master',
-      deck: 'master',
-      part: 'masterGain'
-    });
-    expect(hitsAt(xfader.items, trackX, insideMasterRow)).toContainEqual({
-      target: 'master',
-      deck: 'master',
-      part: 'xfader'
-    });
+    expect(hitsAt(gain.items, trackX, insideMasterRow)).toContainEqual(
+      expect.objectContaining({ target: 'lane', deck: 'master', part: 'masterGain' })
+    );
+    expect(hitsAt(xfader.items, trackX, insideMasterRow)).toContainEqual(
+      expect.objectContaining({ target: 'lane', deck: 'master', part: 'xfader' })
+    );
   });
 });
 

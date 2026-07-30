@@ -29,6 +29,7 @@ import init, {
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
   bmsVersion as wasmBmsVersion,
+  faderCurvePlots as wasmFaderCurvePlots,
   editConstants as wasmEditConstants,
   laneSpecs as wasmLaneSpecs,
   mixerParams as wasmMixerParams
@@ -156,6 +157,10 @@ export function blockBounds(
 
 export function bmsVersion(): number {
   return wasmBmsVersion();
+}
+
+export function faderCurvePlots(samples: number): Record<string, number[]> {
+  return parse<Record<string, number[]>>(wasmFaderCurvePlots(samples));
 }
 
 export type EditConstants = {

@@ -17,7 +17,7 @@ import {
   drawPaintGesturePreview,
   drawClipGhosts
 } from '@renderer/utils/timelineDraw';
-import { yToValue, makeMsToX, laneValuePad } from '@renderer/utils/timelineDraw';
+import { yToValue, makeMsToX } from '@renderer/utils/timelineDraw';
 import {
   clampFrac,
   panByMs,
@@ -293,12 +293,9 @@ export function useTimelineGestures(deps: GestureDeps) {
         if (!deps.isEditMode()) break;
         const ms = viewContext.xToMs(point.x);
         const laneKey = hit.part as EditableLaneKey;
-        const laneRect = hit.data as { top: number; height: number };
-        // Match the renderer's inset value area so drawn points and the painted
-        // region land where they're rendered.
-        const pad = laneValuePad(laneRect.height);
-        const valueTop = laneRect.top + pad;
-        const valueH = laneRect.height - 2 * pad;
+        // The item reports the value area it draws into, which is inset from the
+        // lane frame by a different amount on the master row than on a deck.
+        const { top: valueTop, height: valueH } = hit.data as { top: number; height: number };
         if (event.shiftKey && laneKey === 'filter') {
           active = {
             kind: 'filter-paint',
@@ -585,7 +582,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       return;
     }
     if (hit.target === 'laneDropdown' || hit.target === 'overview') return;
-    // lane / clipBand / master background: seek and clear selections.
+    // lane / clipBand background: seek and clear selections.
     deps.emit({ type: 'clip.clearSelection' });
     deps.emit({ type: 'filterRegion.clearSelection' });
     deps.emit({ type: 'seek', ms });

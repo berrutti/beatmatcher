@@ -10,6 +10,10 @@
 }
 
 :root {
+  /* Native widgets the UA paints itself: without this WebKit draws number-input
+     spinners and scrollbars in its light scheme, invisible on these surfaces. */
+  color-scheme: dark;
+
   --color-bg: #0a0a0a;
   --color-surface: #141414;
   --color-border: #2a2a2a;

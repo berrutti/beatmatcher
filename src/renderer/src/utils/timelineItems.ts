@@ -26,6 +26,7 @@ import {
   drawRowDividers,
   drawFrameGutters,
   laneValuePad,
+  MASTER_GAIN_INSET_Y,
   type DeckRowChrome
 } from '@renderer/utils/timelineDraw';
 import {
@@ -266,7 +267,13 @@ export function laneSurfaceItem(
     hitTest: (point, viewContext) => {
       if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
       if (point.y < lane.top || point.y > lane.top + lane.height) return null;
-      return { target: 'lane', deck, part: lane.key, data: { top: lane.top, height: lane.height } };
+      const pad = laneValuePad(lane.height);
+      return {
+        target: 'lane',
+        deck,
+        part: lane.key,
+        data: { top: lane.top + pad, height: lane.height - 2 * pad }
+      };
     }
   };
 }
@@ -385,7 +392,15 @@ export function masterItem(
       // Label column opens the dropdown, track area is the lane, as on a deck row.
       if (point.x < LABEL_W) return { target: 'laneDropdown', deck: MASTER_ROW_ID };
       if (point.x > LABEL_W + viewContext.trackW) return null;
-      return { target: 'master', deck: MASTER_ROW_ID, part: lane };
+      return {
+        target: 'lane',
+        deck: MASTER_ROW_ID,
+        part: lane,
+        data: {
+          top: top + MASTER_GAIN_INSET_Y,
+          height: height - 2 * MASTER_GAIN_INSET_Y
+        }
+      };
     }
   };
 }

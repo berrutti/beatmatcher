@@ -34,6 +34,9 @@ pub struct MasterMonitor {
     // Held here rather than on the strips because it is one master value; the
     // strips carry only the gain it resolves to against their own assign.
     pub xfader_position: Arc<std::sync::atomic::AtomicU32>,
+    // Also one master value the strips resolve against, held as its param number
+    // so the whole master scope reads back the same way.
+    pub fader_curve: Arc<std::sync::atomic::AtomicU32>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
     // Free-running count of master output frames produced by the audio device.
@@ -52,6 +55,9 @@ impl MasterMonitor {
             )),
             cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
             xfader_position: Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits())),
+            fader_curve: Arc::new(std::sync::atomic::AtomicU32::new(
+                (session_core::FaderCurve::default().as_param() as f32).to_bits(),
+            )),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -86,6 +92,17 @@ impl MasterMonitor {
 
     pub fn xfader_position(&self) -> f32 {
         f32::from_bits(self.xfader_position.load(Ordering::Relaxed))
+    }
+
+    pub fn set_fader_curve(&self, curve: session_core::FaderCurve) {
+        self.fader_curve
+            .store((curve.as_param() as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn fader_curve(&self) -> session_core::FaderCurve {
+        session_core::FaderCurve::from_param(f64::from(f32::from_bits(
+            self.fader_curve.load(Ordering::Relaxed),
+        )))
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {

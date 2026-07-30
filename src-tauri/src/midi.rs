@@ -69,7 +69,7 @@ pub struct MidiState {
     dispatch: DispatchSlot,
     connected: Mutex<Option<String>>,
     profile: Profile,
-    halves: Mutex<HighResolution>,
+    memory: Mutex<ControlMemory>,
 }
 
 impl MidiState {
@@ -88,12 +88,12 @@ impl MidiState {
             dispatch,
             connected: Mutex::new(None),
             profile: ddj_flx6(),
-            halves: Mutex::new(HighResolution::default()),
+            memory: Mutex::new(ControlMemory::default()),
         }
     }
 
-    pub(crate) fn clear_halves(&self) {
-        self.halves
+    pub(crate) fn clear_control_memory(&self) {
+        self.memory
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
@@ -219,10 +219,10 @@ const SEVEN_BIT_WRAP: i32 = 128;
 enum Resolution {
     SevenBit,
     FourteenBit,
-    // Two ways this surface reports a control with no position. The jog sits at
-    // `RELATIVE_CENTRE` and deviates by however far it was turned; the browse
-    // encoder sends a signed step, 1 or 127 for one detent either way.
+    // Read off the platter: a steady turn holds one value just off
+    // `RELATIVE_CENTRE` and a faster one sits further off, so it reports speed.
     CentreDelta,
+    // The browse encoder: 1 or 127, one detent either way.
     SignedStep,
 }
 
@@ -535,11 +535,11 @@ fn ddj_flx6() -> Profile {
 }
 
 #[derive(Default)]
-struct HighResolution {
+struct ControlMemory {
     halves: HashMap<usize, (u8, u8)>,
 }
 
-impl HighResolution {
+impl ControlMemory {
     /// Acts on both halves instead of waiting for a pair to complete: a
     /// controller that sends only the half that changed would otherwise stall
     /// forever. The intermediate that a high half produces on its own is at
@@ -648,7 +648,7 @@ enum Move {
     },
 }
 
-fn resolve_move(profile: &Profile, halves: &mut HighResolution, data: &[u8]) -> Option<Move> {
+fn resolve_move(profile: &Profile, memory: &mut ControlMemory, data: &[u8]) -> Option<Move> {
     if let Some(message) = parse_control_change(data) {
         let (index, binding, half) = profile.resolve(Key::ControlChange {
             channel: message.channel,
@@ -668,7 +668,7 @@ fn resolve_move(profile: &Profile, halves: &mut HighResolution, data: &[u8]) -> 
         }
         let position = match binding.source.resolution() {
             Resolution::FourteenBit => {
-                f64::from(halves.join(index, half, message.value)) / FOURTEEN_BIT_MAX
+                f64::from(memory.join(index, half, message.value)) / FOURTEEN_BIT_MAX
             }
             // A relative control returned above, so it never reaches this; the arm
             // is spelled out anyway so a new resolution has to be considered here.
@@ -740,13 +740,13 @@ pub(crate) fn apply(
     if state.app_mode() != crate::AppMode::Performance {
         return;
     }
-    // Scoped so the halves lock is released before the engine locks are taken.
+    // Scoped so the memory lock is released before the engine locks are taken.
     let moved = {
-        let mut halves = midi
-            .halves
+        let mut memory = midi
+            .memory
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        resolve_move(&midi.profile, &mut halves, data)
+        resolve_move(&midi.profile, &mut memory, data)
     };
     match moved {
         None => {}
@@ -874,7 +874,7 @@ pub fn set_midi_input(
     app_state: tauri::State<'_, crate::AppState>,
     port: Option<String>,
 ) -> Result<(), String> {
-    state.clear_halves();
+    state.clear_control_memory();
     let Some(port) = port else {
         state.send(Request::Disconnect);
         *state
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn the_crossfader_sweeps_end_to_end() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
 
         let left = resolve_move(&profile, &mut halves, &control_change(6, 63, 0));
         assert_eq!(left, Some(Move::Xfader { position: 0.0 }));
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn the_crossfaders_two_halves_join() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
 
         resolve_move(&profile, &mut halves, &control_change(6, 31, 122));
         let moved = resolve_move(&profile, &mut halves, &control_change(6, 63, 127));
@@ -1087,7 +1087,7 @@ mod tests {
     // centre of the 14-bit range.
     #[test]
     fn the_two_halves_of_a_high_resolution_control_join() {
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(halves.join(0, Half::Msb, 61), 61 << 7);
         assert_eq!(halves.join(0, Half::Lsb, 75), (61 << 7) | 75);
         assert_eq!(halves.join(0, Half::Msb, 62), (62 << 7) | 75);
@@ -1100,7 +1100,7 @@ mod tests {
     // half that moved from stalling, and it has to land within one low-half step.
     #[test]
     fn a_high_half_on_its_own_lands_within_one_low_half_step() {
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         halves.join(0, Half::Msb, 61);
         halves.join(0, Half::Lsb, 127);
         let intermediate = halves.join(0, Half::Msb, 62);
@@ -1110,7 +1110,7 @@ mod tests {
 
     #[test]
     fn two_high_resolution_controls_do_not_share_halves() {
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         halves.join(0, Half::Msb, 64);
         assert_eq!(halves.join(1, Half::Lsb, 3), 3);
     }
@@ -1119,7 +1119,7 @@ mod tests {
     // and place the knob somewhere it has never been.
     #[test]
     fn clearing_forgets_a_half() {
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         halves.join(0, Half::Msb, 127);
         halves.clear();
         assert_eq!(halves.join(0, Half::Lsb, 3), 3);
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn a_high_resolution_control_spans_the_whole_param_range() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
 
         let low = resolve_move(&profile, &mut halves, &control_change(0, 47, 0));
         assert!(matches!(low, Some(Move::Param { position, .. }) if position == 0.0));
@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn a_cue_press_toggles_and_its_release_does_not() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &note_on(1, 84, 127)),
             Some(Move::Cue {
@@ -1156,7 +1156,7 @@ mod tests {
     #[test]
     fn a_play_press_toggles_and_its_release_does_not() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &note_on(0, 11, 127)),
             Some(Move::Play {
@@ -1174,7 +1174,7 @@ mod tests {
     #[test]
     fn a_transport_cue_press_and_release_are_both_moves() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &note_on(0, 12, 127)),
             Some(Move::CuePress {
@@ -1194,7 +1194,7 @@ mod tests {
     #[test]
     fn transport_cue_is_not_the_headphone_cue() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &note_on(2, 84, 127)),
             Some(Move::Cue {
@@ -1221,7 +1221,7 @@ mod tests {
     #[test]
     fn transport_reaches_all_four_decks_by_channel() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
             assert_eq!(
                 resolve_move(&profile, &mut halves, &note_on(channel, 11, 127)),
@@ -1235,7 +1235,7 @@ mod tests {
     #[test]
     fn the_three_loop_buttons_resolve_to_their_own_moves() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &note_on(1, 16, 127)),
             Some(Move::LoopIn {
@@ -1273,7 +1273,7 @@ mod tests {
     #[test]
     fn the_tempo_fader_is_a_high_resolution_pair() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
 
         resolve_move(&profile, &mut halves, &control_change(0, 32, 0));
         let bottom = resolve_move(&profile, &mut halves, &control_change(0, 0, 0));
@@ -1296,38 +1296,38 @@ mod tests {
         );
     }
 
-    // Read off the hardware: the jog rests at 64 and the values seen turning it
-    // slowly were 63 and 70, so it reports deviation rather than position.
+    // Read off the hardware: a steady turn holds one value just off centre, so
+    // the wheel reports speed, not the angle it is at.
     #[test]
     fn the_jog_reports_deviation_from_its_centre() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut memory = ControlMemory::default();
         assert_eq!(
-            resolve_move(&profile, &mut halves, &control_change(0, 33, 70)),
+            resolve_move(&profile, &mut memory, &control_change(0, 33, 70)),
             Some(Move::Jog {
                 deck: "A".to_string(),
                 ticks: 6
             })
         );
         assert_eq!(
-            resolve_move(&profile, &mut halves, &control_change(0, 33, 63)),
+            resolve_move(&profile, &mut memory, &control_change(0, 33, 63)),
             Some(Move::Jog {
                 deck: "A".to_string(),
                 ticks: -1
             })
         );
         assert_eq!(
-            resolve_move(&profile, &mut halves, &control_change(0, 33, 64)),
+            resolve_move(&profile, &mut memory, &control_change(0, 33, 64)),
             None
         );
     }
 
     // The other relative encoding on this surface: one detent either way, which
-    // read as 1 and 127 rather than as a deviation from 64.
+    // reads as 1 and 127 rather than as an angle.
     #[test]
     fn the_browse_encoder_reports_a_signed_step() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &control_change(6, 64, 1)),
             Some(Move::Browse { steps: 1 })
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn an_unmapped_message_is_no_move() {
         let profile = ddj_flx6();
-        let mut halves = HighResolution::default();
+        let mut halves = ControlMemory::default();
         assert_eq!(
             resolve_move(&profile, &mut halves, &control_change(9, 99, 64)),
             None

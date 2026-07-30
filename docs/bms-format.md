@@ -49,14 +49,15 @@ An older version is never rejected. Reading a session ports it: every event in a
 
 Every mixer parameter is one `set_param` event addressed as **deck / slot / param**. `slot` is the position in the channel strip, not the unit filling it, so replacing the unit in a slot keeps existing automation pointing at the same place. Omitting `deck` addresses master scope.
 
-| slot     | param                  | scope  | value                                |
-| -------- | ---------------------- | ------ | ------------------------------------ |
-| `fader`  | `gain`                 | deck   | 0-1, channel fader                   |
-| `eq`     | `low` / `mid` / `high` | deck   | dB, -26 to +6                        |
-| `filter` | `value`                | deck   | -1 to +1, negative LPF, positive HPF |
-| `filter` | `active`               | deck   | 0 or 1, filter on/off                |
-| `gain`   | `gain`                 | master | 0-1, master output level             |
-| `xfader` | `position`             | master | -1 to +1, -1 full A, +1 full B       |
+| slot          | param                  | scope  | value                                  |
+| ------------- | ---------------------- | ------ | -------------------------------------- |
+| `fader`       | `gain`                 | deck   | 0-1, channel fader                     |
+| `eq`          | `low` / `mid` / `high` | deck   | dB, -26 to +6                          |
+| `filter`      | `value`                | deck   | -1 to +1, negative LPF, positive HPF   |
+| `filter`      | `active`               | deck   | 0 or 1, filter on/off                  |
+| `gain`        | `gain`                 | master | 0-1, master output level               |
+| `xfader`      | `position`             | master | -1 to +1, -1 full A, +1 full B         |
+| `fader_curve` | `shape`                | master | 0 exponential, 1 linear, 2 logarithmic |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
@@ -79,6 +80,16 @@ The table above is the `classic-3band-v2` manifest. The slot and param set, and 
 The curve is constant power: both buses sit at -3 dB with the fader centred, and the ends are exactly 0 and 1 rather than merely close, so a fully cut channel is silent rather than 140 dB down.
 
 The crossfader arrived in the `-v2` manifests. The `classic-3band` and `isolator-3band` manifests are frozen at their original shape rather than gaining the slot, because the header hash covers master slots and adding one would have refused every session recorded before it. A pre-crossfader session therefore resolves a pre-crossfader mixer and renders exactly as it always did.
+
+## Channel fader curve
+
+`fader/gain` records the throw of the fader, not the gain it produces. How that throw maps to gain is `fader_curve/shape`, one master-scope value that sets the taper of every channel at once, the way one switch does on a mixer.
+
+```json
+{ "elapsed_ms": 0.0, "type": "set_param", "slot": "fader_curve", "param": "shape", "value": 0.0 }
+```
+
+Linear is the default, so a session that never sets a shape renders exactly as it did before the parameter existed. Recording writes the shape once at `recording_start`, because the curve is a setting rather than something performed: nothing else in the session would say which taper the fader moves were played on. All three curves hold both ends of the throw exactly, so a fader at zero is silent and a fader at the top is unity whichever is selected, and the CUE sheet's audibility test is unaffected by the choice.
 
 ## Latency compensation
 

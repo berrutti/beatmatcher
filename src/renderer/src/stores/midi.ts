@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { type MidiMessage } from '@renderer/utils/midi';
+import { midiConsoleLine, type MidiMessage } from '@renderer/utils/midi';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
 const MONITOR_LIMIT = 200;
@@ -60,12 +60,13 @@ export const useMidiStore = defineStore('midi', () => {
   }
 
   function receive(batch: MidiMessage[]): void {
+    for (const message of batch) console.log(midiConsoleLine(message.data));
     const newest = [...batch].reverse();
     messages.value = newest.concat(messages.value).slice(0, MONITOR_LIMIT);
   }
 
-  connectPreferred();
-
+  // The monitor runs for the whole session rather than while the panel is open,
+  // so a capture is already in the console by the time anyone goes looking.
   async function startMonitor(): Promise<void> {
     if (!listening) {
       listening = listen<MidiMessage[]>('midi-messages', (event) => {
@@ -76,16 +77,14 @@ export const useMidiStore = defineStore('midi', () => {
     await invoke('set_midi_monitor', { enabled: true });
   }
 
-  async function stopMonitor(): Promise<void> {
-    await invoke('set_midi_monitor', { enabled: false });
-    const pending = listening;
-    listening = null;
-    if (pending) (await pending)();
-  }
-
   function clearMessages(): void {
     messages.value = [];
   }
+
+  connectPreferred();
+  startMonitor().catch((cause) => {
+    error.value = String(cause);
+  });
 
   return {
     inputs,
@@ -97,7 +96,6 @@ export const useMidiStore = defineStore('midi', () => {
     selectInput,
     receive,
     startMonitor,
-    stopMonitor,
     clearMessages
   };
 });

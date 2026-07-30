@@ -85,6 +85,7 @@ pub struct SimState {
     pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
     pub xfader_position: f32,
+    pub fader_curve: crate::FaderCurve,
 }
 
 impl SimState {
@@ -94,6 +95,7 @@ impl SimState {
             strips: HashMap::new(),
             master_gain: DEFAULT_MASTER_GAIN,
             xfader_position: 0.0,
+            fader_curve: crate::FaderCurve::default(),
         }
     }
 }
@@ -146,6 +148,7 @@ pub struct SessionSnapshot {
     pub strips: HashMap<String, StripSnap>,
     pub master_gain: f32,
     pub xfader_position: f32,
+    pub fader_curve: crate::FaderCurve,
 }
 
 // Continuous beat count at a playback position, given the track's beat grid.
@@ -225,6 +228,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         strips,
         master_gain: snap.master_gain,
         xfader_position: snap.xfader_position,
+        fader_curve: snap.fader_curve,
     }
 }
 
@@ -427,6 +431,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             (None, "xfader", "position") => {
                 state.xfader_position = value as f32;
             }
+            (None, "fader_curve", "shape") => {
+                state.fader_curve = crate::FaderCurve::from_param(value);
+            }
             _ => {}
         },
         SessionCommand::SetBeatGrid {
@@ -516,6 +523,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         strips,
         master_gain: state.master_gain,
         xfader_position: state.xfader_position,
+        fader_curve: state.fader_curve,
     }
 }
 

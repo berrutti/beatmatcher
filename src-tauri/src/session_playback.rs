@@ -698,6 +698,7 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
             s.set_filter_active(snap.filter_active);
             s.set_xfader_assign(snap.xfader_assign);
             s.set_xfader_position(sim.xfader_position);
+            s.set_fader_curve(sim.fader_curve);
         }
     }
 }
@@ -778,6 +779,23 @@ fn apply_event_live(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .set_xfader_position(value as f32);
+                    }
+                }
+            }
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot: "fader_curve",
+                param: "shape",
+                value,
+                ..
+            } => {
+                let curve = session_core::FaderCurve::from_param(value);
+                for id in ["A", "B", "C", "D"] {
+                    if let Some(strip_arc) = audio.strip(id) {
+                        strip_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_fader_curve(curve);
                     }
                 }
             }

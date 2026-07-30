@@ -1,35 +1,35 @@
 <template>
-  <Transition name="loading-modal">
-    <div v-if="open" class="loading-modal__backdrop">
-      <div class="loading-modal" role="alertdialog" aria-live="polite" :aria-busy="true">
-        <div class="loading-modal__title">{{ $t('session.loadingTitle') }}</div>
-        <div class="loading-modal__body">{{ $t('session.loadingBody') }}</div>
-        <div
-          v-if="determinate"
-          class="loading-modal__track"
-          role="progressbar"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :aria-valuenow="percent"
-        >
-          <div class="loading-modal__fill" :style="{ width: `${percent}%` }" />
-        </div>
-        <div v-else class="loading-modal__track" role="progressbar">
-          <div class="loading-modal__fill loading-modal__fill--indeterminate" />
-        </div>
-        <div class="loading-modal__stats">
-          <span class="loading-modal__phase">{{ phaseLabel }}</span>
-          <span v-if="determinate" class="loading-modal__percent">{{ percent }}%</span>
-        </div>
-        <div v-if="counts" class="loading-modal__counts">{{ counts }}</div>
-      </div>
+  <Modal
+    :open="open"
+    :title="$t('session.loadingTitle')"
+    :body="$t('session.loadingBody')"
+    :dismissable="false"
+  >
+    <div
+      v-if="determinate"
+      class="loading-modal__track"
+      role="progressbar"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="percent"
+    >
+      <div class="loading-modal__fill" :style="{ width: `${percent}%` }" />
     </div>
-  </Transition>
+    <div v-else class="loading-modal__track" role="progressbar">
+      <div class="loading-modal__fill loading-modal__fill--indeterminate" />
+    </div>
+    <div class="loading-modal__stats" aria-live="polite">
+      <span class="loading-modal__phase">{{ phaseLabel }}</span>
+      <span v-if="determinate" class="loading-modal__percent">{{ percent }}%</span>
+    </div>
+    <div v-if="counts" class="loading-modal__counts">{{ counts }}</div>
+  </Modal>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import Modal from '@renderer/components/modals/Modal.vue';
 import type { SessionLoadPhase } from '@renderer/stores/session';
 
 const { open, phase, fraction, loadedTracks, totalTracks } = defineProps<{
@@ -67,42 +67,10 @@ const counts = computed(() =>
 </script>
 
 <style scoped>
-.loading-modal__backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
-
-.loading-modal {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 24px;
-  min-width: 340px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.loading-modal__title {
-  font-size: 0.85rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--color-text);
-}
-
-.loading-modal__body {
-  font-size: 0.7rem;
-  line-height: 1.5;
-  color: var(--color-muted);
-}
-
 .loading-modal__track {
   height: 6px;
+  /* Wider than the shared modal minimum, or the bar is too short to read as one. */
+  min-width: 340px;
   border-radius: 3px;
   background: #1a1a1a;
   border: 1px solid var(--color-border);
@@ -131,26 +99,20 @@ const counts = computed(() =>
   }
 }
 
-.loading-modal__stats {
-  display: flex;
-  justify-content: space-between;
+.loading-modal__stats,
+.loading-modal__counts {
   font-size: 0.65rem;
   letter-spacing: 0.04em;
   color: var(--color-muted);
 }
 
+.loading-modal__stats {
+  display: flex;
+  justify-content: space-between;
+}
+
 .loading-modal__percent {
   color: var(--color-text);
   font-variant-numeric: tabular-nums;
-}
-
-.loading-modal-enter-active,
-.loading-modal-leave-active {
-  transition: opacity 0.15s ease;
-}
-
-.loading-modal-enter-from,
-.loading-modal-leave-to {
-  opacity: 0;
 }
 </style>

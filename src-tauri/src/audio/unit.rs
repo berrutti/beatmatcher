@@ -14,6 +14,10 @@ pub trait AudioUnit: Send {
     // never logged, and must not become addressable from a `.bms` event. The
     // strip forwards it to the unit filling the fader role.
     fn set_muted(&mut self, _muted: bool) {}
+
+    // Master scope, so it arrives outside the strip's own param space. The strip
+    // forwards it to the unit filling the fader role.
+    fn set_fader_curve(&mut self, _curve: session_core::FaderCurve) {}
 }
 
 struct Eq3Band {
@@ -93,6 +97,8 @@ impl AudioUnit for SweepFilter {
 }
 
 struct Fader {
+    position: f32,
+    curve: session_core::FaderCurve,
     target_gain: f32,
     current_gain: f32,
     smooth_coeff: f32,
@@ -100,19 +106,33 @@ struct Fader {
     mute_gain: f32,
 }
 
+impl Fader {
+    // Curved before smoothing, so the one-pole interpolates what is heard.
+    fn resolve_gain(&mut self) {
+        self.target_gain = self.curve.gain(f64::from(self.position)) as f32;
+    }
+}
+
 impl AudioUnit for Fader {
     fn set_param(&mut self, param: &str, value: f32) {
         if param == "gain" {
-            self.target_gain = value.clamp(0.0, 1.0);
+            self.position = value.clamp(0.0, 1.0);
+            self.resolve_gain();
         }
     }
 
+    /// The throw, not the gain it curves to: this is the value a `.bms` records.
     fn param(&self, param: &str) -> Option<f32> {
-        (param == "gain").then_some(self.target_gain)
+        (param == "gain").then_some(self.position)
     }
 
     fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
+    }
+
+    fn set_fader_curve(&mut self, curve: session_core::FaderCurve) {
+        self.curve = curve;
+        self.resolve_gain();
     }
 
     #[inline]
@@ -229,6 +249,8 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
             gains: [1.0; 3],
         })),
         "fader" => Some(Box::new(Fader {
+            position: 1.0,
+            curve: session_core::FaderCurve::default(),
             target_gain: 1.0,
             current_gain: 1.0,
             smooth_coeff: 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp(),
@@ -332,6 +354,24 @@ mod tests {
         // would otherwise dominate the window.
         rms_through(muted.as_mut());
         assert!(rms_through(muted.as_mut()) < unity * 0.01);
+    }
+
+    #[test]
+    fn the_fader_curve_reaches_the_unit_without_moving_the_recorded_throw() {
+        const HALF_THROW: f32 = 0.5;
+        let at = |curve| {
+            let mut fader = unit_for("fader");
+            fader.set_param("gain", HALF_THROW);
+            fader.set_fader_curve(curve);
+            (rms_through(fader.as_mut()), fader.param("gain"))
+        };
+        let (linear, throw) = at(session_core::FaderCurve::Linear);
+        let (exponential, _) = at(session_core::FaderCurve::Exponential);
+        let (logarithmic, _) = at(session_core::FaderCurve::Logarithmic);
+
+        assert!(exponential < linear);
+        assert!(logarithmic > linear);
+        assert_eq!(throw, Some(HALF_THROW));
     }
 
     #[test]

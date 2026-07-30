@@ -16,7 +16,6 @@ describe('hitPriority', () => {
       'laneSeparator',
       'lane',
       'clipBand',
-      'master',
       'tickRow'
     ];
     for (const target of others) {
@@ -59,7 +58,7 @@ describe('hitPriority', () => {
   });
 
   it('leaves the ruler at the back', () => {
-    for (const target of ['clipBand', 'master', 'lane', 'laneSeparator']) {
+    for (const target of ['clipBand', 'lane', 'laneSeparator']) {
       expect(beats(at(target), at('tickRow')), target).toBe(true);
     }
   });
@@ -90,7 +89,6 @@ describe('hitPriority', () => {
       at('laneSeparator'),
       at('lane'),
       at('clipBand'),
-      at('master'),
       at('tickRow')
     ];
     const scores = ranked.map(hitPriority);

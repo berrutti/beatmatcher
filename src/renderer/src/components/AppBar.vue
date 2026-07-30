@@ -2,12 +2,11 @@
   <Modal
     :open="confirmPending !== null"
     :title="confirmPending?.title ?? ''"
+    :body="confirmPending?.body"
     :confirm-label="$t('appBar.continue')"
     @confirm="onConfirm"
     @cancel="confirmPending = null"
-  >
-    <p class="appbar__modal-body">{{ confirmPending?.body }}</p>
-  </Modal>
+  />
 
   <div class="appbar">
     <Dropdown
@@ -147,10 +146,4 @@ async function onConfirm() {
   color: var(--color-text);
 }
 
-.appbar__modal-body {
-  font-size: 0.75rem;
-  color: var(--color-muted);
-  line-height: 1.5;
-  margin: 0;
-}
 </style>

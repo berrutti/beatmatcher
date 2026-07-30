@@ -23,7 +23,7 @@ function mountModal(props: {
 describe('SessionLoadingModal', () => {
   it('renders nothing while closed', () => {
     const wrapper = mountModal({ open: false, fraction: 0, loadedTracks: 0, totalTracks: 0 });
-    expect(wrapper.find('.loading-modal').exists()).toBe(false);
+    expect(wrapper.find('.modal').exists()).toBe(false);
   });
 
   it('offers no way to dismiss itself', () => {

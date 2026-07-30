@@ -88,4 +88,19 @@ describe('Modal', () => {
 
     expect(wrapper.emitted('cancel')).toBeUndefined();
   });
+
+  // What a load gate needs: no way past it at all, buttons included.
+  it('closes off every exit when not dismissable', async () => {
+    const wrapper = mount(Modal, {
+      global: { plugins: [i18n] },
+      props: { open: true, title: 'Title', dismissable: false }
+    });
+
+    expect(wrapper.findAll('button')).toHaveLength(0);
+
+    await wrapper.find('.modal__backdrop').trigger('click');
+    await wrapper.find('.modal__backdrop').trigger('keydown', { key: 'Escape' });
+
+    expect(wrapper.emitted('cancel')).toBeUndefined();
+  });
 });

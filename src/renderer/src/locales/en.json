@@ -45,6 +45,19 @@
       "title": "Nudge sensitivity",
       "hint": "Speed offset applied while holding a nudge key or button."
     },
+    "jog": {
+      "title": "Jog rotation speed",
+      "hint": "Turntable speed the platter emulates. One revolution covers 1.8 seconds of audio at 33 rpm and 1.33 at 45, so 45 scrubs finer.",
+      "rpm33": "33 rpm",
+      "rpm45": "45 rpm"
+    },
+    "faderCurve": {
+      "title": "Channel fader curve",
+      "hint": "How a channel fader's throw maps to volume. Linear only reaches silence at the very bottom; exponential drops away far earlier.",
+      "exponential": "Exponential",
+      "linear": "Linear",
+      "logarithmic": "Logarithmic"
+    },
     "pitch": {
       "title": "Pitch range",
       "hint": "Maximum pitch slider deviation from original BPM."

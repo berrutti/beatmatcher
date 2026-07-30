@@ -11,7 +11,7 @@ pub use analysis::{
     compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
     compute_spectral_waveform_region, detect_bpm, detect_silence_end,
 };
-pub use deck::{ChannelStrip, CuePressOutcome, DeckState};
+pub use deck::{ChannelStrip, CuePressOutcome, DeckState, JogRotationSpeed};
 pub(crate) use dsp::LimiterState;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
@@ -245,6 +245,14 @@ impl AppAudio {
             .pitch_range_percent
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn set_jog_rotation_speed(&self, speed: JogRotationSpeed) {
+        for deck in self.decks.values() {
+            deck.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_jog_rotation_speed(speed);
+        }
     }
 
     pub fn set_pitch_range_percent(&self, percent: f64) {

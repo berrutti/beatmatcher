@@ -58,3 +58,9 @@ export function describeMidiMessage(data: number[]): string {
   }
   return `Ch ${channel}  ${name}`;
 }
+
+// One line per message, tab separated, so a capture can be selected out of the
+// console and pasted. The panel's scrolling box cannot be copied out of.
+export function midiConsoleLine(data: number[]): string {
+  return `[midi] ${data.map(hex).join(' ')}\t${describeMidiMessage(data)}`;
+}

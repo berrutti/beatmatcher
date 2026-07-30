@@ -13,6 +13,12 @@ export type BufferSizeOption = (typeof BUFFER_SIZE_OPTIONS)[number];
 export const RECORDING_FORMAT_OPTIONS = ['wav-16', 'wav-32', 'flac', 'session'] as const;
 export type RecordingFormatOption = (typeof RECORDING_FORMAT_OPTIONS)[number];
 
+export const JOG_ROTATION_SPEED_OPTIONS = ['rpm33', 'rpm45'] as const;
+export type JogRotationSpeedOption = (typeof JOG_ROTATION_SPEED_OPTIONS)[number];
+
+export const FADER_CURVE_OPTIONS = ['exponential', 'linear', 'logarithmic'] as const;
+export type FaderCurveOption = (typeof FADER_CURVE_OPTIONS)[number];
+
 // Sessions written before the .bms carried a mixer header were all played on
 // this one, so it is the fallback when a file names none.
 export const DEFAULT_MIXER_ID = 'classic-3band';
@@ -26,6 +32,8 @@ type Stored = {
   keybindings?: Keybindings;
   limiterEnabled?: boolean;
   nudgeSensitivity?: number;
+  jogRotationSpeed?: JogRotationSpeedOption;
+  faderCurve?: FaderCurveOption;
   pitchRange?: PitchRangeOption;
   bufferSize?: BufferSizeOption;
   bpmMin?: number;
@@ -42,6 +50,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const keybindings = ref<Keybindings>(structuredClone(DEFAULT_KEYS));
   const limiterEnabled = ref<boolean>(true);
   const nudgeSensitivity = ref<number>(4);
+  const jogRotationSpeed = ref<JogRotationSpeedOption>('rpm33');
+  const faderCurve = ref<FaderCurveOption>('linear');
   const pitchRange = ref<PitchRangeOption>(10);
   const bufferSize = ref<BufferSizeOption>(0);
   const bpmMin = ref<number>(90);
@@ -58,6 +68,8 @@ export const useSettingsStore = defineStore('settings', () => {
     if (stored.keybindings) keybindings.value = stored.keybindings;
     limiterEnabled.value = stored.limiterEnabled ?? limiterEnabled.value;
     nudgeSensitivity.value = stored.nudgeSensitivity ?? nudgeSensitivity.value;
+    jogRotationSpeed.value = stored.jogRotationSpeed ?? jogRotationSpeed.value;
+    faderCurve.value = stored.faderCurve ?? faderCurve.value;
     pitchRange.value = stored.pitchRange ?? pitchRange.value;
     bufferSize.value = stored.bufferSize ?? bufferSize.value;
     bpmMin.value = stored.bpmMin ?? bpmMin.value;
@@ -84,6 +96,8 @@ export const useSettingsStore = defineStore('settings', () => {
       keybindings: keybindings.value,
       limiterEnabled: limiterEnabled.value,
       nudgeSensitivity: nudgeSensitivity.value,
+      jogRotationSpeed: jogRotationSpeed.value,
+      faderCurve: faderCurve.value,
       pitchRange: pitchRange.value,
       bufferSize: bufferSize.value,
       bpmMin: bpmMin.value,
@@ -138,6 +152,10 @@ export const useSettingsStore = defineStore('settings', () => {
     immediate: true
   });
   watch(pitchRange, (v) => invoke('set_pitch_range', { percent: v }), { immediate: true });
+  watch(jogRotationSpeed, (v) => invoke('set_jog_rotation_speed', { speed: v }), {
+    immediate: true
+  });
+  watch(faderCurve, (v) => invoke('set_fader_curve', { curve: v }), { immediate: true });
 
   function setLimiterEnabled(enabled: boolean): void {
     limiterEnabled.value = enabled;
@@ -146,6 +164,16 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setNudgeSensitivity(value: number): void {
     nudgeSensitivity.value = Math.max(1, Math.min(20, value));
+    trySave();
+  }
+
+  function setJogRotationSpeed(value: JogRotationSpeedOption): void {
+    jogRotationSpeed.value = value;
+    trySave();
+  }
+
+  function setFaderCurve(value: FaderCurveOption): void {
+    faderCurve.value = value;
     trySave();
   }
 
@@ -190,7 +218,9 @@ export const useSettingsStore = defineStore('settings', () => {
     bpmMin,
     bufferSize,
     deckAccents,
+    faderCurve,
     isOpen,
+    jogRotationSpeed,
     keybindings,
     limiterEnabled,
     nudgeSensitivity,
@@ -202,6 +232,8 @@ export const useSettingsStore = defineStore('settings', () => {
     resetToDefaults,
     setBpmRange,
     setBufferSize,
+    setFaderCurve,
+    setJogRotationSpeed,
     setKey,
     setLimiterEnabled,
     setNudgeSensitivity,

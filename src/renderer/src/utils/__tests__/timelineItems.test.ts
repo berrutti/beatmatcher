@@ -3,6 +3,8 @@ import {
   filterSelectionItem,
   clipBandItem,
   blockAtPoint,
+  laneSurfaceItem,
+  masterItem,
   waveformSeparatorItem,
   overviewItem,
   readOverviewHit
@@ -10,11 +12,12 @@ import {
 import {
   LABEL_W,
   laneValuePad,
+  MASTER_GAIN_INSET_Y,
   type RowLayout,
   type SublaneLayout
 } from '@renderer/utils/timelineDraw';
 import type { ViewContext } from '@renderer/utils/timelineEngine';
-import type { Clip } from '@renderer/utils/types';
+import { MASTER_ROW_ID, type Clip } from '@renderer/utils/types';
 
 // ms -> x as identity-ish; pt.x in these tests is given directly in ms units.
 const vc = { msToX: (ms: number) => ms, trackW: 10_000 } as ViewContext;
@@ -55,6 +58,36 @@ describe('filterSelectionItem', () => {
     expect(r.h).toBe(lane.height - 2 * pad);
     // The divider is drawn at the lane bottom; the border must stay above it.
     expect(r.y + r.h).toBeLessThan(lane.top + lane.height);
+  });
+});
+
+// The gesture takes the value rect straight from the hit, so an item that reports
+// its frame instead puts drawn points where they are not rendered.
+describe('lane hit-test', () => {
+  it('reports the deck lane value area, not its frame', () => {
+    const lane: SublaneLayout = { key: 'filter', top: 100, height: 80 };
+    const hit = laneSurfaceItem(lane, 'A', undefined).hitTest({ x: LABEL_W + 10, y: 140 }, vc);
+    const pad = laneValuePad(lane.height);
+    expect(hit?.target).toBe('lane');
+    expect(hit?.data).toEqual({ top: lane.top + pad, height: lane.height - 2 * pad });
+  });
+
+  it('reports the master row as a lane so it draws like a deck lane', () => {
+    const masterLanes = { gain: [], xfader: [] };
+    const item = masterItem(200, 20, masterLanes, 'masterGain');
+    const hit = item.hitTest({ x: LABEL_W + 10, y: 210 }, vc);
+    expect(hit?.target).toBe('lane');
+    expect(hit?.deck).toBe(MASTER_ROW_ID);
+    expect(hit?.part).toBe('masterGain');
+    expect(hit?.data).toEqual({
+      top: 200 + MASTER_GAIN_INSET_Y,
+      height: 20 - 2 * MASTER_GAIN_INSET_Y
+    });
+  });
+
+  it('keeps the master label column on the dropdown', () => {
+    const item = masterItem(200, 20, { gain: [], xfader: [] }, 'xfader');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.target).toBe('laneDropdown');
   });
 });
 

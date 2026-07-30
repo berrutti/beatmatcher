@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 /// Mode is owned by the frontend; this is the mirror the MIDI thread reads.
-/// Clearing the halves is the same reasoning as on reconnect: a half stranded by
+/// Clearing the memory is the same reasoning as on reconnect: a half stranded by
 /// a mode switch would join with the first message after the switch back.
 #[tauri::command]
 pub fn set_app_mode(
@@ -13,7 +13,7 @@ pub fn set_app_mode(
     mode: crate::AppMode,
 ) {
     state.set_app_mode(mode);
-    midi.clear_halves();
+    midi.clear_control_memory();
 }
 
 pub(crate) fn get_deck(
@@ -576,6 +576,19 @@ pub(crate) fn set_pitch_range(state: tauri::State<'_, AppState>, percent: f64) {
 }
 
 #[tauri::command]
+pub(crate) fn set_fader_curve(state: tauri::State<'_, AppState>, curve: session_core::FaderCurve) {
+    state.set_fader_curve(curve);
+}
+
+#[tauri::command]
+pub(crate) fn set_jog_rotation_speed(
+    state: tauri::State<'_, AppState>,
+    speed: crate::audio::JogRotationSpeed,
+) {
+    state.audio.set_jog_rotation_speed(speed);
+}
+
+#[tauri::command]
 pub(crate) fn set_nudge(
     state: tauri::State<'_, AppState>,
     deck: String,
@@ -771,6 +784,16 @@ pub(crate) fn start_recording(
                 "recording_start",
                 serde_json::json!({
                     "buffer_size_frames": buffer_size_frames,
+                }),
+            );
+            // A setting rather than a performed move, so nothing else in the
+            // session would ever say which curve the fader moves were played on.
+            logger.log(
+                "set_param",
+                serde_json::json!({
+                    "slot": session_core::FADER_CURVE_SHAPE.0,
+                    "param": session_core::FADER_CURVE_SHAPE.1,
+                    "value": state.audio.monitor.fader_curve().as_param(),
                 }),
             );
             for deck_id in ["A", "B", "C", "D"] {

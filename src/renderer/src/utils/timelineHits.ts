@@ -34,11 +34,11 @@ const HIT_PRECEDENCE: readonly string[] = [
   // The lane separator sits over the (often empty) lane bottom, so it can sink
   // below the elements: move off an element to grab it.
   'laneSeparator',
-  // The automation lane drawing surface (draw value / shift-paint).
+  // The automation lane drawing surface (draw value / shift-paint), on a deck
+  // row and on the master row alike.
   'lane',
-  // The deck's clip band (seek / shift-nudge) and master lane.
+  // The deck's clip band (seek / shift-nudge).
   'clipBand',
-  'master',
   // Background ruler.
   'tickRow'
 ];

@@ -110,6 +110,12 @@ impl ChannelStrip {
         }
     }
 
+    /// Master scope, so the strip's own param loop never reaches it.
+    pub(crate) fn set_fader_curve(&mut self, curve: session_core::FaderCurve) {
+        self.restart_settle();
+        self.slots[self.fader_slot].main.set_fader_curve(curve);
+    }
+
     pub(crate) fn set_xfader_assign(&mut self, assign: session_core::XfaderAssign) {
         self.xfader_assign = assign;
         self.resolve_xfader();
@@ -222,6 +228,7 @@ impl ChannelStrip {
         // from performance mode would silence a deck for the whole session.
         self.set_xfader_assign(session_core::XfaderAssign::Thru);
         self.set_xfader_position(0.0);
+        self.set_fader_curve(session_core::FaderCurve::default());
     }
 
     // The full strip, in manifest order.
@@ -270,6 +277,28 @@ pub enum CuePressOutcome {
     NoTrack,
 }
 
+// A platter labelled 33 turns at 33 1/3, and 60/rpm seconds of audio pass under
+// the needle in one revolution.
+const RPM_33: f64 = 100.0 / 3.0;
+const RPM_45: f64 = 45.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum JogRotationSpeed {
+    Rpm33,
+    Rpm45,
+}
+
+impl JogRotationSpeed {
+    /// Against 33, which is the speed `JOG_SCRUB_SEC_PER_TICK_AT_33` is set for.
+    fn scrub_scale(self) -> f64 {
+        match self {
+            Self::Rpm33 => 1.0,
+            Self::Rpm45 => RPM_33 / RPM_45,
+        }
+    }
+}
+
 pub struct DeckState {
     pub(crate) samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub(crate) channels: usize,
@@ -291,6 +320,8 @@ pub struct DeckState {
     pub(crate) jog_hold_factor: f64, // 1 + nudge_percent/100
     pub(crate) jog_pending: f64,
     jog_filtered: f64,
+    jog_bend: f64,
+    jog_rotation_speed: JogRotationSpeed,
     pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
@@ -328,6 +359,8 @@ impl DeckState {
             jog_hold_factor: 1.0,
             jog_pending: 0.0,
             jog_filtered: 0.0,
+            jog_bend: 0.0,
+            jog_rotation_speed: JogRotationSpeed::Rpm33,
             quantize: true,
             bass_band: Arc::new(Vec::new()),
             mid_band: Arc::new(Vec::new()),
@@ -361,6 +394,7 @@ impl DeckState {
         self.jog_hold_factor = 1.0;
         self.jog_pending = 0.0;
         self.jog_filtered = 0.0;
+        self.jog_bend = 0.0;
     }
 
     // Threshold for "position is at the cue point" used by press_cue.
@@ -448,32 +482,56 @@ impl DeckState {
         self.main_pos / self.device_sample_rate as f64
     }
 
-    // Applied per block rather than per frame, so the decay does not change with
-    // the buffer size.
-    const JOG_FILTER_ALPHA: f64 = 0.25;
+    // Wall clock, not per block. The one-pole runs once a block, so a fixed
+    // coefficient would settle over a time that moves with the buffer setting.
+    const JOG_FILTER_TAU_SEC: f64 = 0.040;
 
-    // First pass, worth revisiting on the hardware. Percent is the unit the nudge
-    // button already speaks, so the two inputs stay directly comparable.
-    const JOG_SCRUB_MS_PER_TICK: f64 = 2.0;
-    const JOG_PERCENT_PER_TICK: f64 = 0.35;
+    const JOG_SCRUB_SEC_PER_TICK_AT_33: f64 = 0.002;
+    // How much further a hand movement seeks a paused deck than it bends a playing
+    // one. Set by ear: a smaller value overshoots the beat.
+    const JOG_PAUSED_MULTIPLIER: f64 = 100.0;
 
-    /// Zeroing the accumulator here is what lets a released wheel settle without
-    /// anything having to notice it was released.
-    pub(crate) fn consume_jog(&mut self) {
+    pub fn set_jog_rotation_speed(&mut self, speed: JogRotationSpeed) {
+        self.jog_rotation_speed = speed;
+    }
+
+    fn jog_frames_per_tick(&self) -> f64 {
+        Self::JOG_SCRUB_SEC_PER_TICK_AT_33
+            * self.jog_rotation_speed.scrub_scale()
+            * self.device_sample_rate as f64
+    }
+
+    fn jog_filter_alpha(&self, frames: usize) -> f64 {
+        if self.device_sample_rate == 0 {
+            return 1.0;
+        }
+        let block_seconds = frames as f64 / self.device_sample_rate as f64;
+        1.0 - (-block_seconds / Self::JOG_FILTER_TAU_SEC).exp()
+    }
+
+    /// Zeroing the accumulator is what lets a released wheel settle without anything
+    /// having to notice it was released.
+    pub(crate) fn consume_jog(&mut self, frames: usize) {
         let pending = std::mem::take(&mut self.jog_pending);
         if pending == 0.0 && self.jog_filtered == 0.0 {
             return;
         }
-        self.jog_filtered += (pending - self.jog_filtered) * Self::JOG_FILTER_ALPHA;
+        self.jog_filtered += (pending - self.jog_filtered) * self.jog_filter_alpha(frames);
         if self.jog_filtered.abs() < f64::EPSILON {
             self.jog_filtered = 0.0;
         }
+
+        let travel = self.jog_filtered * self.jog_frames_per_tick();
         if self.is_playing {
+            self.jog_bend = if frames == 0 {
+                0.0
+            } else {
+                travel / (frames as f64 * Self::JOG_PAUSED_MULTIPLIER)
+            };
             return;
         }
-        let frames_per_tick = Self::JOG_SCRUB_MS_PER_TICK / 1000.0 * self.device_sample_rate as f64;
-        let scrubbed = self.main_pos + self.jog_filtered * frames_per_tick;
-        self.main_pos = scrubbed.clamp(0.0, self.total_frames as f64);
+        self.jog_bend = 0.0;
+        self.main_pos = (self.main_pos + travel).clamp(0.0, self.total_frames as f64);
         self.cue_pos = self.main_pos;
     }
 
@@ -528,7 +586,7 @@ impl DeckState {
         // Ahead of the settled check below, because scrubbing a paused deck is
         // the one thing that has to happen on a block that renders no audio.
         if owns_period {
-            self.consume_jog();
+            self.consume_jog(frames);
         }
 
         // Not gated on `cue_active`: the cue path is silenced at its output,
@@ -622,7 +680,7 @@ impl DeckState {
         // perfectly steady velocity, so it is the constant case of the same
         // quantity: with the wheel idle this reduces to `jog_hold_factor` exactly,
         // which is what keeps recorded sessions replaying frame for frame.
-        let wheel = self.jog_filtered * Self::JOG_PERCENT_PER_TICK / 100.0;
+        let wheel = self.jog_bend;
         let factor = (self.jog_hold_factor + wheel).max(Self::JOG_FACTOR_MIN);
         let step = self.playback_rate * factor;
         let new_pos = pos + step;
@@ -676,6 +734,7 @@ mod tests {
     use super::*;
 
     const SR: u32 = 44100;
+    const BLOCK: usize = 512;
 
     impl DeckState {
         // Creates a DeckState loaded with a 440 Hz sine wave. No audio hardware.
@@ -841,7 +900,7 @@ mod tests {
 
             let expected = rate * (1.0 + percent / 100.0);
             for _ in 0..8 {
-                deck.consume_jog();
+                deck.consume_jog(BLOCK);
                 let before = deck.main_pos;
                 let after = deck.next_pos(before, false);
                 assert!(
@@ -859,7 +918,7 @@ mod tests {
         let mut deck = DeckState::loaded_for_testing(SR, 1.0);
         deck.main_pos = 1000.0;
         for _ in 0..64 {
-            deck.consume_jog();
+            deck.consume_jog(BLOCK);
         }
         assert_eq!(deck.main_pos, 1000.0);
     }
@@ -872,13 +931,13 @@ mod tests {
         deck.is_playing = true;
         for _ in 0..8 {
             deck.jog_pending += 20.0;
-            deck.consume_jog();
+            deck.consume_jog(BLOCK);
         }
         let bent = deck.next_pos(0.0, false);
         assert!(bent > 1.0, "a turned wheel should bend forward, got {bent}");
 
         for _ in 0..400 {
-            deck.consume_jog();
+            deck.consume_jog(BLOCK);
         }
         assert_eq!(deck.next_pos(0.0, false), 1.0);
     }
@@ -889,14 +948,70 @@ mod tests {
         deck.main_pos = 20_000.0;
 
         deck.jog_pending += 50.0;
-        deck.consume_jog();
+        deck.consume_jog(BLOCK);
         assert!(deck.main_pos > 20_000.0);
         assert_eq!(deck.cue_pos, deck.main_pos);
 
         let forward = deck.main_pos;
         deck.jog_pending -= 200.0;
-        deck.consume_jog();
+        deck.consume_jog(BLOCK);
         assert!(deck.main_pos < forward);
+    }
+
+    #[test]
+    fn the_wheel_settles_over_the_same_wall_clock_time_at_any_buffer_size() {
+        const TICKS_PER_FRAME: f64 = 0.05;
+        const TURN_MS: f64 = 120.0;
+        const SETTLE_SLACK: f64 = 0.02;
+        let settled_fraction = |frames: usize| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.is_playing = true;
+            let blocks = (TURN_MS / 1000.0 * f64::from(SR) / frames as f64).round() as usize;
+            for _ in 0..blocks {
+                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.consume_jog(frames);
+            }
+            deck.jog_filtered / (TICKS_PER_FRAME * frames as f64)
+        };
+        assert!((settled_fraction(256) - settled_fraction(1024)).abs() < SETTLE_SLACK);
+    }
+
+    #[test]
+    fn the_same_hand_speed_bends_the_same_at_any_buffer_size() {
+        const TICKS_PER_FRAME: f64 = 0.05;
+        let bend = |frames: usize| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.is_playing = true;
+            for _ in 0..200 {
+                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.consume_jog(frames);
+            }
+            deck.next_pos(0.0, false)
+        };
+        assert!((bend(256) - bend(1024)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_revolution_covers_a_fixed_ratio_less_audio_at_the_faster_speed() {
+        let travel = |speed| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.set_jog_rotation_speed(speed);
+            deck.main_pos = 20_000.0;
+            deck.jog_pending += 50.0;
+            deck.consume_jog(BLOCK);
+            deck.main_pos - 20_000.0
+        };
+        let slow = travel(JogRotationSpeed::Rpm33);
+        let fast = travel(JogRotationSpeed::Rpm45);
+        assert!((slow / fast - RPM_45 / RPM_33).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_rotation_speed_survives_a_track_change() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.set_jog_rotation_speed(JogRotationSpeed::Rpm45);
+        deck.reset();
+        assert_eq!(deck.jog_rotation_speed, JogRotationSpeed::Rpm45);
     }
 
     // Scrubbing backwards past the start would read at a negative frame.
@@ -906,13 +1021,13 @@ mod tests {
         deck.main_pos = 10.0;
         for _ in 0..200 {
             deck.jog_pending -= 500.0;
-            deck.consume_jog();
+            deck.consume_jog(BLOCK);
         }
         assert!(deck.main_pos >= 0.0);
 
         for _ in 0..2000 {
             deck.jog_pending += 500.0;
-            deck.consume_jog();
+            deck.consume_jog(BLOCK);
         }
         assert!(deck.main_pos <= deck.total_frames as f64);
     }

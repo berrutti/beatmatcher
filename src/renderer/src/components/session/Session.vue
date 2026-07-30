@@ -2,12 +2,11 @@
   <Modal
     :open="discardModalOpen"
     :title="$t('session.discardTitle')"
+    :body="$t('session.discardBody')"
     :confirm-label="$t('session.discardConfirm')"
     @confirm="onDiscardConfirmed"
     @cancel="discardModalOpen = false"
-  >
-    <p class="session__modal-body">{{ $t('session.discardBody') }}</p>
-  </Modal>
+  />
 
   <SessionLoadingModal
     :open="session.isLoading"
@@ -453,10 +452,4 @@ onUnmounted(() => {
   border-color: var(--color-text);
 }
 
-.session__modal-body {
-  font-size: 0.75rem;
-  color: var(--color-muted);
-  line-height: 1.5;
-  margin: 0;
-}
 </style>

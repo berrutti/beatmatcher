@@ -586,6 +586,27 @@ impl AppState {
         Ok(())
     }
 
+    /// One switch, every channel, as on a mixer: the strips each hold their own
+    /// copy because the taper is applied before the fader's own smoothing.
+    pub(crate) fn set_fader_curve(&self, curve: session_core::FaderCurve) {
+        self.audio.monitor.set_fader_curve(curve);
+        for deck in self.audio.deck_ids() {
+            let Some(strip) = self.audio.strip(&deck) else {
+                continue;
+            };
+            strip
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_fader_curve(curve);
+        }
+        self.log_param(
+            None,
+            session_core::FADER_CURVE_SHAPE.0,
+            session_core::FADER_CURVE_SHAPE.1,
+            curve.as_param(),
+        );
+    }
+
     fn resolve_xfader_gains(&self) {
         let position = self.audio.monitor.xfader_position();
         for deck in self.audio.deck_ids() {
@@ -804,6 +825,8 @@ pub fn run() {
             commands::set_buffer_size,
             commands::set_app_mode,
             commands::set_pitch_range,
+            commands::set_jog_rotation_speed,
+            commands::set_fader_curve,
             commands::set_xfader_position,
             commands::set_xfader_assign,
             commands::set_cue_active,

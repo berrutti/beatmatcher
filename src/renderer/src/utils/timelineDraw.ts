@@ -93,7 +93,7 @@ const NUDGE_PREVIEW_LABEL_NEGATIVE_Y_OFFSET_PX = 6;
 const NUDGE_PREVIEW_LABEL_POSITIVE_Y_OFFSET_PX = 12;
 const NUDGE_PREVIEW_LABEL_RIGHT_MARGIN_PX = 30;
 // Tighter inset than the deck lanes' laneValuePad, sized for the short master row.
-const MASTER_GAIN_INSET_Y = 2;
+export const MASTER_GAIN_INSET_Y = 2;
 const MASTER_ROW_BG_COLOR = '#101010';
 const LANE_DROPDOWN_COLOR = '#06b6d4';
 const MASTER_LABEL_COLOR = '#888';

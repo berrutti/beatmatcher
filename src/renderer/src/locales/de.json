@@ -45,6 +45,19 @@
       "title": "Nudge-Empfindlichkeit",
       "hint": "Tempoabweichung beim Halten einer Nudge-Taste oder -Schaltfläche."
     },
+    "jog": {
+      "title": "Jog-Drehzahl",
+      "hint": "Plattentellerdrehzahl, die das Jograd nachbildet. Eine Umdrehung entspricht 1,8 Sekunden Audio bei 33 U/min und 1,33 bei 45, 45 sucht also feiner.",
+      "rpm33": "33 U/min",
+      "rpm45": "45 U/min"
+    },
+    "faderCurve": {
+      "title": "Kanalfader-Kurve",
+      "hint": "Wie der Weg eines Kanalfaders auf die Lautstärke abgebildet wird. Linear erreicht Stille erst ganz unten, exponentiell fällt deutlich früher ab.",
+      "exponential": "Exponentiell",
+      "linear": "Linear",
+      "logarithmic": "Logarithmisch"
+    },
     "pitch": {
       "title": "Pitch-Bereich",
       "hint": "Maximale Abweichung des Pitch-Reglers vom Original-BPM."

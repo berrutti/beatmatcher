@@ -42,16 +42,22 @@ describe('the MIDI monitor', () => {
     expect(mockedListen).toHaveBeenCalledTimes(1);
   });
 
-  it('unregisters on stop and registers again on the next start', async () => {
-    const unlisten = vi.fn();
-    mockedListen.mockResolvedValue(unlisten);
+  it('writes every message to the console so a capture can be copied out', () => {
     const store = useMidiStore();
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      logged.push(line);
+    });
 
-    await store.startMonitor();
-    await store.stopMonitor();
-    expect(unlisten).toHaveBeenCalledTimes(1);
+    store.receive([
+      { port: 'FLX6', timestampUs: 0, data: [0xb1, 0x21, 0x3f] },
+      { port: 'FLX6', timestampUs: 1, data: [0xb1, 0x21, 0x40] }
+    ]);
+    spy.mockRestore();
 
-    await store.startMonitor();
-    expect(mockedListen).toHaveBeenCalledTimes(2);
+    expect(logged).toEqual([
+      '[midi] B1 21 3F\tCh 2  CC 33  63',
+      '[midi] B1 21 40\tCh 2  CC 33  64'
+    ]);
   });
 });
