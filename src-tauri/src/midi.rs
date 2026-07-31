@@ -285,6 +285,14 @@ enum Half {
     Lsb,
 }
 
+/// What a lit button reports. A binding is an input address; this says which of
+/// them the app also writes back to, so a control with no entry stays dark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Feedback {
+    Cue,
+    Quantize,
+}
+
 /// Distinct from `Source` because a high-resolution control declares one source
 /// but arrives on two addresses, and dispatch has to find it by either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -384,6 +392,17 @@ enum Action {
     Jog {
         deck: String,
     },
+    // Held, not latched: the surface sends both edges and the deck it names is
+    // the one whose wheel it modifies.
+    Shift {
+        deck: String,
+    },
+    QuantizeToggle {
+        deck: String,
+    },
+    Eject {
+        deck: String,
+    },
     // `steps` is how far one press moves the cursor, for a surface that browses
     // with buttons instead of an encoder. The encoder itself carries its own
     // delta and leaves this unset.
@@ -409,7 +428,7 @@ struct Binding {
 pub struct Profile {
     bindings: Vec<Binding>,
     by_key: HashMap<Key, (usize, Half)>,
-    cue_keys: HashMap<String, Key>,
+    led_keys: HashMap<(Feedback, String), Key>,
 }
 
 impl Profile {
@@ -418,12 +437,17 @@ impl Profile {
     /// broken hardware rather than a broken mapping.
     fn new(bindings: Vec<Binding>) -> Result<Self, String> {
         let mut by_key = HashMap::new();
-        let mut cue_keys = HashMap::new();
+        let mut led_keys = HashMap::new();
         for (index, binding) in bindings.iter().enumerate() {
             let keys = binding.source.keys()?;
-            if let Action::CueToggle { deck } = &binding.action {
+            let lit = match &binding.action {
+                Action::CueToggle { deck } => Some((Feedback::Cue, deck)),
+                Action::QuantizeToggle { deck } => Some((Feedback::Quantize, deck)),
+                _ => None,
+            };
+            if let Some((feedback, deck)) = lit {
                 if let Some((key, _)) = keys.first() {
-                    cue_keys.insert(deck.clone(), *key);
+                    led_keys.insert((feedback, deck.clone()), *key);
                 }
             }
             for (key, half) in keys {
@@ -435,7 +459,7 @@ impl Profile {
         Ok(Self {
             bindings,
             by_key,
-            cue_keys,
+            led_keys,
         })
     }
 
@@ -478,7 +502,7 @@ const MAPPING_VERSION: u32 = 1;
 
 const MAPPING_FILES: [&str; 2] = [
     include_str!("../mappings/ddj-flx6.json"),
-    include_str!("../mappings/xdj-1000.json"),
+    include_str!("../mappings/xdj-1000mk2.json"),
 ];
 
 #[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -619,6 +643,15 @@ impl BindingSpec {
                 deck: self.deck(scope, assigned)?,
             },
             "jog" => Action::Jog {
+                deck: self.deck(scope, assigned)?,
+            },
+            "shift" => Action::Shift {
+                deck: self.deck(scope, assigned)?,
+            },
+            "quantize_toggle" => Action::QuantizeToggle {
+                deck: self.deck(scope, assigned)?,
+            },
+            "eject" => Action::Eject {
                 deck: self.deck(scope, assigned)?,
             },
             "load" => Action::Load {
@@ -791,6 +824,16 @@ enum Move {
         deck: String,
         ticks: i32,
     },
+    Shift {
+        deck: String,
+        held: bool,
+    },
+    QuantizeToggle {
+        deck: String,
+    },
+    Eject {
+        deck: String,
+    },
     Browse {
         steps: i32,
     },
@@ -853,6 +896,9 @@ fn resolve_move(profile: &Profile, memory: &mut ControlMemory, data: &[u8]) -> O
             | Action::LoopOut { .. }
             | Action::LoopExitOrReloop { .. }
             | Action::Jog { .. }
+            | Action::Shift { .. }
+            | Action::QuantizeToggle { .. }
+            | Action::Eject { .. }
             | Action::Browse { .. }
             | Action::Load { .. }
             | Action::Enter
@@ -881,6 +927,16 @@ fn resolve_move(profile: &Profile, memory: &mut ControlMemory, data: &[u8]) -> O
         Action::LoopExitOrReloop { deck } => {
             pressed.then(|| Move::LoopExitOrReloop { deck: deck.clone() })
         }
+        Action::Shift { deck } => Some(Move::Shift {
+            deck: deck.clone(),
+            held: pressed,
+        }),
+        // Momentary on the surface, latching in the app, so only the press turns
+        // it over; the release would turn it straight back.
+        Action::QuantizeToggle { deck } => {
+            pressed.then(|| Move::QuantizeToggle { deck: deck.clone() })
+        }
+        Action::Eject { deck } => pressed.then(|| Move::Eject { deck: deck.clone() }),
         Action::Load { deck } => pressed.then(|| Move::Load { deck: deck.clone() }),
         Action::Enter => pressed.then_some(Move::Enter),
         Action::Back => pressed.then_some(Move::Back),
@@ -954,6 +1010,14 @@ pub(crate) fn apply(
         Some(Move::Jog { deck, ticks }) => {
             state.jog(crate::ParamOrigin::Midi, &deck, ticks).ok();
         }
+        Some(Move::Shift { deck, held }) => {
+            state.set_jog_shift(&deck, held).ok();
+        }
+        // Forwarded rather than acted on: the frontend owns the flag and writes
+        // it back through `set_quantize`, which is also what lights the button.
+        Some(Move::QuantizeToggle { deck }) => {
+            app.emit("midi-quantize", deck).ok();
+        }
         // Selection is not engine state, so these are the moves Rust forwards
         // rather than acts on. Which track a load button loads is only knowable
         // from the cursor, which lives in the frontend.
@@ -971,6 +1035,9 @@ pub(crate) fn apply(
         }
         Some(Move::Load { deck }) => {
             app.emit("midi-load", deck).ok();
+        }
+        Some(Move::Eject { deck }) => {
+            app.emit("midi-eject", deck).ok();
         }
         Some(Move::Tempo { deck, position }) => {
             state
@@ -1010,9 +1077,10 @@ pub(crate) fn apply(
     }
 }
 
-/// Lights a deck's cue button to match the app. Driven by every cue change
-/// whatever caused it, so a mouse toggle lights the button too.
-pub fn send_cue_led(state: &MidiState, deck: &str, active: bool) {
+/// Lights one of a deck's buttons to match the app, on every device that binds
+/// it. Driven by every change whatever caused it, so a mouse toggle lights the
+/// button too.
+pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
     let writes: Vec<(String, u8, u8)> = {
         let devices = state
             .devices
@@ -1020,12 +1088,17 @@ pub fn send_cue_led(state: &MidiState, deck: &str, active: bool) {
             .unwrap_or_else(|error| error.into_inner());
         devices
             .iter()
-            .filter_map(
-                |(port, device)| match device.profile.as_ref()?.cue_keys.get(deck)? {
+            .filter_map(|(port, device)| {
+                match device
+                    .profile
+                    .as_ref()?
+                    .led_keys
+                    .get(&(kind, deck.to_string()))?
+                {
                     Key::Note { channel, note } => Some((port.clone(), *channel, *note)),
                     Key::ControlChange { .. } => None,
-                },
-            )
+                }
+            })
             .collect()
     };
     for (port, channel, note) in writes {
@@ -1036,32 +1109,41 @@ pub fn send_cue_led(state: &MidiState, deck: &str, active: bool) {
     }
 }
 
-/// Nothing else pushes state when a port opens, so a cue the app already has on
-/// would leave its button dark until the next toggle.
-fn resync_cue_leds(state: &crate::AppState, midi: &MidiState) {
-    let decks: Vec<String> = {
+/// Nothing else pushes state when a port opens, so a button the app already has
+/// on would stay dark until the next toggle.
+fn resync_leds(state: &crate::AppState, midi: &MidiState) {
+    let lit: Vec<(Feedback, String)> = {
         let devices = midi
             .devices
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut decks: Vec<String> = devices
+        let mut lit: Vec<(Feedback, String)> = devices
             .values()
             .filter_map(|device| device.profile.as_ref())
-            .flat_map(|profile| profile.cue_keys.keys().cloned())
+            .flat_map(|profile| profile.led_keys.keys().cloned())
             .collect();
-        decks.sort();
-        decks.dedup();
-        decks
+        lit.sort();
+        lit.dedup();
+        lit
     };
-    for deck in decks {
-        let Some(strip) = state.audio.strip(&deck) else {
-            continue;
+    for (kind, deck) in lit {
+        let on = match kind {
+            Feedback::Cue => state.audio.strip(&deck).map(|strip| {
+                strip
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .cue_active
+            }),
+            Feedback::Quantize => state.deck(&deck).ok().map(|deck_state| {
+                deck_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .quantize
+            }),
         };
-        let active = strip
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .cue_active;
-        send_cue_led(midi, &deck, active);
+        if let Some(on) = on {
+            send_led(midi, kind, &deck, on);
+        }
     }
 }
 
@@ -1130,7 +1212,7 @@ pub fn list_midi_devices(
         .recv()
         .map_err(|_| "the MIDI thread stopped".to_string())?;
     // Requests are served in order, so the outputs these write to are open.
-    resync_cue_leds(&app_state, &state);
+    resync_leds(&app_state, &state);
     Ok(device_list(&state))
 }
 
@@ -1139,6 +1221,7 @@ pub fn list_midi_devices(
 #[tauri::command]
 pub fn set_midi_device_deck(
     state: tauri::State<'_, MidiState>,
+    app_state: tauri::State<'_, crate::AppState>,
     port: String,
     deck: Option<String>,
 ) -> Result<(), String> {
@@ -1160,6 +1243,9 @@ pub fn set_midi_device_deck(
             None => None,
         };
     }
+    // The profile only exists once a deck is chosen, so the resync in
+    // `list_midi_devices` ran against a device that could not be lit yet.
+    resync_leds(&app_state, &state);
     Ok(())
 }
 
@@ -1498,7 +1584,7 @@ mod tests {
             })
         );
         assert_eq!(
-            profile.cue_keys.get("C"),
+            profile.led_keys.get(&(Feedback::Cue, "C".to_string())),
             Some(&Key::Note {
                 channel: 2,
                 note: 84
@@ -1640,6 +1726,48 @@ mod tests {
             resolve_move(&profile, &mut halves, &control_change(6, 64, 127)),
             Some(Move::Browse { steps: -1 })
         );
+    }
+
+    // Held on the surface, the wheel moves to its own address: the same gesture
+    // that sends CC 33 sends CC 38 while note 63 is down, so leaving CC 38
+    // unbound kills the wheel instead of doubling it.
+    #[test]
+    fn the_wheels_shifted_address_drives_the_same_deck() {
+        let profile = ddj_flx6();
+        let mut memory = ControlMemory::default();
+        for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
+            assert_eq!(
+                resolve_move(&profile, &mut memory, &control_change(channel, 38, 70)),
+                Some(Move::Jog {
+                    deck: deck.to_string(),
+                    ticks: 6
+                })
+            );
+        }
+    }
+
+    // Read off the hardware: note 63 on each deck's own channel, 127 down and 0
+    // up. A held modifier is only a modifier if the release arrives too.
+    #[test]
+    fn shift_resolves_on_both_edges_for_the_channels_own_deck() {
+        let profile = ddj_flx6();
+        let mut halves = ControlMemory::default();
+        for (channel, deck) in [(0, "A"), (1, "B"), (2, "C"), (3, "D")] {
+            assert_eq!(
+                resolve_move(&profile, &mut halves, &note_on(channel, 63, 127)),
+                Some(Move::Shift {
+                    deck: deck.to_string(),
+                    held: true
+                })
+            );
+            assert_eq!(
+                resolve_move(&profile, &mut halves, &note_on(channel, 63, 0)),
+                Some(Move::Shift {
+                    deck: deck.to_string(),
+                    held: false
+                })
+            );
+        }
     }
 
     #[test]
@@ -1793,15 +1921,21 @@ mod tests {
     fn a_mapping_claims_only_the_port_names_it_names() {
         let flx6 = mapping_named("DDJ-FLX6");
         assert!(flx6.claims("DDJ-FLX6 MIDI 1"));
-        assert!(!flx6.claims("XDJ-1000"));
+        assert!(!flx6.claims("XDJ-1000MK2"));
         assert!(!flx6.claims("IAC Driver Bus 1"));
+
+        // The mapping is named for the revision in hand; the substring it claims
+        // by is the shorter one both revisions of the port name start with.
+        let player = mapping_named("XDJ-1000MK2");
+        assert!(player.claims("XDJ-1000MK2"));
+        assert!(player.claims("XDJ-1000"));
     }
 
     // A player is one deck, and which deck is not in the file: it is the user's
     // choice, baked into the profile when they make it.
     #[test]
     fn an_assigned_mapping_names_the_deck_it_was_built_for() {
-        let player = mapping_named("XDJ-1000");
+        let player = mapping_named("XDJ-1000MK2");
         assert!(player.needs_deck());
         let profile = player.profile(Some("D")).expect("the player mapping");
         let mut halves = ControlMemory::default();
@@ -1831,7 +1965,7 @@ mod tests {
 
     #[test]
     fn the_players_tempo_fader_centres_on_a_rate_of_one() {
-        let profile = mapping_named("XDJ-1000")
+        let profile = mapping_named("XDJ-1000MK2")
             .profile(Some("A"))
             .expect("the player mapping");
         let mut halves = ControlMemory::default();
@@ -1848,7 +1982,7 @@ mod tests {
     // to the jog: the platter is the vinyl gesture and waits for a scratch engine.
     #[test]
     fn the_players_bend_ring_drives_the_jog_and_its_platter_does_not() {
-        let profile = mapping_named("XDJ-1000")
+        let profile = mapping_named("XDJ-1000MK2")
             .profile(Some("A"))
             .expect("the player mapping");
         let mut halves = ControlMemory::default();
@@ -1867,14 +2001,14 @@ mod tests {
 
     #[test]
     fn an_assigned_mapping_refuses_to_build_without_a_deck() {
-        assert!(mapping_named("XDJ-1000").profile(None).is_err());
+        assert!(mapping_named("XDJ-1000MK2").profile(None).is_err());
     }
 
     // Track search is the browse cursor, not transport: the file gives the step
     // because a button carries no delta of its own.
     #[test]
     fn a_note_can_browse_by_a_fixed_step() {
-        let profile = mapping_named("XDJ-1000")
+        let profile = mapping_named("XDJ-1000MK2")
             .profile(Some("A"))
             .expect("the player mapping");
         let mut halves = ControlMemory::default();
@@ -1918,8 +2052,122 @@ mod tests {
     fn every_cue_binding_has_a_key_to_light() {
         let profile = ddj_flx6();
         for deck in ["A", "B", "C", "D"] {
-            assert!(profile.cue_keys.contains_key(deck), "{deck}");
+            assert!(
+                profile
+                    .led_keys
+                    .contains_key(&(Feedback::Cue, deck.to_string())),
+                "{deck}"
+            );
         }
+    }
+
+    // Two kinds of feedback on one deck are two entries, or the second would
+    // overwrite the first and light the wrong button.
+    #[test]
+    fn each_kind_of_feedback_keeps_its_own_key() {
+        let profile = Profile::new(vec![
+            Binding {
+                source: Source::Note {
+                    channel: 0,
+                    note: 84,
+                },
+                action: Action::CueToggle {
+                    deck: "A".to_string(),
+                },
+            },
+            Binding {
+                source: Source::Note {
+                    channel: 0,
+                    note: 48,
+                },
+                action: Action::QuantizeToggle {
+                    deck: "A".to_string(),
+                },
+            },
+        ])
+        .expect("a profile");
+        assert_eq!(
+            profile.led_keys.get(&(Feedback::Cue, "A".to_string())),
+            Some(&Key::Note {
+                channel: 0,
+                note: 84
+            })
+        );
+        assert_eq!(
+            profile.led_keys.get(&(Feedback::Quantize, "A".to_string())),
+            Some(&Key::Note {
+                channel: 0,
+                note: 48
+            })
+        );
+    }
+
+    // Momentary on the surface, latching in the app: acting on the release too
+    // would turn quantize straight back off under the finger.
+    #[test]
+    fn quantize_turns_over_on_the_press_only() {
+        let profile = mapping_named("XDJ-1000MK2")
+            .profile(Some("A"))
+            .expect("the player mapping");
+        let mut halves = ControlMemory::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 9, 127)),
+            Some(Move::QuantizeToggle {
+                deck: "A".to_string()
+            })
+        );
+        assert_eq!(resolve_move(&profile, &mut halves, &note_on(0, 9, 0)), None);
+        assert_eq!(
+            profile.led_keys.get(&(Feedback::Quantize, "A".to_string())),
+            Some(&Key::Note {
+                channel: 0,
+                note: 9
+            })
+        );
+    }
+
+    #[test]
+    fn the_players_eject_button_names_its_assigned_deck() {
+        let profile = mapping_named("XDJ-1000MK2")
+            .profile(Some("C"))
+            .expect("the player mapping");
+        let mut halves = ControlMemory::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 48, 127)),
+            Some(Move::Eject {
+                deck: "C".to_string()
+            })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 48, 0)),
+            None
+        );
+    }
+
+    // Read off the unit: the rotary sends 127 one way and 1 the other, which is
+    // the same signed step the controller's browse encoder uses.
+    #[test]
+    fn the_players_browse_encoder_steps_both_ways() {
+        let profile = mapping_named("XDJ-1000MK2")
+            .profile(Some("A"))
+            .expect("the player mapping");
+        let mut halves = ControlMemory::default();
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(0, 79, 127)),
+            Some(Move::Browse { steps: -1 })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &control_change(0, 79, 1)),
+            Some(Move::Browse { steps: 1 })
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 51, 127)),
+            Some(Move::Enter)
+        );
+        assert_eq!(
+            resolve_move(&profile, &mut halves, &note_on(0, 50, 127)),
+            Some(Move::Back)
+        );
     }
 
     #[test]

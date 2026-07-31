@@ -210,6 +210,8 @@
   "deck": {
     "loadTitle": "¿Cargar nueva pista?",
     "loadBody": "La reproducción se detendrá y la pista actual será reemplazada.",
+    "ejectConfirmTitle": "¿Quitar la pista en reproducción?",
+    "ejectConfirmBody": "La reproducción se detendrá y la bandeja quedará vacía.",
     "label": "DECK {id}",
     "ejectTitle": "Quitar pista",
     "notLoaded": "Carga una pista",

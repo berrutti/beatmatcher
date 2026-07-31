@@ -322,6 +322,7 @@ pub struct DeckState {
     jog_filtered: f64,
     jog_bend: f64,
     jog_rotation_speed: JogRotationSpeed,
+    jog_shift: bool,
     pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
@@ -361,6 +362,7 @@ impl DeckState {
             jog_filtered: 0.0,
             jog_bend: 0.0,
             jog_rotation_speed: JogRotationSpeed::Rpm33,
+            jog_shift: false,
             quantize: true,
             bass_band: Arc::new(Vec::new()),
             mid_band: Arc::new(Vec::new()),
@@ -490,9 +492,14 @@ impl DeckState {
     // How much further a hand movement seeks a paused deck than it bends a playing
     // one. Set by ear: a smaller value overshoots the beat.
     const JOG_PAUSED_MULTIPLIER: f64 = 100.0;
+    const JOG_SHIFT_MULTIPLIER: f64 = 2.0;
 
     pub fn set_jog_rotation_speed(&mut self, speed: JogRotationSpeed) {
         self.jog_rotation_speed = speed;
+    }
+
+    pub(crate) fn set_jog_shift(&mut self, held: bool) {
+        self.jog_shift = held;
     }
 
     fn jog_frames_per_tick(&self) -> f64 {
@@ -531,6 +538,11 @@ impl DeckState {
             return;
         }
         self.jog_bend = 0.0;
+        let travel = if self.jog_shift {
+            travel * Self::JOG_SHIFT_MULTIPLIER
+        } else {
+            travel
+        };
         self.main_pos = (self.main_pos + travel).clamp(0.0, self.total_frames as f64);
         self.cue_pos = self.main_pos;
     }
@@ -1004,6 +1016,38 @@ mod tests {
         let slow = travel(JogRotationSpeed::Rpm33);
         let fast = travel(JogRotationSpeed::Rpm45);
         assert!((slow / fast - RPM_45 / RPM_33).abs() < 1e-12);
+    }
+
+    #[test]
+    fn shift_doubles_the_scrub_and_leaves_the_bend_alone() {
+        let scrub = |held| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.set_jog_shift(held);
+            deck.main_pos = 20_000.0;
+            deck.jog_pending += 50.0;
+            deck.consume_jog(BLOCK);
+            deck.main_pos - 20_000.0
+        };
+        assert!((scrub(true) / scrub(false) - 2.0).abs() < 1e-12);
+
+        let bend = |held| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.set_jog_shift(held);
+            deck.is_playing = true;
+            deck.jog_pending += 50.0;
+            deck.consume_jog(BLOCK);
+            deck.jog_bend
+        };
+        assert_eq!(bend(true), bend(false));
+    }
+
+    // The button is held on the surface, so a track change cannot release it.
+    #[test]
+    fn shift_survives_a_track_change() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.set_jog_shift(true);
+        deck.reset();
+        assert!(deck.jog_shift);
     }
 
     #[test]

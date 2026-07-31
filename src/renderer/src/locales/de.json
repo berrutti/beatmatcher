@@ -210,6 +210,8 @@
   "deck": {
     "loadTitle": "Neuen Track laden?",
     "loadBody": "Die Wiedergabe wird gestoppt und der aktuelle Track ersetzt.",
+    "ejectConfirmTitle": "Laufenden Track auswerfen?",
+    "ejectConfirmBody": "Die Wiedergabe wird gestoppt und das Deck geleert.",
     "label": "DECK {id}",
     "ejectTitle": "Track auswerfen",
     "notLoaded": "Track laden",

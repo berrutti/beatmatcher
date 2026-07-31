@@ -70,7 +70,10 @@ export const useMidiStore = defineStore('midi', () => {
 
   // The monitor runs for the whole session rather than while the panel is open,
   // so a capture is already in the console by the time anyone goes looking.
+  // A release build has no devtools to read it in, so nothing is buffered or
+  // shipped over IPC there.
   async function startMonitor(): Promise<void> {
+    if (!import.meta.env.DEV) return;
     if (!listening) {
       listening = listen<MidiMessage[]>('midi-messages', (event) => {
         receive(event.payload);

@@ -55,6 +55,17 @@ describe('the MIDI devices', () => {
     expect(mockedListen).toHaveBeenCalledTimes(1);
   });
 
+  it('subscribes to nothing in a build with no devtools to read the console', async () => {
+    vi.stubEnv('DEV', false);
+    const store = useMidiStore();
+
+    await store.startMonitor();
+
+    expect(mockedListen).not.toHaveBeenCalled();
+    expect(mockedInvoke).not.toHaveBeenCalledWith('set_midi_monitor', { enabled: true });
+    vi.unstubAllEnvs();
+  });
+
   it('writes every message to the console so a capture can be copied out', () => {
     const store = useMidiStore();
     const logged: string[] = [];

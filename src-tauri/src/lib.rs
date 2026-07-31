@@ -12,7 +12,7 @@ use engine_push::{EnginePush, ParamOrigin};
 use std::sync::Arc;
 
 type TrackCache = Arc<std::sync::Mutex<session_playback::SampleCache>>;
-type CueFeedback = Box<dyn Fn(&str, bool) + Send + Sync>;
+type LedFeedback = Box<dyn Fn(midi::Feedback, &str, bool) + Send + Sync>;
 use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
@@ -136,7 +136,7 @@ pub struct AppState {
     // Set once at startup. The reverse of the MIDI dispatch closure: that one
     // lets the controller reach the engine, this one lets the engine light the
     // controller's buttons without `AppState` knowing about `MidiState`.
-    cue_feedback: std::sync::Mutex<Option<CueFeedback>>,
+    led_feedback: std::sync::Mutex<Option<LedFeedback>>,
 }
 
 /// Matches the pitch slider's `step`. Rate has no descriptor, so nothing else
@@ -226,7 +226,10 @@ impl AppState {
         Ok(())
     }
 
-    fn deck(&self, deck: &str) -> Result<Arc<std::sync::Mutex<audio::DeckState>>, String> {
+    pub(crate) fn deck(
+        &self,
+        deck: &str,
+    ) -> Result<Arc<std::sync::Mutex<audio::DeckState>>, String> {
         self.audio
             .deck(deck)
             .ok_or_else(|| format!("unknown deck: {}", deck))
@@ -423,6 +426,16 @@ impl AppState {
         Ok(())
     }
 
+    /// Held on the surface rather than latched, so it is set on both edges and
+    /// moves nothing on its own.
+    pub(crate) fn set_jog_shift(&self, deck: &str, held: bool) -> Result<(), String> {
+        self.deck(deck)?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_jog_shift(held);
+        Ok(())
+    }
+
     pub(crate) fn loop_in(
         &self,
         origin: ParamOrigin,
@@ -547,13 +560,19 @@ impl AppState {
             serde_json::json!({ "deck": deck, "active": active }),
         );
         self.engine_push.mark_cue(origin, deck);
+        self.light(midi::Feedback::Cue, deck, active);
+    }
+
+    /// Every writer of a lit control goes through here whatever moved it, so a
+    /// mouse click lights the button the same as the button does.
+    pub(crate) fn light(&self, kind: midi::Feedback, deck: &str, on: bool) {
         if let Some(feedback) = self
-            .cue_feedback
+            .led_feedback
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
         {
-            feedback(deck, active);
+            feedback(kind, deck, on);
         }
     }
 
@@ -618,9 +637,9 @@ impl AppState {
         }
     }
 
-    pub(crate) fn set_cue_feedback(&self, feedback: CueFeedback) {
+    pub(crate) fn set_led_feedback(&self, feedback: LedFeedback) {
         *self
-            .cue_feedback
+            .led_feedback
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(feedback);
     }
@@ -695,7 +714,7 @@ pub fn run() {
         session_files: std::sync::Mutex::new(std::collections::HashMap::new()),
         app_mode: std::sync::Mutex::new(AppMode::Performance),
         engine_push: Arc::new(EnginePush::new()),
-        cue_feedback: std::sync::Mutex::new(None),
+        led_feedback: std::sync::Mutex::new(None),
     };
 
     // Cloned before `.manage()` consumes app_state, so the broadcaster thread
@@ -783,10 +802,16 @@ pub fn run() {
                 }),
             );
             let feedback_handle = app.handle().clone();
-            app.state::<AppState>()
-                .set_cue_feedback(Box::new(move |deck: &str, active: bool| {
-                    midi::send_cue_led(&feedback_handle.state::<midi::MidiState>(), deck, active);
-                }));
+            app.state::<AppState>().set_led_feedback(Box::new(
+                move |kind: midi::Feedback, deck: &str, active: bool| {
+                    midi::send_led(
+                        &feedback_handle.state::<midi::MidiState>(),
+                        kind,
+                        deck,
+                        active,
+                    );
+                },
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

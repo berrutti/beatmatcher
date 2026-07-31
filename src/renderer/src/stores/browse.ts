@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { loadToDeck } from '@renderer/utils/deckDrop';
+import { confirmModal, cancelModal } from '@renderer/utils/activeModal';
 
 export type BrowseTab = 'all' | 'playlists';
 
@@ -71,13 +72,18 @@ export const useBrowseStore = defineStore('browse', () => {
     anchors.value[listId.value] = rows.value[to];
   }
 
+  // A modal is the whole screen's answer to these two, so it takes them before
+  // the browser does. Without it the surface can open a confirm it has no way
+  // to answer, which a LOAD onto a playing deck does.
   function enter(): void {
+    if (confirmModal()) return;
     const key = cursorKey.value;
     if (!onPlaylistList.value || key === null) return;
     openPlaylist(key);
   }
 
   function back(): void {
+    if (cancelModal()) return;
     if (activePlaylistId.value !== null) {
       activePlaylistId.value = null;
       return;

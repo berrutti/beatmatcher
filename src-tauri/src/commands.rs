@@ -619,6 +619,7 @@ pub(crate) fn set_quantize(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .quantize = quantize;
+    state.light(crate::midi::Feedback::Quantize, &deck, quantize);
     Ok(())
 }
 

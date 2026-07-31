@@ -162,6 +162,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     loopRegion: null as LoopRegion | null,
     loopActive: false,
     quantized: true,
+    ejectPending: false,
 
     trackBpm: null as number | null,
     beatOffset: 0,
@@ -498,7 +499,28 @@ function createDeck(id: DeckId, accent: string, name: string) {
       clockAtPlay = 0;
       localRate = 1.0;
       onBeatOffsetChangeCb = null;
+      state.ejectPending = false;
       await invoke('eject_track', { deck: id });
+    },
+
+    // The confirmation lives here rather than in the button, so the eject key on
+    // a controller passes the same guard the mouse does.
+    async requestEject() {
+      if (!state.trackLoaded) return;
+      if (state.loopPlaying) {
+        state.ejectPending = true;
+        return;
+      }
+      await this.ejectTrack();
+    },
+
+    async confirmEject() {
+      state.ejectPending = false;
+      await this.ejectTrack();
+    },
+
+    cancelEject() {
+      state.ejectPending = false;
     },
 
     async stop() {
@@ -561,6 +583,20 @@ export const useDecksStore = defineStore('decks', () => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
     deck.returnToCue();
+  });
+
+  // Rust forwards the press rather than flipping the flag: the store owns it,
+  // and writing back through `set_quantize` is what lights the button.
+  listen<string>('midi-quantize', (event) => {
+    const found = DECKS_DISPOSITION.find((id) => id === event.payload);
+    if (!found) return;
+    decks[found].toggleQuantized();
+  });
+
+  listen<string>('midi-eject', async (event) => {
+    const found = DECKS_DISPOSITION.find((id) => id === event.payload);
+    if (!found) return;
+    await decks[found].requestEject();
   });
 
   listen<TransportPush[]>('engine-transport', (event) => {

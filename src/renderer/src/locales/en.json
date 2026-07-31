@@ -210,6 +210,8 @@
   "deck": {
     "loadTitle": "Load new track?",
     "loadBody": "Playback will stop and the current track will be replaced.",
+    "ejectConfirmTitle": "Eject the playing track?",
+    "ejectConfirmBody": "Playback will stop and the deck will be emptied.",
     "label": "DECK {id}",
     "ejectTitle": "Eject track",
     "notLoaded": "Load a track",
