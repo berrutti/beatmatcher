@@ -57,6 +57,65 @@ function roundBpm(bpm: number): number {
   return Math.round(bpm * 100) / 100;
 }
 
+// Everything a track puts on a deck. Ejecting applies this again rather than
+// naming each field to clear, so a field added here cannot be forgotten there.
+type DeckTrackState = {
+  trackName: string;
+  trackLoaded: boolean;
+  loading: boolean;
+  waveformLoading: boolean;
+  loadedPath: string | null;
+  trackData: TrackData | null;
+  // Low-rate overview covering the whole track (few points per second).
+  // Used by the overview strip and by WaveformDisplay as a first-paint
+  // fallback while the dense LOD is still loading.
+  fullSpectralData: Float32Array | null;
+  // Higher-rate LOD covering the whole track. WaveformDisplay slices this
+  // directly in JS for any zoom level the rate can satisfy, avoiding IPC
+  // round-trips on pan/zoom. Deeper zoom levels fall back to on-demand
+  // fetches; see WaveformDisplay for the switching logic.
+  denseSpectralData: Float32Array | null;
+  denseSpectralRate: number;
+  coverArt: string | null;
+  loopPlaying: boolean;
+  loopRegion: LoopRegion | null;
+  loopActive: boolean;
+  ejectPending: boolean;
+  trackBpm: number | null;
+  beatOffset: number;
+  cuePoint: number;
+  targetBpm: number | null;
+  pitchOffset: number;
+  nudging: 'back' | 'forward' | null;
+  cueing: boolean;
+};
+
+function emptyDeck(): DeckTrackState {
+  return {
+    trackName: '',
+    trackLoaded: false,
+    loading: false,
+    waveformLoading: false,
+    loadedPath: null,
+    trackData: null,
+    fullSpectralData: null,
+    denseSpectralData: null,
+    denseSpectralRate: 0,
+    coverArt: null,
+    loopPlaying: false,
+    loopRegion: null,
+    loopActive: false,
+    ejectPending: false,
+    trackBpm: null,
+    beatOffset: 0,
+    cuePoint: 0,
+    targetBpm: null,
+    pitchOffset: 0,
+    nudging: null,
+    cueing: false
+  };
+}
+
 function createDeck(id: DeckId, accent: string, name: string) {
   let positionCache = 0;
   let clockAtPlay = 0; // performance.now() when playback started or position was last anchored
@@ -141,37 +200,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
     id,
     accent,
     name,
-    trackName: '',
-    trackLoaded: false,
-    loading: false,
-    waveformLoading: false,
-    loadedPath: null as string | null,
-    trackData: null as TrackData | null,
-    // Low-rate overview covering the whole track (few points per second).
-    // Used by the overview strip and by WaveformDisplay as a first-paint
-    // fallback while the dense LOD is still loading.
-    fullSpectralData: null as Float32Array | null,
-    // Higher-rate LOD covering the whole track. WaveformDisplay slices this
-    // directly in JS for any zoom level the rate can satisfy, avoiding IPC
-    // round-trips on pan/zoom. Deeper zoom levels fall back to on-demand
-    // fetches; see WaveformDisplay for the switching logic.
-    denseSpectralData: null as Float32Array | null,
-    denseSpectralRate: 0,
-    coverArt: null as string | null,
-    loopPlaying: false,
-    loopRegion: null as LoopRegion | null,
-    loopActive: false,
+    ...emptyDeck(),
+    // Not part of the empty deck: it is a setting, and survives the track.
     quantized: true,
-    ejectPending: false,
-
-    trackBpm: null as number | null,
-    beatOffset: 0,
-    cuePoint: 0,
-    targetBpm: null as number | null,
-    pitchOffset: 0,
-
-    nudging: null as 'back' | 'forward' | null,
-    cueing: false,
 
     get trackPosition(): number | null {
       return state.loopPlaying ? interpolatedPosition() : null;
@@ -475,31 +506,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
       bandsReadyUnlisten?.();
       bandsReadyUnlisten = null;
       loadGeneration++;
-      state.loading = false;
-      state.waveformLoading = false;
-      state.loopPlaying = false;
-      state.cueing = false;
-      state.nudging = null;
-      state.loopRegion = null;
-      state.loopActive = false;
-      state.trackData = null;
-      state.fullSpectralData = null;
-      state.denseSpectralData = null;
-      state.denseSpectralRate = 0;
-      state.coverArt = null;
-      state.trackName = '';
-      state.trackLoaded = false;
-      state.loadedPath = null;
-      state.trackBpm = null;
-      state.targetBpm = null;
-      state.pitchOffset = 0;
-      state.cuePoint = 0;
-      state.beatOffset = 0;
       positionCache = 0;
       clockAtPlay = 0;
       localRate = 1.0;
       onBeatOffsetChangeCb = null;
-      state.ejectPending = false;
+      Object.assign(state, emptyDeck());
       await invoke('eject_track', { deck: id });
     },
 
@@ -511,12 +522,12 @@ function createDeck(id: DeckId, accent: string, name: string) {
         state.ejectPending = true;
         return;
       }
-      await this.ejectTrack();
+      await state.ejectTrack();
     },
 
     async confirmEject() {
       state.ejectPending = false;
-      await this.ejectTrack();
+      await state.ejectTrack();
     },
 
     cancelEject() {

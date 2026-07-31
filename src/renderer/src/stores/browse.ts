@@ -72,9 +72,8 @@ export const useBrowseStore = defineStore('browse', () => {
     anchors.value[listId.value] = rows.value[to];
   }
 
-  // A modal is the whole screen's answer to these two, so it takes them before
-  // the browser does. Without it the surface can open a confirm it has no way
-  // to answer, which a LOAD onto a playing deck does.
+  // An open modal takes these two: a controller LOAD onto a playing deck opens
+  // one, and nothing else on the surface could dismiss it.
   function enter(): void {
     if (confirmModal()) return;
     const key = cursorKey.value;

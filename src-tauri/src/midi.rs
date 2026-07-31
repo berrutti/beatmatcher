@@ -1077,8 +1077,7 @@ pub(crate) fn apply(
     }
 }
 
-/// Lights one of a deck's buttons to match the app, on every device that binds
-/// it. Driven by every change whatever caused it, so a mouse toggle lights the
+/// Driven by every change whatever caused it, so a mouse toggle lights the
 /// button too.
 pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
     let writes: Vec<(String, u8, u8)> = {
@@ -1728,9 +1727,8 @@ mod tests {
         );
     }
 
-    // Held on the surface, the wheel moves to its own address: the same gesture
-    // that sends CC 33 sends CC 38 while note 63 is down, so leaving CC 38
-    // unbound kills the wheel instead of doubling it.
+    // Read off both halves: while note 63 is down the wheel sends CC 38, not
+    // CC 33.
     #[test]
     fn the_wheels_shifted_address_drives_the_same_deck() {
         let profile = ddj_flx6();
@@ -1746,8 +1744,7 @@ mod tests {
         }
     }
 
-    // Read off the hardware: note 63 on each deck's own channel, 127 down and 0
-    // up. A held modifier is only a modifier if the release arrives too.
+    // Read off the hardware: note 63 on each deck's own channel.
     #[test]
     fn shift_resolves_on_both_edges_for_the_channels_own_deck() {
         let profile = ddj_flx6();
@@ -2061,8 +2058,7 @@ mod tests {
         }
     }
 
-    // Two kinds of feedback on one deck are two entries, or the second would
-    // overwrite the first and light the wrong button.
+    // Cue is note 84 and quantize note 48 on the same deck.
     #[test]
     fn each_kind_of_feedback_keeps_its_own_key() {
         let profile = Profile::new(vec![
@@ -2144,8 +2140,7 @@ mod tests {
         );
     }
 
-    // Read off the unit: the rotary sends 127 one way and 1 the other, which is
-    // the same signed step the controller's browse encoder uses.
+    // Read off the unit: the rotary sends 127 one way and 1 the other.
     #[test]
     fn the_players_browse_encoder_steps_both_ways() {
         let profile = mapping_named("XDJ-1000MK2")
