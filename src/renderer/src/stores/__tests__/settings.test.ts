@@ -30,12 +30,8 @@ describe('fader curve options', () => {
     const [exponential, linear, logarithmic] = FADER_CURVE_OPTIONS;
     for (let step = 1; step < 10; step++) {
       const position = step / 10;
-      expect(faderCurveGain(exponential, position)).toBeLessThan(
-        faderCurveGain(linear, position)
-      );
-      expect(faderCurveGain(linear, position)).toBeLessThan(
-        faderCurveGain(logarithmic, position)
-      );
+      expect(faderCurveGain(exponential, position)).toBeLessThan(faderCurveGain(linear, position));
+      expect(faderCurveGain(linear, position)).toBeLessThan(faderCurveGain(logarithmic, position));
     }
   });
 });

@@ -50,14 +50,14 @@ An older version is never rejected. Reading a session ports it: every event in a
 
 Every mixer parameter is one `set_param` event addressed as **deck / slot / param**. `slot` is the position in the channel strip, not the unit filling it, so replacing the unit in a slot keeps existing automation pointing at the same place. Omitting `deck` addresses master scope.
 
-| slot          | param                  | scope  | value                                  |
-| ------------- | ---------------------- | ------ | -------------------------------------- |
-| `fader`       | `gain`                 | deck   | 0-1, channel fader                     |
-| `eq`          | `low` / `mid` / `high` | deck   | dB, -26 to +6                          |
-| `filter`      | `value`                | deck   | -1 to +1, negative LPF, positive HPF   |
-| `filter`      | `active`               | deck   | 0 or 1, filter on/off                  |
-| `gain`        | `gain`                 | master | 0-1, master output level               |
-| `xfader`      | `position`             | master | -1 to +1, -1 full A, +1 full B         |
+| slot     | param                  | scope  | value                                |
+| -------- | ---------------------- | ------ | ------------------------------------ |
+| `fader`  | `gain`                 | deck   | 0-1, channel fader                   |
+| `eq`     | `low` / `mid` / `high` | deck   | dB, -26 to +6                        |
+| `filter` | `value`                | deck   | -1 to +1, negative LPF, positive HPF |
+| `filter` | `active`               | deck   | 0 or 1, filter on/off                |
+| `gain`   | `gain`                 | master | 0-1, master output level             |
+| `xfader` | `position`             | master | -1 to +1, -1 full A, +1 full B       |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
