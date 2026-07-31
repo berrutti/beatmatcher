@@ -1,18 +1,10 @@
-// Only ever one modal at a time, and it is already on screen with its own
-// buttons, so the open one is read off the DOM rather than tracked in state.
-const BACKDROP = '.modal__backdrop';
-
-function openBackdrop(): Element | null {
-  return document.querySelector(BACKDROP);
-}
-
-// Returns whether a modal took the press. A gate the user must wait out renders
-// no buttons and still takes it, rather than letting it reach what is behind.
+// The modal is already on screen with its own buttons, so answering it is
+// pressing one. Returns whether there was a button, so a caller falls through
+// to its own behaviour when there was not.
 function answerModal(action: 'confirm' | 'cancel'): boolean {
-  const backdrop = openBackdrop();
-  if (!backdrop) return false;
-  const button = backdrop.querySelector(`.modal__btn--${action}`);
-  if (button instanceof HTMLElement) button.click();
+  const button = document.querySelector(`.modal__btn--${action}`);
+  if (!(button instanceof HTMLElement)) return false;
+  button.click();
   return true;
 }
 

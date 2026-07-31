@@ -1,23 +1,18 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { confirmModal, cancelModal } from '../activeModal';
 
-function renderModal(withButtons: boolean): { confirm: () => void; cancel: () => void } {
+function renderModal(): { confirm: () => void; cancel: () => void } {
   const confirm = vi.fn();
   const cancel = vi.fn();
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal__backdrop';
-  if (withButtons) {
-    for (const [action, handler] of [
-      ['confirm', confirm],
-      ['cancel', cancel]
-    ] as const) {
-      const button = document.createElement('button');
-      button.className = `modal__btn modal__btn--${action}`;
-      button.addEventListener('click', handler);
-      backdrop.appendChild(button);
-    }
+  for (const [action, handler] of [
+    ['confirm', confirm],
+    ['cancel', cancel]
+  ] as const) {
+    const button = document.createElement('button');
+    button.className = `modal__btn modal__btn--${action}`;
+    button.addEventListener('click', handler);
+    document.body.appendChild(button);
   }
-  document.body.appendChild(backdrop);
   return { confirm, cancel };
 }
 
@@ -27,7 +22,7 @@ describe('answering the open modal', () => {
   });
 
   it('presses whichever button the action means', () => {
-    const { confirm, cancel } = renderModal(true);
+    const { confirm, cancel } = renderModal();
 
     expect(confirmModal()).toBe(true);
     expect(confirm).toHaveBeenCalledTimes(1);
@@ -40,14 +35,5 @@ describe('answering the open modal', () => {
   it('lets the press through when no modal is on screen', () => {
     expect(confirmModal()).toBe(false);
     expect(cancelModal()).toBe(false);
-  });
-
-  // A gate the user must wait out has no buttons, but the press must not reach
-  // the browser sitting behind it either.
-  it('swallows the press for a modal with no buttons', () => {
-    renderModal(false);
-
-    expect(confirmModal()).toBe(true);
-    expect(cancelModal()).toBe(true);
   });
 });
