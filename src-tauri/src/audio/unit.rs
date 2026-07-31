@@ -313,9 +313,8 @@ mod tests {
     #[test]
     fn an_isolator_band_reaches_its_new_gain_over_a_ramp_rather_than_at_once() {
         let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("the isolator");
-        let tone = |frame: usize| {
-            (std::f32::consts::TAU * 60.0 * frame as f32 / SAMPLE_RATE).sin() * 0.3
-        };
+        let tone =
+            |frame: usize| (std::f32::consts::TAU * 60.0 * frame as f32 / SAMPLE_RATE).sin() * 0.3;
         for frame in 0..PROBE_FRAMES {
             unit.process(tone(frame), tone(frame));
         }

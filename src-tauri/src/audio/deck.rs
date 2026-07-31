@@ -47,7 +47,7 @@ pub struct ChannelStrip {
 
 impl ChannelStrip {
     pub fn new(sample_rate: f32) -> Self {
-        Self::from_manifest(&session_core::CLASSIC_3BAND, sample_rate)
+        Self::from_manifest(super::MIXER, sample_rate)
     }
 
     /// Panics on a manifest this build cannot realize. Callers resolve it first through
@@ -932,8 +932,7 @@ mod tests {
             deck.playback_rate = 1.0;
             deck.main_pos = 1_000_000.0;
             let start = deck.main_pos;
-            let expected = ticks * deck.jog_frames_per_tick()
-                / session_core::JOG_PAUSED_MULTIPLIER
+            let expected = ticks * deck.jog_frames_per_tick() / session_core::JOG_PAUSED_MULTIPLIER
                 + 4096.0 * BLOCK_FRAMES as f64;
 
             deck.jog_pending += ticks;
@@ -1091,7 +1090,10 @@ mod tests {
         };
         let slow = travel(session_core::JogRotationSpeed::Rpm33);
         let fast = travel(session_core::JogRotationSpeed::Rpm45);
-        assert!((slow / fast - session_core::JogRotationSpeed::Rpm45.scrub_scale().recip()).abs() < 1e-12);
+        assert!(
+            (slow / fast - session_core::JogRotationSpeed::Rpm45.scrub_scale().recip()).abs()
+                < 1e-12
+        );
     }
 
     #[test]
@@ -1157,7 +1159,10 @@ mod tests {
         let mut deck = DeckState::loaded_for_testing(SR, 1.0);
         deck.set_jog_rotation_speed(session_core::JogRotationSpeed::Rpm45);
         deck.reset();
-        assert_eq!(deck.jog_rotation_speed, session_core::JogRotationSpeed::Rpm45);
+        assert_eq!(
+            deck.jog_rotation_speed,
+            session_core::JogRotationSpeed::Rpm45
+        );
     }
 
     // Scrubbing backwards past the start would read at a negative frame.
@@ -1248,6 +1253,14 @@ mod tests {
 
         assert!(out.abs() < 0.01, "the deck is crossfaded away, got {out}");
         assert!(strip.metered().0 > 0.99, "meter read {}", strip.metered().0);
+    }
+
+    // Every caller of `new` is a test, so a strip built here exercising a manifest the app
+    // never runs would leave the real one untested wherever the two differ.
+    #[test]
+    fn the_convenience_constructor_builds_the_manifest_the_app_runs() {
+        let strip = ChannelStrip::new(48000.0);
+        assert_eq!(strip.manifest.id, crate::audio::MIXER.id);
     }
 
     fn settled_xfader_gain(strip: &mut ChannelStrip) -> f32 {

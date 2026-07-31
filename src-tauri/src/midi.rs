@@ -1860,9 +1860,11 @@ mod tests {
             let profile = mapping.profile(Some("A")).expect(mapping.name());
             for binding in &profile.bindings {
                 let (scope, slot, param) = match &binding.action {
-                    Action::DeckParam { slot, param, .. } => {
-                        (session_core::ParamScope::Deck, slot.as_str(), param.as_str())
-                    }
+                    Action::DeckParam { slot, param, .. } => (
+                        session_core::ParamScope::Deck,
+                        slot.as_str(),
+                        param.as_str(),
+                    ),
                     Action::XfaderPosition => {
                         (session_core::ParamScope::Master, "xfader", "position")
                     }

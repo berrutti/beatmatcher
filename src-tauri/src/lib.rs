@@ -426,10 +426,7 @@ impl AppState {
             deck_state.jog_pending += scaled;
             scaled
         };
-        self.log(
-            "jog",
-            serde_json::json!({ "deck": deck, "ticks": scaled }),
-        );
+        self.log("jog", serde_json::json!({ "deck": deck, "ticks": scaled }));
         self.engine_push.mark_transport(origin, deck, false);
         Ok(())
     }
