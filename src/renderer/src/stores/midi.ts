@@ -3,66 +3,69 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { midiConsoleLine, type MidiMessage } from '@renderer/utils/midi';
+import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 
-const MONITOR_LIMIT = 200;
+export type MidiDevice = {
+  port: string;
+  mapping: string | null;
+  assignable: boolean;
+  deck: string | null;
+};
 
 export const useMidiStore = defineStore('midi', () => {
-  const inputs = ref<string[]>([]);
-  const selectedInput = ref<string | null>(null);
-  const messages = ref<MidiMessage[]>([]);
+  const devices = ref<MidiDevice[]>([]);
   const error = ref<string>('');
+
+  // Keyed by port name, which is all a device tells us about itself.
+  const assignments = ref<Record<string, DeckId>>(
+    storageGet<Record<string, DeckId>>(STORAGE_KEYS.midiDeckAssignments, {})
+  );
 
   // The pending promise, not the resolved handle: two overlapping calls would both
   // pass a `!unlisten` check before either finished registering, and the first
   // listener would leak and double every batch.
   let listening: Promise<UnlistenFn> | null = null;
 
-  async function loadInputs(): Promise<void> {
+  async function refresh(): Promise<void> {
     error.value = '';
     try {
-      inputs.value = await invoke<string[]>('list_midi_inputs');
-      selectedInput.value = await invoke<string | null>('get_midi_input');
+      devices.value = await invoke<MidiDevice[]>('list_midi_devices');
+      await restoreAssignments();
     } catch (cause) {
       error.value = String(cause);
     }
   }
 
-  async function selectInput(port: string | null): Promise<void> {
+  // A device that was assigned before comes back to the same deck, so unplugging
+  // it mid-set is not a reconfiguration.
+  async function restoreAssignments(): Promise<void> {
+    for (const device of devices.value) {
+      if (!device.assignable || device.deck !== null) continue;
+      const remembered = assignments.value[device.port];
+      if (remembered) await assignDeck(device.port, remembered);
+    }
+  }
+
+  async function assignDeck(port: string, deck: DeckId | null): Promise<void> {
     error.value = '';
     try {
-      await invoke('set_midi_input', { port });
-      selectedInput.value = port;
-      storageSet(STORAGE_KEYS.midiInput, port ?? '');
+      await invoke('set_midi_device_deck', { port, deck });
+      const next = { ...assignments.value };
+      if (deck === null) delete next[port];
+      else next[port] = deck;
+      assignments.value = next;
+      storageSet(STORAGE_KEYS.midiDeckAssignments, assignments.value);
+      devices.value = devices.value.map((device) =>
+        device.port === port ? { ...device, deck } : device
+      );
     } catch (cause) {
       error.value = String(cause);
-      selectedInput.value = null;
     }
-  }
-
-  // An absent key means the user has never chosen, which is the only case where
-  // guessing is welcome. An empty one means they chose None, and taking the
-  // single controller anyway would override that on every launch.
-  function preferredPort(): string | null {
-    const remembered = storageGet<string | null>(STORAGE_KEYS.midiInput, null);
-    if (remembered === null) {
-      return inputs.value.length === 1 ? inputs.value[0] : null;
-    }
-    if (remembered === '') return null;
-    return inputs.value.includes(remembered) ? remembered : null;
-  }
-
-  async function connectPreferred(): Promise<void> {
-    await loadInputs();
-    if (selectedInput.value) return;
-    const port = preferredPort();
-    if (port) await selectInput(port);
   }
 
   function receive(batch: MidiMessage[]): void {
     for (const message of batch) console.log(midiConsoleLine(message.data));
-    const newest = [...batch].reverse();
-    messages.value = newest.concat(messages.value).slice(0, MONITOR_LIMIT);
   }
 
   // The monitor runs for the whole session rather than while the panel is open,
@@ -77,25 +80,18 @@ export const useMidiStore = defineStore('midi', () => {
     await invoke('set_midi_monitor', { enabled: true });
   }
 
-  function clearMessages(): void {
-    messages.value = [];
-  }
-
-  connectPreferred();
+  refresh();
   startMonitor().catch((cause) => {
     error.value = String(cause);
   });
 
   return {
-    inputs,
-    selectedInput,
-    messages,
+    devices,
     error,
-    loadInputs,
-    connectPreferred,
-    selectInput,
+    assignments,
+    refresh,
+    assignDeck,
     receive,
-    startMonitor,
-    clearMessages
+    startMonitor
   };
 });

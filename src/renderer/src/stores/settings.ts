@@ -34,6 +34,7 @@ type Stored = {
   nudgeSensitivity?: number;
   jogRotationSpeed?: JogRotationSpeedOption;
   faderCurve?: FaderCurveOption;
+  filtersEngagedAtStart?: boolean;
   pitchRange?: PitchRangeOption;
   bufferSize?: BufferSizeOption;
   bpmMin?: number;
@@ -52,6 +53,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const nudgeSensitivity = ref<number>(4);
   const jogRotationSpeed = ref<JogRotationSpeedOption>('rpm33');
   const faderCurve = ref<FaderCurveOption>('linear');
+  const filtersEngagedAtStart = ref<boolean>(false);
   const pitchRange = ref<PitchRangeOption>(10);
   const bufferSize = ref<BufferSizeOption>(0);
   const bpmMin = ref<number>(90);
@@ -61,6 +63,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const recordCue = ref<boolean>(false);
   const deckAccents = ref<Record<string, string>>({});
   const isOpen = ref(false);
+  // Distinguishes the stored values arriving from the user changing one, which a
+  // setting that only applies at launch has to be able to tell apart.
+  const hydrated = ref(false);
 
   let store: Store | null = null;
 
@@ -70,6 +75,7 @@ export const useSettingsStore = defineStore('settings', () => {
     nudgeSensitivity.value = stored.nudgeSensitivity ?? nudgeSensitivity.value;
     jogRotationSpeed.value = stored.jogRotationSpeed ?? jogRotationSpeed.value;
     faderCurve.value = stored.faderCurve ?? faderCurve.value;
+    filtersEngagedAtStart.value = stored.filtersEngagedAtStart ?? filtersEngagedAtStart.value;
     pitchRange.value = stored.pitchRange ?? pitchRange.value;
     bufferSize.value = stored.bufferSize ?? bufferSize.value;
     bpmMin.value = stored.bpmMin ?? bpmMin.value;
@@ -88,6 +94,7 @@ export const useSettingsStore = defineStore('settings', () => {
     } catch {
       // use defaults
     }
+    hydrated.value = true;
   }
 
   async function save(): Promise<void> {
@@ -98,6 +105,7 @@ export const useSettingsStore = defineStore('settings', () => {
       nudgeSensitivity: nudgeSensitivity.value,
       jogRotationSpeed: jogRotationSpeed.value,
       faderCurve: faderCurve.value,
+      filtersEngagedAtStart: filtersEngagedAtStart.value,
       pitchRange: pitchRange.value,
       bufferSize: bufferSize.value,
       bpmMin: bpmMin.value,
@@ -177,6 +185,11 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
+  function setFiltersEngagedAtStart(value: boolean): void {
+    filtersEngagedAtStart.value = value;
+    trySave();
+  }
+
   function setPitchRange(value: PitchRangeOption): void {
     pitchRange.value = value;
     trySave();
@@ -219,7 +232,9 @@ export const useSettingsStore = defineStore('settings', () => {
     bufferSize,
     deckAccents,
     faderCurve,
+    filtersEngagedAtStart,
     isOpen,
+    hydrated,
     jogRotationSpeed,
     keybindings,
     limiterEnabled,
@@ -233,6 +248,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setBpmRange,
     setBufferSize,
     setFaderCurve,
+    setFiltersEngagedAtStart,
     setJogRotationSpeed,
     setKey,
     setLimiterEnabled,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
+import { reactive, nextTick } from 'vue';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue({})
@@ -19,19 +20,26 @@ vi.mock('@renderer/utils/storage', () => ({
   STORAGE_KEYS: { deckCount: 'deckCount', collectionHeight: 'collectionHeight' }
 }));
 
+// Reactive, so a store watching it sees a change made after the store exists.
+// A plain object would let a mid-set change pass every assertion by never
+// triggering anything at all.
+const settingsMock = reactive({
+  pitchRange: 8,
+  nudgeSensitivity: 4,
+  recordingBitDepth: 24,
+  recordingFormat: 'wav',
+  recordSession: false,
+  filtersEngagedAtStart: false,
+  hydrated: true
+});
+
 vi.mock('@renderer/stores/settings', () => ({
   DEFAULT_MIXER_ID: 'classic-3band',
   LIVE_MIXER_ID: 'classic-3band-v2',
-  useSettingsStore: () => ({
-    pitchRange: 8,
-    nudgeSensitivity: 4,
-    recordingBitDepth: 24,
-    recordingFormat: 'wav',
-    recordSession: false
-  })
+  useSettingsStore: () => settingsMock
 }));
 
-import { useMixerStore, paramKey, FADER_GAIN, type XfaderSide } from '../mixer';
+import { useMixerStore, paramKey, FADER_GAIN, FILTER_ACTIVE, type XfaderSide } from '../mixer';
 import { editConstants, mixerParams } from '@renderer/utils/sessionCore';
 import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 
@@ -39,6 +47,13 @@ const { eqMinDb: EQ_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
 import { invoke } from '@tauri-apps/api/core';
 
 const mockedInvoke = vi.mocked(invoke);
+
+// The mock is module-level, so a test that turns this on would otherwise engage
+// filters in every test after it and count as an extra invoke.
+beforeEach(() => {
+  settingsMock.filtersEngagedAtStart = false;
+  settingsMock.hydrated = true;
+});
 
 const EQ_LOW = paramKey('eq', 'low');
 const EQ_MID = paramKey('eq', 'mid');
@@ -191,6 +206,64 @@ describe('reset', () => {
       'set_deck_param',
       expect.objectContaining({ deck: 'E' })
     );
+  });
+});
+
+// A controller whose filter knob has no on/off button is unusable until the
+// filter is engaged, so this has to hold without touching the UI.
+describe('filters engaged at start', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    settingsMock.filtersEngagedAtStart = false;
+    settingsMock.hydrated = true;
+  });
+
+  it('leaves filters off when the preference is off', () => {
+    const store = useMixerStore();
+    for (const deckId of ['A', 'B', 'C', 'D'] as const) {
+      expect(store.paramActive(deckId, FILTER_ACTIVE), deckId).toBe(false);
+    }
+  });
+
+  it('engages every live deck when the preference is on', () => {
+    settingsMock.filtersEngagedAtStart = true;
+    const store = useMixerStore();
+    for (const deckId of ['A', 'B', 'C', 'D'] as const) {
+      expect(store.paramActive(deckId, FILTER_ACTIVE), deckId).toBe(true);
+    }
+    expect(store.paramActive('E', FILTER_ACTIVE)).toBe(false);
+  });
+
+  // The switch names the launch. Turning it on mid-set used to punch every live
+  // filter in at once, which is the mixer changing under the DJ's hands.
+  it('ignores the preference being switched on after launch', async () => {
+    const store = useMixerStore();
+
+    settingsMock.filtersEngagedAtStart = true;
+    await nextTick();
+
+    expect(store.paramActive('A', FILTER_ACTIVE)).toBe(false);
+  });
+
+  it('engages at launch when the settings arrive after the store is created', async () => {
+    settingsMock.hydrated = false;
+    settingsMock.filtersEngagedAtStart = true;
+    const store = useMixerStore();
+
+    settingsMock.hydrated = true;
+    await nextTick();
+
+    expect(store.paramActive('A', FILTER_ACTIVE)).toBe(true);
+  });
+
+  it('re-engages after a reset, which would otherwise restore the descriptor default', () => {
+    settingsMock.filtersEngagedAtStart = true;
+    const store = useMixerStore();
+
+    store.reset();
+
+    expect(store.paramActive('A', FILTER_ACTIVE)).toBe(true);
   });
 });
 

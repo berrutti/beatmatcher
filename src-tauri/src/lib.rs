@@ -772,11 +772,12 @@ pub fn run() {
             let midi_handle = app.handle().clone();
             midi::set_dispatch(
                 &app.state::<midi::MidiState>(),
-                Arc::new(move |data: &[u8]| {
+                Arc::new(move |port: &str, data: &[u8]| {
                     midi::apply(
                         midi_handle.state::<AppState>().inner(),
                         midi_handle.state::<midi::MidiState>().inner(),
                         &midi_handle,
+                        port,
                         data,
                     );
                 }),
@@ -804,9 +805,8 @@ pub fn run() {
             commands::get_track_amplitude_region,
             commands::list_audio_devices,
             commands::load_track,
-            midi::get_midi_input,
-            midi::list_midi_inputs,
-            midi::set_midi_input,
+            midi::list_midi_devices,
+            midi::set_midi_device_deck,
             midi::set_midi_monitor,
             commands::pick_save_path,
             commands::play,

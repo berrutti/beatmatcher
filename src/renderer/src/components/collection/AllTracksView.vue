@@ -48,7 +48,10 @@
         class="collection__row"
         :class="[
           `collection__item--${track.status}`,
-          { 'collection__item--played': track.path && mixerStore.playedPaths.has(track.path) }
+          {
+            'collection__item--played': track.path && mixerStore.playedPaths.has(track.path),
+            'collection__item--cursor': track.path !== null && isCursor(track.path)
+          }
         ]"
         @pointerdown="onItemPointerDown($event, track)"
         @dblclick="onTrackDblClick(track)"
@@ -137,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, type ComponentPublicInstance } from 'vue';
+import { ref, computed, watch, type ComponentPublicInstance } from 'vue';
 import {
   useCollectionStore,
   isMetadataField,
@@ -157,6 +160,7 @@ import {
   TABLE_CHROME_WIDTH
 } from '@renderer/composables/useColumnResize';
 import { useBpmModal } from '@renderer/composables/useBpmModal';
+import { useRowCursor } from '@renderer/composables/useRowCursor';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
 import { displayName, formatAddedDate } from '@renderer/utils/trackDisplay';
 import { loadToDeck } from '@renderer/utils/deckDrop';
@@ -305,6 +309,25 @@ const trackRowRange = computed(() => {
 const visibleTracks = computed(() =>
   sortedTracks.value.slice(trackRowRange.value.start, trackRowRange.value.end)
 );
+
+const { cursorKey, isCursor } = useRowCursor(
+  () => 'all',
+  () =>
+    sortedTracks.value.map((track) => track.path).filter((path): path is string => path !== null)
+);
+
+// The rows are virtualized, so the cursor cannot be scrolled to by a DOM call:
+// the element it would scroll to does not exist until the scroll has happened.
+watch(cursorKey, (key) => {
+  const el = allTracksScrollEl.value;
+  if (el === null || key === null) return;
+  const index = sortedTracks.value.findIndex((track) => track.path === key);
+  if (index === -1) return;
+  const top = sortBarHeight.value + index * TRACK_ROW_HEIGHT;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (top + TRACK_ROW_HEIGHT > el.scrollTop + allTracksViewportHeight.value)
+    el.scrollTop = top + TRACK_ROW_HEIGHT - allTracksViewportHeight.value;
+});
 
 // status, actions, remove, the trailing filler column, plus one per visible
 // column (metadata + bpm + added).

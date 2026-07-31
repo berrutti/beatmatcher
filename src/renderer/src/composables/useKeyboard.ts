@@ -6,6 +6,7 @@ import { useMixerStore, FADER_GAIN, FILTER_ACTIVE } from '@renderer/stores/mixer
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useBrowseStore } from '@renderer/stores/browse';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -22,6 +23,9 @@ const DIGIT_DECK: Record<string, DeckId> = {
 // While in swarm mode, swiping up/down moves the selected faders.
 const SWARM_SWIPE_SENSITIVITY = 0.005;
 
+// The browser is walked on the arrow cluster alone, so Enter stays free.
+const BROWSE_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
 export function useKeyboard() {
   const store = useDecksStore();
   const mixer = useMixerStore();
@@ -29,6 +33,7 @@ export function useKeyboard() {
   const settings = useSettingsStore();
   const appMode = useAppModeStore();
   const sessionEdit = useSessionEditStore();
+  const browse = useBrowseStore();
 
   // Space acts as a held modifier (Space+deck key = CUE) rather than arming swarm.
   const spaceHeld = ref(false);
@@ -127,6 +132,17 @@ export function useKeyboard() {
     if (appMode.mode === 'edit' && !isTyping(e) && e.code === 'Space' && !e.repeat) {
       e.preventDefault();
       store.decks.E?.togglePlay().catch(() => {});
+      return;
+    }
+
+    // Ahead of the repeat filter: holding an arrow has to walk a long list rather
+    // than step once.
+    if (appMode.mode === 'performance' && !isTyping(e) && BROWSE_KEYS.includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'ArrowUp') browse.moveCursor(-1);
+      else if (e.key === 'ArrowDown') browse.moveCursor(1);
+      else if (e.key === 'ArrowLeft') browse.back();
+      else browse.enter();
       return;
     }
 

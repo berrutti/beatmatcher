@@ -112,6 +112,7 @@
 <script setup lang="ts">
 defineOptions({ inheritAttrs: false });
 import { ref, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
@@ -124,9 +125,10 @@ import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import SessionLoadingModal from '@renderer/components/modals/SessionLoadingModal.vue';
-import { formatMs } from '@renderer/utils/time';
+import { formatMs, dateStamp } from '@renderer/utils/time';
 import { basename } from '@renderer/utils/path';
 
+const { t } = useI18n();
 const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
@@ -226,7 +228,10 @@ async function onSeek(ms: number) {
 
 async function onRender(useFlac: boolean) {
   if (!session.session || isRendering.value) return;
-  const outputPath = await mixer.pickRenderOutputPath(useFlac);
+  const outputPath = await mixer.pickRenderOutputPath(
+    useFlac,
+    t('files.defaultName', { date: dateStamp() })
+  );
   if (!outputPath) return;
   isRendering.value = true;
   try {

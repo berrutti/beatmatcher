@@ -6,346 +6,365 @@
         <button class="settings-close" v-tooltip="$t('settings.close')" @click="close">✕</button>
       </div>
 
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.language.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="lang in LANGUAGES"
-            :key="lang.code"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': locale === lang.code }"
-            @click="locale = lang.code"
-          >
-            {{ lang.label }}
-          </button>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.limiter.title') }}</div>
-        <label class="settings-toggle">
-          <input
-            type="checkbox"
-            :checked="settings.limiterEnabled"
-            @change="settings.setLimiterEnabled(($event.target as HTMLInputElement).checked)"
-          />
-          <span class="settings-toggle-track">
-            <span class="settings-toggle-thumb" />
-          </span>
-          <span class="settings-toggle-label">{{
-            settings.limiterEnabled ? $t('settings.limiter.on') : $t('settings.limiter.off')
-          }}</span>
-        </label>
-        <p class="settings-hint">
-          {{ $t('settings.limiter.hint') }}
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.nudge.title') }}</div>
-        <div class="settings-row">
-          <input
-            type="range"
-            class="settings-slider"
-            min="1"
-            max="20"
-            step="1"
-            :value="settings.nudgeSensitivity"
-            @input="settings.setNudgeSensitivity(+($event.target as HTMLInputElement).value)"
-          />
-          <span class="settings-value">{{ settings.nudgeSensitivity }}%</span>
-        </div>
-        <p class="settings-hint">{{ $t('settings.nudge.hint') }}</p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.jog.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="opt in JOG_ROTATION_SPEED_OPTIONS"
-            :key="opt"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': settings.jogRotationSpeed === opt }"
-            @click="settings.setJogRotationSpeed(opt)"
-          >
-            {{ JOG_ROTATION_SPEED_LABELS[opt] }}
-          </button>
-        </div>
-        <p class="settings-hint">{{ $t('settings.jog.hint') }}</p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.faderCurve.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="opt in FADER_CURVE_OPTIONS"
-            :key="opt"
-            class="btn-secondary settings-chip settings-curve"
-            :class="{ 'settings-chip--active': settings.faderCurve === opt }"
-            @click="settings.setFaderCurve(opt)"
-          >
-            <svg class="settings-curve__plot" viewBox="-5 -5 110 110">
-              <polyline :points="curvePlot(opt)" />
-            </svg>
-            <span>{{ FADER_CURVE_LABELS[opt] }}</span>
-          </button>
-        </div>
-        <p class="settings-hint">{{ $t('settings.faderCurve.hint') }}</p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.pitch.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="opt in PITCH_RANGE_OPTIONS"
-            :key="opt"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': settings.pitchRange === opt }"
-            @click="settings.setPitchRange(opt)"
-          >
-            ±{{ opt }}%
-          </button>
-        </div>
-        <p class="settings-hint">{{ $t('settings.pitch.hint') }}</p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.buffer.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="opt in BUFFER_SIZE_OPTIONS"
-            :key="opt"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': settings.bufferSize === opt }"
-            @click="settings.setBufferSize(opt)"
-          >
-            {{ opt === 0 ? $t('settings.buffer.default') : opt }}
-          </button>
-        </div>
-        <p class="settings-hint">
-          {{ $t('settings.buffer.hint') }}
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.midi.title') }}</div>
-        <div class="settings-row">
-          <button
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': midi.selectedInput === null }"
-            @click="midi.selectInput(null)"
-          >
-            {{ $t('settings.midi.none') }}
-          </button>
-          <button
-            v-for="port in midi.inputs"
-            :key="port"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': midi.selectedInput === port }"
-            @click="midi.selectInput(port)"
-          >
-            {{ port }}
-          </button>
-          <button class="btn-secondary settings-chip" @click="midi.loadInputs()">
-            {{ $t('settings.midi.rescan') }}
-          </button>
-        </div>
-        <span v-if="midi.error" class="settings-error">{{ midi.error }}</span>
-        <div class="settings-midi-monitor">
-          <p v-if="midi.messages.length === 0" class="settings-hint">
-            {{ $t('settings.midi.waiting') }}
-          </p>
-          <div
-            v-for="(message, index) in midi.messages"
-            :key="`${message.timestampUs}-${index}`"
-            class="settings-midi-line"
-          >
-            <span class="settings-midi-bytes">{{ message.data.map(hex).join(' ') }}</span>
-            <span>{{ describeMidiMessage(message.data) }}</span>
+      <div class="settings-body">
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.language.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="lang in LANGUAGES"
+              :key="lang.code"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': locale === lang.code }"
+              @click="locale = lang.code"
+            >
+              {{ lang.label }}
+            </button>
           </div>
-        </div>
-        <p class="settings-hint">
-          {{ $t('settings.midi.hint') }}
-        </p>
-      </section>
+        </section>
 
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.bpmRange.title') }}</div>
-        <div class="settings-row">
-          <label class="settings-range-label">{{ $t('settings.bpmRange.min') }}</label>
-          <input
-            type="number"
-            class="settings-number"
-            min="40"
-            max="220"
-            step="1"
-            :value="settings.bpmMin"
-            @change="
-              settings.setBpmRange(+($event.target as HTMLInputElement).value, settings.bpmMax)
-            "
-          />
-          <label class="settings-range-label">{{ $t('settings.bpmRange.max') }}</label>
-          <input
-            type="number"
-            class="settings-number"
-            min="41"
-            max="250"
-            step="1"
-            :value="settings.bpmMax"
-            @change="
-              settings.setBpmRange(settings.bpmMin, +($event.target as HTMLInputElement).value)
-            "
-          />
-          <span class="settings-value">{{ $t('settings.bpmRange.unit') }}</span>
-        </div>
-        <p class="settings-hint">
-          {{ $t('settings.bpmRange.hint') }}
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.recording.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="opt in RECORDING_FORMAT_OPTIONS"
-            :key="opt"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': settings.recordingFormat === opt }"
-            @click="settings.setRecordingFormat(opt)"
-          >
-            {{ RECORDING_FORMAT_LABELS[opt] }}
-          </button>
-        </div>
-        <p class="settings-hint">{{ RECORDING_FORMAT_HINTS[settings.recordingFormat] }}</p>
-        <label
-          class="settings-checkbox-row"
-          :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
-        >
-          <input
-            type="checkbox"
-            :checked="settings.recordingFormat === 'session' || settings.recordBms"
-            :disabled="settings.recordingFormat === 'session'"
-            @change="settings.setRecordBms(($event.target as HTMLInputElement).checked)"
-          />
-          <span>{{ $t('settings.recording.bmsCheckbox') }}</span>
-        </label>
-        <p class="settings-hint">
-          {{ $t('settings.recording.bmsHint') }}
-        </p>
-        <label
-          class="settings-checkbox-row"
-          :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
-        >
-          <input
-            type="checkbox"
-            :checked="settings.recordingFormat !== 'session' && settings.recordCue"
-            :disabled="settings.recordingFormat === 'session'"
-            @change="settings.setRecordCue(($event.target as HTMLInputElement).checked)"
-          />
-          <span>{{ $t('settings.recording.cueCheckbox') }}</span>
-        </label>
-        <p class="settings-hint">
-          {{ $t('settings.recording.cueHint') }}
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.deckCount.title') }}</div>
-        <div class="settings-row">
-          <button
-            v-for="count in [2, 4] as const"
-            :key="count"
-            class="btn-secondary settings-chip"
-            :class="{ 'settings-chip--active': mixer.deckCount === count }"
-            @click="mixer.setDeckCount(count)"
-          >
-            {{ count }} {{ $t('settings.deckCount.unit') }}
-          </button>
-        </div>
-        <p class="settings-hint">
-          {{ $t('settings.deckCount.hint') }}
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-section-label">{{ $t('settings.deckColors.title') }}</div>
-        <div class="settings-decks">
-          <label
-            v-for="deckId in DECKS_DISPOSITION"
-            :key="deckId"
-            class="settings-deck settings-color-label"
-          >
-            <span class="settings-deck-label" :style="{ color: accent(deckId) }">
-              {{ $t('settings.keyboard.deck') }} {{ deckId }}
-            </span>
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.limiter.title') }}</div>
+          <label class="settings-toggle">
             <input
-              type="color"
-              class="settings-color-input settings-color-input--lg"
-              :value="accent(deckId)"
-              @input="decks.setDeckAccent(deckId, ($event.target as HTMLInputElement).value)"
+              type="checkbox"
+              :checked="settings.limiterEnabled"
+              @change="settings.setLimiterEnabled(($event.target as HTMLInputElement).checked)"
             />
+            <span class="settings-toggle-track">
+              <span class="settings-toggle-thumb" />
+            </span>
+            <span class="settings-toggle-label">{{
+              settings.limiterEnabled ? $t('settings.limiter.on') : $t('settings.limiter.off')
+            }}</span>
           </label>
-        </div>
-        <div class="settings-footer" style="margin-top: 4px">
-          <span />
-          <button class="btn-secondary settings-reset-btn" @click="decks.resetDeckAccents()">
-            {{ $t('settings.deckColors.reset') }}
-          </button>
-        </div>
-      </section>
+          <p class="settings-hint">
+            {{ $t('settings.limiter.hint') }}
+          </p>
+        </section>
 
-      <section class="settings-section settings-section--keyboard">
-        <div class="settings-section-label">{{ $t('settings.keyboard.title') }}</div>
-        <p class="settings-hint">{{ $t('settings.keyboard.hint') }}</p>
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.nudge.title') }}</div>
+          <div class="settings-row">
+            <input
+              type="range"
+              class="settings-slider"
+              min="1"
+              max="20"
+              step="1"
+              :value="settings.nudgeSensitivity"
+              @input="settings.setNudgeSensitivity(+($event.target as HTMLInputElement).value)"
+            />
+            <span class="settings-value">{{ settings.nudgeSensitivity }}%</span>
+          </div>
+          <p class="settings-hint">{{ $t('settings.nudge.hint') }}</p>
+        </section>
 
-        <div ref="decksEl" class="settings-decks" role="grid" @keydown="onGridKeydown">
-          <div
-            v-for="deckId in DECKS_DISPOSITION"
-            :key="decks.decks[deckId].name"
-            class="settings-deck"
-            role="rowgroup"
-          >
-            <div class="settings-deck-label" :style="{ color: accent(deckId) }">
-              {{ $t('settings.keyboard.deck') }} {{ deckId }}
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.jog.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="opt in JOG_ROTATION_SPEED_OPTIONS"
+              :key="opt"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': settings.jogRotationSpeed === opt }"
+              @click="settings.setJogRotationSpeed(opt)"
+            >
+              {{ JOG_ROTATION_SPEED_LABELS[opt] }}
+            </button>
+          </div>
+          <p class="settings-hint">{{ $t('settings.jog.hint') }}</p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.faderCurve.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="opt in FADER_CURVE_OPTIONS"
+              :key="opt"
+              class="btn-secondary settings-chip settings-curve"
+              :class="{ 'settings-chip--active': settings.faderCurve === opt }"
+              @click="settings.setFaderCurve(opt)"
+            >
+              <svg class="settings-curve__plot" viewBox="-5 -5 110 110">
+                <polyline :points="curvePlot(opt)" />
+              </svg>
+              <span>{{ FADER_CURVE_LABELS[opt] }}</span>
+            </button>
+          </div>
+          <p class="settings-hint">{{ $t('settings.faderCurve.hint') }}</p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.filterStart.title') }}</div>
+          <label class="settings-toggle">
+            <input
+              type="checkbox"
+              :checked="settings.filtersEngagedAtStart"
+              @change="
+                settings.setFiltersEngagedAtStart(($event.target as HTMLInputElement).checked)
+              "
+            />
+            <span class="settings-toggle-track">
+              <span class="settings-toggle-thumb" />
+            </span>
+            <span class="settings-toggle-label">{{
+              settings.filtersEngagedAtStart
+                ? $t('settings.filterStart.on')
+                : $t('settings.filterStart.off')
+            }}</span>
+          </label>
+          <p class="settings-hint">{{ $t('settings.filterStart.hint') }}</p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.pitch.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="opt in PITCH_RANGE_OPTIONS"
+              :key="opt"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': settings.pitchRange === opt }"
+              @click="settings.setPitchRange(opt)"
+            >
+              ±{{ opt }}%
+            </button>
+          </div>
+          <p class="settings-hint">{{ $t('settings.pitch.hint') }}</p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.buffer.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="opt in BUFFER_SIZE_OPTIONS"
+              :key="opt"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': settings.bufferSize === opt }"
+              @click="settings.setBufferSize(opt)"
+            >
+              {{ opt === 0 ? $t('settings.buffer.default') : opt }}
+            </button>
+          </div>
+          <p class="settings-hint">
+            {{ $t('settings.buffer.hint') }}
+          </p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.midi.title') }}</div>
+          <p v-if="midi.devices.length === 0" class="settings-hint">
+            {{ $t('settings.midi.noDevices') }}
+          </p>
+          <div v-for="device in midi.devices" :key="device.port" class="settings-midi-device">
+            <div class="settings-midi-device-name">
+              <span>{{ device.port }}</span>
+              <span class="settings-midi-device-mapping">{{
+                device.mapping ?? $t('settings.midi.unmapped')
+              }}</span>
             </div>
-            <div class="settings-deck-grid" role="row">
-              <template v-for="row in COMMAND_LAYOUT" :key="row[0]">
-                <button
-                  v-for="command in row"
-                  :key="command"
-                  class="settings-btn"
-                  :class="{
-                    'settings-btn--active': isCapturing(deckId, command),
-                    'settings-btn--conflict': isConflict(deckId, command)
-                  }"
-                  :style="{ '--accent': accent(deckId) }"
-                  :aria-label="`${$t('settings.keyboard.deck')} ${deckId} ${COMMAND_LABEL[command]}: ${settings.keybindings[deckId][command]}`"
-                  role="gridcell"
-                  @click="startCapture(deckId, command)"
-                  @dblclick.prevent="resetSlot(deckId, command)"
-                >
-                  <span class="settings-btn-key">
-                    <template v-if="isCapturing(deckId, command)">···</template>
-                    <template v-else>{{ settings.keybindings[deckId][command] }}</template>
-                  </span>
-                  <span class="settings-btn-action">{{ COMMAND_DISPLAY[command] }}</span>
-                </button>
-              </template>
+            <div v-if="device.assignable" class="settings-row">
+              <button
+                v-for="deckId in DECKS_DISPOSITION"
+                :key="deckId"
+                class="btn-secondary settings-chip"
+                :class="{ 'settings-chip--active': device.deck === deckId }"
+                @click="midi.assignDeck(device.port, device.deck === deckId ? null : deckId)"
+              >
+                {{ deckId }}
+              </button>
             </div>
           </div>
-        </div>
+          <div class="settings-row">
+            <button class="btn-secondary settings-chip" @click="midi.refresh()">
+              {{ $t('settings.midi.rescan') }}
+            </button>
+          </div>
+          <span v-if="midi.error" class="settings-error">{{ midi.error }}</span>
+          <p class="settings-hint">
+            {{ $t('settings.midi.hint') }}
+          </p>
+        </section>
 
-        <div class="settings-footer">
-          <span v-if="conflictError" class="settings-error">{{ conflictError }}</span>
-          <span v-else-if="capturingSlot" class="settings-capture-hint">{{
-            $t('settings.keyboard.pressKey')
-          }}</span>
-          <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true">·</span>
-          <button class="btn-secondary settings-reset-btn" @click="settings.resetToDefaults()">
-            {{ $t('settings.keyboard.reset') }}
-          </button>
-        </div>
-      </section>
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.bpmRange.title') }}</div>
+          <div class="settings-row">
+            <label class="settings-range-label">{{ $t('settings.bpmRange.min') }}</label>
+            <input
+              type="number"
+              class="settings-number"
+              min="40"
+              max="220"
+              step="1"
+              :value="settings.bpmMin"
+              @change="
+                settings.setBpmRange(+($event.target as HTMLInputElement).value, settings.bpmMax)
+              "
+            />
+            <label class="settings-range-label">{{ $t('settings.bpmRange.max') }}</label>
+            <input
+              type="number"
+              class="settings-number"
+              min="41"
+              max="250"
+              step="1"
+              :value="settings.bpmMax"
+              @change="
+                settings.setBpmRange(settings.bpmMin, +($event.target as HTMLInputElement).value)
+              "
+            />
+            <span class="settings-value">{{ $t('settings.bpmRange.unit') }}</span>
+          </div>
+          <p class="settings-hint">
+            {{ $t('settings.bpmRange.hint') }}
+          </p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.recording.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="opt in RECORDING_FORMAT_OPTIONS"
+              :key="opt"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': settings.recordingFormat === opt }"
+              @click="settings.setRecordingFormat(opt)"
+            >
+              {{ RECORDING_FORMAT_LABELS[opt] }}
+            </button>
+          </div>
+          <p class="settings-hint">{{ RECORDING_FORMAT_HINTS[settings.recordingFormat] }}</p>
+          <label
+            class="settings-checkbox-row"
+            :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+          >
+            <input
+              type="checkbox"
+              :checked="settings.recordingFormat === 'session' || settings.recordBms"
+              :disabled="settings.recordingFormat === 'session'"
+              @change="settings.setRecordBms(($event.target as HTMLInputElement).checked)"
+            />
+            <span>{{ $t('settings.recording.bmsCheckbox') }}</span>
+          </label>
+          <p class="settings-hint">
+            {{ $t('settings.recording.bmsHint') }}
+          </p>
+          <label
+            class="settings-checkbox-row"
+            :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+          >
+            <input
+              type="checkbox"
+              :checked="settings.recordingFormat !== 'session' && settings.recordCue"
+              :disabled="settings.recordingFormat === 'session'"
+              @change="settings.setRecordCue(($event.target as HTMLInputElement).checked)"
+            />
+            <span>{{ $t('settings.recording.cueCheckbox') }}</span>
+          </label>
+          <p class="settings-hint">
+            {{ $t('settings.recording.cueHint') }}
+          </p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.deckCount.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="count in [2, 4] as const"
+              :key="count"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': mixer.deckCount === count }"
+              @click="mixer.setDeckCount(count)"
+            >
+              {{ count }} {{ $t('settings.deckCount.unit') }}
+            </button>
+          </div>
+          <p class="settings-hint">
+            {{ $t('settings.deckCount.hint') }}
+          </p>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.deckColors.title') }}</div>
+          <div class="settings-decks">
+            <label
+              v-for="deckId in DECKS_DISPOSITION"
+              :key="deckId"
+              class="settings-deck settings-color-label"
+            >
+              <span class="settings-deck-label" :style="{ color: accent(deckId) }">
+                {{ $t('settings.keyboard.deck') }} {{ deckId }}
+              </span>
+              <input
+                type="color"
+                class="settings-color-input settings-color-input--lg"
+                :value="accent(deckId)"
+                @input="decks.setDeckAccent(deckId, ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+          </div>
+          <div class="settings-footer" style="margin-top: 4px">
+            <span />
+            <button class="btn-secondary settings-reset-btn" @click="decks.resetDeckAccents()">
+              {{ $t('settings.deckColors.reset') }}
+            </button>
+          </div>
+        </section>
+
+        <section class="settings-section settings-section--keyboard">
+          <div class="settings-section-label">{{ $t('settings.keyboard.title') }}</div>
+          <p class="settings-hint">{{ $t('settings.keyboard.hint') }}</p>
+
+          <div ref="decksEl" class="settings-decks" role="grid" @keydown="onGridKeydown">
+            <div
+              v-for="deckId in DECKS_DISPOSITION"
+              :key="decks.decks[deckId].name"
+              class="settings-deck"
+              role="rowgroup"
+            >
+              <div class="settings-deck-label" :style="{ color: accent(deckId) }">
+                {{ $t('settings.keyboard.deck') }} {{ deckId }}
+              </div>
+              <div class="settings-deck-grid" role="row">
+                <template v-for="row in COMMAND_LAYOUT" :key="row[0]">
+                  <button
+                    v-for="command in row"
+                    :key="command"
+                    class="settings-btn"
+                    :class="{
+                      'settings-btn--active': isCapturing(deckId, command),
+                      'settings-btn--conflict': isConflict(deckId, command)
+                    }"
+                    :style="{ '--accent': accent(deckId) }"
+                    :aria-label="`${$t('settings.keyboard.deck')} ${deckId} ${COMMAND_LABEL[command]}: ${settings.keybindings[deckId][command]}`"
+                    role="gridcell"
+                    @click="startCapture(deckId, command)"
+                    @dblclick.prevent="resetSlot(deckId, command)"
+                  >
+                    <span class="settings-btn-key">
+                      <template v-if="isCapturing(deckId, command)">···</template>
+                      <template v-else>{{ settings.keybindings[deckId][command] }}</template>
+                    </span>
+                    <span class="settings-btn-action">{{ COMMAND_DISPLAY[command] }}</span>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-footer">
+            <span v-if="conflictError" class="settings-error">{{ conflictError }}</span>
+            <span v-else-if="capturingSlot" class="settings-capture-hint">{{
+              $t('settings.keyboard.pressKey')
+            }}</span>
+            <span v-else class="settings-capture-hint" style="opacity: 0" aria-hidden="true"
+              >·</span
+            >
+            <button class="btn-secondary settings-reset-btn" @click="settings.resetToDefaults()">
+              {{ $t('settings.keyboard.reset') }}
+            </button>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 </template>
@@ -371,7 +390,6 @@ import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { SUPPORTED_LOCALES } from '@renderer/i18n';
 import { useMidiStore } from '@renderer/stores/midi';
-import { describeMidiMessage, hex } from '@renderer/utils/midi';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
 
 const { t, locale } = useI18n();
@@ -612,7 +630,7 @@ function onWindowKeydown(e: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener('keydown', onWindowKeydown, { capture: true });
   focusableElements()[0]?.focus();
-  await midi.loadInputs();
+  await midi.refresh();
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeydown, { capture: true });
@@ -635,9 +653,12 @@ onUnmounted(() => {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: 6px;
+  /* Explicit, because without it the dialog is shrink-to-fit and whichever row
+     happens to be widest decides its size, so it resizes as sections change. */
+  width: 600px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   font-family: var(--font);
@@ -674,6 +695,12 @@ onUnmounted(() => {
 
 .settings-close:hover {
   color: var(--color-text);
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings-section {
@@ -815,6 +842,11 @@ onUnmounted(() => {
 }
 
 .settings-chip {
+  /* Declared rather than inherited from the platform: with neither set, the
+     button keeps its native appearance, and the active rule's background alone
+     drops it to a CSS box a few pixels wider. */
+  border: 1px solid var(--color-border);
+  background: transparent;
   color: var(--color-muted);
   font-family: var(--font);
   font-size: 10px;
@@ -990,29 +1022,23 @@ onUnmounted(() => {
   min-height: 22px;
 }
 
-.settings-midi-monitor {
-  height: 120px;
-  overflow-y: auto;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 6px 8px;
+.settings-midi-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.settings-midi-device-name {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  min-width: 0;
 }
 
-.settings-midi-line {
-  display: flex;
-  gap: 10px;
+.settings-midi-device-mapping {
   font-size: 10px;
-  font-family: monospace;
-  color: var(--color-text);
-  white-space: nowrap;
-}
-
-.settings-midi-bytes {
   color: var(--color-muted);
-  min-width: 76px;
 }
 
 .settings-error {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DECKS_DISPOSITION } from './decks';
@@ -294,7 +294,24 @@ export const useMixerStore = defineStore('mixer', () => {
       cueActive[deckId] = false;
       invoke('set_cue_active', { deck: deckId, active: false });
     }
+    engageFiltersIfPreferred();
   }
+
+  function engageFiltersIfPreferred(): void {
+    if (!useSettingsStore().filtersEngagedAtStart) return;
+    for (const deckId of LIVE_DECKS) setParam(deckId, FILTER_ACTIVE, 1);
+  }
+
+  // Keyed on the settings arriving, not on the value: the preference names the
+  // launch, so flipping the switch mid-set must not reach into a live mixer in
+  // either direction.
+  watch(
+    () => useSettingsStore().hydrated,
+    (hydrated) => {
+      if (hydrated) engageFiltersIfPreferred();
+    },
+    { immediate: true }
+  );
 
   async function loadOutputDevices(): Promise<void> {
     deviceError.value = '';
@@ -389,11 +406,11 @@ export const useMixerStore = defineStore('mixer', () => {
     return tempPath;
   }
 
-  async function pickSavePath(): Promise<string | null> {
+  async function pickSavePath(baseName: string): Promise<string | null> {
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
     const dialogFormat = fmt === 'flac' ? 'flac' : fmt === 'session' ? 'session' : 'wav';
-    return invoke<string | null>('pick_save_path', { format: dialogFormat });
+    return invoke<string | null>('pick_save_path', { format: dialogFormat, baseName });
   }
 
   async function saveRecording(src: string, dest: string): Promise<void> {
@@ -427,8 +444,11 @@ export const useMixerStore = defineStore('mixer', () => {
     });
   }
 
-  async function pickRenderOutputPath(useFlac: boolean): Promise<string | null> {
-    return invoke<string | null>('pick_save_path', { format: useFlac ? 'flac' : 'wav' });
+  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
+    return invoke<string | null>('pick_save_path', {
+      format: useFlac ? 'flac' : 'wav',
+      baseName
+    });
   }
 
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {

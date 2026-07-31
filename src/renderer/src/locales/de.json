@@ -1,4 +1,7 @@
 {
+  "files": {
+    "defaultName": "aufnahme-{date}"
+  },
   "appBar": {
     "performance": "Performance",
     "edit": "Bearbeiten",
@@ -56,6 +59,12 @@
       "linear": "Linear",
       "logarithmic": "Logarithmisch"
     },
+    "filterStart": {
+      "title": "Filter beim Start",
+      "on": "Aktiv",
+      "off": "Aus",
+      "hint": "Aktiviert beim Öffnen der App den Filter jedes Kanals. Praktisch bei Controllern, deren Filterregler keinen eigenen Ein-/Ausschalter hat."
+    },
     "pitch": {
       "title": "Pitch-Bereich",
       "hint": "Maximale Abweichung des Pitch-Reglers vom Original-BPM."
@@ -67,10 +76,10 @@
     },
     "midi": {
       "title": "MIDI-Controller",
-      "none": "Keiner",
       "rescan": "Neu suchen",
-      "waiting": "Warte auf MIDI. Bewege ein Bedienelement am verbundenen Gerät.",
-      "hint": "Zeigt eingehende MIDI-Rohdaten, solange dieses Fenster offen ist. EQ, Filter, Lautstärke und Cue sind auf einem verbundenen Controller belegt."
+      "noDevices": "Keine MIDI-Geräte verbunden.",
+      "unmapped": "Keine Zuordnung für dieses Gerät",
+      "hint": "Alle verbundenen Geräte sind gleichzeitig aktiv. Ein Gerät, das ein einzelnes Deck spielt, braucht hier eine Auswahl."
     },
     "bpmRange": {
       "title": "BPM-Erkennungsbereich",

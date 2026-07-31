@@ -22,7 +22,7 @@ export const STORAGE_KEYS = {
   browserColumns: 'beatmatcher.ui.browser-columns',
 
   // Hardware
-  midiInput: 'beatmatcher.midi.input'
+  midiDeckAssignments: 'beatmatcher.midi.deck-assignments'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

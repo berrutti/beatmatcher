@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Emitter;
 
-const FLUSH_MS: u64 = 33;
+const FLUSH_MS: u64 = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ParamOrigin {

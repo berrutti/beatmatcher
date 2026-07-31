@@ -36,8 +36,10 @@
           class="collection__row collection__playlist-track"
           :class="{
             'collection__playlist-track--dragging': playlistDragFromIdx === idx,
-            'collection__item--played': mixerStore.playedPaths.has(item.path)
+            'collection__item--played': mixerStore.playedPaths.has(item.path),
+            'collection__item--cursor': isCursor(item.path)
           }"
+          :data-row-key="item.path"
           @pointerdown="onPlaylistTrackPointerDown($event, idx)"
           @dblclick="onTrackDblClickByPath(item.path)"
           @contextmenu.prevent="item.entry && contextMenuEl?.open($event, item.entry.id)"
@@ -157,7 +159,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import {
   useCollectionStore,
   isMetadataField,
@@ -174,6 +176,8 @@ import {
   TABLE_CHROME_WIDTH as BASE_TABLE_CHROME_WIDTH
 } from '@renderer/composables/useColumnResize';
 import { useBpmModal } from '@renderer/composables/useBpmModal';
+import { useRowCursor } from '@renderer/composables/useRowCursor';
+import { playlistListId } from '@renderer/stores/browse';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
 import { displayName, formatAddedDate } from '@renderer/utils/trackDisplay';
 import { loadToDeck } from '@renderer/utils/deckDrop';
@@ -255,6 +259,18 @@ const playlistItems = computed((): PlaylistItem[] => {
     const bpm = entry ? store.getBpm(entry) : null;
     return { path, entry, label, bpm, addedAt: playlist.addedAt[path] ?? null };
   });
+});
+
+const { cursorKey, isCursor } = useRowCursor(
+  () => playlistListId(props.playlistId),
+  () => playlistItems.value.map((item) => item.path)
+);
+
+watch(cursorKey, async (key) => {
+  if (key === null) return;
+  await nextTick();
+  const row = playlistListEl.value?.querySelector(`[data-row-key="${CSS.escape(key)}"]`);
+  row?.scrollIntoView({ block: 'nearest' });
 });
 
 const showAddSection = ref(false);

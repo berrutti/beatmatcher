@@ -25,7 +25,7 @@ const SYSTEM_NAMES: Record<number, string> = {
   0xff: 'Reset'
 };
 
-export function hex(byte: number): string {
+function hex(byte: number): string {
   return byte.toString(16).toUpperCase().padStart(2, '0');
 }
 

@@ -700,16 +700,18 @@ pub(crate) fn set_main_device(
     state.audio.set_main_device(&device_id, channel_offset)
 }
 
+/// `base_name` comes from the caller because it is translated and carries a
+/// formatted date; the extension is the only part this knows about.
 #[tauri::command]
-pub(crate) async fn pick_save_path(format: String) -> Option<String> {
-    let (label, ext, name) = match format.as_str() {
-        "flac" => ("FLAC Audio", "flac", "mix.flac"),
-        "session" => ("Beatmatcher Session", "bms", "mix.bms"),
-        _ => ("WAV Audio", "wav", "mix.wav"),
+pub(crate) async fn pick_save_path(format: String, base_name: String) -> Option<String> {
+    let (label, ext) = match format.as_str() {
+        "flac" => ("FLAC Audio", "flac"),
+        "session" => ("Beatmatcher Session", "bms"),
+        _ => ("WAV Audio", "wav"),
     };
     rfd::AsyncFileDialog::new()
         .add_filter(label, &[ext])
-        .set_file_name(name)
+        .set_file_name(format!("{base_name}.{ext}"))
         .save_file()
         .await
         .map(|f| f.path().to_string_lossy().into_owned())

@@ -163,11 +163,14 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
+import { dateStamp } from '@renderer/utils/time';
 
+const { t } = useI18n();
 const mixer = useMixerStore();
 const decksStore = useDecksStore();
 const appMode = useAppModeStore();
@@ -217,7 +220,7 @@ async function pollLevels() {
 async function onRecClick() {
   if (mixer.isRecording) {
     const tempPath = await mixer.stopRecording();
-    const destPath = await mixer.pickSavePath();
+    const destPath = await mixer.pickSavePath(t('files.defaultName', { date: dateStamp() }));
     if (destPath) {
       await mixer.saveRecording(tempPath, destPath);
     } else {

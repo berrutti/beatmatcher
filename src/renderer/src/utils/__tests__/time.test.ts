@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { formatMs } from '@renderer/utils/time';
+import { formatMs, dateStamp } from '@renderer/utils/time';
+
+describe('dateStamp', () => {
+  it('is day-month-year, zero padded', () => {
+    expect(dateStamp(new Date(2026, 6, 5))).toBe('05-07-2026');
+  });
+
+  it('pads neither the year nor a two-digit day', () => {
+    expect(dateStamp(new Date(2026, 11, 25))).toBe('25-12-2026');
+  });
+});
 
 describe('formatMs', () => {
   it('formats under an hour as m:ss', () => {

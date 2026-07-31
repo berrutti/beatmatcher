@@ -30,18 +30,22 @@
         </div>
       </div>
 
-      <div
-        v-else
-        class="perf__play"
-        :class="{ 'perf__play--two-deck': mixerStore.deckCount === 2 }"
-      >
+      <div v-else class="perf__play">
         <Deck class="perf__deck-a" :deck="decksStore.deckA" />
-        <Deck v-if="mixerStore.deckCount === 4" class="perf__deck-c" :deck="decksStore.deckC" />
+        <Deck
+          class="perf__deck-c"
+          :class="{ 'perf__deck--hidden': mixerStore.deckCount === 2 }"
+          :deck="decksStore.deckC"
+        />
         <div class="perf__center">
           <Mixer />
         </div>
         <Deck class="perf__deck-b" :deck="decksStore.deckB" />
-        <Deck v-if="mixerStore.deckCount === 4" class="perf__deck-d" :deck="decksStore.deckD" />
+        <Deck
+          class="perf__deck-d"
+          :class="{ 'perf__deck--hidden': mixerStore.deckCount === 2 }"
+          :deck="decksStore.deckD"
+        />
       </div>
     </div>
 
@@ -101,9 +105,16 @@ function onScrubEnd(deckId: DeckId) {
     'deck-c center deck-d';
 }
 
-.perf__play--two-deck {
-  grid-template-rows: 200px;
-  grid-template-areas: 'deck-a center deck-b';
+/* Hidden rather than removed: the second row is what gives the mixer column its
+   height, so dropping it collapsed the channel faders and pushed the crossfader
+   out of the centre column's overflow. Matches how an inactive mixer channel
+   goes, and keeps the decks' canvases at a real size. */
+.perf__deck--hidden {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.25s ease,
+    visibility 0s linear 0.25s;
 }
 
 .perf__waveform-strip {

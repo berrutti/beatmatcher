@@ -1,4 +1,7 @@
 {
+  "files": {
+    "defaultName": "recording-{date}"
+  },
   "appBar": {
     "performance": "Performance",
     "edit": "Edit",
@@ -56,6 +59,12 @@
       "linear": "Linear",
       "logarithmic": "Logarithmic"
     },
+    "filterStart": {
+      "title": "Filters at startup",
+      "on": "Engaged",
+      "off": "Off",
+      "hint": "Engage every channel filter when the app opens. Useful on a controller whose filter knob has no on/off button of its own."
+    },
     "pitch": {
       "title": "Pitch range",
       "hint": "Maximum pitch slider deviation from original BPM."
@@ -66,11 +75,11 @@
       "hint": "Frames per audio callback. Smaller values reduce latency but increase CPU load. Changing this causes a brief audio gap."
     },
     "midi": {
-      "title": "MIDI controller",
-      "none": "None",
+      "title": "MIDI controllers",
       "rescan": "Rescan",
-      "waiting": "Waiting for MIDI. Move a control on the connected device.",
-      "hint": "Shows raw incoming MIDI while this window is open. EQ, filter, volume and cue are mapped on a connected controller."
+      "noDevices": "No MIDI devices connected.",
+      "unmapped": "No mapping for this device",
+      "hint": "Every connected device is online at once. A device that plays a single deck needs one chosen here."
     },
     "bpmRange": {
       "title": "BPM detection range",

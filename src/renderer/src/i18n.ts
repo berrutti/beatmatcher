@@ -5,7 +5,6 @@ import de from './locales/de.json';
 import es from './locales/es.json';
 
 export const SUPPORTED_LOCALES = ['en', 'de', 'es'] as const;
-export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
 
 function savedLocale(): string {
   const v = storageGet<string>(STORAGE_KEYS.locale, 'en');

@@ -27,6 +27,7 @@ import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useMidiStore } from '@renderer/stores/midi';
+import { useBrowseStore } from '@renderer/stores/browse';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
@@ -46,6 +47,9 @@ const appMode = useAppModeStore();
 // Created here so a plugged-in controller reconnects at launch rather than on
 // the first visit to Settings.
 useMidiStore();
+// The controller's browse, load and back moves arrive here, so the cursor has to
+// be listening before anyone touches the wheel.
+useBrowseStore();
 const sessionStore = useSessionStore();
 const sessionEditStore = useSessionEditStore();
 
