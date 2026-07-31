@@ -26,17 +26,17 @@ const AUTO_FIT_CANDIDATE_LIMIT = 30;
 const PINNED_FIELDS = ['bpm', 'added', 'trackNumber'] as const;
 type PinnedField = (typeof PINNED_FIELDS)[number];
 
-export const PINNED_COLUMN_WIDTH: Record<PinnedField, number> = {
+const PINNED_COLUMN_WIDTH: Record<PinnedField, number> = {
   bpm: 55,
   added: 55,
   trackNumber: 60
 };
 
-export function isPinnedField(field: ColumnField): field is PinnedField {
+function isPinnedField(field: ColumnField): field is PinnedField {
   return PINNED_FIELDS.some((f) => f === field);
 }
 
-export function isFieldResizable(field: ColumnField): field is MetadataField {
+function isFieldResizable(field: ColumnField): field is MetadataField {
   return isMetadataField(field) && !isPinnedField(field);
 }
 

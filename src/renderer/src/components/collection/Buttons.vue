@@ -47,7 +47,7 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import type { DeckId } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useAppModeStore } from '@renderer/stores/appMode';
 
 const props = defineProps<{

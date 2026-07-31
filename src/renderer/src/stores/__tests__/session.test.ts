@@ -78,7 +78,7 @@ function sessionContent(...trackPaths: string[]): string {
         is_playing: true,
         position_sec: 0
       })),
-      { elapsed_ms: 1000, type: 'set_volume', deck: 'A', gain: 0.8 },
+      { elapsed_ms: 1000, type: 'set_param', deck: 'A', slot: 'fader', param: 'gain', value: 0.8 },
       { elapsed_ms: 5000, type: 'stop', deck: 'A' }
     ]
   });
@@ -198,5 +198,172 @@ describe('missing track detection and relocation', () => {
 
     expect(store.missingTracks).toEqual(['/music/a.mp3']);
     expect(editStore.dirty).toBe(false);
+  });
+});
+
+describe('edits rejected by session-core', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    fakeFs = { '/music/a.mp3': 100 };
+    fakeScan = {};
+    fakeBms = {};
+    dialogResult = null;
+    installInvokeMock();
+  });
+
+  it('a rejected gesture leaves the session, the undo stack and the redo stack untouched', async () => {
+    const store = useSessionStore();
+    const editStore = useSessionEditStore();
+    fakeBms['/sessions/mix.bms'] = sessionContent('/music/a.mp3');
+    await store.openSessionFromPath('/sessions/mix.bms');
+
+    await editStore.commitGesture(
+      'A',
+      'gain',
+      [
+        { ms: 1000, value: 0.5 },
+        { ms: 3000, value: 0.9 }
+      ],
+      1000,
+      3000
+    );
+    expect(editStore.canUndo).toBe(true);
+
+    editStore.undo();
+    expect(editStore.canUndo).toBe(false);
+    expect(editStore.canRedo).toBe(true);
+
+    const before = store.session?.events;
+    // Shorter than MIN_GESTURE_MS, so session-core returns its input.
+    await editStore.commitGesture('A', 'gain', [{ ms: 1000, value: 0.5 }], 1000, 1010);
+
+    expect(store.session?.events).toBe(before);
+    expect(editStore.canUndo).toBe(false);
+    expect(editStore.canRedo).toBe(true);
+    expect(editStore.dirty).toBe(false);
+  });
+});
+
+describe('playback gate while a session is decoding', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  function loading(store: ReturnType<typeof useSessionStore>, done: boolean, bytes = 0) {
+    store.loadProgress = {
+      path: '/s.bms',
+      phase: 'decoding',
+      loadedBytes: bytes,
+      totalBytes: 100,
+      loadedTracks: done ? 4 : 1,
+      totalTracks: 4,
+      done
+    };
+  }
+
+  it('reports loading until the backend says every track is decoded', () => {
+    const store = useSessionStore();
+    expect(store.isLoading).toBe(false);
+    loading(store, false);
+    expect(store.isLoading).toBe(true);
+    loading(store, true);
+    expect(store.isLoading).toBe(false);
+  });
+
+  it('refuses to start playback while still decoding', async () => {
+    const store = useSessionStore();
+    loading(store, false);
+    await store.play(0);
+
+    expect(store.isPlaying).toBe(false);
+    expect(vi.mocked(invoke).mock.calls.some((c) => c[0] === 'start_session_playback')).toBe(false);
+  });
+
+  it('weights progress by bytes, not by track count', () => {
+    const store = useSessionStore();
+    loading(store, false, 30);
+    expect(store.loadedFraction).toBeCloseTo(0.3, 6);
+  });
+
+  it('falls back to track count when no byte total is known', () => {
+    const store = useSessionStore();
+    store.loadProgress = {
+      path: '/s.bms',
+      phase: 'decoding',
+      loadedBytes: 0,
+      totalBytes: 0,
+      loadedTracks: 1,
+      totalTracks: 4,
+      done: false
+    };
+    expect(store.loadedFraction).toBeCloseTo(0.25, 6);
+  });
+
+  it('reads as fully loaded when nothing is being tracked', () => {
+    const store = useSessionStore();
+    expect(store.loadedFraction).toBe(1);
+    expect(store.isLoading).toBe(false);
+  });
+});
+
+function pathArg(args: unknown): string {
+  if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
+    return args.path;
+  }
+  return '';
+}
+
+describe('a preload failure against the session it was started for', () => {
+  let preloadRejects: Record<string, () => void>;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    fakeBms = {};
+    preloadRejects = {};
+    mockedInvoke.mockImplementation((cmd, args) => {
+      const path = pathArg(args);
+      if (cmd === 'read_file') return Promise.resolve(fakeBms[path] ?? null);
+      if (cmd === 'preload_session') {
+        return new Promise((_resolve, reject) => {
+          preloadRejects[path] = () => reject(new Error('decode failed'));
+        });
+      }
+      return Promise.resolve(null);
+    });
+  });
+
+  it('leaves the newer session loading when the older one fails to preload', async () => {
+    const store = useSessionStore();
+    fakeBms['/sessions/a.bms'] = sessionContent('/music/a.mp3');
+    fakeBms['/sessions/b.bms'] = sessionContent('/music/b.mp3');
+
+    await store.openSessionFromPath('/sessions/a.bms');
+    await store.openSessionFromPath('/sessions/b.bms');
+
+    preloadRejects['/sessions/a.bms']();
+    await vi.waitFor(() => {
+      expect(preloadRejects['/sessions/b.bms']).toBeTypeOf('function');
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.loadProgress?.path).toBe('/sessions/b.bms');
+    expect(store.isLoading).toBe(true);
+  });
+
+  it('clears the progress when the session that failed is still the loaded one', async () => {
+    const store = useSessionStore();
+    fakeBms['/sessions/a.bms'] = sessionContent('/music/a.mp3');
+
+    await store.openSessionFromPath('/sessions/a.bms');
+    preloadRejects['/sessions/a.bms']();
+    await vi.waitFor(() => {
+      expect(store.loadProgress).toBe(null);
+    });
+
+    expect(store.isLoading).toBe(false);
   });
 });

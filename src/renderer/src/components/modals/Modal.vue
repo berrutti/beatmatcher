@@ -1,15 +1,11 @@
 <template>
   <Transition name="modal">
-    <div
-      v-if="open"
-      class="modal__backdrop"
-      @click.self="emit('cancel')"
-      @keydown.escape="emit('cancel')"
-    >
+    <div v-if="open" class="modal__backdrop" @click.self="dismiss" @keydown.escape="dismiss">
       <div class="modal">
         <div class="modal__title">{{ title }}</div>
+        <p v-if="body" class="modal__body">{{ body }}</p>
         <slot />
-        <div class="modal__actions">
+        <div v-if="dismissable" class="modal__actions">
           <button class="modal__btn modal__btn--cancel" @click="emit('cancel')">
             {{ $t('modal.cancel') }}
           </button>
@@ -25,17 +21,31 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue';
 
-const { open, autoFocusEl = null } = defineProps<{
+const {
+  open,
+  autoFocusEl = null,
+  dismissable = true
+} = defineProps<{
   open: boolean;
   title: string;
+  // The explanatory line under the title. Here rather than in each caller's slot
+  // because all of them want the same one paragraph of muted text.
+  body?: string;
   confirmLabel?: string;
   // Element to focus when the modal opens, e.g. a form input inside the
   // slot, passed down as a template ref (Vue auto-unwraps it in the
   // template, so this receives the element itself). Falls back to the
   // confirm button when not given.
   autoFocusEl?: HTMLElement | null;
+  // Off for a gate the user must wait out: the buttons are exits too, so they
+  // go with the backdrop click and the escape key rather than separately.
+  dismissable?: boolean;
 }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
+
+function dismiss(): void {
+  if (dismissable) emit('cancel');
+}
 
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 watch(
@@ -73,6 +83,13 @@ watch(
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--color-text);
+}
+
+.modal__body {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-muted);
+  margin: 0;
 }
 
 .modal__actions {

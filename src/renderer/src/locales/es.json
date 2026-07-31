@@ -1,4 +1,7 @@
 {
+  "files": {
+    "defaultName": "grabacion-{date}"
+  },
   "appBar": {
     "performance": "Performance",
     "edit": "Edición",
@@ -16,8 +19,6 @@
     "continue": "Continuar"
   },
   "topStrip": {
-    "stopRecording": "Detener grabación",
-    "recordMaster": "Grabar salida maestra",
     "rec": "Rec",
     "fourDecks": "4 decks",
     "twoDecks": "2 decks",
@@ -45,6 +46,25 @@
       "title": "Sensibilidad del empuje",
       "hint": "Desplazamiento al mantener pulsada una tecla de empuje."
     },
+    "jog": {
+      "title": "Velocidad de giro del jog",
+      "hint": "Velocidad de plato que imita el jog. Una vuelta abarca 1,8 segundos de audio a 33 rpm y 1,33 a 45, por lo que 45 busca con más precisión.",
+      "rpm33": "33 rpm",
+      "rpm45": "45 rpm"
+    },
+    "faderCurve": {
+      "title": "Curva del fader de canal",
+      "hint": "Cómo el recorrido de un fader de canal se traduce en volumen. La lineal solo llega al silencio al final del recorrido; la exponencial cae mucho antes.",
+      "exponential": "Exponencial",
+      "linear": "Lineal",
+      "logarithmic": "Logarítmica"
+    },
+    "filterStart": {
+      "title": "Filtros al iniciar",
+      "on": "Activados",
+      "off": "Apagados",
+      "hint": "Activa el filtro de cada canal al abrir la app. Útil en controladores cuyo mando de filtro no tiene interruptor propio."
+    },
     "pitch": {
       "title": "Rango de pitch",
       "hint": "Desviación máxima del slider de pitch respecto al BPM original."
@@ -53,6 +73,13 @@
       "title": "Tamaño del buffer de audio",
       "default": "Por defecto",
       "hint": "Frames por callback de audio. Valores menores reducen la latencia pero aumentan la carga del procesador. Cambiar esto causa una breve interrupción del audio."
+    },
+    "midi": {
+      "title": "Controladores MIDI",
+      "rescan": "Volver a buscar",
+      "noDevices": "No hay dispositivos MIDI conectados.",
+      "unmapped": "Sin asignación para este dispositivo",
+      "hint": "Todos los dispositivos conectados están activos a la vez. Un dispositivo que reproduce un solo deck necesita elegir uno aquí."
     },
     "bpmRange": {
       "title": "Rango de detección de BPM",
@@ -183,6 +210,8 @@
   "deck": {
     "loadTitle": "¿Cargar nueva pista?",
     "loadBody": "La reproducción se detendrá y la pista actual será reemplazada.",
+    "ejectConfirmTitle": "¿Quitar la pista en reproducción?",
+    "ejectConfirmBody": "La reproducción se detendrá y la bandeja quedará vacía.",
     "label": "DECK {id}",
     "ejectTitle": "Quitar pista",
     "notLoaded": "Carga una pista",
@@ -205,7 +234,11 @@
   },
   "mixer": {
     "cue": "CUE",
-    "cueHint": "Activar CUE: Espacio + número"
+    "cueHint": "Activar CUE: Espacio + número",
+    "assignA": "A",
+    "assignB": "B",
+    "assignHint": "Asignación del crossfader: A o B, ninguno para omitir",
+    "xfaderHint": "Crossfader. Doble clic para centrar."
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
@@ -216,7 +249,9 @@
       "rate": "Pitch",
       "eqLow": "EQ Graves",
       "eqMid": "EQ Medios",
-      "eqHigh": "EQ Agudos"
+      "eqHigh": "EQ Agudos",
+      "masterGain": "Master",
+      "xfader": "Crossfader"
     },
     "rendering": "Renderizando...",
     "renderWav": "Renderizar WAV",
@@ -236,7 +271,14 @@
     "splitClip": "Dividir clip aquí",
     "mute": "Silenciar",
     "solo": "Solo",
-    "lanesMenu": "Carriles"
+    "lanesMenu": "Carriles",
+    "loadingTitle": "Cargando sesión",
+    "loadingBody": "Decodificando pistas. La reproducción empezará cuando todas estén listas.",
+    "loadingTracks": "{loaded} de {total} pistas",
+    "loadingPhaseReading": "Leyendo el archivo de sesión",
+    "loadingPhaseParsing": "Analizando eventos",
+    "loadingPhaseDecoding": "Decodificando pistas",
+    "loadingPhaseIndexing": "Construyendo el índice"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",

@@ -11,6 +11,8 @@ import { ref, onMounted, onUnmounted } from 'vue';
 const props = defineProps<{
   accent: string;
   active: boolean;
+  playing: boolean;
+  cueing: boolean;
   getBeat: () => number | null;
   coverArt: string | null;
 }>();
@@ -19,6 +21,7 @@ const LINE_WIDTH_RATIO = 0.065;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
+let phase4 = 0;
 
 function draw() {
   const canvas = canvasEl.value;
@@ -43,11 +46,13 @@ function draw() {
   ctx.lineWidth = LINE_WIDTH;
   ctx.stroke();
 
-  let phase4 = 0;
-
-  const beat = props.getBeat();
-  if (beat !== null) {
-    phase4 = (((beat % 4) + 4) % 4) / 4;
+  // Held where it stopped, because scrubbing a paused deck moves the playhead at
+  // hand speed and whips the ring round. A held CUE is audible, so it advances.
+  if (props.playing || props.cueing) {
+    const beat = props.getBeat();
+    if (beat !== null) {
+      phase4 = (((beat % 4) + 4) % 4) / 4;
+    }
   }
 
   const startAngle = -Math.PI / 2;

@@ -18,6 +18,15 @@
       @cancel="pendingLoad = null"
     />
 
+    <ConfirmModal
+      :open="props.deck.ejectPending"
+      :title="$t('deck.ejectConfirmTitle')"
+      :body="$t('deck.ejectConfirmBody')"
+      :confirm-label="$t('deck.ejectTitle')"
+      @confirm="props.deck.confirmEject()"
+      @cancel="props.deck.cancelEject()"
+    />
+
     <div class="deck__loading-bar" />
 
     <div v-if="props.compact" class="deck__compact">
@@ -89,6 +98,8 @@
             <PhaseRing
               :accent="props.deck.accent"
               :active="props.deck.trackLoaded"
+              :playing="props.deck.playing"
+              :cueing="props.deck.cueing"
               :get-beat="() => props.deck.beat"
               :cover-art="props.deck.coverArt"
             />
@@ -116,7 +127,7 @@
                 :disabled="!props.deck.trackLoaded"
                 :tabindex="-1"
                 v-tooltip="$t('deck.ejectTitle')"
-                @click="props.deck.ejectTrack()"
+                @click="props.deck.requestEject()"
               >
                 ⏏
               </button>

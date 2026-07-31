@@ -1808,3 +1808,268 @@ mod tests {
         assert!((rebuilt[0].session_end_ms - 3000.0).abs() < 1.0);
     }
 }
+
+// Randomised sweeps over the edit operations. Block geometry interacts with neighbours,
+// loops and rate changes in combinations impractical to enumerate by hand.
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use crate::timeline::build_clips;
+
+    fn rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    // A plausible recorded session: two decks loading, playing, adjusting and stopping.
+    fn make_session(seed: &mut u64) -> Vec<SessionEvent> {
+        let mut events: Vec<SessionEvent> = Vec::new();
+        let mut t = 0.0f64;
+        for deck in ["A", "B"] {
+            t += (rng(seed) % 500) as f64;
+            events.push(SessionEvent {
+                path: Some(format!("/music/{deck}.wav")),
+                duration: Some(300.0),
+                beat_offset_sec: Some(0.0),
+                ..SessionEvent::at(t, "load_track", deck)
+            });
+            t += (rng(seed) % 500) as f64;
+            events.push(SessionEvent {
+                sec: Some(0.0),
+                ..SessionEvent::at(t, "play", deck)
+            });
+            for _ in 0..(rng(seed) % 4) {
+                t += 200.0 + (rng(seed) % 3000) as f64;
+                match rng(seed) % 3 {
+                    0 => events.push(SessionEvent::param(
+                        t,
+                        Some(deck),
+                        "fader",
+                        "gain",
+                        (rng(seed) % 100) as f64 / 100.0,
+                    )),
+                    1 => events.push(SessionEvent {
+                        rate: Some(0.95 + (rng(seed) % 10) as f64 / 100.0),
+                        ..SessionEvent::at(t, "set_playback_rate", deck)
+                    }),
+                    _ => events.push(SessionEvent {
+                        sec: Some((rng(seed) % 60) as f64),
+                        ..SessionEvent::at(t, "seek", deck)
+                    }),
+                }
+            }
+            t += 1000.0 + (rng(seed) % 5000) as f64;
+            events.push(SessionEvent::at(t, "stop", deck));
+        }
+        events.sort_by(crate::sim::event_sim_order);
+        events
+    }
+
+    struct Report {
+        unsorted: u32,
+        non_finite: u32,
+        negative_ms: u32,
+        inverted_clip: u32,
+        examples: Vec<String>,
+    }
+
+    fn check(label: &str, out: &[SessionEvent], rep: &mut Report, ctx: &str) {
+        for w in out.windows(2) {
+            if w[0].elapsed_ms > w[1].elapsed_ms {
+                rep.unsorted += 1;
+                if rep.examples.len() < 4 {
+                    rep.examples.push(format!("{label} UNSORTED: {ctx}"));
+                }
+                break;
+            }
+        }
+        for e in out {
+            if !e.elapsed_ms.is_finite() {
+                rep.non_finite += 1;
+                if rep.examples.len() < 4 {
+                    rep.examples.push(format!("{label} NON-FINITE ms: {ctx}"));
+                }
+                break;
+            }
+            if e.elapsed_ms < 0.0 {
+                rep.negative_ms += 1;
+                if rep.examples.len() < 4 {
+                    rep.examples
+                        .push(format!("{label} NEGATIVE ms {}: {ctx}", e.elapsed_ms));
+                }
+                break;
+            }
+        }
+        let rebuilt = build_clips(out);
+        for c in &rebuilt.clips {
+            if !c.session_start_ms.is_finite()
+                || !c.session_end_ms.is_finite()
+                || c.session_end_ms < c.session_start_ms
+            {
+                rep.inverted_clip += 1;
+                if rep.examples.len() < 4 {
+                    rep.examples.push(format!(
+                        "{label} BAD CLIP [{}..{}]: {ctx}",
+                        c.session_start_ms, c.session_end_ms
+                    ));
+                }
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_clip_edit_ops_preserve_structure() {
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        let mut rep = Report {
+            unsorted: 0,
+            non_finite: 0,
+            negative_ms: 0,
+            inverted_clip: 0,
+            examples: Vec::new(),
+        };
+        let mut applied = 0u32;
+
+        for _ in 0..4000 {
+            let events = make_session(&mut seed);
+            let clips = build_clips(&events).clips;
+            if clips.is_empty() {
+                continue;
+            }
+            let deck = if rng(&mut seed) % 2 == 0 { "A" } else { "B" };
+            let blocks = blocks_for_deck(&clips, deck);
+            if blocks.is_empty() {
+                continue;
+            }
+            let block = &blocks[(rng(&mut seed) as usize) % blocks.len()];
+            let span = (block.end_ms - block.start_ms).max(1.0);
+            applied += 1;
+
+            match rng(&mut seed) % 6 {
+                0 => {
+                    let delta = (rng(&mut seed) % 8000) as f64 - 4000.0;
+                    let out = move_transport_block(&events, &clips, block, delta).events;
+                    check("move", &out, &mut rep, &format!("delta={delta}"));
+                }
+                1 => {
+                    let new_ms = block.start_ms + (rng(&mut seed) % (span as u64 * 2 + 1)) as f64
+                        - span / 2.0;
+                    let out =
+                        trim_transport_block(&events, &clips, block, Edge::Start, new_ms).events;
+                    check("trim-start", &out, &mut rep, &format!("new_ms={new_ms}"));
+                }
+                2 => {
+                    let new_ms =
+                        block.end_ms + (rng(&mut seed) % (span as u64 * 2 + 1)) as f64 - span / 2.0;
+                    let out = trim_transport_block(&events, &clips, block, Edge::End, new_ms).events;
+                    check("trim-end", &out, &mut rep, &format!("new_ms={new_ms}"));
+                }
+                3 => {
+                    let out = delete_transport_block(&events, &clips, block);
+                    check("delete", &out, &mut rep, "");
+                }
+                4 => {
+                    let split = block.start_ms + (rng(&mut seed) % span as u64) as f64;
+                    let out = split_transport_block(&events, &clips, block, split);
+                    check("split", &out, &mut rep, &format!("split={split}"));
+                }
+                _ => {
+                    let a = block.start_ms + (rng(&mut seed) % span as u64) as f64;
+                    let b = block.start_ms + (rng(&mut seed) % span as u64) as f64;
+                    let (s, e) = if a <= b { (a, b) } else { (b, a) };
+                    let out = delete_block_range(&events, &clips, block, s, e);
+                    check("delete-range", &out, &mut rep, &format!("range=[{s},{e}]"));
+                }
+            }
+        }
+
+        println!(
+            "CLIP_EDIT fuzz: {applied} ops | unsorted={} non_finite={} negative_ms={} inverted_clip={}",
+            rep.unsorted, rep.non_finite, rep.negative_ms, rep.inverted_clip
+        );
+        for e in &rep.examples {
+            println!("   {e}");
+        }
+        assert_eq!(
+            rep.unsorted + rep.non_finite + rep.negative_ms + rep.inverted_clip,
+            0
+        );
+    }
+
+    // Semantic invariants: an edit must actually do what it claims.
+    #[test]
+    fn fuzz_clip_edit_ops_have_declared_effect() {
+        let mut seed = 0x123456789ABCDEFu64;
+        let (mut del_bad, mut split_bad, mut move_bad) = (0u32, 0u32, 0u32);
+        let (mut del_n, mut split_n, mut move_n) = (0u32, 0u32, 0u32);
+        let mut examples: Vec<String> = Vec::new();
+
+        for _ in 0..4000 {
+            let events = make_session(&mut seed);
+            let clips = build_clips(&events).clips;
+            if clips.is_empty() { continue; }
+            let deck = if rng(&mut seed) % 2 == 0 { "A" } else { "B" };
+            let before = blocks_for_deck(&clips, deck);
+            if before.is_empty() { continue; }
+            let block = before[(rng(&mut seed) as usize) % before.len()].clone();
+            let span = block.end_ms - block.start_ms;
+
+            match rng(&mut seed) % 3 {
+                0 => {
+                    del_n += 1;
+                    let out = delete_transport_block(&events, &clips, &block);
+                    let after = blocks_for_deck(&build_clips(&out).clips, deck);
+                    if after.len() + 1 != before.len() {
+                        del_bad += 1;
+                        if examples.len() < 5 {
+                            examples.push(format!(
+                                "DELETE: {} blocks -> {} (expected {}) span={span}",
+                                before.len(), after.len(), before.len() - 1));
+                        }
+                    }
+                }
+                1 => {
+                    if span < 2.0 * MIN_BLOCK_MS + 2.0 { continue; }
+                    let split = block.start_ms + MIN_BLOCK_MS + 1.0
+                        + (rng(&mut seed) % (span - 2.0 * MIN_BLOCK_MS - 1.0) as u64) as f64;
+                    split_n += 1;
+                    let out = split_transport_block(&events, &clips, &block, split);
+                    let after = blocks_for_deck(&build_clips(&out).clips, deck);
+                    if after.len() != before.len() + 1 {
+                        split_bad += 1;
+                        if examples.len() < 5 {
+                            examples.push(format!(
+                                "SPLIT at {split} in [{},{}]: {} blocks -> {} (expected {})",
+                                block.start_ms, block.end_ms,
+                                before.len(), after.len(), before.len() + 1));
+                        }
+                    }
+                }
+                _ => {
+                    let delta = (rng(&mut seed) % 4000) as f64 - 2000.0;
+                    move_n += 1;
+                    let res = move_transport_block(&events, &clips, &block, delta);
+                    if res.applied_delta_ms.abs() < EPS_MS { continue; }
+                    let target = block.start_ms + res.applied_delta_ms;
+                    let after = blocks_for_deck(&build_clips(&res.events).clips, deck);
+                    if !after.iter().any(|b| (b.start_ms - target).abs() <= EPS_MS * 2.0) {
+                        move_bad += 1;
+                        if examples.len() < 5 {
+                            let got: Vec<String> =
+                                after.iter().map(|b| format!("{:.0}", b.start_ms)).collect();
+                            examples.push(format!(
+                                "MOVE {} by applied={} -> expected start {target}, got [{}]",
+                                block.start_ms, res.applied_delta_ms, got.join(",")));
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("SEMANTIC fuzz: delete {del_bad}/{del_n} | split {split_bad}/{split_n} | move {move_bad}/{move_n}");
+        for e in &examples { println!("   {e}"); }
+        assert_eq!(del_bad + split_bad + move_bad, 0);
+    }
+}

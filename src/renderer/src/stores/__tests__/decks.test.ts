@@ -96,3 +96,176 @@ describe('switchTo edit', () => {
     expect(appMode.mode).toBe('edit');
   });
 });
+
+// Rust gates MIDI input on its mirror of the mode, so a switch that does not
+// reach it leaves a controller live over the session scheduler.
+describe('switchTo mirrors the mode to Rust', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('reports every mode it switches to', async () => {
+    const appMode = useAppModeStore();
+
+    await appMode.switchTo('session');
+    expect(mockedInvoke).toHaveBeenCalledWith('set_app_mode', { mode: 'session' });
+
+    await appMode.switchTo('performance');
+    expect(mockedInvoke).toHaveBeenCalledWith('set_app_mode', { mode: 'performance' });
+  });
+
+  it('reports before tearing anything down, so entering session stops MIDI first', async () => {
+    const appMode = useAppModeStore();
+
+    await appMode.switchTo('session');
+
+    const names = mockedInvoke.mock.calls.map(([command]) => command);
+    expect(names[0]).toBe('set_app_mode');
+  });
+
+  it('says nothing when the mode does not change', async () => {
+    const appMode = useAppModeStore();
+
+    await appMode.switchTo('performance');
+
+    expect(mockedInvoke).not.toHaveBeenCalledWith('set_app_mode', expect.anything());
+  });
+});
+
+// The push channel is the only way an engine-originated transport move reaches
+// the UI, because a MIDI press never returns through an invoke.
+describe('applyEngineTransport', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('mirrors the pushed state without invoking back', () => {
+    const decks = useDecksStore();
+
+    decks.deckA.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 12.5,
+      positionSec: 20,
+      loopActive: true,
+      loopRegionCleared: false,
+      loopRegion: null
+    });
+
+    expect(decks.deckA.loopPlaying).toBe(true);
+    expect(decks.deckA.cuePoint).toBe(12.5);
+    expect(decks.deckA.loopActive).toBe(true);
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it('drops the cached loop region when the press destroyed it', () => {
+    const decks = useDecksStore();
+    decks.deckB.loopRegion = { startSec: 1, endSec: 2, beats: 4 };
+
+    decks.deckB.applyEngineTransport({
+      isPlaying: false,
+      isCueing: false,
+      cuePointSec: 1,
+      positionSec: 1,
+      loopActive: false,
+      loopRegionCleared: true,
+      loopRegion: null
+    });
+
+    expect(decks.deckB.loopRegion).toBeNull();
+  });
+
+  // Before the push carried the region, `setLoopOut` read it out of the invoke's
+  // return value, which a controller press never produces.
+  it('draws the region a controller press defined', () => {
+    const decks = useDecksStore();
+
+    decks.deckA.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 10,
+      positionSec: 11,
+      loopActive: true,
+      loopRegionCleared: false,
+      loopRegion: { startSec: 10, endSec: 14, beats: 8 }
+    });
+
+    expect(decks.deckA.loopRegion).toEqual({ startSec: 10, endSec: 14, beats: 8 });
+  });
+
+  // The guard against a regression: a payload without a region must leave the cached one
+  // exactly as it was, which is what every transport push did before this field existed.
+  it('leaves a cached region alone when the payload carries none', () => {
+    const decks = useDecksStore();
+    const region = { startSec: 1, endSec: 2, beats: 4 };
+    decks.deckB.loopRegion = region;
+
+    decks.deckB.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 1,
+      positionSec: 1.5,
+      loopActive: false,
+      loopRegionCleared: false,
+      loopRegion: null
+    });
+
+    expect(decks.deckB.loopRegion).toEqual(region);
+  });
+});
+
+describe('a displayed bpm is exactly reachable', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('sets 129.05 with no rounding drift', () => {
+    const decks = useDecksStore();
+    decks.deckA.setTrackBpm(120);
+
+    decks.deckA.setTargetBpm(129.05);
+
+    expect(decks.deckA.targetBpm).toBe(129.05);
+    expect(mockedInvoke).toHaveBeenCalledWith('set_playback_rate', {
+      deck: 'A',
+      rate: 129.05 / 120
+    });
+  });
+});
+
+describe('an engine rate move on a deck with no beat grid', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  // Rust does not gate the tempo fader on a grid, so a controller can change the rate of a
+  // deck showing --.-. The interpolated playhead has to follow it or it drifts unboundedly.
+  it('still slows the interpolated playhead', () => {
+    const clock = vi.spyOn(performance, 'now');
+    clock.mockReturnValue(0);
+
+    const decks = useDecksStore();
+    const deck = decks.deckA;
+    deck.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 0,
+      positionSec: 0,
+      loopActive: false,
+      loopRegionCleared: false,
+      loopRegion: null
+    });
+
+    clock.mockReturnValue(1000);
+    deck.applyEngineRate(0.5);
+    clock.mockReturnValue(2000);
+
+    expect(deck.trackBpm).toBeNull();
+    expect(deck.trackPosition).toBeCloseTo(1.5, 6);
+    clock.mockRestore();
+  });
+});

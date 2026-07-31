@@ -6,7 +6,8 @@
 
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { DECK_ACCENTS, type DeckId, useDecksStore } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
+import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
 import {
@@ -14,7 +15,14 @@ import {
   mergeSelectionRanges,
   type ClipSelectionRef
 } from '@renderer/utils/timelineLayout';
-import type { Clip, FilterActiveSpan, NudgeSpan, TransportBlock } from '@renderer/utils/types';
+import type {
+  Clip,
+  FilterActiveSpan,
+  MasterLaneKey,
+  NudgeSpan,
+  TransportBlock
+} from '@renderer/utils/types';
+import { MASTER_LANE_KEYS } from '@renderer/utils/types';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
@@ -44,6 +52,10 @@ export function useTimelineController(opts: {
   const selectedDeckLane = ref<Record<string, LaneKey>>(
     storageGet(STORAGE_KEYS.sessionDeckLane, {})
   );
+  const storedMasterLane = storageGet<string>(STORAGE_KEYS.sessionMasterLane, 'masterGain');
+  const selectedMasterLane = ref<MasterLaneKey>(
+    MASTER_LANE_KEYS.find((key) => key === storedMasterLane) ?? 'masterGain'
+  );
   const storedH = storageGet<number>(STORAGE_KEYS.sessionLaneHeight, DEFAULT_LANE_H);
   const laneHeight = ref(typeof storedH === 'number' ? storedH : DEFAULT_LANE_H);
   const storedW = storageGet<number>(STORAGE_KEYS.sessionWaveformHeight, ROW_H);
@@ -59,6 +71,13 @@ export function useTimelineController(opts: {
 
   function laneFor(deck: string): LaneKey {
     return selectedDeckLane.value[deck] ?? DEFAULT_DECK_LANE;
+  }
+
+  function setMasterLane(lane: MasterLaneKey): void {
+    selectedMasterLane.value = lane;
+    storageSet(STORAGE_KEYS.sessionMasterLane, lane);
+    lanePicker.value = null;
+    opts.requestRender();
   }
 
   function setDeckLane(deck: string, lane: LaneKey): void {
@@ -152,7 +171,7 @@ export function useTimelineController(opts: {
         opts.emitSeek(intent.ms);
         break;
       case 'view.set':
-        opts.camera.setView(intent.view);
+        opts.camera.setViewFromUser(intent.view);
         break;
       case 'lane.openDropdown':
         lanePicker.value = { deck: intent.deck, x: intent.clientX, y: intent.clientY };
@@ -324,6 +343,8 @@ export function useTimelineController(opts: {
     unlockedBlockIds,
     deckMenu,
     lanePicker,
+    selectedMasterLane,
+    setMasterLane,
     filterMenu,
     // helpers the component/scene need
     laneFor,

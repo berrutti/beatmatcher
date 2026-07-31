@@ -2,12 +2,19 @@
   <Modal
     :open="discardModalOpen"
     :title="$t('session.discardTitle')"
+    :body="$t('session.discardBody')"
     :confirm-label="$t('session.discardConfirm')"
     @confirm="onDiscardConfirmed"
     @cancel="discardModalOpen = false"
-  >
-    <p class="session__modal-body">{{ $t('session.discardBody') }}</p>
-  </Modal>
+  />
+
+  <SessionLoadingModal
+    :open="session.isLoading"
+    :phase="session.loadProgress?.phase ?? 'parsing'"
+    :fraction="session.loadedFraction"
+    :loaded-tracks="session.loadProgress?.loadedTracks ?? 0"
+    :total-tracks="session.loadProgress?.totalTracks ?? 0"
+  />
 
   <div class="session" v-bind="$attrs">
     <div class="session__body">
@@ -52,6 +59,7 @@
       <button
         class="session__btn session__btn--transport session__btn--play"
         :class="{ 'session__btn--active': session.isPlaying }"
+        :disabled="session.isLoading"
         @click="onTransport"
       >
         {{ session.isPlaying ? '⏸︎' : '▶︎' }}
@@ -104,6 +112,7 @@
 <script setup lang="ts">
 defineOptions({ inheritAttrs: false });
 import { ref, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
@@ -115,9 +124,11 @@ import { useSettingsStore } from '@renderer/stores/settings';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
-import { formatMs } from '@renderer/utils/time';
+import SessionLoadingModal from '@renderer/components/modals/SessionLoadingModal.vue';
+import { formatMs, dateStamp } from '@renderer/utils/time';
 import { basename } from '@renderer/utils/path';
 
+const { t } = useI18n();
 const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
@@ -193,6 +204,7 @@ function tickPlayhead() {
 }
 
 async function onTransport() {
+  if (session.isLoading) return;
   if (session.isPlaying) {
     cancelAnimationFrame(rafId);
     await session.stop();
@@ -216,7 +228,10 @@ async function onSeek(ms: number) {
 
 async function onRender(useFlac: boolean) {
   if (!session.session || isRendering.value) return;
-  const outputPath = await mixer.pickRenderOutputPath(useFlac);
+  const outputPath = await mixer.pickRenderOutputPath(
+    useFlac,
+    t('files.defaultName', { date: dateStamp() })
+  );
   if (!outputPath) return;
   isRendering.value = true;
   try {
@@ -386,7 +401,12 @@ onUnmounted(() => {
   min-width: 3.6em;
 }
 
-.session__btn--transport:hover,
+.session__btn--transport:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.session__btn--transport:hover:not(:disabled),
 .session__btn--active {
   background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
   border-color: var(--color-accent-cyan);
@@ -435,12 +455,5 @@ onUnmounted(() => {
 .session__btn--eject:hover {
   color: var(--color-text);
   border-color: var(--color-text);
-}
-
-.session__modal-body {
-  font-size: 0.75rem;
-  color: var(--color-muted);
-  line-height: 1.5;
-  margin: 0;
 }
 </style>

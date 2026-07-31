@@ -31,9 +31,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 flacenc = "0.5"
 cpal = "0.15"
+midir = "0.10"
 symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "vorbis", "wav", "ogg"] }
 rfd = "0.15"
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "time", "sync"] }
 base64 = "0.22"
 
 # Optimize all dependencies (symphonia, cpal, etc.) even in dev builds.

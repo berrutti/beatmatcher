@@ -69,7 +69,7 @@
         <span class="lane-menu__arrow">▶</span>
         <div class="lane-menu__submenu">
           <button
-            v-for="key in LANE_KEYS"
+            v-for="key in DECK_LANE_KEYS"
             :key="key"
             class="lane-menu__item"
             @click="onPickLaneFromMenu(key)"
@@ -96,11 +96,14 @@
       :style="{ left: lanePicker.x + 'px', top: lanePicker.y + 'px' }"
       @click.stop
     >
-      <button v-for="key in LANE_KEYS" :key="key" class="lane-menu__item" @click="onPickLane(key)">
+      <button
+        v-for="key in lanePicker.deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS"
+        :key="key"
+        class="lane-menu__item"
+        @click="onPickLane(key)"
+      >
         {{ $t(`session.lanes.${key}`) }}
-        <span class="lane-menu__check">{{
-          controller.laneFor(lanePicker.deck) === key ? '✓' : ''
-        }}</span>
+        <span class="lane-menu__check">{{ pickedLane(lanePicker.deck) === key ? '✓' : '' }}</span>
       </button>
     </div>
     <div
@@ -142,8 +145,14 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
 import {
+  DECK_LANE_KEYS,
+  MASTER_LANE_KEYS,
+  MASTER_ROW_ID,
+  isMasterLaneKey,
+  type EditableLaneKey
+} from '@renderer/utils/types';
+import {
   DECK_ORDER,
-  LANE_KEYS,
   LABEL_W,
   PADDING,
   makeMsToX,
@@ -159,7 +168,7 @@ import { useTimelineGestures } from '@renderer/composables/useTimelineGestures';
 import { buildScene } from '@renderer/composables/useTimelineScene';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { useSettingsStore } from '@renderer/stores/settings';
+import { useSettingsStore, DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import type { BpmContext } from '@renderer/utils/timelineIntents';
 
@@ -194,7 +203,10 @@ const scrollEl = ref<HTMLDivElement | null>(null);
 const sizerEl = ref<HTMLDivElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 
-const camera = useTimelineView(() => props.durationMs);
+const camera = useTimelineView(
+  () => props.durationMs,
+  () => sessionStore.session?.mixerId ?? DEFAULT_MIXER_ID
+);
 const controller = useTimelineController({
   camera,
   getClips: () => props.clips,
@@ -280,6 +292,7 @@ function render(): void {
     durationMs: props.durationMs,
     editMode: editStore.editMode,
     laneFor: controller.laneFor,
+    masterLane: controller.selectedMasterLane.value,
     laneHeight: controller.laneHeight.value,
     waveformHeight: controller.waveformHeight.value,
     accentFor: controller.accentFor,
@@ -399,8 +412,19 @@ function onPickLaneFromMenu(lane: LaneKey): void {
   deckMenu.value = null;
 }
 
-function onPickLane(lane: LaneKey): void {
-  if (lanePicker.value) controller.setDeckLane(lanePicker.value.deck, lane);
+function pickedLane(deck: string): EditableLaneKey {
+  return deck === MASTER_ROW_ID ? controller.selectedMasterLane.value : controller.laneFor(deck);
+}
+
+// One picker serves both row kinds, so the pick is routed by which row opened it.
+function onPickLane(lane: EditableLaneKey): void {
+  const picker = lanePicker.value;
+  if (!picker) return;
+  if (picker.deck === MASTER_ROW_ID) {
+    if (isMasterLaneKey(lane)) controller.setMasterLane(lane);
+    return;
+  }
+  if (!isMasterLaneKey(lane)) controller.setDeckLane(picker.deck, lane);
 }
 
 function onDeleteFilterRegion(): void {

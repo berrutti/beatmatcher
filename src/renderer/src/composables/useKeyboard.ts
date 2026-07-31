@@ -1,10 +1,12 @@
 import { ref, onMounted, onUnmounted } from 'vue';
-import { Deck, useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { Deck, useDecksStore } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useMixerStore } from '@renderer/stores/mixer';
+import { useMixerStore, FADER_GAIN, FILTER_ACTIVE } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useBrowseStore } from '@renderer/stores/browse';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -21,6 +23,9 @@ const DIGIT_DECK: Record<string, DeckId> = {
 // While in swarm mode, swiping up/down moves the selected faders.
 const SWARM_SWIPE_SENSITIVITY = 0.005;
 
+// The browser is walked on the arrow cluster alone, so Enter stays free.
+const BROWSE_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
 export function useKeyboard() {
   const store = useDecksStore();
   const mixer = useMixerStore();
@@ -28,6 +33,7 @@ export function useKeyboard() {
   const settings = useSettingsStore();
   const appMode = useAppModeStore();
   const sessionEdit = useSessionEditStore();
+  const browse = useBrowseStore();
 
   // Space acts as a held modifier (Space+deck key = CUE) rather than arming swarm.
   const spaceHeld = ref(false);
@@ -57,6 +63,13 @@ export function useKeyboard() {
       return type === 'text' || type === 'number' || type === 'email' || type === 'search';
     }
     return false;
+  }
+
+  // A range input and a select step themselves on the arrow cluster, and every fader in
+  // performance mode is a range, so taking the key stops a focused one responding.
+  function stepsItselfOnArrows(target: EventTarget | null): boolean {
+    if (target instanceof HTMLSelectElement) return true;
+    return target instanceof HTMLInputElement && target.type.toLowerCase() === 'range';
   }
 
   function handleDeckCommand(deck: Deck, command: Command, shiftKey: boolean) {
@@ -129,6 +142,23 @@ export function useKeyboard() {
       return;
     }
 
+    // Ahead of the repeat filter: holding an arrow has to walk a long list rather
+    // than step once. A user's own binding still wins, since arrows are capturable.
+    if (
+      appMode.mode === 'performance' &&
+      !isTyping(e) &&
+      BROWSE_KEYS.includes(e.key) &&
+      !stepsItselfOnArrows(e.target) &&
+      getDeckCommandFromKey(resolveKey(e)) === null
+    ) {
+      e.preventDefault();
+      if (e.key === 'ArrowUp') browse.moveCursor(-1);
+      else if (e.key === 'ArrowDown') browse.moveCursor(1);
+      else if (e.key === 'ArrowLeft') browse.back();
+      else browse.enter();
+      return;
+    }
+
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
     // Space is now just a modifier: while it's held, a deck key toggles that
@@ -144,7 +174,7 @@ export function useKeyboard() {
       if (spaceHeld.value) {
         mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
       } else if (e.shiftKey) {
-        mixer.toggleFilter(digitDeck);
+        mixer.toggleParam(digitDeck, FILTER_ACTIVE);
       } else if (mixer.activeDecks.includes(digitDeck)) {
         mixer.setSwarmMode(true);
         mixer.setSwarmChannel(digitDeck, true);
@@ -212,7 +242,9 @@ export function useKeyboard() {
     e.preventDefault();
     const delta = e.deltaY * SWARM_SWIPE_SENSITIVITY;
     for (const deckId of Object.keys(mixer.swarmSelected) as DeckId[]) {
-      if (mixer.swarmSelected[deckId]) mixer.setVolume(deckId, mixer.volume[deckId] + delta);
+      if (mixer.swarmSelected[deckId]) {
+        mixer.setParam(deckId, FADER_GAIN, mixer.paramValue(deckId, FADER_GAIN) + delta);
+      }
     }
   }
 

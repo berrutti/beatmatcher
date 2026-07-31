@@ -42,8 +42,10 @@ fn fixture_events() -> Vec<SessionEvent> {
             ..make_event(3000.0, "loop_out", "B")
         },
         SessionEvent {
-            gain: Some(0.5),
-            ..make_event(4000.0, "set_volume", "A")
+            slot: Some("fader".to_string()),
+            param: Some("gain".to_string()),
+            value: Some(0.5),
+            ..make_event(4000.0, "set_param", "A")
         },
         make_event(5000.0, "exit_loop", "B"),
         SessionEvent {
@@ -209,7 +211,7 @@ fn golden_session_derives_edits_and_reconstructs() {
 
     // Edit 3: draw gain 0.3 on deck A over [4000, 6000]. The recorded 0.5 at
     // 4000 is consumed and restored at 6000.
-    let spec = lane_spec_for(EditableLane::Gain, None, None);
+    let spec = lane_spec_for(EditableLane::Gain, &session_core::CLASSIC_3BAND, None, None);
     let events = splice_lane_events(
         &events,
         &spec,

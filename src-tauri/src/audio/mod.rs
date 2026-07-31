@@ -5,12 +5,13 @@ mod io;
 mod recording;
 mod session_apply;
 mod stream;
+mod unit;
 
 pub use analysis::{
     compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
     compute_spectral_waveform_region, detect_bpm, detect_silence_end,
 };
-pub use deck::{ChannelStrip, CuePressOutcome, DeckState};
+pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, DeckState};
 pub(crate) use dsp::LimiterState;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
@@ -33,6 +34,10 @@ use stream::{
     find_output_device, MasterMonitor as Monitor, SendStream,
 };
 
+/// Stands in only until the frontend mirrors its own setting down, which it does
+/// on load. Matches the default in `settings.ts`.
+const DEFAULT_PITCH_RANGE_PERCENT: f64 = 10.0;
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
@@ -52,6 +57,16 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
+// The one mixer the live engine builds. The offline renderer builds whichever a `.bms`
+// names (see `session_core::MANIFESTS`), but nothing selects another at runtime.
+pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
+
+/// Every deck that reaches the live mixer. The edit deck is deliberately absent.
+pub(crate) const LIVE_DECK_IDS: [&str; 4] = ["A", "B", "C", "D"];
+
+/// Session view only, so it never reaches the mixer, a recording or a broadcast.
+pub(crate) const EDIT_DECK_ID: &str = "E";
+
 pub struct AppAudio {
     pub device_sample_rate: u32,
     decks: HashMap<String, Arc<Mutex<DeckState>>>,
@@ -65,10 +80,14 @@ pub struct AppAudio {
     buffer_frames: Arc<AtomicU32>,
     pub bpm_min: Arc<AtomicU32>,
     pub bpm_max: Arc<AtomicU32>,
+    // Mirrored from the frontend, which owns it. A tempo fader arrives as a
+    // position that means nothing until something knows how far the fader travels.
+    pitch_range_percent: Mutex<f64>,
     _main_stream: Mutex<Option<SendStream>>,
     _cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
     recording: Mutex<Option<RecordingState>>,
+    mixer: &'static session_core::MixerManifest,
 }
 
 // Required because AppAudio contains SendStream (see stream.rs for the safety argument).
@@ -89,7 +108,7 @@ impl AppAudio {
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
         let mut ended_flags: HashMap<String, Arc<AtomicBool>> = HashMap::new();
-        for id in ["A", "B", "C", "D", "E"] {
+        for id in LIVE_DECK_IDS.into_iter().chain([EDIT_DECK_ID]) {
             let flag = Arc::new(AtomicBool::new(false));
             ended_flags.insert(id.to_string(), flag.clone());
             let mut deck = DeckState::empty(device_sample_rate);
@@ -97,7 +116,10 @@ impl AppAudio {
             decks.insert(id.to_string(), Arc::new(Mutex::new(deck)));
             strips.insert(
                 id.to_string(),
-                Arc::new(Mutex::new(ChannelStrip::new(device_sample_rate as f32))),
+                Arc::new(Mutex::new(ChannelStrip::from_manifest(
+                    MIXER,
+                    device_sample_rate as f32,
+                ))),
             );
         }
 
@@ -126,11 +148,13 @@ impl AppAudio {
             buffer_frames: Arc::new(AtomicU32::new(0)),
             bpm_min: Arc::new(AtomicU32::new(BPM_MIN as u32)),
             bpm_max: Arc::new(AtomicU32::new(BPM_MAX as u32)),
+            pitch_range_percent: Mutex::new(DEFAULT_PITCH_RANGE_PERCENT),
             default_device_id,
             _main_stream: Mutex::new(Some(SendStream(main_stream))),
             _cue_stream: Mutex::new(None),
             monitor,
             recording: Mutex::new(None),
+            mixer: MIXER,
         })
     }
 
@@ -140,6 +164,10 @@ impl AppAudio {
 
     pub fn strip(&self, id: &str) -> Option<Arc<Mutex<ChannelStrip>>> {
         self.strips.get(id).cloned()
+    }
+
+    pub fn deck_ids(&self) -> Vec<String> {
+        self.strips.keys().cloned().collect()
     }
 
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
@@ -205,9 +233,57 @@ impl AppAudio {
         self.rebuild_streams()
     }
 
+    /// What every strip is built on, so a recording is stamped with the mixer it played
+    /// through and a `.bms` naming another can be refused over replayed at wrong scales.
+    pub fn mixer(&self) -> &'static session_core::MixerManifest {
+        self.mixer
+    }
+
     pub fn set_bpm_range(&self, min: u32, max: u32) {
         self.bpm_min.store(min, Ordering::Relaxed);
         self.bpm_max.store(max, Ordering::Relaxed);
+    }
+
+    pub fn pitch_range_percent(&self) -> f64 {
+        *self
+            .pitch_range_percent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn set_jog_rotation_speed(&self, speed: session_core::JogRotationSpeed) {
+        for deck in self.decks.values() {
+            deck.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_jog_rotation_speed(speed);
+        }
+    }
+
+    pub fn release_held_controls(&self) {
+        for deck in self.decks.values() {
+            deck.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .release_held_controls();
+        }
+    }
+
+    /// Every deck is set together, so deck A answers for all of them.
+    pub fn jog_rotation_speed(&self) -> session_core::JogRotationSpeed {
+        self.decks
+            .get("A")
+            .map(|deck| {
+                deck.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .jog_rotation_speed
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_pitch_range_percent(&self, percent: f64) {
+        *self
+            .pitch_range_percent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = percent;
     }
 
     pub fn get_buffer_frames(&self) -> u32 {

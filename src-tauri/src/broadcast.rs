@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Live decks only; the edit deck E is never broadcast.
-const LIVE_DECKS: [&str; 4] = ["A", "B", "C", "D"];
 
 const BROADCAST_INTERVAL_MS: u64 = 50;
 
@@ -19,7 +18,7 @@ struct DeckBroadcast {
     beat_offset_sec: f64,
     position_sec: f64,
     playback_rate: f64,
-    nudge_factor: f64,
+    jog_hold_factor: f64,
     effective_bpm: Option<f64>,
     current_beat: Option<f64>,
 }
@@ -42,7 +41,7 @@ fn deck_broadcast(audio: &AppAudio, id: &str) -> DeckBroadcast {
             beat_offset_sec: 0.0,
             position_sec: 0.0,
             playback_rate: 1.0,
-            nudge_factor: 1.0,
+            jog_hold_factor: 1.0,
             effective_bpm: None,
             current_beat: None,
         };
@@ -66,10 +65,10 @@ fn deck_broadcast(audio: &AppAudio, id: &str) -> DeckBroadcast {
         beat_offset_sec,
         position_sec,
         playback_rate: deck.playback_rate,
-        nudge_factor: deck.nudge_factor,
+        jog_hold_factor: deck.jog_hold_factor,
         effective_bpm: deck
             .bpm
-            .map(|bpm| bpm * deck.playback_rate * deck.nudge_factor),
+            .map(|bpm| bpm * deck.playback_rate * deck.jog_hold_factor),
         current_beat: deck
             .bpm
             .map(|bpm| session_core::current_beat(position_sec, beat_offset_sec, bpm)),
@@ -85,7 +84,7 @@ fn snapshot(audio: &AppAudio) -> StateBroadcast {
         schema_version: 1,
         epoch_ms,
         sample_rate: audio.device_sample_rate,
-        decks: LIVE_DECKS
+        decks: crate::audio::LIVE_DECK_IDS
             .iter()
             .map(|&id| deck_broadcast(audio, id))
             .collect(),

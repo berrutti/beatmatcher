@@ -30,18 +30,22 @@
         </div>
       </div>
 
-      <div
-        v-else
-        class="perf__play"
-        :class="{ 'perf__play--two-deck': mixerStore.deckCount === 2 }"
-      >
+      <div v-else class="perf__play">
         <Deck class="perf__deck-a" :deck="decksStore.deckA" />
-        <Deck v-if="mixerStore.deckCount === 4" class="perf__deck-c" :deck="decksStore.deckC" />
+        <Deck
+          class="perf__deck-c"
+          :class="{ 'perf__deck--hidden': mixerStore.deckCount === 2 }"
+          :deck="decksStore.deckC"
+        />
         <div class="perf__center">
           <Mixer />
         </div>
         <Deck class="perf__deck-b" :deck="decksStore.deckB" />
-        <Deck v-if="mixerStore.deckCount === 4" class="perf__deck-d" :deck="decksStore.deckD" />
+        <Deck
+          class="perf__deck-d"
+          :class="{ 'perf__deck--hidden': mixerStore.deckCount === 2 }"
+          :deck="decksStore.deckD"
+        />
       </div>
     </div>
 
@@ -50,7 +54,8 @@
 </template>
 
 <script setup lang="ts">
-import { useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useCollectionStore } from '@renderer/stores/collection';
 import Deck from '@renderer/components/deck/Deck.vue';
@@ -62,11 +67,8 @@ const decksStore = useDecksStore();
 const mixerStore = useMixerStore();
 const collectionStore = useCollectionStore();
 
-let scrubSavedVolume: number | null = null;
-
 function onScrubStart(deckId: DeckId) {
-  scrubSavedVolume = mixerStore.volume[deckId];
-  mixerStore.setVolume(deckId, 0);
+  mixerStore.startScrubMute(deckId);
 }
 
 function onScrub(deckId: DeckId, sec: number) {
@@ -74,9 +76,7 @@ function onScrub(deckId: DeckId, sec: number) {
 }
 
 function onScrubEnd(deckId: DeckId) {
-  if (scrubSavedVolume === null) return;
-  mixerStore.setVolume(deckId, scrubSavedVolume);
-  scrubSavedVolume = null;
+  mixerStore.endScrubMute(deckId);
 }
 </script>
 
@@ -105,9 +105,16 @@ function onScrubEnd(deckId: DeckId) {
     'deck-c center deck-d';
 }
 
-.perf__play--two-deck {
-  grid-template-rows: 200px;
-  grid-template-areas: 'deck-a center deck-b';
+/* Hidden rather than removed: the second row is what gives the mixer column its
+   height, so dropping it collapsed the channel faders and pushed the crossfader
+   out of the centre column's overflow. Matches how an inactive mixer channel
+   goes, and keeps the decks' canvases at a real size. */
+.perf__deck--hidden {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.25s ease,
+    visibility 0s linear 0.25s;
 }
 
 .perf__waveform-strip {

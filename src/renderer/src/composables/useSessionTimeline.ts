@@ -4,11 +4,6 @@ import { buildTimeline } from '@renderer/utils/sessionCore';
 import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 import type { Clip, LoadedSpan, NudgeSpan, DeckLanes, MasterLanes } from '@renderer/utils/types';
 
-export const DEFAULT_GAIN = 1;
-export const DEFAULT_EQ_DB = 0;
-export const DEFAULT_FILTER_VALUE = 0;
-export const DEFAULT_RATE = 1;
-
 function defaultNameForPath(path: string): string {
   return (
     path
@@ -35,7 +30,7 @@ export function useSessionTimeline(
         clips: [],
         loadedSpans: [],
         deckLanes: {},
-        masterLanes: { gain: [] },
+        masterLanes: { gain: [], xfader: [] },
         deckNudges: {}
       };
     }

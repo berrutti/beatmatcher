@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "events": [
+    { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
+    {
+      "elapsed_ms": 0,
+      "type": "deck_snapshot",
+      "deck": "A",
+      "path": "__SOURCE__",
+      "is_playing": true,
+      "position_sec": 0.25,
+      "cue_point_sec": 0.1,
+      "bpm": 124.0,
+      "playback_rate": 1.0
+    },
+    {
+      "elapsed_ms": 0,
+      "type": "deck_snapshot",
+      "deck": "D",
+      "path": "__SOURCE__",
+      "is_playing": false,
+      "position_sec": 0.0
+    },
+    { "elapsed_ms": 0, "type": "set_param", "deck": "A", "slot": "fader", "param": "gain", "value": 0.7 },
+    { "elapsed_ms": 0, "type": "set_param", "deck": "D", "slot": "fader", "param": "gain", "value": 0.6 },
+    { "elapsed_ms": 200, "type": "set_playback_rate", "deck": "A", "rate": 0.94 },
+    { "elapsed_ms": 400, "type": "play", "deck": "D", "sec": 0.0 },
+    { "elapsed_ms": 600, "type": "set_nudge", "deck": "A", "percent": 4.0 },
+    { "elapsed_ms": 900, "type": "set_nudge", "deck": "A", "percent": 0.0 },
+    { "elapsed_ms": 1100, "type": "set_nudge", "deck": "D", "percent": -4.0 },
+    { "elapsed_ms": 1400, "type": "set_nudge", "deck": "D", "percent": 0.0 },
+    { "elapsed_ms": 1600, "type": "set_playback_rate", "deck": "A", "rate": 1.08 },
+    { "elapsed_ms": 2000, "type": "stop", "deck": "A" },
+    { "elapsed_ms": 2200, "type": "stop", "deck": "D" },
+    { "elapsed_ms": 2300, "type": "recording_stop" }
+  ]
+}

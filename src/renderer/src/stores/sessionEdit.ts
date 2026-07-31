@@ -20,7 +20,8 @@ import {
   moveTransportBlock,
   trimTransportBlock,
   splitTransportBlock,
-  deleteTransportRanges
+  deleteTransportRanges,
+  bmsVersion
 } from '@renderer/utils/sessionCore';
 import {
   TransportBlock,
@@ -98,9 +99,17 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (syncPromise) await syncPromise;
   }
 
+  // A rejected edit returns its input unchanged, but every wrapper round-trips through
+  // JSON, so the result is always a fresh array and a reference check alone would miss it.
+  function isSameEdit(next: SessionEvent[], current: SessionEvent[]): boolean {
+    if (next === current) return true;
+    if (next.length !== current.length) return false;
+    return JSON.stringify(next) === JSON.stringify(current);
+  }
+
   function applyEdit(next: SessionEvent[]) {
     const session = sessionStore.session;
-    if (!session || next === session.events) return;
+    if (!session || isSameEdit(next, session.events)) return;
     undoStack.value.push(session.events);
     if (undoStack.value.length > MAX_UNDO) undoStack.value.shift();
     redoStack.value = [];
@@ -120,9 +129,9 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!session || samples.length === 0) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
 
-    const spec = laneSpecFor(lane, opts);
+    const spec = laneSpecFor(lane, session.mixerId, opts);
     const points = decimateSteps(normalizeGestureSamples(samples), spec.epsilon);
-    applyEdit(spliceLaneEvents(session.events, spec, deck, t0, t1, points));
+    applyEdit(spliceLaneEvents(session.events, spec, session.mixerId, deck, t0, t1, points));
   }
 
   async function commitFilterActiveToggle(deck: string, t0: number, t1: number): Promise<void> {
@@ -322,8 +331,14 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     syncToRust();
   }
 
+  // Stamped rather than carried over from `raw`: loading ports the events, so a
+  // session read as an older version is current by the time it can be saved.
   function serialize(session: ParsedSession): string {
-    return JSON.stringify({ ...session.raw, events: session.events }, null, 2);
+    return JSON.stringify(
+      { ...session.raw, version: bmsVersion(), events: session.events },
+      null,
+      2
+    );
   }
 
   async function save(): Promise<boolean> {

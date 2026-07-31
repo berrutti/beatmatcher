@@ -4,7 +4,7 @@
 // by the engine, so nothing here guards its own edges. Items hold no gesture
 // state; what to do with a hit is the gesture/controller layer's job.
 
-import type { SceneItem, Rect, ViewContext } from '@renderer/utils/timelineEngine';
+import type { SceneItem, Rect, ViewContext, Hit } from '@renderer/utils/timelineEngine';
 import type { RowLayout, SublaneLayout } from '@renderer/utils/timelineDraw';
 import {
   LABEL_W,
@@ -13,7 +13,7 @@ import {
   drawTickRow,
   drawDeckRowChrome,
   drawMasterRowChrome,
-  drawMasterGainLane,
+  drawMasterLane,
   drawDeckLanes,
   drawClip,
   drawClipBpmLabels,
@@ -26,9 +26,15 @@ import {
   drawRowDividers,
   drawFrameGutters,
   laneValuePad,
+  MASTER_GAIN_INSET_Y,
   type DeckRowChrome
 } from '@renderer/utils/timelineDraw';
-import { overlapsRange, hitTestOverview } from '@renderer/utils/timelineView';
+import {
+  overlapsRange,
+  hitTestOverview,
+  OVERVIEW_PARTS,
+  type OverviewHit
+} from '@renderer/utils/timelineView';
 import { blocksForDeck } from '@renderer/utils/sessionCore';
 import type {
   TransportBlock,
@@ -36,9 +42,11 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
+  MasterLaneKey,
   NudgeSpan,
   FilterActiveSpan
 } from '@renderer/utils/types';
+import { MASTER_ROW_ID } from '@renderer/utils/types';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 // Thin grab tolerance for edges/separators, in pixels.
@@ -80,7 +88,13 @@ export function deckChromeItem(
   return {
     bounds: (viewContext) => ({ x: 0, y: row.top, w: viewContext.canvasW, h: row.height }),
     draw: (ctx, viewContext) =>
-      drawDeckRowChrome(ctx, row, viewContext.canvasW, { zebraIndex, ...chrome }),
+      drawDeckRowChrome(
+        ctx,
+        row,
+        viewContext.canvasW,
+        { zebraIndex, ...chrome },
+        viewContext.mixerId
+      ),
     hitTest: (point) => {
       // Only the label-column lane caret is interactive here.
       if (point.x > LABEL_W || row.lanes.length === 0) return null;
@@ -246,13 +260,20 @@ export function laneSurfaceItem(
         deckLanes,
         [lane],
         viewContext.view.start,
-        viewContext.view.start + viewContext.view.duration
+        viewContext.view.start + viewContext.view.duration,
+        viewContext.mixerId
       );
     },
     hitTest: (point, viewContext) => {
       if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
       if (point.y < lane.top || point.y > lane.top + lane.height) return null;
-      return { target: 'lane', deck, part: lane.key, data: { top: lane.top, height: lane.height } };
+      const pad = laneValuePad(lane.height);
+      return {
+        target: 'lane',
+        deck,
+        part: lane.key,
+        data: { top: lane.top + pad, height: lane.height - 2 * pad }
+      };
     }
   };
 }
@@ -342,26 +363,44 @@ export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
   };
 }
 
-export function masterItem(top: number, height: number, gain: MasterLanes): SceneItem {
+export function masterItem(
+  top: number,
+  height: number,
+  lanes: MasterLanes,
+  lane: MasterLaneKey
+): SceneItem {
+  const points = lane === 'xfader' ? lanes.xfader : lanes.gain;
   return {
     bounds: (viewContext) => ({ x: 0, y: top, w: viewContext.canvasW, h: height }),
     draw: (ctx, viewContext) => {
-      drawMasterRowChrome(ctx, top, height, viewContext.canvasW);
-      drawMasterGainLane(
+      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane, viewContext.mixerId);
+      drawMasterLane(
         ctx,
-        gain.gain,
+        points,
+        lane,
         top,
         height,
         viewContext.canvasW,
         viewContext.msToX,
         viewContext.view.start,
-        viewContext.view.start + viewContext.view.duration
+        viewContext.view.start + viewContext.view.duration,
+        viewContext.mixerId
       );
     },
     hitTest: (point, viewContext) => {
-      if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
       if (point.y < top + 2 || point.y > top + height - 2) return null;
-      return { target: 'master', deck: 'master', part: 'masterGain' };
+      // Label column opens the dropdown, track area is the lane, as on a deck row.
+      if (point.x < LABEL_W) return { target: 'laneDropdown', deck: MASTER_ROW_ID };
+      if (point.x > LABEL_W + viewContext.trackW) return null;
+      return {
+        target: 'lane',
+        deck: MASTER_ROW_ID,
+        part: lane,
+        data: {
+          top: top + MASTER_GAIN_INSET_Y,
+          height: height - 2 * MASTER_GAIN_INSET_Y
+        }
+      };
     }
   };
 }
@@ -404,6 +443,16 @@ export function frameGuttersItem(): SceneItem {
     draw: (ctx, viewContext) => drawFrameGutters(ctx, viewContext.canvasW, viewContext.canvasH),
     hitTest: () => null
   };
+}
+
+// The engine's `Hit.data` is `unknown` so the engine stays domain-free; this is
+// where the overview's payload regains its type, beside the item that writes it.
+export function readOverviewHit(hit: Hit): { part: OverviewHit; frac: number } | null {
+  if (hit.target !== 'overview') return null;
+  const frac = hit.data;
+  if (typeof frac !== 'number' || !Number.isFinite(frac)) return null;
+  const part = OVERVIEW_PARTS.find((candidate) => candidate === hit.part);
+  return part ? { part, frac } : null;
 }
 
 export function overviewItem(

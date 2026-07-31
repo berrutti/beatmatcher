@@ -32,8 +32,15 @@ import {
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
-import type { DeckId } from '@renderer/stores/decks';
-import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
+import type { DeckId } from '@renderer/utils/types';
+import type {
+  Clip,
+  LoadedSpan,
+  DeckLanes,
+  MasterLanes,
+  MasterLaneKey,
+  NudgeSpan
+} from '@renderer/utils/types';
 
 export type SceneInput = {
   vc: ViewContext;
@@ -48,6 +55,7 @@ export type SceneInput = {
   durationMs: number;
   editMode: boolean;
   laneFor: (deck: string) => LaneKey;
+  masterLane: MasterLaneKey;
   laneHeight: number;
   waveformHeight: number;
   accentFor: (deck: string) => string;
@@ -80,7 +88,7 @@ export function buildScene(input: SceneInput): SceneResult {
 
   const items: SceneItem[] = [];
 
-  items.push(masterItem(masterTop, masterHeight, input.masterLanes));
+  items.push(masterItem(masterTop, masterHeight, input.masterLanes, input.masterLane));
 
   rows.forEach((row, rowIndex) => {
     const deck = row.deckId;
