@@ -61,6 +61,12 @@ pub struct DeviceInfo {
 // names (see `session_core::MANIFESTS`), but nothing selects another at runtime.
 pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
 
+/// Every deck that reaches the live mixer. The edit deck is deliberately absent.
+pub(crate) const LIVE_DECK_IDS: [&str; 4] = ["A", "B", "C", "D"];
+
+/// Session view only, so it never reaches the mixer, a recording or a broadcast.
+pub(crate) const EDIT_DECK_ID: &str = "E";
+
 pub struct AppAudio {
     pub device_sample_rate: u32,
     decks: HashMap<String, Arc<Mutex<DeckState>>>,
@@ -102,7 +108,7 @@ impl AppAudio {
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
         let mut ended_flags: HashMap<String, Arc<AtomicBool>> = HashMap::new();
-        for id in ["A", "B", "C", "D", "E"] {
+        for id in LIVE_DECK_IDS.into_iter().chain([EDIT_DECK_ID]) {
             let flag = Arc::new(AtomicBool::new(false));
             ended_flags.insert(id.to_string(), flag.clone());
             let mut deck = DeckState::empty(device_sample_rate);

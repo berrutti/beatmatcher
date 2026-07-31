@@ -1255,6 +1255,13 @@ mod tests {
         assert!(strip.metered().0 > 0.99, "meter read {}", strip.metered().0);
     }
 
+    // The edit deck has no channel on the mixer, so a broadcast, a recording or a crossfader
+    // resolve that walked it would be reporting a deck the audience never hears.
+    #[test]
+    fn the_edit_deck_is_not_a_live_deck() {
+        assert!(!crate::audio::LIVE_DECK_IDS.contains(&crate::audio::EDIT_DECK_ID));
+    }
+
     // Every caller of `new` is a test, so a strip built here exercising a manifest the app
     // never runs would leave the real one untested wherever the two differ.
     #[test]

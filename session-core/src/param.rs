@@ -783,10 +783,8 @@ mod tests {
         assert_ne!(CLASSIC_3BAND.content_hash(), CLASSIC_3BAND_V2.content_hash());
     }
 
-    // Every `.bms` on disk carries the hash of the mixer it was played on, and
-    // `resolve_manifest` refuses a session whose hash no longer matches. Changing one of
-    // these means every existing recording stops loading, so mint a new manifest id
-    // instead of retyping the literal.
+    // Every `.bms` carries the hash of the mixer it played on and `resolve_manifest` refuses
+    // a mismatch, so mint a new manifest id rather than retyping one of these.
     #[test]
     fn every_shipped_manifest_keeps_the_hash_its_sessions_carry() {
         let pinned: &[(&str, &str)] = &[

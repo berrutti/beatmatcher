@@ -797,7 +797,7 @@ pub(crate) fn start_recording(
             let (speed_event, speed_payload) =
                 jog_speed_start_event(state.audio.jog_rotation_speed());
             logger.log(speed_event, speed_payload);
-            let assigns: Vec<(&str, session_core::XfaderAssign)> = ["A", "B", "C", "D"]
+            let assigns: Vec<(&str, session_core::XfaderAssign)> = crate::audio::LIVE_DECK_IDS
                 .into_iter()
                 .map(|deck_id| {
                     let assign = state
@@ -818,7 +818,7 @@ pub(crate) fn start_recording(
             {
                 logger.log(event_type, payload);
             }
-            for deck_id in ["A", "B", "C", "D"] {
+            for deck_id in crate::audio::LIVE_DECK_IDS {
                 let Some(arc) = state.audio.deck(deck_id) else {
                     continue;
                 };

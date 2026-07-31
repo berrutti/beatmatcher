@@ -318,7 +318,6 @@ fn diff_signals(a: &[f32], b: &[f32]) -> CompareResult {
     }
 }
 
-const DECK_IDS: &[&str] = &["A", "B", "C", "D"];
 const CHUNK: usize = 512;
 
 pub fn render_session(
@@ -330,11 +329,11 @@ pub fn render_session(
     // reproduce would diverge from the recording without saying so.
     let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
 
-    let mut decks: HashMap<String, DeckState> = DECK_IDS
+    let mut decks: HashMap<String, DeckState> = crate::audio::LIVE_DECK_IDS
         .iter()
         .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
         .collect();
-    let mut strips: HashMap<String, ChannelStrip> = DECK_IDS
+    let mut strips: HashMap<String, ChannelStrip> = crate::audio::LIVE_DECK_IDS
         .iter()
         .map(|&id| {
             (
@@ -408,8 +407,8 @@ pub fn render_session(
         for f in frame..chunk_end {
             let mut mix_l = 0.0f32;
             let mut mix_r = 0.0f32;
-            for id in DECK_IDS {
-                if let (Some(deck), Some(strip)) = (decks.get_mut(*id), strips.get_mut(*id)) {
+            for id in crate::audio::LIVE_DECK_IDS {
+                if let (Some(deck), Some(strip)) = (decks.get_mut(id), strips.get_mut(id)) {
                     let (l, r) = deck.main_tick();
                     let (pl, pr) = strip.process_main(l, r);
                     mix_l += pl;

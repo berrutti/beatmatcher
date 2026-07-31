@@ -116,10 +116,8 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
             _ => {}
         }
 
-        // A master crossfader move names no deck but can make any of them
-        // audible, so it is the one command that has to re-check all of them.
-        // Sorted because the map is a HashMap: an unordered walk numbered the same
-        // recording's tracks differently from one run to the next.
+        // A master crossfader move names no deck and can open any of them, so it re-checks
+        // all. Sorted because an unordered HashMap walk renumbered tracks between runs.
         let moved: Vec<String> = match command.deck_id() {
             Some(deck_id) => vec![deck_id.to_string()],
             None => {

@@ -415,7 +415,7 @@ pub(crate) async fn start_session_playback(
         }
 
         if !cancel.load(Ordering::Acquire) {
-            for id in ["A", "B", "C", "D"] {
+            for id in crate::audio::LIVE_DECK_IDS {
                 if let Some(deck_arc) = audio.deck(id) {
                     deck_arc
                         .lock()
@@ -444,7 +444,7 @@ pub(crate) fn stop_session_playback(state: tauri::State<'_, AppState>) {
     if let Some(cancel) = guard.take() {
         cancel.store(true, Ordering::Release);
     }
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = state.audio.deck(id) {
             deck_arc
                 .lock()
@@ -665,7 +665,7 @@ fn reconstructs_mixer_state(ev: &SessionEvent) -> bool {
 }
 
 fn reset_all(audio: &audio::AppAudio) {
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = audio.deck(id) {
             deck_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
@@ -678,7 +678,7 @@ fn reset_all(audio: &audio::AppAudio) {
 
 fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     audio.monitor.set_master_gain(sim.master_gain);
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
             let mut s = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
@@ -765,7 +765,7 @@ fn apply_event_live(
                 value,
                 ..
             } => {
-                for id in ["A", "B", "C", "D"] {
+                for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(strip_arc) = audio.strip(id) {
                         strip_arc
                             .lock()
@@ -775,7 +775,7 @@ fn apply_event_live(
                 }
             }
             SessionCommand::SetFaderCurve { curve } => {
-                for id in ["A", "B", "C", "D"] {
+                for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(strip_arc) = audio.strip(id) {
                         strip_arc
                             .lock()
@@ -785,7 +785,7 @@ fn apply_event_live(
                 }
             }
             SessionCommand::SetJogRotationSpeed { speed } => {
-                for id in ["A", "B", "C", "D"] {
+                for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(deck_arc) = audio.deck(id) {
                         deck_arc
                             .lock()

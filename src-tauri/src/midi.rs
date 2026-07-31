@@ -498,7 +498,11 @@ fn relative_delta(resolution: Resolution, value: u8) -> Option<i32> {
 
 /// Bumped only when the vocabulary changes. A file declaring a newer version is
 /// refused rather than half-read.
-const MAPPING_VERSION: u32 = 1;
+const MAPPING_VERSION: u32 = 2;
+
+/// The version that introduced the deck template. A file using it is refused below this,
+/// because an older build finds no `bindings` at all and presents a dead controller.
+const DECK_TEMPLATE_VERSION: u32 = 2;
 
 const MAPPING_FILES: [&str; 2] = [
     include_str!("../mappings/ddj-flx6.json"),
@@ -555,6 +559,48 @@ struct BindingSpec {
     steps: Option<i32>,
 }
 
+/// One deck's channel on a surface that lays the same controls out per deck.
+#[derive(serde::Deserialize)]
+struct DeckChannel {
+    deck: String,
+    channel: u8,
+}
+
+/// Written once and expanded across `per_deck`, so the deck and the channel come from the
+/// template rather than being retyped per copy where a slip is a valid other-deck address.
+#[derive(serde::Deserialize)]
+struct DeckBindingSpec {
+    action: String,
+    #[serde(default)]
+    note: Option<u8>,
+    #[serde(default)]
+    cc: Option<u8>,
+    #[serde(default)]
+    resolution: Option<ResolutionSpec>,
+    #[serde(default)]
+    slot: Option<String>,
+    #[serde(default)]
+    param: Option<String>,
+    #[serde(default)]
+    steps: Option<i32>,
+}
+
+impl DeckBindingSpec {
+    fn expand(&self, over: &DeckChannel) -> BindingSpec {
+        BindingSpec {
+            channel: over.channel,
+            action: self.action.clone(),
+            note: self.note,
+            cc: self.cc,
+            resolution: self.resolution,
+            deck: Some(over.deck.clone()),
+            slot: self.slot.clone(),
+            param: self.param.clone(),
+            steps: self.steps,
+        }
+    }
+}
+
 struct Mapping {
     name: String,
     matches: Vec<String>,
@@ -569,6 +615,11 @@ struct MappingFile {
     #[serde(rename = "match")]
     matches: Vec<String>,
     decks: DeckScope,
+    #[serde(default)]
+    per_deck: Vec<DeckChannel>,
+    #[serde(default)]
+    deck_bindings: Vec<DeckBindingSpec>,
+    #[serde(default)]
     bindings: Vec<BindingSpec>,
 }
 
@@ -702,11 +753,25 @@ fn parse_mapping(source: &str) -> Result<Mapping, String> {
             file.name, file.version
         ));
     }
+    let templated = !file.per_deck.is_empty() || !file.deck_bindings.is_empty();
+    if templated && file.version < DECK_TEMPLATE_VERSION {
+        return Err(format!(
+            "{} uses a deck template but declares version {}, older than {DECK_TEMPLATE_VERSION}",
+            file.name, file.version
+        ));
+    }
+    if !file.deck_bindings.is_empty() && file.per_deck.is_empty() {
+        return Err(format!("{}: 'deck_bindings' needs 'per_deck'", file.name));
+    }
+    let mut bindings = file.bindings;
+    for over in &file.per_deck {
+        bindings.extend(file.deck_bindings.iter().map(|spec| spec.expand(over)));
+    }
     Ok(Mapping {
         name: file.name,
         matches: file.matches,
         decks: file.decks,
-        bindings: file.bindings,
+        bindings,
     })
 }
 
@@ -1851,9 +1916,8 @@ mod tests {
         assert_eq!(resolve_move(&profile, &mut halves, &[]), None);
     }
 
-    // A binding naming an address the mixer does not have would silently do
-    // nothing at runtime, which is indistinguishable from a broken controller.
-    // Checked against the manifest `apply` resolves through, not a convenient one.
+    // A binding naming an address the mixer lacks does nothing at runtime, which reads as
+    // broken hardware. Checked against the manifest `apply` itself resolves through.
     #[test]
     fn every_binding_addresses_a_real_param() {
         for mapping in built_in_mappings() {
@@ -2044,6 +2108,46 @@ mod tests {
         assert_eq!(resolve_move(&profile, &mut halves, &note_on(0, 4, 0)), None);
     }
 
+    // The per-deck block is the same controls on one channel each, and writing it out per
+    // deck made a typo a valid address on the wrong deck, which no collision check can see.
+    #[test]
+    fn a_deck_template_expands_one_binding_per_deck() {
+        let source = r#"{ "version": 2, "name": "Template", "match": [], "decks": "fixed",
+                         "per_deck": [{ "deck": "A", "channel": 1 }, { "deck": "B", "channel": 2 }],
+                         "deck_bindings": [{ "note": 11, "action": "play_toggle" }] }"#;
+        let profile = parse_mapping(source)
+            .expect("a parseable file")
+            .profile(None)
+            .expect("a profile");
+        let mut halves = ControlMemory::default();
+
+        for (channel, deck) in [(0, "A"), (1, "B")] {
+            assert_eq!(
+                resolve_move(&profile, &mut halves, &note_on(channel, 11, 127)),
+                Some(Move::Play {
+                    deck: deck.to_string()
+                })
+            );
+        }
+    }
+
+    // A build predating the template parses the file, finds no `bindings`, and presents a
+    // dead controller. Declaring the older version has to be refused rather than half-read.
+    #[test]
+    fn a_deck_template_in_a_file_that_predates_it_is_refused() {
+        let source = r#"{ "version": 1, "name": "Old", "match": [], "decks": "fixed",
+                         "per_deck": [{ "deck": "A", "channel": 1 }],
+                         "deck_bindings": [{ "note": 11, "action": "play_toggle" }] }"#;
+        assert!(parse_mapping(source).is_err());
+    }
+
+    #[test]
+    fn deck_bindings_with_no_decks_to_expand_over_are_refused() {
+        let source = r#"{ "version": 2, "name": "Empty", "match": [], "decks": "fixed",
+                         "deck_bindings": [{ "note": 11, "action": "play_toggle" }] }"#;
+        assert!(parse_mapping(source).is_err());
+    }
+
     #[test]
     fn a_file_declaring_a_newer_version_is_refused() {
         let source = r#"{ "version": 99, "name": "Future", "match": [], "decks": "fixed",
@@ -2072,7 +2176,7 @@ mod tests {
     #[test]
     fn every_cue_binding_has_a_key_to_light() {
         let profile = ddj_flx6();
-        for deck in ["A", "B", "C", "D"] {
+        for deck in crate::audio::LIVE_DECK_IDS {
             assert!(
                 profile
                     .led_keys

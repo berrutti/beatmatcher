@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Live decks only; the edit deck E is never broadcast.
-const LIVE_DECKS: [&str; 4] = ["A", "B", "C", "D"];
 
 const BROADCAST_INTERVAL_MS: u64 = 50;
 
@@ -85,7 +84,7 @@ fn snapshot(audio: &AppAudio) -> StateBroadcast {
         schema_version: 1,
         epoch_ms,
         sample_rate: audio.device_sample_rate,
-        decks: LIVE_DECKS
+        decks: crate::audio::LIVE_DECK_IDS
             .iter()
             .map(|&id| deck_broadcast(audio, id))
             .collect(),
