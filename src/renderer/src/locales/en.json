@@ -16,8 +16,6 @@
     "continue": "Continue"
   },
   "topStrip": {
-    "stopRecording": "Stop recording",
-    "recordMaster": "Record master output",
     "rec": "Rec",
     "fourDecks": "4 decks",
     "twoDecks": "2 decks",

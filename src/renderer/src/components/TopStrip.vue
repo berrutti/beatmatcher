@@ -4,7 +4,6 @@
       <button
         class="btn-secondary topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
-        v-tooltip="mixer.isRecording ? $t('topStrip.stopRecording') : $t('topStrip.recordMaster')"
         tabindex="-1"
         @click="onRecClick"
       >
