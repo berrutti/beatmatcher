@@ -22,9 +22,8 @@ export const useMidiStore = defineStore('midi', () => {
     storageGet<Record<string, DeckId>>(STORAGE_KEYS.midiDeckAssignments, {})
   );
 
-  // The pending promise, not the resolved handle: two overlapping calls would both
-  // pass a `!unlisten` check before either finished registering, and the first
-  // listener would leak and double every batch.
+  // The pending promise rather than the resolved handle, or two overlapping calls both pass
+  // a `!unlisten` check before either registers and the first listener doubles every batch.
   let listening: Promise<UnlistenFn> | null = null;
 
   async function refresh(): Promise<void> {
@@ -68,10 +67,8 @@ export const useMidiStore = defineStore('midi', () => {
     for (const message of batch) console.log(midiConsoleLine(message.data));
   }
 
-  // The monitor runs for the whole session rather than while the panel is open,
-  // so a capture is already in the console by the time anyone goes looking.
-  // A release build has no devtools to read it in, so nothing is buffered or
-  // shipped over IPC there.
+  // Runs for the whole session rather than while the panel is open, so a capture is already
+  // in the console when anyone looks. A release build has no devtools, so it buffers nothing.
   async function startMonitor(): Promise<void> {
     if (!import.meta.env.DEV) return;
     if (!listening) {

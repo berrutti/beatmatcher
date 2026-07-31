@@ -20,9 +20,8 @@ function rootBlock(): string {
   return MAIN_CSS.slice(start, MAIN_CSS.indexOf('}', start));
 }
 
-// The UA paints number-input spinners and scrollbars itself. Under its default
-// light scheme they come out near-black on these surfaces, which reads as the
-// arrows being missing rather than as a theming mistake.
+// The UA paints number-input spinners and scrollbars itself, and under its default light
+// scheme they come out near-black here, which reads as the arrows being missing.
 describe('native control colour scheme', () => {
   it('declares a dark scheme at the root', () => {
     expect(rootBlock()).toMatch(/color-scheme:\s*dark/);

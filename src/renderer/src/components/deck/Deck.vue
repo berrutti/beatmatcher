@@ -99,6 +99,7 @@
               :accent="props.deck.accent"
               :active="props.deck.trackLoaded"
               :playing="props.deck.playing"
+              :cueing="props.deck.cueing"
               :get-beat="() => props.deck.beat"
               :cover-art="props.deck.coverArt"
             />

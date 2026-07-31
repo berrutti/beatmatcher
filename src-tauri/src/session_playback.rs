@@ -66,9 +66,8 @@ pub(crate) async fn preload_session(
     .map_err(|e| e.to_string())??;
 
     reporter.phase("parsing");
-    // Off the async thread: a long session's event array takes seconds to
-    // deserialize, and blocking here stalls every other command including the
-    // progress events this load is emitting.
+    // Off the async thread: a long session's event array takes seconds to deserialize, and
+    // blocking here stalls every other command including this load's own progress events.
     let session = tokio::task::spawn_blocking(move || {
         crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
     })
@@ -266,12 +265,8 @@ pub(crate) async fn start_session_playback(
         let _ = handle.await;
     }
 
-    // The live strips are built on one manifest. Playing a session recorded on one
-    // whose addresses it cannot reproduce would silently differ from what the
-    // offline renderer produces for the same file, so refuse that rather than
-    // replay it against the wrong scales. An id match is too strict: every session
-    // recorded before the mixer was versioned resolves to the older manifest, and
-    // the live one hosts it unchanged.
+    // Refused rather than replayed against the wrong scales, which would differ from
+    // the offline render. Hosting beats an id match, so pre-versioned sessions play.
     let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
     if !state.audio.mixer().can_host(manifest) {
         return Err(format!(
@@ -480,9 +475,8 @@ pub(crate) type TrackLoads = Arc<
     >,
 >;
 
-/// The one place a track is decoded. The waveform strip and the session preload
-/// both want the same samples at the same moment, and decoding per caller had
-/// them racing for cores: 13 tracks became 26 competing decodes.
+/// The one place a track is decoded. The waveform strip and the session preload want the
+/// same samples at once, and decoding per caller made 13 tracks into 26 competing decodes.
 pub(crate) async fn load_track(
     cache: &crate::TrackCache,
     loads: &TrackLoads,
@@ -594,9 +588,8 @@ async fn populate_track_cache(
             .collect()
     };
 
-    // Byte-weighted so a session of one long track and three short ones does not
-    // sit at 25% for most of the wait, and smallest-first so the earliest slots
-    // free soonest.
+    // Byte-weighted so one long track and three short ones does not sit at 25% for most of
+    // the wait, and smallest-first so the earliest slots free soonest.
     let mut sized: Vec<(String, u64)> = missing
         .into_iter()
         .map(|p| {
@@ -662,9 +655,8 @@ async fn populate_track_cache(
     }
 }
 
-/// Mixer state a mid-session start has to rebuild by replaying the events before
-/// it. Transport is excluded: deck positions come from the snapshot and `sim_pos`,
-/// not from replaying every play and stop.
+/// Mixer state a mid-session start rebuilds by replaying the events before it. Transport
+/// is excluded, since deck positions come from the snapshot and `sim_pos`.
 fn reconstructs_mixer_state(ev: &SessionEvent) -> bool {
     matches!(
         ev.command(),
@@ -789,6 +781,16 @@ fn apply_event_live(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .set_fader_curve(curve);
+                    }
+                }
+            }
+            SessionCommand::SetJogRotationSpeed { speed } => {
+                for id in ["A", "B", "C", "D"] {
+                    if let Some(deck_arc) = audio.deck(id) {
+                        deck_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_jog_rotation_speed(speed);
                     }
                 }
             }
@@ -991,6 +993,8 @@ mod tests {
         );
     }
 
+    const PARITY_BLOCK: usize = 512;
+
     fn max_sim_engine_divergence(
         events: &[SessionEvent],
         cache: &SampleCache,
@@ -1028,6 +1032,11 @@ mod tests {
                         worst_t = cur_ms;
                     }
                 }
+            }
+            // The wheel is drained once per block by `render_block`, so a per-frame model
+            // that skips it leaves every logged tick unconsumed.
+            if n % PARITY_BLOCK == 0 {
+                d.consume_jog(PARITY_BLOCK);
             }
             d.main_tick();
         }
@@ -1173,11 +1182,14 @@ mod tests {
             SessionCommand::SetParam { .. } => ("set_param", false),
             SessionCommand::SetXfaderAssign { .. } => ("set_xfader_assign", false),
             SessionCommand::SetFaderCurve { .. } => ("set_fader_curve", false),
+            SessionCommand::SetJogRotationSpeed { .. } => ("set_jog_rotation_speed", false),
+            SessionCommand::Jog { .. } => ("jog", true),
         }
     }
 
     // The `true` arms of variant_catalog; coverage_list_matches_catalog binds them.
-    const POSITION_AFFECTING_TAGS: [&str; 15] = [
+    const POSITION_AFFECTING_TAGS: [&str; 16] = [
+        "jog",
         "deck_snapshot",
         "load_track",
         "eject_track",
@@ -1225,6 +1237,10 @@ mod tests {
             SessionEvent {
                 percent: Some(0.0),
                 ..deck_ev("set_nudge", 3500.0, "A")
+            },
+            SessionEvent {
+                ticks: Some(6.0),
+                ..deck_ev("jog", 3700.0, "A")
             },
             SessionEvent::param(4000.0, Some("A"), "fader", "gain", 0.8),
             SessionEvent::param(4100.0, Some("A"), "eq", "low", -3.0),

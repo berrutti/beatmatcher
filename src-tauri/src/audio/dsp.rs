@@ -147,9 +147,8 @@ impl Biquad {
         }
     }
 
-    // Flat magnitude, phase only. A Linkwitz-Riley band split sums to this
-    // rather than to the input, so a band that skips one crossover has to be
-    // put through the matching allpass to stay aligned with the ones that did.
+    // Flat magnitude, phase only. A Linkwitz-Riley split sums to this, so a band skipping
+    // one crossover needs the matching allpass to stay aligned with the ones that did not.
     pub(crate) fn all_pass(sr: f32, freq: f32, q: f32) -> Self {
         let w0 = 2.0 * std::f32::consts::PI * freq / sr;
         let cos_w = w0.cos();

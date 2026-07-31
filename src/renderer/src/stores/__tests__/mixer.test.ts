@@ -20,9 +20,8 @@ vi.mock('@renderer/utils/storage', () => ({
   STORAGE_KEYS: { deckCount: 'deckCount', collectionHeight: 'collectionHeight' }
 }));
 
-// Reactive, so a store watching it sees a change made after the store exists.
-// A plain object would let a mid-set change pass every assertion by never
-// triggering anything at all.
+// Reactive, so a store watching it sees a change made after the store exists. A plain
+// object would let a mid-set change pass every assertion by triggering nothing.
 const settingsMock = reactive({
   pitchRange: 8,
   nudgeSensitivity: 4,
@@ -59,9 +58,8 @@ const EQ_LOW = paramKey('eq', 'low');
 const EQ_MID = paramKey('eq', 'mid');
 const EQ_HIGH = paramKey('eq', 'high');
 
-// Looped from the manifest rather than named, so a param the mixer gains is
-// covered here without this file being edited. That is the whole point of the
-// store holding one record instead of a field per address.
+// Looped from the manifest rather than named, so a param the mixer gains is covered
+// without editing this file. That is why the store holds one record over a field each.
 const LIVE_SPECS = Object.values(mixerParams(LIVE_MIXER_ID));
 
 describe('setParam', () => {

@@ -195,9 +195,8 @@ describe('applyEngineTransport', () => {
     expect(decks.deckA.loopRegion).toEqual({ startSec: 10, endSec: 14, beats: 8 });
   });
 
-  // The guard that keeps carrying the region from being a regression: a payload
-  // without one must leave the cached region exactly as it was, which is what
-  // every transport push did before this field existed.
+  // The guard against a regression: a payload without a region must leave the cached one
+  // exactly as it was, which is what every transport push did before this field existed.
   it('leaves a cached region alone when the payload carries none', () => {
     const decks = useDecksStore();
     const region = { startSec: 1, endSec: 2, beats: 4 };
@@ -234,5 +233,39 @@ describe('a displayed bpm is exactly reachable', () => {
       deck: 'A',
       rate: 129.05 / 120
     });
+  });
+});
+
+describe('an engine rate move on a deck with no beat grid', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  // Rust does not gate the tempo fader on a grid, so a controller can change the rate of a
+  // deck showing --.-. The interpolated playhead has to follow it or it drifts unboundedly.
+  it('still slows the interpolated playhead', () => {
+    const clock = vi.spyOn(performance, 'now');
+    clock.mockReturnValue(0);
+
+    const decks = useDecksStore();
+    const deck = decks.deckA;
+    deck.applyEngineTransport({
+      isPlaying: true,
+      isCueing: false,
+      cuePointSec: 0,
+      positionSec: 0,
+      loopActive: false,
+      loopRegionCleared: false,
+      loopRegion: null
+    });
+
+    clock.mockReturnValue(1000);
+    deck.applyEngineRate(0.5);
+    clock.mockReturnValue(2000);
+
+    expect(deck.trackBpm).toBeNull();
+    expect(deck.trackPosition).toBeCloseTo(1.5, 6);
+    clock.mockRestore();
   });
 });

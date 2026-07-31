@@ -66,14 +66,11 @@ type DeckTrackState = {
   waveformLoading: boolean;
   loadedPath: string | null;
   trackData: TrackData | null;
-  // Low-rate overview covering the whole track (few points per second).
-  // Used by the overview strip and by WaveformDisplay as a first-paint
-  // fallback while the dense LOD is still loading.
+  // Low-rate overview over the whole track, used by the overview strip and as a
+  // first-paint fallback in WaveformDisplay while the dense LOD loads.
   fullSpectralData: Float32Array | null;
-  // Higher-rate LOD covering the whole track. WaveformDisplay slices this
-  // directly in JS for any zoom level the rate can satisfy, avoiding IPC
-  // round-trips on pan/zoom. Deeper zoom levels fall back to on-demand
-  // fetches; see WaveformDisplay for the switching logic.
+  // Higher-rate LOD over the whole track, sliced in JS for any zoom the rate can satisfy.
+  // Deeper zooms fall back to on-demand fetches, see WaveformDisplay.
   denseSpectralData: Float32Array | null;
   denseSpectralRate: number;
   coverArt: string | null;
@@ -395,9 +392,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
-    // Engine-originated transport, and deliberately does not invoke back: Rust
-    // never pushes a change the UI itself made, so anything arriving here moved
-    // the engine without passing through this store.
+    // Engine-originated, and deliberately does not invoke back: Rust never pushes a change
+    // the UI made, so anything arriving here moved the engine without passing this store.
     applyEngineTransport(payload: DeckSyncPayload) {
       applyDeckState(payload);
     },
@@ -405,9 +401,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
     // The engine owns the rate; bpm and pitch offset are this store's derived
     // display of it, so they are recomputed here rather than invoked back.
     applyEngineRate(rate: number) {
-      if (state.trackBpm === null) return;
+      // Ahead of the grid check: the tempo fader is not gated on a grid, so a deck showing
+      // --.- still has to interpolate at the rate the engine is actually playing.
       syncPosition();
       localRate = rate;
+      if (state.trackBpm === null) return;
       state.targetBpm = roundBpm(state.trackBpm * rate);
       state.pitchOffset = (rate - 1) * 100;
     },

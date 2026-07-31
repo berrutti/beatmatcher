@@ -11,7 +11,7 @@ pub use analysis::{
     compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
     compute_spectral_waveform_region, detect_bpm, detect_silence_end,
 };
-pub use deck::{ChannelStrip, CuePressOutcome, DeckState, JogRotationSpeed};
+pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, DeckState};
 pub(crate) use dsp::LimiterState;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
@@ -57,10 +57,9 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
-// The one mixer the live engine builds. The format supports others (see
-// `session_core::MANIFESTS`) and the offline renderer builds whichever a `.bms`
-// names, but nothing selects a different one at runtime.
-const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
+// The one mixer the live engine builds. The offline renderer builds whichever a `.bms`
+// names (see `session_core::MANIFESTS`), but nothing selects another at runtime.
+pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
 
 pub struct AppAudio {
     pub device_sample_rate: u32,
@@ -228,9 +227,8 @@ impl AppAudio {
         self.rebuild_streams()
     }
 
-    /// What every strip is built on, so a recording is stamped with the mixer it
-    /// was actually played through and a `.bms` naming another one can be
-    /// refused rather than replayed against the wrong parameter scales.
+    /// What every strip is built on, so a recording is stamped with the mixer it played
+    /// through and a `.bms` naming another can be refused over replayed at wrong scales.
     pub fn mixer(&self) -> &'static session_core::MixerManifest {
         self.mixer
     }
@@ -247,12 +245,32 @@ impl AppAudio {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    pub fn set_jog_rotation_speed(&self, speed: JogRotationSpeed) {
+    pub fn set_jog_rotation_speed(&self, speed: session_core::JogRotationSpeed) {
         for deck in self.decks.values() {
             deck.lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .set_jog_rotation_speed(speed);
         }
+    }
+
+    pub fn release_held_controls(&self) {
+        for deck in self.decks.values() {
+            deck.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .release_held_controls();
+        }
+    }
+
+    /// Every deck is set together, so deck A answers for all of them.
+    pub fn jog_rotation_speed(&self) -> session_core::JogRotationSpeed {
+        self.decks
+            .get("A")
+            .map(|deck| {
+                deck.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .jog_rotation_speed
+            })
+            .unwrap_or_default()
     }
 
     pub fn set_pitch_range_percent(&self, percent: f64) {

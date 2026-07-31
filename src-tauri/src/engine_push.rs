@@ -22,9 +22,8 @@ pub struct ParamChange {
     value: f32,
 }
 
-/// Transport does not reach the UI as a param either, and it carries more than
-/// one number, so it rides its own event rather than being flattened into
-/// `ParamChange`.
+/// Transport carries more than one number and does not reach the UI as a param, so it
+/// rides its own event rather than being flattened into `ParamChange`.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TransportChange {
@@ -42,9 +41,8 @@ struct RateChange {
     rate: f64,
 }
 
-// Cue is not a manifest param, so it cannot be addressed by slot and param the
-// way the rest can. It still reaches the UI on this channel, under a slot name
-// the mixer store dispatches on.
+// Cue is no manifest param, so slot and param cannot address it. It still reaches the UI
+// here, under a slot name the mixer store dispatches on.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Address {
     Param(String, String, String),
@@ -106,9 +104,8 @@ impl EnginePush {
         self.insert(origin, Address::XfaderAssign(deck.to_string()));
     }
 
-    /// Whether the loop region was destroyed is a fact about the press rather
-    /// than about the deck's current state, so it is the one thing here that
-    /// cannot be read at flush and has to be carried.
+    /// A destroyed loop region is a fact about the press rather than the deck's current
+    /// state, so it is the one thing here that cannot be read at flush and has to be carried.
     pub(crate) fn mark_transport(
         &self,
         origin: ParamOrigin,
@@ -138,11 +135,8 @@ impl EnginePush {
     }
 }
 
-/// Display only: the engine applied each value when it was written, so a flush
-/// period of latency costs a redraw and nothing else.
-///
-/// Values are read here rather than captured at write time, so a push can never
-/// carry a value that a later write has already replaced.
+/// Display only, so a flush period of latency costs a redraw and nothing else.
+/// Values are read at flush, never captured at write time, so none arrive stale.
 pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(FLUSH_MS));
@@ -302,9 +296,8 @@ mod tests {
         assert!(taken.loops_cleared.is_empty());
     }
 
-    // Playing state and position are re-read at flush, but a destroyed loop
-    // region is not readable there, so it has to survive the collapse of every
-    // other press in the window.
+    // Playing state and position are re-read at flush, but a destroyed loop region is not
+    // readable there, so it has to survive the collapse of every other press in the window.
     #[test]
     fn a_cleared_loop_region_survives_repeated_transport_marks() {
         let push = EnginePush::new();

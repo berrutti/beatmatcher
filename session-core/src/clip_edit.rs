@@ -1809,9 +1809,8 @@ mod tests {
     }
 }
 
-// Randomised sweeps over the edit operations. These complement the
-// hand-written cases above: block geometry interacts with neighbours, loops and
-// rate changes in combinations that are impractical to enumerate by hand.
+// Randomised sweeps over the edit operations. Block geometry interacts with neighbours,
+// loops and rate changes in combinations impractical to enumerate by hand.
 #[cfg(test)]
 mod fuzz {
     use super::*;

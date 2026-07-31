@@ -8,9 +8,8 @@ type ParamMapping = {
   value: (event: SessionEvent) => number | undefined;
 };
 
-// Version 1 named its control instead of addressing a slot. Every address maps onto
-// the classic mixer, which is what a session with no mixer header resolves to, so
-// this renames rather than reinterprets.
+// Version 1 named its control instead of addressing a slot. Every address maps onto the
+// classic mixer, which a headerless session resolves to, so this renames over reinterprets.
 const V1_PARAM_MAPPINGS: Record<string, ParamMapping> = {
   set_volume: {
     slot: 'fader',
@@ -47,7 +46,9 @@ const V1_PARAM_MAPPINGS: Record<string, ParamMapping> = {
 function portedFromV1(event: SessionEvent): SessionEvent {
   const mapping = V1_PARAM_MAPPINGS[event.type];
   if (!mapping) return event;
-  if (mapping.scope === 'deck' ? event.deck === undefined : event.deck !== undefined) return event;
+  // A `"deck": null` in the file is no deck, which is what serde hands session-core.
+  const deckScoped = typeof event.deck === 'string';
+  if (mapping.scope === 'deck' ? !deckScoped : deckScoped) return event;
   const param = mapping.param(event);
   const value = mapping.value(event);
   if (param === undefined || value === undefined) return event;

@@ -21,9 +21,8 @@ const trackData: TrackData = {
   coverArt: null
 };
 
-// The component batches drags to its own rAF loop, so a gesture commits nothing
-// until a frame runs. Frames are driven by hand here; without this the assertions
-// below would pass on an empty emit list.
+// The component batches drags to its own rAF loop, so a gesture commits nothing until a
+// frame runs. Frames are driven by hand, or the assertions pass on an empty emit list.
 const frameQueue: FrameRequestCallback[] = [];
 let nextFrameHandle = 1;
 const realRequest = window.requestAnimationFrame;
@@ -59,9 +58,8 @@ function rect(width: number): DOMRect {
   };
 }
 
-// happy-dom reports every element as zero-sized. A zero-width canvas is also a
-// real state (the edit view lives behind `v-show`, and the panel can collapse), so
-// both widths are fuzzed: `pxToSec` divides by this.
+// happy-dom reports every element as zero-sized, and a zero-width canvas is also real
+// (the edit view lives behind `v-show`), so both widths are fuzzed: `pxToSec` divides by this.
 function stubSize(element: HTMLCanvasElement, width: number) {
   element.getBoundingClientRect = () => rect(width);
   Object.defineProperty(element, 'clientWidth', { value: width, configurable: true });

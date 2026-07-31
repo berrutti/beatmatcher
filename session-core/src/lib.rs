@@ -19,10 +19,12 @@ pub use clip_edit::{
 };
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use param::{
-    is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, MixerHeader, MixerManifest,
-    ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
+    is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, JogRotationSpeed, MixerHeader,
+    MixerManifest, ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
     XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2,
-    MANIFESTS, REQUIRED_STRIP_ROLES,
+    JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER,
+    MANIFESTS,
+    REQUIRED_STRIP_ROLES,
 };
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
@@ -34,7 +36,7 @@ pub use lane_edit::{
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
     sim_state_from_snapshot, DeckSim, DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim,
-    StripSnap, DEFAULT_MASTER_GAIN,
+    StripSnap, DEFAULT_MASTER_GAIN, JOG_FACTOR_MIN,
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
@@ -122,9 +124,8 @@ mod wasm {
         serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    // A build that dropped a mixer still has to draw a session that names it,
-    // so the editor falls back rather than refusing to render. Rendering audio
-    // does not: `resolve_manifest` is strict on that path.
+    // A build that dropped a mixer still has to draw a session naming it, so the editor
+    // falls back. Rendering audio does not: `resolve_manifest` is strict on that path.
     fn resolve_mixer(id: &str) -> &'static crate::MixerManifest {
         crate::manifest_by_id(id).unwrap_or(&crate::CLASSIC_3BAND)
     }
@@ -157,10 +158,8 @@ mod wasm {
         serde_json::Value::Object(map).to_string()
     }
 
-    /// A mixer's deck-scope params, keyed `"slot/param"`, so the performance
-    /// mixer's knobs take their range from the manifest the engine is running
-    /// rather than from constants that only describe the classic one. Unknown
-    /// ids fall back to the classic mixer, which is also what the engine loads.
+    /// A mixer's deck-scope params, keyed `"slot/param"`, so knobs take their range from
+    /// the running manifest. An unknown id falls back to the classic mixer.
     #[wasm_bindgen(js_name = mixerParams)]
     pub fn mixer_params(id: &str) -> String {
         let manifest = resolve_mixer(id);

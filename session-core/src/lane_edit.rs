@@ -164,9 +164,8 @@ pub fn lane_spec_for(
     rate_min: Option<f64>,
     rate_max: Option<f64>,
 ) -> LaneSpec {
-    // Rate is the only lane without a descriptor of its own;
-    // `every_mixer_lane_resolves_to_a_descriptor` is what stops a manifest
-    // missing a mixer lane from silently landing here.
+    // Rate is the only lane without a descriptor of its own.
+    // `every_mixer_lane_resolves_to_a_descriptor` stops a mixer lane landing here.
     let Some(descriptor) = lane.descriptor(mixer).or_else(|| lane.canonical_descriptor()) else {
         return rate_lane_spec(rate_min, rate_max);
     };
@@ -322,12 +321,8 @@ pub fn splice_lane_events(
         .cloned()
         .collect();
 
-    // Sorted before the restore check below: `points` is not guaranteed to be
-    // ordered by ms (this is a public API, and a drag can scrub backwards), and
-    // the check must compare against the temporally last drawn value, not the
-    // last one in input order. Taking them in input order would skip the restore
-    // event whenever the final *listed* point happens to match the original
-    // value, leaving a later drawn value to leak past range_end_ms.
+    // Sorted first because `points` arrives from a public API and a drag can scrub
+    // backwards. The restore check has to compare against the temporally last value.
     let mut inserted: Vec<SessionEvent> = sort_by_ms(
         points
             .iter()
@@ -826,11 +821,8 @@ mod tests {
     }
 
 
-    // splice_lane_events promises the lane value after range_end_ms is
-    // unchanged. `points` arrives from a public API and from drags that can
-    // scrub backwards, so it is not necessarily ordered by ms. Using the last
-    // point in input order for the restore check let a later-in-time drawn
-    // value leak past the end of the range.
+    // `points` can arrive unordered, and taking the last one in input order for the
+    // restore check let a later-in-time drawn value leak past range_end_ms.
     #[test]
     fn splice_restores_value_when_points_are_unordered() {
         let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
@@ -1115,9 +1107,8 @@ mod tests {
     }
 }
 
-// Randomised sweep over splice_lane_events' contract: the lane value after
-// range_end_ms must be identical before and after a splice, for any drawn
-// gesture whose points fall inside the range, in any input order.
+// Randomised sweep over splice_lane_events' contract: the lane value after range_end_ms
+// is identical before and after a splice, for any gesture in any input order.
 #[cfg(test)]
 mod fuzz {
     use super::*;

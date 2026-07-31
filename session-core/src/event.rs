@@ -38,6 +38,10 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
@@ -223,9 +227,8 @@ pub enum SessionCommand<'a> {
         param: &'a str,
         value: f64,
     },
-    // Categorical, so it gets its own variant rather than riding SetParam as a
-    // number. Same reasoning as `set_cue_active`: per-strip state the manifest
-    // does not describe.
+    // Categorical, so it gets its own variant rather than riding SetParam as a number.
+    // Same reasoning as `set_cue_active`: per-strip state the manifest does not describe.
     SetXfaderAssign {
         deck: &'a str,
         assign: crate::XfaderAssign,
@@ -234,6 +237,17 @@ pub enum SessionCommand<'a> {
     // taper of every channel fader.
     SetFaderCurve {
         curve: crate::FaderCurve,
+    },
+    // The wheel's own input rather than its effect, which is computed per audio block and
+    // so is never known on the thread that logs.
+    Jog {
+        deck: &'a str,
+        ticks: f64,
+    },
+    // Categorical, and it decides what one logged tick is worth, so a session that omits
+    // it cannot be replayed at the speed it was played on.
+    SetJogRotationSpeed {
+        speed: crate::JogRotationSpeed,
     },
     SetPlaybackRate {
         deck: &'a str,
@@ -279,7 +293,7 @@ impl<'a> SessionCommand<'a> {
         use SessionCommand::*;
         match *self {
             SetParam { deck, .. } => deck,
-            SetFaderCurve { .. } => None,
+            SetFaderCurve { .. } | SetJogRotationSpeed { .. } => None,
             DeckSnapshot { deck, .. }
             | LoadTrack { deck, .. }
             | EjectTrack { deck }
@@ -288,6 +302,7 @@ impl<'a> SessionCommand<'a> {
             | StopAtCue { deck, .. }
             | Seek { deck, .. }
             | SetXfaderAssign { deck, .. }
+            | Jog { deck, .. }
             | SetPlaybackRate { deck, .. }
             | SetNudge { deck, .. }
             | SetBeatGrid { deck, .. }
@@ -356,6 +371,13 @@ impl SessionEvent {
             },
             "set_fader_curve" => SetFaderCurve {
                 curve: crate::FaderCurve::from_str_or_linear(self.curve.as_deref()?),
+            },
+            "jog" => Jog {
+                deck: deck?,
+                ticks: self.ticks?,
+            },
+            "set_jog_rotation_speed" => SetJogRotationSpeed {
+                speed: crate::JogRotationSpeed::from_str_or_33(self.speed.as_deref()?),
             },
             "set_playback_rate" => SetPlaybackRate {
                 deck: deck?,
@@ -517,9 +539,8 @@ mod tests {
         assert_eq!(events[2].event_type, "set_volume");
     }
 
-    // Master gain is the one v1 event with no deck. It was skipped outright before,
-    // so a session's master fader automation vanished on load and, once saved at the
-    // current version, could never be recovered.
+    // Master gain is the one v1 event with no deck. Skipping it lost the master fader
+    // automation on load, unrecoverable once the session was saved at the current version.
     #[test]
     fn the_v1_master_gain_ports_onto_the_master_slot() {
         let mut events = vec![SessionEvent {
@@ -542,6 +563,22 @@ mod tests {
         }];
         assert_eq!(port_events(&mut events, 1), 0);
         assert_eq!(events[0].event_type, "set_volume");
+    }
+
+    // A writer is free to emit the key with a null, and porting reads the scope off the
+    // deck alone, so the two spellings of "no deck" have to port the same way.
+    #[test]
+    fn an_explicit_null_deck_reads_as_no_deck() {
+        let mut events: Vec<SessionEvent> = serde_json::from_str(
+            r#"[
+                {"elapsed_ms": 1, "type": "set_volume", "deck": null, "gain": 0.5},
+                {"elapsed_ms": 2, "type": "set_master_gain", "deck": null, "gain": 0.6}
+            ]"#,
+        )
+        .expect("a session with null decks");
+        assert_eq!(port_events(&mut events, 1), 1);
+        assert_eq!(events[0].event_type, "set_volume");
+        assert!(events[1].is_param(None, "gain", "gain"));
     }
 
     #[test]

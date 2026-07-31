@@ -3,9 +3,8 @@ use crate::{AppState, ParamOrigin};
 use std::sync::Arc;
 use tauri::Emitter;
 
-/// Mode is owned by the frontend; this is the mirror the MIDI thread reads.
-/// Clearing the memory is the same reasoning as on reconnect: a half stranded by
-/// a mode switch would join with the first message after the switch back.
+/// Mode is owned by the frontend, and this is the mirror the MIDI thread reads. Clearing
+/// the memory matches reconnect: a half stranded by a mode switch would join across it.
 #[tauri::command]
 pub fn set_app_mode(
     state: tauri::State<'_, AppState>,
@@ -14,6 +13,9 @@ pub fn set_app_mode(
 ) {
     state.set_app_mode(mode);
     midi.clear_control_memory();
+    // The gate in `midi::apply` drops the release edge of anything still held, so the hold
+    // is ended here rather than left latched with the button already back up.
+    state.audio.release_held_controls();
 }
 
 pub(crate) fn get_deck(
@@ -531,9 +533,8 @@ pub(crate) fn clear_loop_region(
     Ok(())
 }
 
-/// Every deck-scope mixer move, addressed the way the manifest addresses it. An
-/// address the manifest does not describe is ignored rather than refused, the
-/// same way a session recorded on a richer mixer replays everything else.
+/// Every deck-scope mixer move, addressed the way the manifest addresses it. An unknown
+/// address is ignored, the same way a richer mixer's session replays everything else.
 #[tauri::command]
 pub(crate) fn set_deck_param(
     state: tauri::State<'_, AppState>,
@@ -582,7 +583,7 @@ pub(crate) fn set_fader_curve(state: tauri::State<'_, AppState>, curve: session_
 #[tauri::command]
 pub(crate) fn set_jog_rotation_speed(
     state: tauri::State<'_, AppState>,
-    speed: crate::audio::JogRotationSpeed,
+    speed: session_core::JogRotationSpeed,
 ) {
     state.audio.set_jog_rotation_speed(speed);
 }
@@ -730,6 +731,39 @@ pub(crate) fn get_deck_levels(
     state.audio.get_deck_levels()
 }
 
+/// Where the crossfader was when recording started. Thru is skipped because every reader
+/// already defaults to it, and stamping it would head every session with inert events.
+fn crossfader_start_events(
+    position: f32,
+    assigns: &[(&str, session_core::XfaderAssign)],
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = vec![(
+        "set_param",
+        serde_json::json!({ "slot": "xfader", "param": "position", "value": position }),
+    )];
+    for (deck, assign) in assigns {
+        if *assign == session_core::XfaderAssign::Thru {
+            continue;
+        }
+        events.push((
+            "set_xfader_assign",
+            serde_json::json!({ "deck": deck, "assign": assign.as_str() }),
+        ));
+    }
+    events
+}
+
+/// A tick is worth 60/rpm seconds of audio, so a session that omits this cannot say how
+/// far its scrubs travelled. Stamped for the same reason the fader curve is.
+fn jog_speed_start_event(
+    speed: session_core::JogRotationSpeed,
+) -> (&'static str, serde_json::Value) {
+    (
+        "set_jog_rotation_speed",
+        serde_json::json!({ "speed": speed.as_str() }),
+    )
+}
+
 #[tauri::command]
 pub(crate) fn start_recording(
     state: tauri::State<'_, AppState>,
@@ -760,6 +794,30 @@ pub(crate) fn start_recording(
                 "set_fader_curve",
                 serde_json::json!({ "curve": state.audio.monitor.fader_curve().as_str() }),
             );
+            let (speed_event, speed_payload) =
+                jog_speed_start_event(state.audio.jog_rotation_speed());
+            logger.log(speed_event, speed_payload);
+            let assigns: Vec<(&str, session_core::XfaderAssign)> = ["A", "B", "C", "D"]
+                .into_iter()
+                .map(|deck_id| {
+                    let assign = state
+                        .audio
+                        .strip(deck_id)
+                        .map(|strip| {
+                            strip
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .xfader_assign
+                        })
+                        .unwrap_or_default();
+                    (deck_id, assign)
+                })
+                .collect();
+            for (event_type, payload) in
+                crossfader_start_events(state.audio.monitor.xfader_position(), &assigns)
+            {
+                logger.log(event_type, payload);
+            }
             for deck_id in ["A", "B", "C", "D"] {
                 let Some(arc) = state.audio.deck(deck_id) else {
                     continue;
@@ -1292,6 +1350,67 @@ pub(crate) async fn get_track_amplitude_region(
 mod tests {
     use super::*;
     use audio::{CuePressOutcome, DeckState};
+
+    // A logged tick is worth 60/rpm seconds of audio, so a session that does not name the
+    // speed it was played at replays every scrub at the wrong distance.
+    #[test]
+    fn record_start_stamps_the_jog_rotation_speed() {
+        for speed in [
+            session_core::JogRotationSpeed::Rpm33,
+            session_core::JogRotationSpeed::Rpm45,
+        ] {
+            let (event_type, payload) = jog_speed_start_event(speed);
+            assert_eq!(event_type, "set_jog_rotation_speed");
+            assert_eq!(payload, serde_json::json!({ "speed": speed.as_str() }));
+        }
+    }
+
+    // Stamped for the same reason the fader curve is: a deck crossfaded away at record
+    // start is silent, and without this the cue sheet and the render both call it audible.
+    #[test]
+    fn record_start_stamps_the_crossfader_and_every_assigned_deck() {
+        let events = crossfader_start_events(
+            -1.0,
+            &[
+                ("A", session_core::XfaderAssign::A),
+                ("B", session_core::XfaderAssign::B),
+                ("C", session_core::XfaderAssign::Thru),
+            ],
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "set_param",
+                    serde_json::json!({ "slot": "xfader", "param": "position", "value": -1.0 })
+                ),
+                (
+                    "set_xfader_assign",
+                    serde_json::json!({ "deck": "A", "assign": "a" })
+                ),
+                (
+                    "set_xfader_assign",
+                    serde_json::json!({ "deck": "B", "assign": "b" })
+                ),
+            ]
+        );
+    }
+
+    // Thru is the default every reader already assumes, so stamping it would put three
+    // inert events at the head of every session recorded without the crossfader.
+    #[test]
+    fn a_centred_crossfader_with_no_assigns_stamps_only_its_position() {
+        let events = crossfader_start_events(
+            0.0,
+            &[
+                ("A", session_core::XfaderAssign::Thru),
+                ("B", session_core::XfaderAssign::Thru),
+            ],
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "set_param");
+    }
 
     // Compile-time guard for the SendStream SAFETY contract (audio/stream.rs):
     // making any stream-mutating command async moves cpal::Stream drops onto

@@ -294,6 +294,7 @@ export const useSessionStore = defineStore('session', () => {
     };
 
     invoke('preload_session', { path }).catch(() => {
+      if (loadProgress.value?.path !== path) return;
       loadProgress.value = null;
     });
 
@@ -321,9 +322,8 @@ export const useSessionStore = defineStore('session', () => {
     loadProgress.value = event.payload;
   }).catch(() => {});
 
-  // Every track has to be decoded before the scheduler can place it, so playback
-  // is refused rather than queued: a press that silently starts seconds later
-  // reads as a broken button.
+  // Every track has to be decoded before the scheduler can place it, so playback is refused
+  // over queued: a press that silently starts seconds later reads as a broken button.
   const isLoading = computed(() => loadProgress.value !== null && !loadProgress.value.done);
 
   const loadedFraction = computed(() => {

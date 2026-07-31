@@ -82,9 +82,14 @@ impl MasterMonitor {
             .store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    pub fn set_xfader_position(&self, position: f32) {
-        self.xfader_position
-            .store(position.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+    /// Reports whether the throw actually moved, so a caller can skip re-resolving every
+    /// strip and logging an event for a value the mixer is already at.
+    pub fn set_xfader_position(&self, position: f32) -> bool {
+        let clamped = position.clamp(-1.0, 1.0);
+        let previous = self
+            .xfader_position
+            .swap(clamped.to_bits(), Ordering::Relaxed);
+        f32::from_bits(previous) != clamped
     }
 
     pub fn xfader_position(&self) -> f32 {
@@ -718,6 +723,22 @@ fn tap_master_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A 14-bit crossfader resolves a move on each half and quantizes onto 201 steps, so one
+    // sweep repeats every value. Without this the .bms gets thousands of inaudible events.
+    #[test]
+    fn setting_the_crossfader_reports_whether_it_actually_moved() {
+        let monitor = MasterMonitor::new();
+
+        assert!(monitor.set_xfader_position(0.5));
+        assert!(!monitor.set_xfader_position(0.5));
+        assert!(monitor.set_xfader_position(-0.5));
+
+        // Both saturate to the same end, so the second one is not a move either.
+        assert!(monitor.set_xfader_position(4.0));
+        assert!(!monitor.set_xfader_position(2.0));
+        assert_eq!(monitor.xfader_position(), 1.0);
+    }
 
     // --- f32_to_i16_sample ---
 

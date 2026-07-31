@@ -136,6 +136,13 @@ pub(crate) fn apply_deck_command(
         // Master scope never reaches here: it has no deck, so callers route it
         // separately.
         SessionCommand::SetFaderCurve { .. } => {}
+        // Master scope, and applied to every deck by the caller for the same reason.
+        SessionCommand::SetJogRotationSpeed { .. } => {}
+        // Fed in as the wheel itself feeds it, so the filter, the shift scale and the
+        // paused-versus-playing split all stay in the one place that owns them.
+        SessionCommand::Jog { ticks, .. } => {
+            deck.jog_pending += ticks;
+        }
         SessionCommand::SetParam {
             slot, param, value, ..
         } => match (slot, param) {

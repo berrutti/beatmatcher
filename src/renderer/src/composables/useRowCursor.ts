@@ -6,9 +6,8 @@ import { useBrowseStore } from '@renderer/stores/browse';
 export function useRowCursor(listId: () => string, keys: () => string[]) {
   const browse = useBrowseStore();
 
-  // The active list is part of the source, not just of the payload: a view whose
-  // own id never changes still has to re-register when it becomes the one on
-  // screen.
+  // The active list is part of the source: a view whose own id never changes still has to
+  // re-register when it becomes the one on screen.
   watch([() => browse.listId, keys], ([, next]) => browse.setRows(listId(), next), {
     immediate: true
   });

@@ -40,15 +40,8 @@ pub struct ParamDescriptor {
 }
 
 impl ParamDescriptor {
-    /// Places a normalized control position on this param's own range. The
-    /// quantization to `step` is what keeps a high-resolution controller from
-    /// emitting far more events than the step-limited UI inputs ever would.
-    ///
-    /// A bipolar param gives each side of its centre half the travel, so a
-    /// detented knob reads unity at the detent even when the range around it is
-    /// lopsided. That is what a mixer's EQ pot does, and the cost is that the
-    /// two halves move at different rates: -26..0 over the lower half is far
-    /// steeper than 0..+6 over the upper.
+    /// Places a normalized control position on this param's range, quantized to `step`.
+    /// A bipolar param splits the travel at its centre, so a detent reads unity.
     pub fn from_unit_interval(&self, position: f64) -> f64 {
         let position = position.clamp(0.0, 1.0);
         let raw = match self.taper {
@@ -62,6 +55,12 @@ impl ParamDescriptor {
             return raw;
         }
         (self.min + ((raw - self.min) / self.step).round() * self.step).clamp(self.min, self.max)
+    }
+
+    /// A `.bms` event and a MIDI mapping both reach a param directly, and a unit is free
+    /// to trust what it is handed, so the range is enforced once for all of them.
+    pub fn clamp(&self, value: f64) -> f64 {
+        value.clamp(self.min, self.max)
     }
 }
 
@@ -124,10 +123,8 @@ impl MixerManifest {
         }
     }
 
-    /// Whether this manifest can replay everything a session recorded on `other`
-    /// can contain, with identical meaning. A newer manifest that only adds slots
-    /// hosts its predecessor, which is what lets sessions recorded before a mixer
-    /// grew a slot still play on the live engine.
+    /// Whether this manifest can replay everything `other` can contain, with identical
+    /// meaning. A manifest that only adds slots hosts its predecessor.
     pub fn can_host(&self, other: &MixerManifest) -> bool {
         if self.cue_tap != other.cue_tap {
             return false;
@@ -137,15 +134,23 @@ impl MixerManifest {
             (ParamScope::Master, other.master, self.master),
         ];
         for (scope, theirs, mine_slots) in scopes {
+            // The strip is a signal chain and cue taps a point along it, so the same
+            // units in another order are a different mix. Master slots run in parallel.
+            let chained = scope == ParamScope::Deck;
+            let mut previous: Option<usize> = None;
             for slot in theirs {
                 // The unit decides how a value sounds, so the same range filled by a
                 // different unit is not the same address.
-                let same_unit = mine_slots
+                let Some(position) = mine_slots
                     .iter()
-                    .any(|entry| entry.slot == slot.slot && entry.unit_id == slot.unit_id);
-                if !same_unit {
+                    .position(|entry| entry.slot == slot.slot && entry.unit_id == slot.unit_id)
+                else {
+                    return false;
+                };
+                if chained && previous.is_some_and(|earlier| position <= earlier) {
                     return false;
                 }
+                previous = Some(position);
                 for param in slot.params {
                     let Some(mine) = self.descriptor(scope, slot.slot, param.id) else {
                         return false;
@@ -227,9 +232,8 @@ fn fnv_bytes(hash: u64, bytes: &[u8]) -> u64 {
 }
 
 impl MixerManifest {
-    /// Identifies the manifest by everything that changes what a `set_param`
-    /// event means. Labels and lane grouping are excluded: renaming a knob must
-    /// not invalidate sessions recorded against it.
+    /// Identifies the manifest by everything that changes what a `set_param` means.
+    /// Labels and lane grouping are excluded, so renaming a knob keeps sessions valid.
     pub fn content_hash(&self) -> String {
         let mut hash = fnv_bytes(FNV_OFFSET, self.id.as_bytes());
         hash = fnv_bytes(hash, self.cue_tap.as_bytes());
@@ -421,13 +425,11 @@ impl XfaderAssign {
     }
 }
 
-/// Constant power rather than linear: both buses sit at -3 dB with the fader
-/// centred, so a blend holds its perceived level instead of dipping through the
-/// middle.
+/// Constant power, with both buses at -3 dB when centred, so a blend holds its
+/// perceived level instead of dipping through the middle.
 pub fn xfader_gains(position: f64) -> (f64, f64) {
-    // The ends are returned exactly rather than left to the trig: `cos` at a
-    // quarter turn is 6e-17, not zero, and anything downstream asking whether a
-    // deck is silent would read that as audible.
+    // The ends are returned exactly, because `cos` at a quarter turn is 6e-17 and anything
+    // asking whether a deck is silent would read that as audible.
     if position <= -1.0 {
         return (1.0, 0.0);
     }
@@ -484,14 +486,69 @@ impl FaderCurve {
     }
 }
 
+/// How much audio one jog tick covers, as the rpm the platter is standing in for.
+/// Categorical, so it travels by name and gets its own event, the way `FaderCurve` does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum JogRotationSpeed {
+    #[default]
+    Rpm33,
+    Rpm45,
+}
+
+const RPM_33: f64 = 33.0 + 1.0 / 3.0;
+const RPM_45: f64 = 45.0;
+
+/// A revolution covers 60/rpm seconds of audio, so the scale is the ratio of the two.
+pub const JOG_SCRUB_SEC_PER_TICK_AT_33: f64 = 0.002;
+
+/// A paused platter scrubs this many times further than a playing one bends.
+pub const JOG_PAUSED_MULTIPLIER: f64 = 100.0;
+
+pub const JOG_SHIFT_MULTIPLIER: f64 = 2.0;
+
+/// The wheel filter settles over this, which is what spreads one gesture's travel out
+/// in time. The total is unaffected, so only a reader tracking the settle needs it.
+pub const JOG_FILTER_TAU_SEC: f64 = 0.040;
+
+impl JogRotationSpeed {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rpm33 => "rpm33",
+            Self::Rpm45 => "rpm45",
+        }
+    }
+
+    /// Infallible so a session naming a speed this build does not have scrubs at 33
+    /// rather than failing to load.
+    pub fn from_str_or_33(value: &str) -> Self {
+        match value {
+            "rpm45" => Self::Rpm45,
+            _ => Self::Rpm33,
+        }
+    }
+
+    /// Against 33, which is the speed `JOG_SCRUB_SEC_PER_TICK_AT_33` is set for.
+    pub fn scrub_scale(self) -> f64 {
+        match self {
+            Self::Rpm33 => 1.0,
+            Self::Rpm45 => RPM_33 / RPM_45,
+        }
+    }
+
+    /// What one logged tick is worth. The engine's filter shapes when this travel
+    /// happens and never how much, so the total is reproducible without it.
+    pub fn frames_per_tick(self, sample_rate: f64) -> f64 {
+        JOG_SCRUB_SEC_PER_TICK_AT_33 * self.scrub_scale() * sample_rate
+    }
+}
+
 const MASTER_SLOTS: &[SlotDescriptor] = &[MASTER_GAIN_SLOT];
 
 const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT];
 
-// The same strip as the classic mixer with a different unit in the `eq` slot:
-// full kill instead of a shelf, so the params share their ids but not their
-// range. The manifest hash is what stops a session recorded on one from being
-// rendered on the other.
+// The classic strip with a different unit in the `eq` slot: full kill over a shelf, so
+// the param ids match but the ranges do not. The hash keeps the two apart.
 pub static ISOLATOR_3BAND: MixerManifest = MixerManifest {
     id: "isolator-3band",
     cue_tap: "fader",
@@ -513,10 +570,8 @@ const ISOLATOR_STRIP: &[SlotDescriptor] = &[
     FADER_SLOT,
 ];
 
-// The v1 manifests are frozen, not deprecated: a session recorded before the
-// crossfader existed still resolves one by id and renders exactly as it did.
-// Adding the slot in place would have changed their hash and refused every one
-// of those files.
+// The v1 manifests stay frozen so pre-crossfader sessions still resolve one by id.
+// Adding the slot in place would have changed their hash and refused every file.
 pub static CLASSIC_3BAND_V2: MixerManifest = MixerManifest {
     id: "classic-3band-v2",
     cue_tap: "fader",
@@ -624,9 +679,8 @@ mod tests {
         }
     }
 
-    // Three ways in and out of the same name: serde for the Tauri command, and
-    // `as_str`/`from_str_or_linear` for the WASM boundary. Nothing else holds them
-    // in step.
+    // Three ways in and out of the same name: serde for the Tauri command, `as_str` and
+    // `from_str_or_linear` for WASM. Nothing else holds them in step.
     #[test]
     fn every_fader_curve_round_trips_through_the_name_it_reports() {
         for curve in [
@@ -729,6 +783,27 @@ mod tests {
         assert_ne!(CLASSIC_3BAND.content_hash(), CLASSIC_3BAND_V2.content_hash());
     }
 
+    // Every `.bms` on disk carries the hash of the mixer it was played on, and
+    // `resolve_manifest` refuses a session whose hash no longer matches. Changing one of
+    // these means every existing recording stops loading, so mint a new manifest id
+    // instead of retyping the literal.
+    #[test]
+    fn every_shipped_manifest_keeps_the_hash_its_sessions_carry() {
+        let pinned: &[(&str, &str)] = &[
+            ("classic-3band", "7c5d3cab7af37be4"),
+            ("isolator-3band", "7506fbbc0d1160a9"),
+            ("classic-3band-v2", "a185b94836f236e4"),
+            ("isolator-3band-v2", "93c120a76ac1a289"),
+        ];
+        let shipped: Vec<&str> = MANIFESTS.iter().map(|manifest| manifest.id).collect();
+        let listed: Vec<&str> = pinned.iter().map(|(id, _)| *id).collect();
+        assert_eq!(shipped, listed);
+        for (id, hash) in pinned {
+            let manifest = manifest_by_id(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(&manifest.content_hash(), hash, "{id}");
+        }
+    }
+
     #[test]
     fn the_shipped_manifest_is_valid() {
         CLASSIC_3BAND.validate().expect("classic-3band");
@@ -777,9 +852,8 @@ mod tests {
         assert!(BAD_TAP.validate().is_err());
     }
 
-    // Every session recorded before the crossfader existed has no mixer header and
-    // resolves to the classic manifest, so refusing to host it would make the live
-    // engine unable to play any of them.
+    // Every pre-crossfader session has no mixer header and resolves to the classic manifest,
+    // so refusing to host it would leave the live engine unable to play any of them.
     #[test]
     fn the_live_manifest_hosts_the_version_it_replaced() {
         assert!(CLASSIC_3BAND_V2.can_host(&CLASSIC_3BAND));
@@ -797,6 +871,47 @@ mod tests {
     fn a_manifest_cannot_host_another_units_slot() {
         assert!(!CLASSIC_3BAND_V2.can_host(&ISOLATOR_3BAND));
         assert!(!ISOLATOR_3BAND_V2.can_host(&CLASSIC_3BAND));
+    }
+
+    // The strip is a signal chain and `cue_tap` is everything before one slot, so the
+    // same units in another order are a different mix.
+    #[test]
+    fn a_manifest_cannot_host_one_whose_strip_runs_in_another_order() {
+        const FILTER_FIRST_STRIP: &[SlotDescriptor] = &[
+            SWEEP_FILTER_SLOT,
+            SlotDescriptor {
+                slot: "eq",
+                unit_id: "eq3band",
+                params: &[
+                    eq_param("low", "Low", "LO"),
+                    eq_param("mid", "Mid", "MD"),
+                    eq_param("high", "High", "HI"),
+                ],
+            },
+            FADER_SLOT,
+        ];
+        const FILTER_FIRST: MixerManifest = MixerManifest {
+            id: "filter-first",
+            cue_tap: "fader",
+            strip: FILTER_FIRST_STRIP,
+            master: MASTER_SLOTS,
+        };
+        assert!(!FILTER_FIRST.can_host(&CLASSIC_3BAND));
+        assert!(!CLASSIC_3BAND.can_host(&FILTER_FIRST));
+    }
+
+    // Cue is everything up to the tap, so moving it changes what the headphones hear
+    // from a session whose every param address is unchanged.
+    #[test]
+    fn a_manifest_cannot_host_one_that_taps_cue_elsewhere() {
+        const CUE_AT_EQ: MixerManifest = MixerManifest {
+            id: "cue-at-eq",
+            cue_tap: "eq",
+            strip: CLASSIC_STRIP,
+            master: MASTER_SLOTS,
+        };
+        assert!(!CUE_AT_EQ.can_host(&CLASSIC_3BAND));
+        assert!(!CLASSIC_3BAND.can_host(&CUE_AT_EQ));
     }
 
     #[test]
@@ -865,9 +980,8 @@ mod tests {
         }
     }
 
-    // The editor draws and clamps eq lanes against these, so reading them off
-    // the wrong manifest would put the curve in the wrong place and clamp an
-    // edit to a range the session never had.
+    // The editor draws and clamps eq lanes against these, so the wrong manifest would put
+    // the curve in the wrong place and clamp an edit to a range the session never had.
     #[test]
     fn a_lane_takes_its_range_from_the_mixer_it_is_asked_for() {
         let classic = lane_spec_for(EditableLane::EqLow, &CLASSIC_3BAND, None, None);
@@ -1007,9 +1121,8 @@ mod tests {
         assert_eq!(filter.from_unit_interval(0.5), 0.0);
     }
 
-    // The reason eq is bipolar at all: a detented knob reports its centre, and
-    // that has to be unity rather than the -10 dB a linear map over -26..+6
-    // would give.
+    // Why eq is bipolar: a detented knob reports its centre, and that has to be unity
+    // rather than the -10 dB a linear map over -26..+6 would give.
     #[test]
     fn a_centred_eq_knob_reads_unity_rather_than_the_middle_of_the_range() {
         let low = CLASSIC_3BAND

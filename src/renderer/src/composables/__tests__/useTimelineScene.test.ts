@@ -60,9 +60,8 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
   };
 }
 
-// The master row is the only way to reach a master-scope lane, so its label
-// column has to open the picker and its track area has to report the lane on
-// display under the same target a deck row uses, which is what makes it drawable.
+// The master row is the only way to reach a master-scope lane, so its label column opens
+// the picker and its track area reports the lane under the same target a deck row uses.
 describe('the master row', () => {
   function hitsAt(items: SceneItem[], x: number, y: number) {
     return items.map((item) => item.hitTest?.({ x, y }, vc) ?? null).filter((hit) => hit !== null);

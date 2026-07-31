@@ -466,6 +466,13 @@ fn apply_event(
         return Ok(());
     }
 
+    if let SessionCommand::SetJogRotationSpeed { speed } = cmd {
+        for deck in decks.values_mut() {
+            deck.set_jog_rotation_speed(speed);
+        }
+        return Ok(());
+    }
+
     let id = cmd
         .deck_id()
         .expect("master-scope commands are handled above; the rest target a deck");
@@ -518,11 +525,8 @@ mod golden {
         out
     }
 
-    // Built once per test process. Tests run in parallel and every one of them
-    // needs this file, so rewriting it per call let one test decode a WAV
-    // another was still writing, which showed up as a render that changed
-    // between runs. Written under a unique name and renamed into place, so a
-    // stale file from an interrupted run cannot be read as a valid one either.
+    // Built once per process. Rewriting per call let one test decode a WAV another was
+    // still writing. Written under a unique name and renamed in, so no partial file reads.
     pub(super) fn source_wav_path() -> String {
         static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         SOURCE
@@ -995,9 +999,8 @@ mod param_addressing {
         assert!(error.contains("isolator"), "{error}");
     }
 
-    // The point of resolving the manifest is that the renderer builds the strip
-    // from it. Rendering the same events on both mixers must differ, or the
-    // header is being read and then ignored.
+    // The renderer builds the strip from the resolved manifest, so the same events on two
+    // mixers must differ, or the header is being read and then ignored.
     #[test]
     fn the_resolved_manifest_is_the_one_the_renderer_builds() {
         let render_on = |manifest: &session_core::MixerManifest| {

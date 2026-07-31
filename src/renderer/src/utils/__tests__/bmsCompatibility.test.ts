@@ -68,6 +68,20 @@ describe('portEvents', () => {
     });
   });
 
+  // A writer is free to spell "no deck" as an explicit null, and session-core reads it
+  // as one through serde, so `an_explicit_null_deck_reads_as_no_deck` is the same claim.
+  it('reads an explicit null deck as no deck, the way session-core does', () => {
+    const events: SessionEvent[] = JSON.parse(
+      '[{"elapsed_ms":1,"type":"set_volume","deck":null,"gain":0.5},' +
+        '{"elapsed_ms":2,"type":"set_master_gain","deck":null,"gain":0.6}]'
+    );
+    const [volume, master] = portEvents(events, 1);
+    expect(volume.type).toBe('set_volume');
+    expect(master.type).toBe('set_param');
+    expect(master.slot).toBe('gain');
+    expect(master.value).toBe(0.6);
+  });
+
   it('ports nothing at the current version', () => {
     const events: SessionEvent[] = [{ elapsed_ms: 1, type: 'set_volume', deck: 'A', gain: 0.5 }];
     expect(portEvents(events, bmsVersion())).toEqual(events);

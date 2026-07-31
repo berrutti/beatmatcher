@@ -55,9 +55,8 @@ impl Monitor {
 }
 
 enum Request {
-    /// The whole set of ports that should be open. Anything already open and
-    /// still named is left alone, so a rescan does not interrupt a device the
-    /// user is playing.
+    /// The whole set of ports that should be open. Anything already open and still named is
+    /// left alone, so a rescan does not interrupt a device the user is playing.
     Connect(Vec<String>, Sender<()>),
     Send(String, Vec<u8>),
 }
@@ -65,9 +64,8 @@ enum Request {
 type Dispatch = Arc<dyn Fn(&str, &[u8]) + Send + Sync>;
 type DispatchSlot = Arc<Mutex<Option<Dispatch>>>;
 
-/// One connected port: which mapping claimed it, the profile built from that
-/// mapping, and its own 14-bit memory. The memory is per device because halves
-/// from two controllers must never join.
+/// One connected port, with its own 14-bit memory. The memory is per device because
+/// halves from two controllers must never join.
 struct Device {
     mapping: Option<usize>,
     profile: Option<Profile>,
@@ -175,18 +173,17 @@ fn serve(requests: Receiver<Request>, monitor: Arc<Monitor>, dispatch: DispatchS
                 // away is closed by being forgotten here.
                 inputs.retain(|name, _| port_names.contains(name));
                 outputs.retain(|name, _| port_names.contains(name));
-                for port_name in port_names {
-                    // A controller that allows one client at a time would refuse a
-                    // second connection, so an already open port is left alone.
-                    if inputs.contains_key(&port_name) {
-                        continue;
-                    }
+                // A controller that allows one client at a time would refuse a second
+                // connection, so an already open port is left alone.
+                for port_name in ports_to_open(&port_names, |name| inputs.contains_key(name)) {
                     let opened = connect(&port_name, Arc::clone(&monitor), Arc::clone(&dispatch));
                     if let Ok(open) = opened {
-                        inputs.insert(port_name.clone(), open);
+                        inputs.insert(port_name, open);
                     }
-                    // Feedback is a bonus, not a requirement: a controller with no
-                    // matching output still works, it just cannot light its buttons.
+                }
+                // Feedback is a bonus, not a requirement, and it is retried independently
+                // of the input so a port that was busy once does not stay dark all session.
+                for port_name in ports_to_open(&port_names, |name| outputs.contains_key(name)) {
                     if let Some(output) = connect_output(&port_name) {
                         outputs.insert(port_name, output);
                     }
@@ -197,6 +194,14 @@ fn serve(requests: Receiver<Request>, monitor: Arc<Monitor>, dispatch: DispatchS
     }
     drop(inputs);
     drop(outputs);
+}
+
+fn ports_to_open(wanted: &[String], is_open: impl Fn(&str) -> bool) -> Vec<String> {
+    wanted
+        .iter()
+        .filter(|name| !is_open(name))
+        .cloned()
+        .collect()
 }
 
 fn connect_output(port_name: &str) -> Option<midir::MidiOutputConnection> {
@@ -246,10 +251,8 @@ fn connect(
         .map_err(|error| error.to_string())
 }
 
-/// The MIDI thread reaches the rest of the app through this one closure and
-/// nothing else, so mapped input cannot reach device or buffer configuration.
-/// Those rebuild the streams and have to stay on the main thread; see
-/// `stream.rs` and `stream_commands_must_stay_synchronous`.
+/// The only path from the MIDI thread into the app, so mapped input cannot reach device
+/// or buffer configuration, which rebuild the streams and stay on the main thread.
 pub fn set_dispatch(state: &MidiState, dispatch: Dispatch) {
     *state
         .dispatch
@@ -403,9 +406,8 @@ enum Action {
     Eject {
         deck: String,
     },
-    // `steps` is how far one press moves the cursor, for a surface that browses
-    // with buttons instead of an encoder. The encoder itself carries its own
-    // delta and leaves this unset.
+    // `steps` is how far one press moves the cursor, for a surface that browses with buttons.
+    // An encoder carries its own delta and leaves this unset.
     Browse {
         steps: Option<i32>,
     },
@@ -432,9 +434,8 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Refuses a colliding profile rather than letting the last binding win,
-    /// because the symptom is the wrong deck's control moving, which reads as
-    /// broken hardware rather than a broken mapping.
+    /// Refuses a colliding profile rather than letting the last binding win, because the
+    /// symptom is the wrong deck's control moving, which reads as broken hardware.
     fn new(bindings: Vec<Binding>) -> Result<Self, String> {
         let mut by_key = HashMap::new();
         let mut led_keys = HashMap::new();
@@ -469,9 +470,8 @@ impl Profile {
     }
 }
 
-/// A control cannot send its own midpoint (63.5 of 7 bits), so a detented centre
-/// arrives one above it and a plain `value / max` puts the detent past half: on a
-/// 7-bit tempo fader at 10% range that showed a 141 bpm track as 141.11.
+/// A control cannot send its own midpoint (63.5 of 7 bits), so a plain `value / max` puts
+/// a detent past half. On a 7-bit tempo fader at 10% that showed 141 bpm as 141.11.
 fn unit_interval(value: f64, max: f64) -> f64 {
     let centre = (max + 1.0) / 2.0;
     if value <= centre {
@@ -573,9 +573,8 @@ struct MappingFile {
 }
 
 impl BindingSpec {
-    /// `assigned` is the deck the user gave the device, and is what an
-    /// `assigned` mapping's bindings are built against; a `fixed` mapping names
-    /// its decks itself and ignores it.
+    /// `assigned` is the deck the user gave the device, and is what an `assigned` mapping's
+    /// bindings are built against. A `fixed` mapping names its own decks and ignores it.
     fn deck(&self, scope: DeckScope, assigned: Option<&str>) -> Result<String, String> {
         match scope {
             DeckScope::Fixed => self
@@ -724,11 +723,8 @@ struct ControlMemory {
 }
 
 impl ControlMemory {
-    /// Acts on both halves instead of waiting for a pair to complete: a
-    /// controller that sends only the half that changed would otherwise stall
-    /// forever. The intermediate that a high half produces on its own is at
-    /// most one low-half step away from the value the next message brings, so
-    /// it is corrected before it can be heard.
+    /// Acts on both halves rather than waiting for a pair, or a controller sending only
+    /// the changed half stalls. A lone high half lands within one low-half step.
     fn join(&mut self, binding: usize, half: Half, value: u8) -> u16 {
         let halves = self.halves.entry(binding).or_insert((0, 0));
         match half {
@@ -958,10 +954,8 @@ pub(crate) fn apply(
     port: &str,
     data: &[u8],
 ) {
-    // The same gate the keyboard has in `useKeyboard.ts`. Outside performance the
-    // session scheduler owns the strips, and it writes them through
-    // `apply_deck_command`, which does not pass the `set_deck_param` funnel, so
-    // nothing downstream would notice the two fighting.
+    // The same gate the keyboard has in `useKeyboard.ts`. Outside performance the session
+    // scheduler owns the strips and writes them past the `set_deck_param` funnel.
     if state.app_mode() != crate::AppMode::Performance {
         return;
     }
@@ -1018,9 +1012,8 @@ pub(crate) fn apply(
         Some(Move::QuantizeToggle { deck }) => {
             app.emit("midi-quantize", deck).ok();
         }
-        // Selection is not engine state, so these are the moves Rust forwards
-        // rather than acts on. Which track a load button loads is only knowable
-        // from the cursor, which lives in the frontend.
+        // Selection lives in the frontend, so Rust forwards these rather than acting on them.
+        // Which track a load button loads is only knowable from the cursor.
         Some(Move::Browse { steps }) => {
             app.emit("midi-browse", steps).ok();
         }
@@ -1242,6 +1235,9 @@ pub fn set_midi_device_deck(
             None => None,
         };
     }
+    // Rebuilding the profile discards the binding that would have delivered the release of
+    // anything still held, and a reassignment would route it to the new deck anyway.
+    app_state.audio.release_held_controls();
     // The profile only exists once a deck is chosen, so the resync in
     // `list_midi_devices` ran against a device that could not be lit yet.
     resync_leds(&app_state, &state);
@@ -1365,9 +1361,8 @@ mod tests {
             .is_none());
     }
 
-    // Read off the hardware: the crossfader is cc 31 on the filters' channel,
-    // with its low half at cc 63, and it sweeps the full -1..+1 of the master
-    // descriptor rather than a strip's range.
+    // Read off the hardware: the crossfader is cc 31 on the filters' channel with its low
+    // half at cc 63, and it sweeps the master descriptor's full -1..+1.
     #[test]
     fn the_crossfader_sweeps_end_to_end() {
         let profile = ddj_flx6();
@@ -1643,9 +1638,8 @@ mod tests {
         );
     }
 
-    // Read off the hardware: the tempo fader is cc 0 with its low half at cc 32,
-    // and the high half arrives first. Both orders are exercised below because
-    // the join deliberately does not care which does.
+    // Read off the hardware: the tempo fader is cc 0 with its low half at cc 32. Both orders
+    // are exercised below because the join deliberately does not care which arrives first.
     #[test]
     fn the_tempo_fader_is_a_high_resolution_pair() {
         let profile = ddj_flx6();
@@ -1671,9 +1665,8 @@ mod tests {
             })
         );
 
-        // Parked in the detent the surface sends cc 0 = 64 and cc 32 = 0, which
-        // joins to 8192 and has to read as exactly half or the deck plays at a
-        // rate the fader is not asking for.
+        // Parked in the detent the surface sends cc 0 = 64 and cc 32 = 0, which joins to 8192 and
+        // has to read as exactly half or the deck plays at a rate the fader never asked for.
         resolve_move(&profile, &mut halves, &control_change(0, 0, 64));
         let centre = resolve_move(&profile, &mut halves, &control_change(0, 32, 0));
         assert_eq!(
@@ -1860,23 +1853,52 @@ mod tests {
 
     // A binding naming an address the mixer does not have would silently do
     // nothing at runtime, which is indistinguishable from a broken controller.
+    // Checked against the manifest `apply` resolves through, not a convenient one.
     #[test]
     fn every_binding_addresses_a_real_param() {
         for mapping in built_in_mappings() {
             let profile = mapping.profile(Some("A")).expect(mapping.name());
             for binding in &profile.bindings {
-                let Action::DeckParam { slot, param, .. } = &binding.action else {
-                    continue;
+                let (scope, slot, param) = match &binding.action {
+                    Action::DeckParam { slot, param, .. } => {
+                        (session_core::ParamScope::Deck, slot.as_str(), param.as_str())
+                    }
+                    Action::XfaderPosition => {
+                        (session_core::ParamScope::Master, "xfader", "position")
+                    }
+                    _ => continue,
                 };
                 assert!(
-                    session_core::CLASSIC_3BAND
-                        .descriptor(session_core::ParamScope::Deck, slot, param)
-                        .is_some(),
+                    crate::audio::MIXER.descriptor(scope, slot, param).is_some(),
                     "{}: {slot}/{param}",
                     mapping.name()
                 );
             }
         }
+    }
+
+    // The crossfader is the address the two shipped manifests disagree about, so a test
+    // reading the wrong one would pass while the hardware did nothing.
+    #[test]
+    fn the_live_mixer_is_the_one_the_crossfader_binding_resolves_against() {
+        assert!(crate::audio::MIXER
+            .descriptor(session_core::ParamScope::Master, "xfader", "position")
+            .is_some());
+    }
+
+    // Read off a real failure: the FLX6's output port was held by another client when the
+    // input opened, and skipping the retry left every LED dark for the rest of the session.
+    #[test]
+    fn an_output_that_failed_to_open_is_retried_while_its_input_stays_alone() {
+        let wanted = vec!["DDJ-FLX6".to_string(), "XDJ-1000MK2".to_string()];
+        let open_inputs = ["DDJ-FLX6"];
+
+        let inputs = ports_to_open(&wanted, |name| open_inputs.contains(&name));
+        assert_eq!(inputs, vec!["XDJ-1000MK2".to_string()]);
+
+        // Nothing is open for output, so the port whose input is already up is still tried.
+        let outputs = ports_to_open(&wanted, |_| false);
+        assert_eq!(outputs, wanted);
     }
 
     // Every shipped file has to build, or the app ships with a controller that

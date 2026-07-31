@@ -65,6 +65,13 @@ export function useKeyboard() {
     return false;
   }
 
+  // A range input and a select step themselves on the arrow cluster, and every fader in
+  // performance mode is a range, so taking the key stops a focused one responding.
+  function stepsItselfOnArrows(target: EventTarget | null): boolean {
+    if (target instanceof HTMLSelectElement) return true;
+    return target instanceof HTMLInputElement && target.type.toLowerCase() === 'range';
+  }
+
   function handleDeckCommand(deck: Deck, command: Command, shiftKey: boolean) {
     switch (command) {
       case commands.CUE:
@@ -136,8 +143,14 @@ export function useKeyboard() {
     }
 
     // Ahead of the repeat filter: holding an arrow has to walk a long list rather
-    // than step once.
-    if (appMode.mode === 'performance' && !isTyping(e) && BROWSE_KEYS.includes(e.key)) {
+    // than step once. A user's own binding still wins, since arrows are capturable.
+    if (
+      appMode.mode === 'performance' &&
+      !isTyping(e) &&
+      BROWSE_KEYS.includes(e.key) &&
+      !stepsItselfOnArrows(e.target) &&
+      getDeckCommandFromKey(resolveKey(e)) === null
+    ) {
       e.preventDefault();
       if (e.key === 'ArrowUp') browse.moveCursor(-1);
       else if (e.key === 'ArrowDown') browse.moveCursor(1);

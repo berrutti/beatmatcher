@@ -172,9 +172,8 @@ export type EditConstants = {
   minGestureMs: number;
 };
 
-// Read on first use because a module-level `export const` cannot await, and the
-// WASM module is only initialized inside the app's async init(). Memoized
-// because the timeline renderer reads these on every draw.
+// Read on first use because a module-level `export const` cannot await and WASM is only
+// initialized in the app's async init(). Memoized because the renderer reads these per draw.
 let editConstantsCache: EditConstants | undefined;
 
 export function editConstants(): EditConstants {

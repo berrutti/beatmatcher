@@ -10,9 +10,8 @@ pub trait AudioUnit: Send {
 
     fn process(&mut self, l: f32, r: f32) -> (f32, f32);
 
-    // Session-view mute (per-deck mute/solo). Not a param: it is audition-only,
-    // never logged, and must not become addressable from a `.bms` event. The
-    // strip forwards it to the unit filling the fader role.
+    // Session-view mute, audition-only and never logged, so it stays off the param path and
+    // out of `.bms` events. The strip forwards it to the unit filling the fader role.
     fn set_muted(&mut self, _muted: bool) {}
 
     // Master scope, so it arrives outside the strip's own param space. The strip
@@ -158,9 +157,8 @@ struct IsolatorChannel {
     low_split_hp: [Biquad; 2],
     high_split_lp: [Biquad; 2],
     high_split_hp: [Biquad; 2],
-    // The low band skips the second crossover, so without this it would be out
-    // of phase with the two bands that went through it and the sum would notch
-    // instead of staying flat.
+    // The low band skips the second crossover, so without this it lands out of phase with
+    // the two bands that went through it and the sum notches.
     low_align: Biquad,
 }
 
@@ -196,7 +194,9 @@ impl IsolatorChannel {
 
 struct Isolator3Band {
     channels: [IsolatorChannel; 2],
+    targets: [f32; 3],
     gains: [f32; 3],
+    smooth_coeff: f32,
 }
 
 impl AudioUnit for Isolator3Band {
@@ -207,20 +207,23 @@ impl AudioUnit for Isolator3Band {
             "high" => 2,
             _ => return,
         };
-        self.gains[band] = value.clamp(0.0, 1.0);
+        self.targets[band] = value.clamp(0.0, 1.0);
     }
 
     fn param(&self, param: &str) -> Option<f32> {
         match param {
-            "low" => Some(self.gains[0]),
-            "mid" => Some(self.gains[1]),
-            "high" => Some(self.gains[2]),
+            "low" => Some(self.targets[0]),
+            "mid" => Some(self.targets[1]),
+            "high" => Some(self.targets[2]),
             _ => None,
         }
     }
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        for (gain, target) in self.gains.iter_mut().zip(self.targets) {
+            *gain += (target - *gain) * self.smooth_coeff;
+        }
         (
             self.channels[0].process(l, &self.gains),
             self.channels[1].process(r, &self.gains),
@@ -246,7 +249,9 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
                 IsolatorChannel::new(sample_rate),
                 IsolatorChannel::new(sample_rate),
             ],
+            targets: [1.0; 3],
             gains: [1.0; 3],
+            smooth_coeff: 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp(),
         })),
         "fader" => Some(Box::new(Fader {
             position: 1.0,
@@ -284,9 +289,8 @@ mod tests {
     const SAMPLE_RATE: f32 = 44100.0;
     const PROBE_FRAMES: usize = 4410;
 
-    // One tone per EQ band (60 Hz under the 200 Hz low shelf, 1 kHz on the mid
-    // peak, 10 kHz over the 6 kHz high shelf) so cutting any single band shows
-    // up in the total.
+    // One tone per EQ band (60 Hz, 1 kHz, 10 kHz) against the 200 Hz shelf, 1 kHz peak and
+    // 6 kHz shelf, so cutting any single band shows up in the total.
     fn rms_through(unit: &mut dyn AudioUnit) -> f32 {
         let mut sum = 0.0;
         for frame in 0..PROBE_FRAMES {
@@ -302,6 +306,32 @@ mod tests {
     fn unit_for(slot: &str) -> Box<dyn AudioUnit> {
         let descriptor = CLASSIC_3BAND.strip_slot(slot).expect("slot");
         make_unit(descriptor.unit_id, SAMPLE_RATE).expect("unit")
+    }
+
+    // Every other gain in the mixer smooths, and this one is automatable, so a drawn kill
+    // lane would step a band to silence between two samples and click.
+    #[test]
+    fn an_isolator_band_reaches_its_new_gain_over_a_ramp_rather_than_at_once() {
+        let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("the isolator");
+        let tone = |frame: usize| {
+            (std::f32::consts::TAU * 60.0 * frame as f32 / SAMPLE_RATE).sin() * 0.3
+        };
+        for frame in 0..PROBE_FRAMES {
+            unit.process(tone(frame), tone(frame));
+        }
+
+        unit.set_param("low", 0.0);
+        let (stepped, _) = unit.process(tone(PROBE_FRAMES), tone(PROBE_FRAMES));
+        let settled_at = PROBE_FRAMES + 4410;
+        for frame in PROBE_FRAMES + 1..settled_at {
+            unit.process(tone(frame), tone(frame));
+        }
+        let (settled, _) = unit.process(tone(settled_at), tone(settled_at));
+
+        assert!(
+            stepped.abs() > settled.abs() * 10.0,
+            "the band vanished in one sample: stepped {stepped}, settled {settled}"
+        );
     }
 
     // A param the manifest advertises but the unit ignores would be silently
@@ -381,9 +411,8 @@ mod tests {
             .is_some());
     }
 
-    // A strip is used straight after construction, without a reset pass, so a
-    // unit that constructs itself somewhere other than its descriptor default
-    // would start the session on a value the editor never shows.
+    // A strip is used straight after construction, so a unit constructing itself away from
+    // its descriptor default would start the session on a value the editor never shows.
     #[test]
     fn constructed_units_match_the_manifest_defaults() {
         for manifest in session_core::MANIFESTS {
@@ -403,9 +432,8 @@ mod tests {
         }
     }
 
-    // A mixer that colours the signal while doing nothing is a defect. The
-    // bands sum to an allpass rather than to the input, so this is a magnitude
-    // check: the phase shift is inaudible, a notch at a crossover is not.
+    // A mixer that colours the signal while doing nothing is a defect. The bands sum to an
+    // allpass, so this checks magnitude: the phase shift is inaudible, a crossover notch is not.
     #[test]
     fn the_isolator_is_level_flat_at_unity() {
         for hz in [60.0, 300.0, 1000.0, 3000.0, 10_000.0] {
@@ -435,11 +463,17 @@ mod tests {
         for (band, hz) in [("low", 60.0), ("mid", 1000.0), ("high", 10_000.0)] {
             let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("unit");
             unit.set_param(band, 0.0);
-            let mut sum = 0.0;
+            let tone = |frame: usize| {
+                (std::f32::consts::TAU * hz * frame as f32 / SAMPLE_RATE).sin() * 0.5
+            };
+            // Past the gain ramp: the claim is that a killed band is silent, not that it
+            // gets there in one sample.
             for frame in 0..PROBE_FRAMES {
-                let phase = frame as f32 / SAMPLE_RATE;
-                let sample = (std::f32::consts::TAU * hz * phase).sin() * 0.5;
-                let (l, _) = unit.process(sample, sample);
+                unit.process(tone(frame), tone(frame));
+            }
+            let mut sum = 0.0;
+            for frame in PROBE_FRAMES..PROBE_FRAMES * 2 {
+                let (l, _) = unit.process(tone(frame), tone(frame));
                 sum += l * l;
             }
             let rms = (sum / PROBE_FRAMES as f32).sqrt();

@@ -99,9 +99,8 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (syncPromise) await syncPromise;
   }
 
-  // A rejected edit returns its input unchanged, but every wrapper round-trips
-  // through JSON, so the result is always a fresh array and a reference check
-  // alone would treat the rejection as an edit.
+  // A rejected edit returns its input unchanged, but every wrapper round-trips through
+  // JSON, so the result is always a fresh array and a reference check alone would miss it.
   function isSameEdit(next: SessionEvent[], current: SessionEvent[]): boolean {
     if (next === current) return true;
     if (next.length !== current.length) return false;

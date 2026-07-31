@@ -12,6 +12,7 @@ const props = defineProps<{
   accent: string;
   active: boolean;
   playing: boolean;
+  cueing: boolean;
   getBeat: () => number | null;
   coverArt: string | null;
 }>();
@@ -46,8 +47,8 @@ function draw() {
   ctx.stroke();
 
   // Held where it stopped, because scrubbing a paused deck moves the playhead at
-  // hand speed and whips the ring round.
-  if (props.playing) {
+  // hand speed and whips the ring round. A held CUE is audible, so it advances.
+  if (props.playing || props.cueing) {
     const beat = props.getBeat();
     if (beat !== null) {
       phase4 = (((beat % 4) + 4) % 4) / 4;

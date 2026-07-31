@@ -133,9 +133,8 @@ pub struct AppState {
     // the MIDI thread has no other way to know the session scheduler is running.
     app_mode: std::sync::Mutex<AppMode>,
     pub engine_push: Arc<EnginePush>,
-    // Set once at startup. The reverse of the MIDI dispatch closure: that one
-    // lets the controller reach the engine, this one lets the engine light the
-    // controller's buttons without `AppState` knowing about `MidiState`.
+    // Set once at startup, the reverse of the MIDI dispatch closure: this lets the engine
+    // light the controller's buttons without `AppState` knowing about `MidiState`.
     led_feedback: std::sync::Mutex<Option<LedFeedback>>,
 }
 
@@ -196,9 +195,8 @@ impl AppState {
         self.log("set_param", serde_json::Value::Object(payload));
     }
 
-    /// The one path a deck param changes through, whoever moved it. Logging from
-    /// here is what puts a MIDI move in the `.bms` on the same terms as a mouse
-    /// move, and what stops a second control path from bypassing the log.
+    /// The one path a deck param changes through, whoever moved it. Logging here puts a MIDI
+    /// move in the `.bms` on the same terms as a mouse move.
     pub(crate) fn set_deck_param(
         &self,
         origin: ParamOrigin,
@@ -213,9 +211,8 @@ impl AppState {
             .ok_or_else(|| format!("unknown deck: {}", deck))?;
         {
             let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
-            // A 14-bit control resolves a move on each half, so the same value
-            // arrives twice per physical move. Logging both would write an event
-            // nothing can hear.
+            // A 14-bit control resolves a move on each half, so the same value arrives twice per
+            // physical move. Logging both would write an event nothing can hear.
             if strip.param(slot, param) == Some(value) {
                 return Ok(());
             }
@@ -235,9 +232,8 @@ impl AppState {
             .ok_or_else(|| format!("unknown deck: {}", deck))
     }
 
-    /// The transport counterpart of `set_deck_param`: the one path play, pause
-    /// and cue change through, so a controller press is logged and mirrored to
-    /// the UI on the same terms as a click.
+    /// The transport counterpart of `set_deck_param`, so a controller press is logged and
+    /// mirrored to the UI on the same terms as a click.
     pub(crate) fn toggle_play(
         &self,
         origin: ParamOrigin,
@@ -414,14 +410,26 @@ impl AppState {
         self.set_playback_rate(origin, deck, rate)
     }
 
-    /// Wheel ticks accumulate on the deck and the audio thread consumes them, so
-    /// this neither waits for a block nor pushes a position: the transport mark
-    /// makes the next flush read whatever the wheel moved.
+    /// Wheel ticks accumulate on the deck and the audio thread consumes them, so this waits
+    /// for no block. The transport mark makes the next flush read whatever the wheel moved.
     pub(crate) fn jog(&self, origin: ParamOrigin, deck: &str, ticks: i32) -> Result<(), String> {
-        self.deck(deck)?
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .jog_pending += f64::from(ticks);
+        // Shift is scaled here rather than at consume time so the logged ticks are exactly
+        // the ones the engine acts on, and a replay needs no shift state of its own.
+        let scaled = {
+            let deck_arc = self.deck(deck)?;
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let scaled = crate::audio::logged_jog_ticks(
+                f64::from(ticks),
+                deck_state.jog_shift,
+                deck_state.is_playing,
+            );
+            deck_state.jog_pending += scaled;
+            scaled
+        };
+        self.log(
+            "jog",
+            serde_json::json!({ "deck": deck, "ticks": scaled }),
+        );
         self.engine_push.mark_transport(origin, deck, false);
         Ok(())
     }
@@ -525,9 +533,8 @@ impl AppState {
         Ok(payload)
     }
 
-    /// The controller's third loop button, which the keyboard reaches by holding
-    /// shift over loop out. Resolved from engine state rather than mirrored from
-    /// the UI's own view of it.
+    /// The controller's third loop button, which the keyboard reaches with shift over loop
+    /// out. Resolved from engine state rather than mirrored from the UI.
     pub(crate) fn exit_or_reloop(
         &self,
         origin: ParamOrigin,
@@ -551,9 +558,8 @@ impl AppState {
         Ok(DeckSyncPayload::from_deck(&deck_state, false))
     }
 
-    /// Cue is headphone routing rather than a mixer move, so it is not a
-    /// manifest param and does not go through `set_deck_param`. It is still
-    /// logged, under its own event type.
+    /// Cue is headphone routing rather than a mixer move, so it skips `set_deck_param`.
+    /// It is still logged, under its own event type.
     fn apply_cue_active(&self, origin: ParamOrigin, deck: &str, active: bool) {
         self.log(
             "set_cue_active",
@@ -579,9 +585,14 @@ impl AppState {
     /// Position is one master value, but the gain it implies is per strip, so
     /// every strip is re-resolved against its own assign on each move.
     pub(crate) fn set_xfader_position(&self, origin: ParamOrigin, position: f32) {
-        self.audio.monitor.set_xfader_position(position);
+        // A 14-bit control resolves a move on each half, so one sweep would otherwise
+        // re-resolve every strip and log an event thousands of times over.
+        if !self.audio.monitor.set_xfader_position(position) {
+            return;
+        }
         self.resolve_xfader_gains();
-        self.log_param(None, "xfader", "position", position as f64);
+        let landed = self.audio.monitor.xfader_position();
+        self.log_param(None, "xfader", "position", landed as f64);
         self.engine_push.mark_xfader(origin);
     }
 

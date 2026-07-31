@@ -27,8 +27,7 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const onPlaylistList = computed(() => listId.value === 'playlists');
 
-  // The anchor is the row's own key, so a re-sort moves the highlight with the
-  // track rather than leaving it on whatever now occupies that position, and a
+  // The anchor is the row's own key, so a re-sort moves the highlight with the track and a
   // filter that excludes the anchored row reads as -1 without discarding it.
   const cursorIndex = computed(() => {
     const anchor = anchors.value[listId.value];
@@ -37,9 +36,8 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const cursorKey = computed(() => rows.value[cursorIndex.value] ?? null);
 
-  // Keyed by list because the playlists overview lives in the always-mounted
-  // Browser while the two track lists are children of it, so which registration
-  // wins cannot be left to mount order.
+  // Keyed by list because the playlists overview lives in the always-mounted Browser while
+  // the track lists are its children, so mount order cannot decide which registration wins.
   function setRows(from: string, keys: string[]): void {
     if (from !== listId.value) return;
     rows.value = keys;

@@ -86,7 +86,7 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
   }
 
   function zoomAt(frac: number, deltaY: number): void {
-    setView(
+    setViewFromUser(
       zoomAroundCursor(currentView(), frac, deltaY, ZOOM_SENSITIVITY, durationMs(), MIN_VIEW_MS)
     );
   }

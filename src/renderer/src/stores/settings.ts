@@ -23,9 +23,8 @@ export type FaderCurveOption = (typeof FADER_CURVE_OPTIONS)[number];
 // this one, so it is the fallback when a file names none.
 export const DEFAULT_MIXER_ID = 'classic-3band';
 
-// What the engine builds its strips on today. It diverged from the fallback when
-// the crossfader was added, since that could not go into a frozen manifest
-// without refusing every session recorded against it.
+// What the engine builds its strips on today. It diverged from the fallback with the
+// crossfader, which could not go into a frozen manifest without refusing older sessions.
 export const LIVE_MIXER_ID = 'classic-3band-v2';
 
 type Stored = {

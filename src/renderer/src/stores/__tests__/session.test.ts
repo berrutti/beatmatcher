@@ -307,3 +307,63 @@ describe('playback gate while a session is decoding', () => {
     expect(store.isLoading).toBe(false);
   });
 });
+
+function pathArg(args: unknown): string {
+  if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
+    return args.path;
+  }
+  return '';
+}
+
+describe('a preload failure against the session it was started for', () => {
+  let preloadRejects: Record<string, () => void>;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    fakeBms = {};
+    preloadRejects = {};
+    mockedInvoke.mockImplementation((cmd, args) => {
+      const path = pathArg(args);
+      if (cmd === 'read_file') return Promise.resolve(fakeBms[path] ?? null);
+      if (cmd === 'preload_session') {
+        return new Promise((_resolve, reject) => {
+          preloadRejects[path] = () => reject(new Error('decode failed'));
+        });
+      }
+      return Promise.resolve(null);
+    });
+  });
+
+  it('leaves the newer session loading when the older one fails to preload', async () => {
+    const store = useSessionStore();
+    fakeBms['/sessions/a.bms'] = sessionContent('/music/a.mp3');
+    fakeBms['/sessions/b.bms'] = sessionContent('/music/b.mp3');
+
+    await store.openSessionFromPath('/sessions/a.bms');
+    await store.openSessionFromPath('/sessions/b.bms');
+
+    preloadRejects['/sessions/a.bms']();
+    await vi.waitFor(() => {
+      expect(preloadRejects['/sessions/b.bms']).toBeTypeOf('function');
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.loadProgress?.path).toBe('/sessions/b.bms');
+    expect(store.isLoading).toBe(true);
+  });
+
+  it('clears the progress when the session that failed is still the loaded one', async () => {
+    const store = useSessionStore();
+    fakeBms['/sessions/a.bms'] = sessionContent('/music/a.mp3');
+
+    await store.openSessionFromPath('/sessions/a.bms');
+    preloadRejects['/sessions/a.bms']();
+    await vi.waitFor(() => {
+      expect(store.loadProgress).toBe(null);
+    });
+
+    expect(store.isLoading).toBe(false);
+  });
+});

@@ -49,10 +49,20 @@ describe('useTimelineView follow', () => {
     expect(view.viewStartMs.value).toBe(74_000);
   });
 
-  it('follows a zoom the user made rather than fighting it', () => {
+  it('keeps a wheel zoom the user aimed away from the playhead', () => {
+    const view = camera();
+    view.followPlayhead(5_000);
+    view.zoomAt(1, -2_000);
+    const zoomedStart = view.viewStartMs.value;
+    view.followPlayhead(5_100);
+    expect(view.viewStartMs.value).toBe(zoomedStart);
+  });
+
+  it('follows at the zoom the user chose once the playhead re-enters the view', () => {
     const view = camera();
     view.zoomAt(0.5, -100);
     const zoomed = view.viewDurationMs.value;
+    view.followPlayhead(5_000);
     view.followPlayhead(90_000);
     expect(view.viewDurationMs.value).toBe(zoomed);
     expect(view.viewStartMs.value).toBe(90_000 - zoomed * 0.1);

@@ -118,9 +118,15 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
 
         // A master crossfader move names no deck but can make any of them
         // audible, so it is the one command that has to re-check all of them.
+        // Sorted because the map is a HashMap: an unordered walk numbered the same
+        // recording's tracks differently from one run to the next.
         let moved: Vec<String> = match command.deck_id() {
             Some(deck_id) => vec![deck_id.to_string()],
-            None => decks.keys().cloned().collect(),
+            None => {
+                let mut all: Vec<String> = decks.keys().cloned().collect();
+                all.sort();
+                all
+            }
         };
         for deck_id in moved {
             let Some(state) = decks.get_mut(&deck_id) else {
@@ -193,6 +199,54 @@ mod tests {
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].elapsed_ms, 5000.0);
+    }
+
+    // One crossfader move can open several decks at once, and the deck map is a HashMap,
+    // so an unordered walk numbered the same recording's tracks differently per run.
+    #[test]
+    fn decks_opened_by_one_crossfader_move_are_listed_in_a_stable_order() {
+        let events = vec![
+            assign_event(0.0, "A", "b"),
+            assign_event(0.0, "B", "b"),
+            assign_event(0.0, "C", "b"),
+            assign_event(0.0, "D", "b"),
+            SessionEvent::param(0.0, None, "xfader", "position", -1.0),
+            SessionEvent {
+                path: Some("/a.wav".to_string()),
+                ..make_event(100.0, "load_track", "A")
+            },
+            SessionEvent {
+                path: Some("/b.wav".to_string()),
+                ..make_event(100.0, "load_track", "B")
+            },
+            SessionEvent {
+                path: Some("/c.wav".to_string()),
+                ..make_event(100.0, "load_track", "C")
+            },
+            SessionEvent {
+                path: Some("/d.wav".to_string()),
+                ..make_event(100.0, "load_track", "D")
+            },
+            make_event(200.0, "play", "A"),
+            make_event(200.0, "play", "B"),
+            make_event(200.0, "play", "C"),
+            make_event(200.0, "play", "D"),
+            SessionEvent::param(5000.0, None, "xfader", "position", 1.0),
+        ];
+
+        let expected: Vec<String> = build_cue_points(&events)
+            .into_iter()
+            .map(|point| point.track_path)
+            .collect();
+        assert_eq!(expected, vec!["/a.wav", "/b.wav", "/c.wav", "/d.wav"]);
+
+        for _ in 0..200 {
+            let paths: Vec<String> = build_cue_points(&events)
+                .into_iter()
+                .map(|point| point.track_path)
+                .collect();
+            assert_eq!(paths, expected);
+        }
     }
 
     fn assign_event(elapsed_ms: f64, deck: &str, assign: &str) -> SessionEvent {

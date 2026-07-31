@@ -60,9 +60,8 @@ export const useMixerStore = defineStore('mixer', () => {
   // defaults come from its descriptors rather than being restated here.
   const deckParams = mixerParams(LIVE_MIXER_ID);
 
-  // Left to right on the strip. Where a control sits is a layout decision, so it
-  // is stated here rather than read off the manifest; a band this does not name
-  // still renders, after the ones that do.
+  // Left to right on the strip. Where a control sits is a layout decision, so it is stated
+  // here rather than read off the manifest. A band this omits still renders, after these.
   const EQ_BAND_ORDER = ['low', 'mid', 'high'];
 
   function specsForSlot(slot: string, order: string[]): MixerParamSpec[] {
@@ -179,9 +178,8 @@ export const useMixerStore = defineStore('mixer', () => {
     swarmSelected[deckId] = active;
   }
 
-  // Per deck, because scrubs overlap: two decks scrubbed at once, or a scrub whose
-  // end is lost to a window blur, used to restore one deck's volume onto another
-  // and leave the second silent.
+  // Per deck, because scrubs overlap: two at once, or one whose end is lost to a window
+  // blur, used to restore one deck's volume onto another and leave the second silent.
   const scrubSavedVolume: Partial<Record<DeckId, number>> = {};
 
   function startScrubMute(deckId: DeckId) {
@@ -251,9 +249,8 @@ export const useMixerStore = defineStore('mixer', () => {
     return Object.prototype.hasOwnProperty.call(params, id);
   }
 
-  // Engine-originated only, and deliberately does not invoke back: Rust never
-  // pushes a value the UI itself wrote, so anything arriving here is a move the
-  // store has not already made.
+  // Engine-originated only, and deliberately does not invoke back: Rust never pushes a
+  // value the UI wrote, so anything arriving here is a move the store has not made.
   function assignFromValue(value: number): XfaderAssign {
     if (value === 1) return 'a';
     if (value === 2) return 'b';
@@ -302,9 +299,8 @@ export const useMixerStore = defineStore('mixer', () => {
     for (const deckId of LIVE_DECKS) setParam(deckId, FILTER_ACTIVE, 1);
   }
 
-  // Keyed on the settings arriving, not on the value: the preference names the
-  // launch, so flipping the switch mid-set must not reach into a live mixer in
-  // either direction.
+  // Keyed on the settings arriving rather than the value, because the preference names the
+  // launch and flipping the switch mid-set must not reach into a live mixer either way.
   watch(
     () => useSettingsStore().hydrated,
     (hydrated) => {

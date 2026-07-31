@@ -11,6 +11,10 @@ use std::sync::Arc;
 // 10^(-2/20) = 0.7943...
 pub const DEFAULT_MASTER_GAIN: f32 = 0.7943;
 
+// A percent below -100 would drive the step negative, and `next_pos` and `read_at` both
+// assume forward motion. The engine floors to this too, or the two disagree.
+pub const JOG_FACTOR_MIN: f64 = 0.1;
+
 // Decoded track samples keyed by path. The simulation only reads each track's
 // frame count (samples / channels); the buffers themselves are the live
 // engine's, passed through unchanged.
@@ -32,6 +36,10 @@ pub struct DeckSim {
     pub beat_offset_frames: f64,
     pub total_frames: f64,
     pub is_playing: bool,
+    // The travel a wheel gesture still owes, and when it was handed over. The engine
+    // spreads it over the filter settle rather than applying it at once.
+    pub jog_travel: f64,
+    pub jog_ms: f64,
 }
 
 impl Default for DeckSim {
@@ -50,6 +58,8 @@ impl Default for DeckSim {
             beat_offset_frames: 0.0,
             total_frames: 0.0,
             is_playing: false,
+            jog_travel: 0.0,
+            jog_ms: 0.0,
         }
     }
 }
@@ -86,6 +96,7 @@ pub struct SimState {
     pub master_gain: f32,
     pub xfader_position: f32,
     pub fader_curve: crate::FaderCurve,
+    pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
 impl SimState {
@@ -96,6 +107,7 @@ impl SimState {
             master_gain: DEFAULT_MASTER_GAIN,
             xfader_position: 0.0,
             fader_curve: crate::FaderCurve::default(),
+            jog_rotation_speed: crate::JogRotationSpeed::default(),
         }
     }
 }
@@ -114,6 +126,9 @@ pub struct DeckSnap {
     pub bpm: Option<f64>,
     pub beat_offset_frames: f64,
     pub total_frames: f64,
+    // A scrub landing mid-gesture would otherwise lose whatever the wheel still owed.
+    pub jog_travel: f64,
+    pub jog_ms: f64,
 }
 
 #[derive(Clone)]
@@ -149,6 +164,7 @@ pub struct SessionSnapshot {
     pub master_gain: f32,
     pub xfader_position: f32,
     pub fader_curve: crate::FaderCurve,
+    pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
 // Continuous beat count at a playback position, given the track's beat grid.
@@ -161,13 +177,38 @@ pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
     (position_sec - beat_offset_sec) * bpm / 60.0
 }
 
+/// How much of a gesture has arrived by `ms`. The engine's one-pole reaches this same
+/// total, so the two only differ inside the settle by less than one block.
+fn jog_settled(sim: &DeckSim, ms: f64) -> f64 {
+    if sim.jog_travel == 0.0 {
+        return 0.0;
+    }
+    let elapsed = (ms - sim.jog_ms).max(0.0) / 1000.0;
+    sim.jog_travel * (1.0 - (-elapsed / crate::JOG_FILTER_TAU_SEC).exp())
+}
+
+/// Banks the position reached so far and leaves the gesture its unsettled remainder, so
+/// an event landing mid-scrub neither drops the rest nor replays what already arrived.
+fn commit_pos(sim: &mut DeckSim, ms: f64, sample_rate_f64: f64) {
+    let committed = sim_pos(sim, ms, sample_rate_f64);
+    let remaining = sim.jog_travel - jog_settled(sim, ms);
+    sim.play_start_frame = committed;
+    sim.play_start_ms = ms;
+    sim.jog_travel = remaining;
+    sim.jog_ms = ms;
+}
+
 pub fn sim_pos(sim: &DeckSim, ms: f64, sample_rate_f64: f64) -> f64 {
     if !sim.is_playing {
-        return sim.play_start_frame;
+        let settled = jog_settled(sim, ms);
+        if settled == 0.0 {
+            return sim.play_start_frame;
+        }
+        return (sim.play_start_frame + settled).clamp(0.0, sim.total_frames);
     }
     let effective_rate = sim.rate * sim.jog_hold_factor;
     let elapsed = (ms - sim.play_start_ms).max(0.0) / 1000.0 * sample_rate_f64 * effective_rate;
-    let raw = sim.play_start_frame + elapsed;
+    let raw = sim.play_start_frame + elapsed + jog_settled(sim, ms);
     // Engine parity: play linearly until loop_end, only then wrap (deck.rs next_pos).
     if sim.loop_active && sim.loop_end > sim.loop_start && raw >= sim.loop_end {
         let len = sim.loop_end - sim.loop_start;
@@ -199,6 +240,8 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
                     beat_offset_frames: d.beat_offset_frames,
                     total_frames: d.total_frames,
                     is_playing: d.is_playing,
+                    jog_travel: d.jog_travel,
+                    jog_ms: d.jog_ms,
                 },
             )
         })
@@ -227,6 +270,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         decks,
         strips,
         master_gain: snap.master_gain,
+        jog_rotation_speed: snap.jog_rotation_speed,
         xfader_position: snap.xfader_position,
         fader_curve: snap.fader_curve,
     }
@@ -303,8 +347,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         }
         SessionCommand::Stop { deck } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.is_playing = false;
         }
         SessionCommand::StopAtCue {
@@ -328,8 +371,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         }
         SessionCommand::SetPlaybackRate { deck, rate } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.rate = rate.max(0.1);
         }
         SessionCommand::SetXfaderAssign { deck, assign } => {
@@ -342,19 +384,34 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         SessionCommand::SetFaderCurve { curve } => {
             state.fader_curve = curve;
         }
+        SessionCommand::SetJogRotationSpeed { speed } => {
+            state.jog_rotation_speed = speed;
+        }
+        // The engine spreads this travel over the wheel filter's settle, which is silent on
+        // a paused deck and a brief bend on a playing one. Only the total reaches the sim.
+        SessionCommand::Jog { deck, ticks } => {
+            let speed = state.jog_rotation_speed;
+            let sim = state.decks.entry(deck.to_string()).or_default();
+            let travel = ticks * speed.frames_per_tick(sample_rate_f64);
+            let moved = if sim.is_playing {
+                sim.rate * travel / crate::JOG_PAUSED_MULTIPLIER
+            } else {
+                travel
+            };
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
+            sim.jog_travel += moved;
+        }
         SessionCommand::SetNudge { deck, percent } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
-            sim.play_start_ms = event.elapsed_ms;
-            sim.jog_hold_factor = 1.0 + percent / 100.0;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
+            sim.jog_hold_factor = (1.0 + percent / 100.0).max(JOG_FACTOR_MIN);
         }
         SessionCommand::LoopIn { deck, cue_sec } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
             // Commit the current (possibly looped) position before clearing
             // loop_active, otherwise sim_pos would fall back to its raw linear
             // anchor and jump to where the deck would be had it never looped.
-            sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             if let Some(cue_sec) = cue_sec {
                 sim.loop_start = cue_sec * sample_rate_f64;
                 sim.cue_point = cue_sec * sample_rate_f64;
@@ -382,8 +439,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             // Commit the current looped position before leaving the loop, so the
             // subsequent linear sim_pos continues from inside the loop region
             // instead of jumping to the un-looped linear position.
-            sim.play_start_frame = sim_pos(sim, event.elapsed_ms, sample_rate_f64);
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.loop_active = false;
         }
         SessionCommand::Reloop { deck } => {
@@ -493,6 +549,8 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
                     bpm: sim.bpm,
                     beat_offset_frames: sim.beat_offset_frames,
                     total_frames: sim.total_frames,
+                    jog_travel: sim.jog_travel - jog_settled(sim, ms),
+                    jog_ms: ms,
                 },
             )
         })
@@ -524,6 +582,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         master_gain: state.master_gain,
         xfader_position: state.xfader_position,
         fader_curve: state.fader_curve,
+        jog_rotation_speed: state.jog_rotation_speed,
     }
 }
 
@@ -1297,6 +1356,104 @@ mod tests {
         // At t=2000ms: 44100 + 44100 * 1.04 = 44100 + 45864 = 89964.
         let pos = sim_pos(&state.decks["A"], 2000.0, SAMPLE_RATE_F64);
         assert_eq!(pos, SAMPLE_RATE_F64 + SAMPLE_RATE_F64 * 1.04);
+    }
+
+    fn jogged(is_playing: bool, rate: f64, ticks: f64, speed: &str) -> SimState {
+        let mut state = SimState::new();
+        state.decks.insert(
+            "A".to_string(),
+            DeckSim {
+                is_playing,
+                play_start_ms: 0.0,
+                play_start_frame: 0.0,
+                rate,
+                total_frames: 100_000_000.0,
+                ..Default::default()
+            },
+        );
+        for event in [
+            SessionEvent {
+                event_type: "set_jog_rotation_speed".to_string(),
+                speed: Some(speed.to_string()),
+                ..Default::default()
+            },
+            SessionEvent {
+                event_type: "jog".to_string(),
+                elapsed_ms: 1000.0,
+                deck: Some("A".to_string()),
+                ticks: Some(ticks),
+                ..Default::default()
+            },
+        ] {
+            sim_apply_event(&event, &mut state, &HashMap::new(), SAMPLE_RATE);
+        }
+        state
+    }
+
+    // The engine's one-pole has unity DC gain, so a scrub's total travel is its tick count
+    // and the sim can stay analytic. Pinned against the engine by the deck.rs travel tests.
+    #[test]
+    fn a_paused_scrub_moves_the_playhead_by_its_tick_count() {
+        let state = jogged(false, 1.0, 6.0, "rpm33");
+        let expected = 6.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
+        let settled = sim_pos(&state.decks["A"], 3000.0, SAMPLE_RATE_F64);
+        assert!((settled - expected).abs() < 1e-6, "settled {settled}, want {expected}");
+    }
+
+    // 45 covers less audio per revolution, so the same tick is worth less.
+    #[test]
+    fn the_rotation_speed_decides_what_a_tick_is_worth() {
+        let settled = |speed| sim_pos(&jogged(false, 1.0, 6.0, speed).decks["A"], 3000.0, SAMPLE_RATE_F64);
+        let at_33 = settled("rpm33");
+        let at_45 = settled("rpm45");
+        assert!(at_45 < at_33 && at_45 > 0.0, "33 {at_33}, 45 {at_45}");
+    }
+
+    // A bend on a playing deck is the same travel over the multiplier, scaled by the rate
+    // the deck is running at, which is what `next_pos` does per frame.
+    #[test]
+    fn a_playing_bend_moves_the_playhead_by_the_scrub_over_the_multiplier() {
+        let scrub = 6.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
+        let expected = 1.08 * scrub / crate::JOG_PAUSED_MULTIPLIER;
+        // Read well past the settle, against the same deck with an untouched wheel.
+        let at = |ticks| sim_pos(&jogged(true, 1.08, ticks, "rpm33").decks["A"], 4000.0, SAMPLE_RATE_F64);
+        let moved = at(6.0) - at(0.0);
+        assert!((moved - expected).abs() < 1e-6, "moved {moved}, want {expected}");
+    }
+
+    // The engine floors this in `set_nudge_percent`, so a sim that does not walks the
+    // playhead backwards and puts the timeline somewhere the render never goes.
+    #[test]
+    fn a_nudge_below_the_floor_is_floored_the_way_the_engine_floors_it() {
+        let mut state = SimState::new();
+        state.decks.insert(
+            "A".to_string(),
+            DeckSim {
+                is_playing: true,
+                play_start_ms: 0.0,
+                play_start_frame: 0.0,
+                rate: 1.0,
+                jog_hold_factor: 1.0,
+                total_frames: 1_000_000.0,
+                ..Default::default()
+            },
+        );
+        sim_apply_event(
+            &SessionEvent {
+                event_type: "set_nudge".to_string(),
+                elapsed_ms: 0.0,
+                deck: Some("A".to_string()),
+                percent: Some(-200.0),
+                ..Default::default()
+            },
+            &mut state,
+            &HashMap::new(),
+            SAMPLE_RATE,
+        );
+
+        assert_eq!(state.decks["A"].jog_hold_factor, JOG_FACTOR_MIN);
+        let pos = sim_pos(&state.decks["A"], 1000.0, SAMPLE_RATE_F64);
+        assert!(pos > 0.0, "a floored nudge still advances, got {pos}");
     }
 
     #[test]

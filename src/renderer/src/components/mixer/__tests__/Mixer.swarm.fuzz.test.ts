@@ -65,9 +65,8 @@ describe('the mixer under fuzzed swarm drags', () => {
     vi.useRealTimers();
   });
 
-  // The component computes each drag as a delta against the dragged deck and applies
-  // it to every selected channel; only the store clamps. Driven through the real
-  // slider so the component's own arithmetic runs.
+  // The component computes each drag as a delta against the dragged deck and only the store
+  // clamps. Driven through the real slider so the component's own arithmetic runs.
   function dragFader(index: number, value: number) {
     const faders = wrapper?.findAll('input.mixer__fader') ?? [];
     const fader = faders[index];

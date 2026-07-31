@@ -127,6 +127,9 @@ describe('timeline camera under fuzzed input', () => {
 
     for (let step = 0; step < 3000; step++) {
       camera.zoomAt(random(), wildValue(random));
+      // A zoom is a user gesture and suspends follow: a playhead inside the zoomed
+      // view re-arms it, which is what this asserts about.
+      camera.followPlayhead(camera.viewStartMs.value + random() * camera.viewDurationMs.value);
       const ms = random() * totalMs;
       const before = camera.viewStartMs.value;
       camera.followPlayhead(ms);
