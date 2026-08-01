@@ -12,6 +12,7 @@ import type {
 import { DECK_ACCENTS, DECK_LANE_KEYS } from '@renderer/utils/types';
 import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
 import { formatMs } from '@renderer/utils/time';
+import { beatLineStep } from '@renderer/utils/beatGrid';
 import {
   overlapsRange,
   msToFrac,
@@ -328,8 +329,7 @@ function drawClipBeatGrid(
     const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
     if (pxPerBeat < BEAT_LINE_W) continue;
 
-    let step = 1;
-    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= BEATS_PER_BAR;
+    const step = beatLineStep(pxPerBeat, MIN_BEAT_SPACING_PX, BEATS_PER_BAR);
 
     const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
     const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);

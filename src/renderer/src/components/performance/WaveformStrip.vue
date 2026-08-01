@@ -37,6 +37,8 @@ const sources = computed(() =>
       getDenseData: () => deck.denseSpectralData,
       getDenseRate: () => deck.denseSpectralRate,
       isWaveformLoading: () => deck.waveformLoading,
+      getLoopRegion: () => deck.loopRegion,
+      getLoopActive: () => deck.loopActive,
       accent: deck.accent
     };
   })

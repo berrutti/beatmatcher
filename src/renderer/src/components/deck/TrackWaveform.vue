@@ -12,6 +12,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
 import { buildWaveformImageData, maxBarTop } from '@renderer/utils/waveformImage';
+import { loopRegionRect } from '@renderer/utils/loopRegionRect';
 
 const props = defineProps<{
   accent: string;
@@ -91,11 +92,11 @@ function draw() {
   ctx.putImageData(waveImgData, marginPx, 0);
 
   const usableW = w - SIDE_MARGIN * 2;
-  const region = props.loopRegion;
-  if (region && trackDuration > 0) {
-    const x1 = SIDE_MARGIN + Math.max(0, (region.startSec / trackDuration) * usableW);
-    const x2 = SIDE_MARGIN + Math.min(usableW, (region.endSec / trackDuration) * usableW);
-    if (x2 > x1) {
+  if (trackDuration > 0) {
+    const xFor = (sec: number) => SIDE_MARGIN + (sec / trackDuration) * usableW;
+    const rect = loopRegionRect(xFor, props.loopRegion, w);
+    if (rect) {
+      const { startX: x1, endX: x2 } = rect;
       ctx.fillStyle = props.loopActive ? '#ca8a04' : '#78716c';
       ctx.globalAlpha = 0.3;
       ctx.fillRect(x1, 0, x2 - x1, h);
