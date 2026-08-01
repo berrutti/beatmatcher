@@ -373,12 +373,7 @@ function drawTriangle(
 }
 
 // Two triangles so a bar reads at a glance instead of only through line density.
-function drawBarMarker(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y0: number,
-  stripH: number
-): void {
+function drawBarMarker(ctx: CanvasRenderingContext2D, x: number, y0: number, stripH: number): void {
   ctx.save();
   drawTriangle(ctx, x, y0, BAR_MARKER_TRI_H);
   drawTriangle(ctx, x, y0 + stripH, -BAR_MARKER_TRI_H);
@@ -431,7 +426,6 @@ function drawLoadingOverlay(
   ctx.fillRect(0, y0, width, stripH);
 }
 
-// Same x for every strip, so drawn once spanning the whole canvas height.
 function drawPlayhead(ctx: CanvasRenderingContext2D, x: number, height: number): void {
   ctx.lineWidth = 3;
   ctx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -447,7 +441,6 @@ function drawPlayhead(ctx: CanvasRenderingContext2D, x: number, height: number):
   ctx.stroke();
 }
 
-// Always shown, even when a strip has no track loaded.
 function drawStripSeparators(
   ctx: CanvasRenderingContext2D,
   stripCount: number,
@@ -530,6 +523,7 @@ function draw() {
     if (src.isWaveformLoading()) drawLoadingOverlay(ctx, y0, w, stripH);
   }
 
+  // x is the same for every strip, unlike the per-strip draws in the loop above.
   drawPlayhead(ctx, snapToDevicePixel(w / 2, dpr), h);
   drawStripSeparators(ctx, n, w, stripH);
 

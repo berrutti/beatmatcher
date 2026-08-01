@@ -16,7 +16,11 @@ export function beatLineStep(
 
 export type BeatTier = 'phrase' | 'bar' | 'beat';
 
-export function beatTier(beatNumber: number, beatsPerBar: number, beatsPerPhrase: number): BeatTier {
+export function beatTier(
+  beatNumber: number,
+  beatsPerBar: number,
+  beatsPerPhrase: number
+): BeatTier {
   if (beatNumber % beatsPerPhrase === 0) return 'phrase';
   if (beatNumber % beatsPerBar === 0) return 'bar';
   return 'beat';
