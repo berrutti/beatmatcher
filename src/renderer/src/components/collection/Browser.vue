@@ -6,7 +6,7 @@
           tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'all' }"
-          @click="tab = 'all'"
+          @click="browse.setTab('all')"
         >
           {{ $t('browser.all') }}
         </button>
@@ -14,7 +14,7 @@
           tabindex="-1"
           class="collection__tab"
           :class="{ 'collection__tab--active': tab === 'playlists' }"
-          @click="tab = 'playlists'"
+          @click="browse.setTab('playlists')"
         >
           {{ $t('browser.playlists') }}
         </button>
@@ -75,7 +75,7 @@
           tabindex="-1"
           class="collection__header-btn"
           style="margin-left: 0"
-          @click="activePlaylistId = null"
+          @click="browse.back()"
         >
           {{ $t('browser.back') }}
         </button>
@@ -84,7 +84,7 @@
 
     <AllTracksView v-if="tab === 'all'" :tracks="filteredTracks" />
 
-    <div v-else-if="activePlaylistId === null" class="collection__body">
+    <div v-else-if="activePlaylistId === null" ref="overviewEl" class="collection__body">
       <div v-if="store.playlists.length === 0" class="collection__empty">
         {{ $t('browser.noPlaylists') }}
       </div>
@@ -106,6 +106,8 @@
           v-for="playlist in store.playlists"
           :key="playlist.id"
           class="collection__row collection__item--playlist"
+          :class="{ 'collection__item--cursor': isCursor(playlist.id) }"
+          :data-row-key="playlist.id"
           @click="openPlaylist(playlist.id)"
         >
           <td class="collection__td collection__td--title">
@@ -150,10 +152,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { useBrowseStore } from '@renderer/stores/browse';
+import { useRowCursor } from '@renderer/composables/useRowCursor';
 import { matchesTrackQuery } from '@renderer/utils/trackSearch';
 import { displayName } from '@renderer/utils/trackDisplay';
 import { TABLE_CHROME_WIDTH } from '@renderer/composables/useColumnResize';
@@ -165,14 +169,21 @@ import AllTracksView from '@renderer/components/collection/AllTracksView.vue';
 import PlaylistDetailView from '@renderer/components/collection/PlaylistDetailView.vue';
 
 const store = useCollectionStore();
+const browse = useBrowseStore();
 
 const isDragOver = ref(false);
 const pendingClear = ref(false);
 const searchQuery = ref('');
 
-const tab = ref<'all' | 'playlists'>('all');
-const activePlaylistId = ref<string | null>(null);
-const renamingPlaylist = ref(false);
+const tab = computed(() => browse.tab);
+const activePlaylistId = computed(() => browse.activePlaylistId);
+const overviewEl = ref<HTMLElement | null>(null);
+// Named rather than a flag so navigating away closes the editor on its own,
+// including when the controller is what navigated.
+const renamingPlaylistId = ref<string | null>(null);
+const renamingPlaylist = computed(
+  () => renamingPlaylistId.value !== null && renamingPlaylistId.value === activePlaylistId.value
+);
 const renameValue = ref('');
 const renameInputEl = ref<HTMLInputElement | null>(null);
 
@@ -200,9 +211,7 @@ function confirmClear() {
 
 function confirmDeletePlaylist() {
   if (pendingDeletePlaylistId.value) {
-    if (activePlaylistId.value === pendingDeletePlaylistId.value) {
-      activePlaylistId.value = null;
-    }
+    if (activePlaylistId.value === pendingDeletePlaylistId.value) browse.back();
     store.deletePlaylist(pendingDeletePlaylistId.value);
   }
   pendingDeletePlaylistId.value = null;
@@ -213,16 +222,27 @@ const activePlaylist = computed(
 );
 
 function openPlaylist(id: string) {
-  activePlaylistId.value = id;
-  renamingPlaylist.value = false;
+  browse.openPlaylist(id);
 }
+
+const { cursorKey, isCursor } = useRowCursor(
+  () => 'playlists',
+  () => store.playlists.map((playlist) => playlist.id)
+);
+
+watch(cursorKey, async (key) => {
+  if (key === null) return;
+  await nextTick();
+  const row = overviewEl.value?.querySelector(`[data-row-key="${CSS.escape(key)}"]`);
+  row?.scrollIntoView({ block: 'nearest' });
+});
 
 async function onCreatePlaylist() {
   store.createPlaylist(`Playlist ${store.playlists.length + 1}`);
   const created = store.playlists[store.playlists.length - 1];
-  activePlaylistId.value = created.id;
+  browse.openPlaylist(created.id);
   renameValue.value = created.name;
-  renamingPlaylist.value = true;
+  renamingPlaylistId.value = created.id;
   await nextTick();
   renameInputEl.value?.select();
 }
@@ -231,7 +251,7 @@ async function startRename() {
   const p = activePlaylist.value;
   if (!p) return;
   renameValue.value = p.name;
-  renamingPlaylist.value = true;
+  renamingPlaylistId.value = p.id;
   await nextTick();
   renameInputEl.value?.select();
 }
@@ -241,11 +261,11 @@ function confirmRename() {
   if (name && activePlaylistId.value) {
     store.renamePlaylist(activePlaylistId.value, name);
   }
-  renamingPlaylist.value = false;
+  renamingPlaylistId.value = null;
 }
 
 function cancelRename() {
-  renamingPlaylist.value = false;
+  renamingPlaylistId.value = null;
 }
 
 const AUDIO_EXT = /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i;
@@ -563,6 +583,10 @@ async function openFolderDialog() {
 
 .collection__item--played .collection__item-name {
   color: var(--color-muted);
+}
+
+.collection__item--cursor {
+  background: var(--color-surface);
 }
 
 .collection__item-btn {

@@ -4,11 +4,11 @@ import en from './locales/en.json';
 import de from './locales/de.json';
 import es from './locales/es.json';
 
-const SUPPORTED = ['en', 'de', 'es'];
+export const SUPPORTED_LOCALES = ['en', 'de', 'es'] as const;
 
 function savedLocale(): string {
-  const v = storageGet<string>(STORAGE_KEYS.locale, 'en');
-  return SUPPORTED.includes(v) ? v : 'en';
+  const stored = storageGet<string>(STORAGE_KEYS.locale, 'en');
+  return SUPPORTED_LOCALES.some((locale) => locale === stored) ? stored : 'en';
 }
 
 export const i18n = createI18n({

@@ -4,11 +4,15 @@ import type {
   LoadedSpan,
   DeckLanes,
   LanePoint,
-  NudgeSpan
+  EditableLaneKey,
+  MasterLaneKey,
+  DeckId
 } from '@renderer/utils/types';
-import { DECK_ACCENTS, DeckId } from '@renderer/stores/decks';
-import { EQ_MIN_DB, EQ_MAX_DB, FILTER_DEAD_ZONE } from '@renderer/stores/mixer';
+import { DECK_ACCENTS, DECK_LANE_KEYS } from '@renderer/utils/types';
+import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
+import { jogLaneColumns, jogLaneScale } from '@renderer/utils/jogLane';
 import { formatMs } from '@renderer/utils/time';
+import { beatLineStep } from '@renderer/utils/beatGrid';
 import {
   overlapsRange,
   msToFrac,
@@ -27,8 +31,7 @@ export type WaveformRegion = { startSec: number; endSec: number; amps: Float32Ar
 export type TrackWaveform = WaveformRegion & { base?: WaveformRegion };
 
 export const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
-// Waveform/clip band height. Taller than the old 44 so the (now higher-res)
-// waveform and beat grid are legible.
+// Tall enough for the waveform and beat grid to stay legible together.
 export const ROW_H = 80;
 export const LABEL_W = 32;
 export const TICK_H = 16;
@@ -38,25 +41,9 @@ export const MASTER_ROW_H = SUBLANE_H * 2;
 export const OVERVIEW_H = 22;
 export const OVERVIEW_GAP = 4;
 
-export const LANE_KEYS = ['gain', 'filter', 'rate', 'eqLow', 'eqMid', 'eqHigh'] as const;
-export type LaneKey = (typeof LANE_KEYS)[number];
-
-const LANE_GROUP: Record<LaneKey, number> = {
-  gain: 0,
-  filter: 1,
-  rate: 2,
-  eqLow: 3,
-  eqMid: 3,
-  eqHigh: 3
-};
-const LANE_SHORT_LABELS: Record<LaneKey, string> = {
-  gain: 'G',
-  filter: 'F',
-  rate: 'RT',
-  eqLow: 'LO',
-  eqMid: 'MD',
-  eqHigh: 'HI'
-};
+export type LaneKey = (typeof DECK_LANE_KEYS)[number];
+// The wheel lane has no manifest spec: it plots gestures, not a mixer param.
+type SpecLaneKey = Exclude<LaneKey, 'jog'>;
 
 const BAR_HALF_HEIGHT_FRACTION = 0.45;
 const BEAT_LINE_COLOR = '#ffffff1f';
@@ -82,8 +69,6 @@ const FILTER_LPF_COLOR = '#38bdf8';
 const FILTER_NEUTRAL_COLOR = '#666666';
 const FRAME_GUTTER_COLOR = '#2a2a2a';
 const GAIN_COLOR = '#e5e5e5';
-const GAIN_MIN = 0;
-const GAIN_MAX = 1;
 const GESTURE_LABEL_CURSOR_GAP_PX = 8;
 const GESTURE_PREVIEW_LINE_COLOR = '#ffffffcc';
 const GESTURE_PREVIEW_LINE_WIDTH = 1.5;
@@ -110,7 +95,7 @@ const NUDGE_PREVIEW_LABEL_NEGATIVE_Y_OFFSET_PX = 6;
 const NUDGE_PREVIEW_LABEL_POSITIVE_Y_OFFSET_PX = 12;
 const NUDGE_PREVIEW_LABEL_RIGHT_MARGIN_PX = 30;
 // Tighter inset than the deck lanes' laneValuePad, sized for the short master row.
-const MASTER_GAIN_INSET_Y = 2;
+export const MASTER_GAIN_INSET_Y = 2;
 const MASTER_ROW_BG_COLOR = '#101010';
 const LANE_DROPDOWN_COLOR = '#06b6d4';
 const MASTER_LABEL_COLOR = '#888';
@@ -125,6 +110,13 @@ const CLIP_BAND_INSET_Y = 4;
 const BPM_LABEL_MIN_PX = 30;
 const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
+const JOG_FILL_COLOR = '#fbbf24cc';
+const JOG_SCALE_LABEL_COLOR = '#777';
+const JOG_SHORT_LABEL = 'JOG';
+const JOG_LANE_RULE_H = 1;
+const JOG_SCALE_LABEL_INSET_PX = 3;
+// Below this a tenth of a percent still reads; above it the decimal is noise.
+const JOG_SCALE_LABEL_COARSE_PCT = 10;
 const NUDGE_LINE_W = 2;
 const OVERVIEW_BORDER_COLOR = '#222';
 const OVERVIEW_CLIP_ALPHA = 'aa';
@@ -215,8 +207,9 @@ export function yToValue(
 }
 
 function filterColorFor(value: number): string {
-  if (value < -FILTER_DEAD_ZONE) return FILTER_LPF_COLOR;
-  if (value > FILTER_DEAD_ZONE) return FILTER_HPF_COLOR;
+  const { filterDeadZone } = editConstants();
+  if (value < -filterDeadZone) return FILTER_LPF_COLOR;
+  if (value > filterDeadZone) return FILTER_HPF_COLOR;
   return FILTER_NEUTRAL_COLOR;
 }
 
@@ -297,8 +290,6 @@ function drawClipWaveform(
     const columnStart = Math.max(0, Math.floor(Math.max(visibleLeft, segX0) - segX0));
     const columnEnd = Math.ceil(Math.min(visibleRight, segX0 + segWidth) - segX0);
     for (let column = columnStart; column < columnEnd; column++) {
-      // The track-time window this column covers, then sample the high-detail
-      // region first and fall back to the coarse base while detail is loading.
       const columnStartSec = seg.trackStartSec + (column / segWidth) * segTrackSpan;
       const columnEndSec = seg.trackStartSec + ((column + 1) / segWidth) * segTrackSpan;
       const amp =
@@ -313,9 +304,8 @@ function drawClipWaveform(
   ctx.restore();
 }
 
-// Beat grid over a clip, drawn per wave segment so the lines compress/stretch
-// with the waveform when the rate changes. Ported from EditWaveform's LOD steps
-// (1 -> 4 -> 16 -> ... beats), but mapped through each segment's track->wall rate.
+// Drawn per wave segment, mapped through each segment's track->wall rate, so the
+// lines compress and stretch with the waveform when the rate changes.
 function drawClipBeatGrid(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -344,8 +334,7 @@ function drawClipBeatGrid(
     const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
     if (pxPerBeat < BEAT_LINE_W) continue;
 
-    let step = 1;
-    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= BEATS_PER_BAR;
+    const step = beatLineStep(pxPerBeat, MIN_BEAT_SPACING_PX, BEATS_PER_BAR);
 
     const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
     const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);
@@ -447,7 +436,8 @@ function drawFilterLane(
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ): void {
   for (const span of deckData.filterActive) {
     if (!overlapsRange(span.startMs, span.endMs, viewStart, viewEnd)) continue;
@@ -457,16 +447,18 @@ function drawFilterLane(
     ctx.fillRect(spanX, laneY, spanWidth, laneH);
   }
 
+  const { min, max, defaultValue } = specs.filter;
+
   // Center line marks the bypass position (knob = 0); LPF sweeps below it, HPF above.
-  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, -1, 1, 0);
+  drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, min, max, defaultValue);
 
   drawLaneSteps(
     ctx,
     deckData.filter,
     laneY,
     laneH,
-    -1,
-    1,
+    min,
+    max,
     filterColorFor,
     msToX,
     viewStart,
@@ -521,7 +513,8 @@ function drawRateLane(
   );
 }
 
-function drawEqLane(
+function drawSpecLane(
+  key: SpecLaneKey,
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   color: string,
@@ -529,10 +522,14 @@ function drawEqLane(
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ): void {
-  drawLaneSteps(ctx, points, laneY, laneH, EQ_MIN_DB, EQ_MAX_DB, color, msToX, viewStart, viewEnd);
+  const { min, max } = specs[key];
+  drawLaneSteps(ctx, points, laneY, laneH, min, max, color, msToX, viewStart, viewEnd);
 }
+
+type LaneSpecs = Record<EditableLaneKey, LaneSpec>;
 
 type LaneDrawer = (
   ctx: CanvasRenderingContext2D,
@@ -542,20 +539,65 @@ type LaneDrawer = (
   laneH: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  specs: LaneSpecs
 ) => void;
 
-const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
-  gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawLaneSteps(ctx, deckData.gain, laneY, laneH, 0, 1, GAIN_COLOR, msToX, viewStart, viewEnd),
+const LANE_DRAWERS: Record<SpecLaneKey, LaneDrawer> = {
+  gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'gain',
+      ctx,
+      deckData.gain,
+      GAIN_COLOR,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
   filter: drawFilterLane,
   rate: drawRateLane,
-  eqLow: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqLow, EQ_BAND_COLORS_LOW, laneY, laneH, msToX, viewStart, viewEnd),
-  eqMid: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqMid, EQ_BAND_COLORS_MID, laneY, laneH, msToX, viewStart, viewEnd),
-  eqHigh: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd) =>
-    drawEqLane(ctx, deckData.eqHigh, EQ_BAND_COLORS_HIGH, laneY, laneH, msToX, viewStart, viewEnd)
+  eqLow: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqLow',
+      ctx,
+      deckData.eqLow,
+      EQ_BAND_COLORS_LOW,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
+  eqMid: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqMid',
+      ctx,
+      deckData.eqMid,
+      EQ_BAND_COLORS_MID,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    ),
+  eqHigh: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
+    drawSpecLane(
+      'eqHigh',
+      ctx,
+      deckData.eqHigh,
+      EQ_BAND_COLORS_HIGH,
+      laneY,
+      laneH,
+      msToX,
+      viewStart,
+      viewEnd,
+      specs
+    )
 };
 
 // Clip drawing to one lane's rect. The single place lane-bounded drawing is
@@ -584,12 +626,16 @@ export function drawDeckLanes(
   deckData: DeckLanes | undefined,
   sublanes: SublaneLayout[],
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  mixerId: string
 ): void {
+  const specs = laneSpecs(mixerId);
   for (let laneIdx = 0; laneIdx < sublanes.length; laneIdx++) {
     const { key, top, height } = sublanes[laneIdx];
-    const group = LANE_GROUP[key];
-    const prevGroup = laneIdx > 0 ? LANE_GROUP[sublanes[laneIdx - 1].key] : -1;
+    if (key === 'jog') continue;
+    const previous = laneIdx > 0 ? sublanes[laneIdx - 1].key : null;
+    const group = specs[key].laneGroup;
+    const prevGroup = previous && previous !== 'jog' ? specs[previous].laneGroup : -1;
     const trackW = canvasWidth - LABEL_W - PADDING;
 
     ctx.fillStyle = group % 2 === 0 ? LANE_GROUP_BG_COLOR_EVEN : LANE_GROUP_BG_COLOR_ODD;
@@ -619,7 +665,8 @@ export function drawDeckLanes(
         height - 2 * pad,
         msToX,
         viewStart,
-        viewEnd
+        viewEnd,
+        specs
       )
     );
   }
@@ -721,23 +768,51 @@ export function drawClipSelection(
   ctx.strokeRect(selectionX + 0.5, selectionY + 0.5, selectionWidth - 1, selectionHeight - 1);
 }
 
-export function drawNudgeSpans(
+// Zero is centred: above the line is forward, below is reverse, height is speed.
+export function drawJogLane(
   ctx: CanvasRenderingContext2D,
-  nudgeSpans: NudgeSpan[],
-  rowY: number,
-  rowH: number,
-  msToX: (ms: number) => number
+  canvasWidth: number,
+  laneY: number,
+  laneH: number,
+  curve: LanePoint[],
+  xToMs: (x: number) => number
 ): void {
-  if (nudgeSpans.length === 0) return;
-  const innerY = rowY + CLIP_BAND_INSET_Y;
-  const innerHeight = rowH - 2 * CLIP_BAND_INSET_Y;
-  ctx.fillStyle = NUDGE_COLOR;
-  for (const span of nudgeSpans) {
-    const nudgeX = msToX(span.startMs);
-    const nudgeWidth = Math.max(2, msToX(span.endMs) - nudgeX);
-    const nudgeLineY = span.percent > 0 ? innerY - NUDGE_LINE_W : innerY + innerHeight;
-    ctx.fillRect(nudgeX, nudgeLineY, nudgeWidth, NUDGE_LINE_W);
+  const trackW = canvasWidth - LABEL_W - PADDING;
+  ctx.fillStyle = LANE_GROUP_BG_COLOR_EVEN;
+  ctx.fillRect(LABEL_W, laneY, trackW, laneH);
+  ctx.fillStyle = LANE_BORDER_COLOR_SAME_GROUP;
+  ctx.fillRect(LABEL_W, laneY, trackW, JOG_LANE_RULE_H);
+
+  const centerY = laneY + laneH / 2;
+  const halfH = laneH / 2 - laneValuePad(laneH);
+  ctx.fillStyle = LANE_CENTER_LINE_COLOR;
+  ctx.fillRect(LABEL_W, centerY, trackW, JOG_LANE_RULE_H);
+  if (halfH <= 0) return;
+
+  const columns = jogLaneColumns(curve, Math.ceil(trackW), (column) => xToMs(LABEL_W + column));
+  const scale = jogLaneScale(columns);
+
+  ctx.fillStyle = JOG_FILL_COLOR;
+  for (let column = 0; column < columns.length; column++) {
+    const height = (columns[column] / scale) * halfH;
+    if (height === 0) continue;
+    ctx.fillRect(LABEL_W + column, centerY - Math.max(height, 0), 1, Math.abs(height));
   }
+
+  drawJogLaneScale(ctx, scale, laneY);
+}
+
+function drawJogLaneScale(ctx: CanvasRenderingContext2D, scale: number, laneY: number): void {
+  ctx.fillStyle = JOG_SCALE_LABEL_COLOR;
+  ctx.font = LABEL_FONT;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const digits = scale < JOG_SCALE_LABEL_COARSE_PCT ? 1 : 0;
+  ctx.fillText(
+    `±${scale.toFixed(digits)}%`,
+    LABEL_W + JOG_SCALE_LABEL_INSET_PX,
+    laneY + JOG_SCALE_LABEL_INSET_PX
+  );
 }
 
 export function drawOverview(
@@ -792,26 +867,29 @@ export function drawOverview(
   return { y: stripY, h: OVERVIEW_H };
 }
 
-export function drawMasterGainLane(
+export function drawMasterLane(
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
+  lane: MasterLaneKey,
   masterTopY: number,
   masterRowH: number,
   canvasWidth: number,
   msToX: (ms: number) => number,
   viewStart: number,
-  viewEnd: number
+  viewEnd: number,
+  mixerId: string
 ): void {
   // Clip to the track area like the deck lanes do, so the level line never
   // bleeds left into the "M" label gutter or right into the padding.
+  const { min, max } = laneSpecs(mixerId)[lane];
   withLaneClip(ctx, masterTopY, masterRowH, canvasWidth, () =>
     drawLaneSteps(
       ctx,
       points,
       masterTopY + MASTER_GAIN_INSET_Y,
       masterRowH - 2 * MASTER_GAIN_INSET_Y,
-      GAIN_MIN,
-      GAIN_MAX,
+      min,
+      max,
       GAIN_COLOR,
       msToX,
       viewStart,
@@ -891,7 +969,8 @@ export function drawDeckRowChrome(
   ctx: CanvasRenderingContext2D,
   row: RowLayout,
   canvasW: number,
-  chrome: DeckRowChrome
+  chrome: DeckRowChrome,
+  mixerId: string
 ): void {
   ctx.fillStyle =
     chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
@@ -920,7 +999,11 @@ export function drawDeckRowChrome(
     const centerY = lane.top + lane.height / 2;
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
     ctx.font = BOLD_LABEL_FONT;
-    ctx.fillText(LANE_SHORT_LABELS[lane.key], LABEL_W / 2, centerY - LANE_LABEL_OFFSET_PX);
+    ctx.fillText(
+      lane.key === 'jog' ? JOG_SHORT_LABEL : laneSpecs(mixerId)[lane.key].shortLabel,
+      LABEL_W / 2,
+      centerY - LANE_LABEL_OFFSET_PX
+    );
     ctx.font = SUB_LABEL_FONT;
     ctx.fillText('▾', LABEL_W / 2, centerY + LANE_CARET_OFFSET_PX);
   }
@@ -930,7 +1013,9 @@ export function drawMasterRowChrome(
   ctx: CanvasRenderingContext2D,
   top: number,
   height: number,
-  canvasW: number
+  canvasW: number,
+  lane: MasterLaneKey,
+  mixerId: string
 ): void {
   ctx.fillStyle = MASTER_ROW_BG_COLOR;
   ctx.fillRect(0, top, canvasW, height);
@@ -938,7 +1023,15 @@ export function drawMasterRowChrome(
   ctx.fillStyle = MASTER_LABEL_COLOR;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('M', LABEL_W / 2, top + height / 2);
+  ctx.fillText('M', LABEL_W / 2, top + height / 2 - LANE_LABEL_OFFSET_PX);
+  // Which of the master lanes is drawn, as a dropdown like the deck rows'.
+  ctx.fillStyle = LANE_DROPDOWN_COLOR;
+  ctx.font = SUB_LABEL_FONT;
+  ctx.fillText(
+    `${laneSpecs(mixerId)[lane].shortLabel} ▾`,
+    LABEL_W / 2,
+    top + height / 2 + LANE_CARET_OFFSET_PX
+  );
   drawRowDivider(ctx, top + height - ROW_DIVIDER_H, canvasW);
 }
 
@@ -994,7 +1087,12 @@ export function drawNudgeGesturePreview(
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  drawNudgeSpans(ctx, [{ startMs, endMs, percent }], rowTop, rowH, msToX);
+  const innerY = rowTop + CLIP_BAND_INSET_Y;
+  const barY = percent > 0 ? innerY - NUDGE_LINE_W : innerY + rowH - 2 * CLIP_BAND_INSET_Y;
+  const barX = msToX(startMs);
+  ctx.fillStyle = NUDGE_COLOR;
+  ctx.fillRect(barX, barY, Math.max(NUDGE_LINE_W, msToX(endMs) - barX), NUDGE_LINE_W);
+
   const label = `${percent > 0 ? '+' : ''}${percent}%`;
   const labelX = Math.min(
     msToX(cursorMs) + GESTURE_LABEL_CURSOR_GAP_PX,

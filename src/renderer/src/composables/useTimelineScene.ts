@@ -20,7 +20,7 @@ import {
   tickRowItem,
   deckChromeItem,
   clipBandItem,
-  nudgeItem,
+  jogLaneItem,
   laneSurfaceItem,
   filterRegionItem,
   filterSelectionItem,
@@ -32,8 +32,16 @@ import {
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
-import type { DeckId } from '@renderer/stores/decks';
-import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
+import type { DeckId } from '@renderer/utils/types';
+import type {
+  Clip,
+  LoadedSpan,
+  DeckLanes,
+  MasterLanes,
+  MasterLaneKey,
+  NudgeSpan,
+  LanePoint
+} from '@renderer/utils/types';
 
 export type SceneInput = {
   vc: ViewContext;
@@ -43,11 +51,13 @@ export type SceneInput = {
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  deckJog: Record<string, LanePoint[]>;
   waveforms: Map<string, TrackWaveform>;
   playheadMs: number;
   durationMs: number;
   editMode: boolean;
   laneFor: (deck: string) => LaneKey;
+  masterLane: MasterLaneKey;
   laneHeight: number;
   waveformHeight: number;
   accentFor: (deck: string) => string;
@@ -80,7 +90,7 @@ export function buildScene(input: SceneInput): SceneResult {
 
   const items: SceneItem[] = [];
 
-  items.push(masterItem(masterTop, masterHeight, input.masterLanes));
+  items.push(masterItem(masterTop, masterHeight, input.masterLanes, input.masterLane));
 
   rows.forEach((row, rowIndex) => {
     const deck = row.deckId;
@@ -103,12 +113,15 @@ export function buildScene(input: SceneInput): SceneResult {
         input.editMode ? selectionSpansFor(input.clipSelection, deck) : []
       )
     );
-    for (const span of input.deckNudges[deck] ?? []) {
-      items.push(nudgeItem(row, span, deck));
-    }
     const lane = row.lanes[0];
     if (lane) {
-      items.push(laneSurfaceItem(lane, deck, input.deckLanes[deck]));
+      if (lane.key === 'jog') {
+        items.push(
+          jogLaneItem(lane, deck, input.deckJog[deck] ?? [], input.deckNudges[deck] ?? [])
+        );
+      } else {
+        items.push(laneSurfaceItem(lane, deck, input.deckLanes[deck]));
+      }
       if (lane.key === 'filter') {
         for (const span of input.deckLanes[deck]?.filterActive ?? []) {
           items.push(filterRegionItem(lane, deck, span));

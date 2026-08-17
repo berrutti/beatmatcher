@@ -17,8 +17,12 @@ export const STORAGE_KEYS = {
   locale: 'beatmatcher.ui.locale',
   sessionDeckLane: 'beatmatcher.ui.session-deck-lane',
   sessionLaneHeight: 'beatmatcher.ui.session-lane-height',
+  sessionMasterLane: 'beatmatcher.ui.session-master-lane',
   sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height',
-  browserColumns: 'beatmatcher.ui.browser-columns'
+  browserColumns: 'beatmatcher.ui.browser-columns',
+
+  // Hardware
+  midiDeckAssignments: 'beatmatcher.midi.deck-assignments'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

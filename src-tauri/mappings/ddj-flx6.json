@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "name": "DDJ-FLX6",
+  "match": ["FLX6"],
+  "decks": "fixed",
+  "per_deck": [
+    { "deck": "A", "channel": 1 },
+    { "deck": "B", "channel": 2 },
+    { "deck": "C", "channel": 3 },
+    { "deck": "D", "channel": 4 }
+  ],
+  "deck_bindings": [
+    { "cc": 7, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "high" },
+    { "cc": 11, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "mid" },
+    { "cc": 15, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "low" },
+    { "cc": 19, "resolution": "14bit", "action": "deck_param", "slot": "fader", "param": "gain" },
+    { "cc": 0, "resolution": "14bit", "action": "tempo_fader" },
+    { "cc": 33, "resolution": "centre_delta", "action": "jog" },
+    { "cc": 38, "resolution": "centre_delta", "action": "jog" },
+    { "note": 84, "action": "cue_toggle" },
+    { "note": 11, "action": "play_toggle" },
+    { "note": 12, "action": "transport_cue" },
+    { "note": 16, "action": "loop_in" },
+    { "note": 17, "action": "loop_out" },
+    { "note": 77, "action": "loop_exit_or_reloop" },
+    { "note": 63, "action": "shift" }
+  ],
+  "bindings": [
+    { "channel": 7, "cc": 23, "resolution": "14bit", "action": "deck_param", "deck": "A", "slot": "filter", "param": "value" },
+    { "channel": 7, "cc": 24, "resolution": "14bit", "action": "deck_param", "deck": "B", "slot": "filter", "param": "value" },
+    { "channel": 7, "cc": 25, "resolution": "14bit", "action": "deck_param", "deck": "C", "slot": "filter", "param": "value" },
+    { "channel": 7, "cc": 26, "resolution": "14bit", "action": "deck_param", "deck": "D", "slot": "filter", "param": "value" },
+    { "channel": 7, "cc": 31, "resolution": "14bit", "action": "xfader_position" },
+    { "channel": 7, "cc": 64, "resolution": "signed_step", "action": "browse" },
+    { "channel": 7, "note": 65, "action": "enter" },
+    { "channel": 7, "note": 101, "action": "back" },
+    { "channel": 7, "note": 122, "action": "toggle_view" },
+    { "channel": 7, "note": 70, "action": "load", "deck": "A" },
+    { "channel": 7, "note": 71, "action": "load", "deck": "B" },
+    { "channel": 7, "note": 72, "action": "load", "deck": "C" },
+    { "channel": 7, "note": 73, "action": "load", "deck": "D" }
+  ]
+}

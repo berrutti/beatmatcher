@@ -3,9 +3,9 @@ export function matchesTrackQuery(
   fallbackLabel: string,
   query: string
 ): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
   const title = (track.title ?? fallbackLabel).toLowerCase();
-  if (title.includes(q)) return true;
-  return track.artist ? track.artist.toLowerCase().includes(q) : false;
+  if (title.includes(needle)) return true;
+  return track.artist ? track.artist.toLowerCase().includes(needle) : false;
 }

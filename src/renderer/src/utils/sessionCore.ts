@@ -1,7 +1,3 @@
-// Thin wrapper over the session-core WASM module. The timeline derivation and
-// all clip/lane edit ops are implemented once in Rust (session-core) and reached
-// here as JSON-in/JSON-out calls, replacing the former TypeScript copies.
-//
 // `initSessionCore()` must be awaited once at app startup before any of the
 // (synchronous) functions below are called; wasm-bindgen exports are sync only
 // after the module has initialized.
@@ -28,7 +24,11 @@ import init, {
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
-  editConstants as wasmEditConstants
+  bmsVersion as wasmBmsVersion,
+  faderCurveGain as wasmFaderCurveGain,
+  editConstants as wasmEditConstants,
+  laneSpecs as wasmLaneSpecs,
+  mixerParams as wasmMixerParams
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
@@ -78,6 +78,7 @@ export function buildTimeline(
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  deckJog: Record<string, LanePoint[]>;
 } {
   const raw = parse<{
     clips: RawClip[];
@@ -85,6 +86,7 @@ export function buildTimeline(
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
+    deckJog: Record<string, LanePoint[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
     // The beat grid (bpm + offset) is a property of the track, not of the
@@ -108,7 +110,8 @@ export function buildTimeline(
     })),
     deckLanes: raw.deckLanes,
     masterLanes: raw.masterLanes,
-    deckNudges: raw.deckNudges
+    deckNudges: raw.deckNudges,
+    deckJog: raw.deckJog
   };
 }
 
@@ -151,6 +154,14 @@ export function blockBounds(
   };
 }
 
+export function bmsVersion(): number {
+  return wasmBmsVersion();
+}
+
+export function faderCurveGain(curve: string, position: number): number {
+  return wasmFaderCurveGain(curve, position);
+}
+
 export type EditConstants = {
   eqMinDb: number;
   eqMaxDb: number;
@@ -160,8 +171,60 @@ export type EditConstants = {
   minGestureMs: number;
 };
 
+// Read on first use because a module-level `export const` cannot await and WASM is only
+// initialized in the app's async init(). Memoized because the renderer reads these per draw.
+let editConstantsCache: EditConstants | undefined;
+
 export function editConstants(): EditConstants {
-  return parse(wasmEditConstants());
+  const constants = editConstantsCache ?? parse<EditConstants>(wasmEditConstants());
+  editConstantsCache = constants;
+  return constants;
+}
+
+export type LaneSpec = {
+  key: EditableLaneKey;
+  min: number;
+  max: number;
+  defaultValue: number;
+  epsilon: number;
+  shortLabel: string;
+  laneGroup: number;
+  unit: LaneUnit;
+};
+
+type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
+
+const laneSpecCache = new Map<string, Record<EditableLaneKey, LaneSpec>>();
+
+// Keyed by mixer because a lane's range is a property of the manifest the
+// session was recorded on, not of the lane.
+export function laneSpecs(mixerId: string): Record<EditableLaneKey, LaneSpec> {
+  const cached = laneSpecCache.get(mixerId);
+  if (cached) return cached;
+  const specs = parse<Record<EditableLaneKey, LaneSpec>>(wasmLaneSpecs(mixerId));
+  laneSpecCache.set(mixerId, specs);
+  return specs;
+}
+
+export type MixerParamSpec = {
+  slot: string;
+  param: string;
+  label: string;
+  shortLabel: string;
+  min: number;
+  max: number;
+  defaultValue: number;
+  step: number;
+};
+
+const mixerParamCache = new Map<string, Record<string, MixerParamSpec>>();
+
+export function mixerParams(mixerId: string): Record<string, MixerParamSpec> {
+  const cached = mixerParamCache.get(mixerId);
+  if (cached) return cached;
+  const specs = parse<Record<string, MixerParamSpec>>(wasmMixerParams(mixerId));
+  mixerParamCache.set(mixerId, specs);
+  return specs;
 }
 
 export function moveTransportBlock(
@@ -229,6 +292,7 @@ export function deleteTransportRanges(
 export function spliceLaneEvents(
   events: SessionEvent[],
   laneKey: EditableLaneKey,
+  mixerId: string,
   deck: string,
   t0: number,
   t1: number,
@@ -240,6 +304,7 @@ export function spliceLaneEvents(
     wasmSplice(
       JSON.stringify(events),
       laneKey,
+      mixerId,
       deck,
       t0,
       t1,

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { reactive, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import type { LoadableTrack } from '@renderer/stores/decks';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { indexByBasename } from '@renderer/utils/path';
@@ -282,7 +283,7 @@ export const useCollectionStore = defineStore('collection', () => {
       .filter((x): x is { path: string; i: number } => x !== null);
     if (pathsWithIdx.length === 0) return;
     try {
-      const sizes = await invoke<(number | null)[]>('files_info', {
+      const sizes = await call('files_info', {
         paths: pathsWithIdx.map((x) => x.path)
       });
       pathsWithIdx.forEach(({ path, i }, k) => {
@@ -329,7 +330,7 @@ export const useCollectionStore = defineStore('collection', () => {
   async function addFilesFromPaths(paths: string[]) {
     const newPaths = paths.filter((p) => !tracks.some((t) => t.path === p));
     if (newPaths.length === 0) return;
-    const sizes = await invoke<(number | null)[]>('files_info', { paths: newPaths });
+    const sizes = await call('files_info', { paths: newPaths });
     newPaths.forEach((path, i) => {
       const size = sizes[i];
       if (size === null || size === undefined) return;
@@ -402,9 +403,7 @@ export const useCollectionStore = defineStore('collection', () => {
     const folder = await open({ directory: true, multiple: false });
     if (typeof folder !== 'string') return;
 
-    const found = await invoke<string[]>('scan_folder', { path: folder }).catch(
-      () => [] as string[]
-    );
+    const found = await call('scan_folder', { path: folder }).catch(() => [] as string[]);
     const byName = indexByBasename(found);
 
     const targets = tracks
@@ -413,7 +412,7 @@ export const useCollectionStore = defineStore('collection', () => {
       .filter((t): t is { entry: CollectionEntry; newPath: string } => t.newPath !== undefined);
     if (targets.length === 0) return;
 
-    const sizes = await invoke<(number | null)[]>('files_info', {
+    const sizes = await call('files_info', {
       paths: targets.map((t) => t.newPath)
     });
     targets.forEach(({ entry: target, newPath }, i) => {
@@ -534,7 +533,7 @@ export const useCollectionStore = defineStore('collection', () => {
   // kept as overrides layered on top of whatever readTagsForEntry reads next.
   //
   // TODO: once Rust gains tag-writing support, editing metadata here should
-  // write back into the actual file tags (like Rekordbox/Mixxx/Serato do),
+  // write back into the actual file tags (as other DJ software does),
   // with this override map becoming the write queue instead of a permanent
   // shadow copy.
   const metadataOverrides = reactive<Record<string, Partial<TrackMetadata>>>(
@@ -636,7 +635,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   async function scanFolders(folders: string[]): Promise<string[]> {
     const pathLists = await Promise.all(
-      folders.map((folder) => invoke<string[]>('scan_folder', { path: folder }))
+      folders.map((folder) => call('scan_folder', { path: folder }))
     );
     return pathLists.flat();
   }
@@ -677,30 +676,30 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   function renamePlaylist(id: string, name: string) {
-    const p = playlists.find((p) => p.id === id);
-    if (p) p.name = name;
+    const playlist = playlists.find((candidate) => candidate.id === id);
+    if (playlist) playlist.name = name;
   }
 
   function addToPlaylist(playlistId: string, path: string) {
-    const p = playlists.find((p) => p.id === playlistId);
-    if (!p || p.paths.includes(path)) return;
-    p.paths.push(path);
-    p.addedAt[path] = Date.now();
+    const playlist = playlists.find((candidate) => candidate.id === playlistId);
+    if (!playlist || playlist.paths.includes(path)) return;
+    playlist.paths.push(path);
+    playlist.addedAt[path] = Date.now();
   }
 
   function removeFromPlaylist(playlistId: string, path: string) {
-    const p = playlists.find((p) => p.id === playlistId);
-    if (!p) return;
-    const idx = p.paths.indexOf(path);
-    if (idx !== -1) p.paths.splice(idx, 1);
-    delete p.addedAt[path];
+    const playlist = playlists.find((candidate) => candidate.id === playlistId);
+    if (!playlist) return;
+    const idx = playlist.paths.indexOf(path);
+    if (idx !== -1) playlist.paths.splice(idx, 1);
+    delete playlist.addedAt[path];
   }
 
   function moveInPlaylist(playlistId: string | null, fromIdx: number, toIdx: number) {
-    const p = playlists.find((p) => p.id === playlistId);
-    if (!p || fromIdx === toIdx) return;
-    const [item] = p.paths.splice(fromIdx, 1);
-    p.paths.splice(toIdx, 0, item);
+    const playlist = playlists.find((candidate) => candidate.id === playlistId);
+    if (!playlist || fromIdx === toIdx) return;
+    const [item] = playlist.paths.splice(fromIdx, 1);
+    playlist.paths.splice(toIdx, 0, item);
   }
 
   return {

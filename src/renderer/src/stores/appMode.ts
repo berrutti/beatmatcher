@@ -1,6 +1,6 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { useSessionStore } from '@renderer/stores/session';
@@ -13,6 +13,10 @@ export const useAppModeStore = defineStore('appMode', () => {
   async function switchTo(next: AppMode): Promise<void> {
     const prev = mode.value;
     if (prev === next) return;
+
+    // Ahead of the transition's own awaits so entering session stops MIDI before anything is
+    // torn down. Leaving re-enables it early, which is harmless: the mixer resets right after.
+    await call('set_app_mode', { mode: next });
 
     const decks = useDecksStore();
     const mixer = useMixerStore();
@@ -39,7 +43,7 @@ export const useAppModeStore = defineStore('appMode', () => {
   }
 
   async function confirmQuit(): Promise<void> {
-    await invoke('confirm_quit');
+    await call('confirm_quit');
   }
 
   return { mode, switchTo, confirmQuit };

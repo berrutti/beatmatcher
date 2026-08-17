@@ -18,6 +18,15 @@
       @cancel="pendingLoad = null"
     />
 
+    <ConfirmModal
+      :open="props.deck.ejectPending"
+      :title="$t('deck.ejectConfirmTitle')"
+      :body="$t('deck.ejectConfirmBody')"
+      :confirm-label="$t('deck.ejectTitle')"
+      @confirm="props.deck.confirmEject()"
+      @cancel="props.deck.cancelEject()"
+    />
+
     <div class="deck__loading-bar" />
 
     <div v-if="props.compact" class="deck__compact">
@@ -89,6 +98,8 @@
             <PhaseRing
               :accent="props.deck.accent"
               :active="props.deck.trackLoaded"
+              :playing="props.deck.playing"
+              :cueing="props.deck.cueing"
               :get-beat="() => props.deck.beat"
               :cover-art="props.deck.coverArt"
             />
@@ -116,7 +127,7 @@
                 :disabled="!props.deck.trackLoaded"
                 :tabindex="-1"
                 v-tooltip="$t('deck.ejectTitle')"
-                @click="props.deck.ejectTrack()"
+                @click="props.deck.requestEject()"
               >
                 ⏏
               </button>
@@ -292,7 +303,7 @@ const artistTitle = computed(() => {
   return { artist: match[0], title: match.slice(1).join(' - ') };
 });
 
-// The slider value is negated: like a CDJ pitch fader, up = slower, down = faster.
+// Up is slower, down is faster.
 function onSliderInput(e: Event) {
   if (!props.deck.trackLoaded) return;
   const val = parseFloat((e.target as HTMLInputElement).value);

@@ -4,6 +4,7 @@
 // processing; tag lookup and CUE text formatting stay in the audio crate.
 
 use crate::event::{SessionCommand, SessionEvent};
+use crate::param::is_fader_gain;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,6 +17,7 @@ struct DeckAudible {
     loaded_path: Option<String>,
     is_playing: bool,
     gain: f32,
+    xfader_assign: crate::XfaderAssign,
     // Whether a cue point was already emitted for the current loaded instance.
     // Reset on (re)load/eject so a fresh load can emit again, but a track that is
     // faded out and brought back in keeps its first audible time.
@@ -25,19 +27,27 @@ struct DeckAudible {
 impl Default for DeckAudible {
     fn default() -> Self {
         // The mixer fader rests at unity, so a deck is audible the moment it
-        // plays unless a set_volume event says otherwise.
+        // plays unless a fader/gain event says otherwise.
         Self {
             loaded_path: None,
             is_playing: false,
             gain: 1.0,
+            xfader_assign: crate::XfaderAssign::Thru,
             recorded: false,
         }
+    }
+}
+
+impl DeckAudible {
+    fn audible(&self, xfader_position: f64) -> bool {
+        self.is_playing && self.gain > 0.0 && self.xfader_assign.gain(xfader_position) > 0.0
     }
 }
 
 pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
     let mut decks: HashMap<String, DeckAudible> = HashMap::new();
     let mut points = Vec::new();
+    let mut xfader_position = 0.0;
 
     for event in events {
         let Some(command) = event.command() else {
@@ -82,25 +92,52 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
             SessionCommand::Stop { deck } | SessionCommand::StopAtCue { deck, .. } => {
                 decks.entry(deck.to_string()).or_default().is_playing = false;
             }
-            SessionCommand::SetVolume { deck, gain } => {
-                decks.entry(deck.to_string()).or_default().gain = gain;
+            SessionCommand::SetParam {
+                deck: Some(deck),
+                slot,
+                param,
+                value,
+                ..
+            } if is_fader_gain(slot, param) => {
+                decks.entry(deck.to_string()).or_default().gain = value as f32;
+            }
+            SessionCommand::SetXfaderAssign { deck, assign } => {
+                decks.entry(deck.to_string()).or_default().xfader_assign = assign;
+            }
+            SessionCommand::SetParam {
+                deck: None,
+                slot: "xfader",
+                param: "position",
+                value,
+                ..
+            } => {
+                xfader_position = value;
             }
             _ => {}
         }
 
-        let Some(deck_id) = command.deck_id() else {
-            continue;
+        // A master crossfader move names no deck and can open any of them, so it re-checks
+        // all. Sorted because an unordered HashMap walk renumbered tracks between runs.
+        let moved: Vec<String> = match command.deck_id() {
+            Some(deck_id) => vec![deck_id.to_string()],
+            None => {
+                let mut all: Vec<String> = decks.keys().cloned().collect();
+                all.sort();
+                all
+            }
         };
-        let Some(state) = decks.get_mut(deck_id) else {
-            continue;
-        };
-        if !state.recorded && state.is_playing && state.gain > 0.0 {
-            if let Some(path) = &state.loaded_path {
-                points.push(CuePoint {
-                    elapsed_ms: event.elapsed_ms,
-                    track_path: path.clone(),
-                });
-                state.recorded = true;
+        for deck_id in moved {
+            let Some(state) = decks.get_mut(&deck_id) else {
+                continue;
+            };
+            if !state.recorded && state.audible(xfader_position) {
+                if let Some(path) = &state.loaded_path {
+                    points.push(CuePoint {
+                        elapsed_ms: event.elapsed_ms,
+                        track_path: path.clone(),
+                    });
+                    state.recorded = true;
+                }
             }
         }
     }
@@ -149,23 +186,128 @@ mod tests {
     #[test]
     fn fader_down_delays_audible_time() {
         let events = vec![
-            SessionEvent {
-                gain: Some(0.0),
-                ..make_event(0.0, "set_volume", "A")
-            },
+            SessionEvent::param(0.0, Some("A"), "fader", "gain", 0.0),
             SessionEvent {
                 path: Some("/a.wav".to_string()),
                 ..make_event(100.0, "load_track", "A")
             },
             make_event(200.0, "play", "A"),
-            SessionEvent {
-                gain: Some(0.8),
-                ..make_event(5000.0, "set_volume", "A")
-            },
+            SessionEvent::param(5000.0, Some("A"), "fader", "gain", 0.8),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].elapsed_ms, 5000.0);
+    }
+
+    // One crossfader move can open several decks at once, and the deck map is a HashMap,
+    // so an unordered walk numbered the same recording's tracks differently per run.
+    #[test]
+    fn decks_opened_by_one_crossfader_move_are_listed_in_a_stable_order() {
+        let events = vec![
+            assign_event(0.0, "A", "b"),
+            assign_event(0.0, "B", "b"),
+            assign_event(0.0, "C", "b"),
+            assign_event(0.0, "D", "b"),
+            SessionEvent::param(0.0, None, "xfader", "position", -1.0),
+            SessionEvent {
+                path: Some("/a.wav".to_string()),
+                ..make_event(100.0, "load_track", "A")
+            },
+            SessionEvent {
+                path: Some("/b.wav".to_string()),
+                ..make_event(100.0, "load_track", "B")
+            },
+            SessionEvent {
+                path: Some("/c.wav".to_string()),
+                ..make_event(100.0, "load_track", "C")
+            },
+            SessionEvent {
+                path: Some("/d.wav".to_string()),
+                ..make_event(100.0, "load_track", "D")
+            },
+            make_event(200.0, "play", "A"),
+            make_event(200.0, "play", "B"),
+            make_event(200.0, "play", "C"),
+            make_event(200.0, "play", "D"),
+            SessionEvent::param(5000.0, None, "xfader", "position", 1.0),
+        ];
+
+        let expected: Vec<String> = build_cue_points(&events)
+            .into_iter()
+            .map(|point| point.track_path)
+            .collect();
+        assert_eq!(expected, vec!["/a.wav", "/b.wav", "/c.wav", "/d.wav"]);
+
+        for _ in 0..200 {
+            let paths: Vec<String> = build_cue_points(&events)
+                .into_iter()
+                .map(|point| point.track_path)
+                .collect();
+            assert_eq!(paths, expected);
+        }
+    }
+
+    fn assign_event(elapsed_ms: f64, deck: &str, assign: &str) -> SessionEvent {
+        SessionEvent {
+            assign: Some(assign.to_string()),
+            ..make_event(elapsed_ms, "set_xfader_assign", deck)
+        }
+    }
+
+    // The crossfader can silence a deck whose fader is wide open, which is the
+    // accuracy D1 consequence 1 is about.
+    #[test]
+    fn a_deck_crossfaded_away_is_not_audible_yet() {
+        let events = vec![
+            assign_event(0.0, "A", "a"),
+            SessionEvent::param(0.0, None, "xfader", "position", 1.0),
+            SessionEvent {
+                path: Some("/a.wav".to_string()),
+                ..make_event(100.0, "load_track", "A")
+            },
+            make_event(200.0, "play", "A"),
+            SessionEvent::param(5000.0, None, "xfader", "position", -1.0),
+        ];
+        let points = build_cue_points(&events);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].elapsed_ms, 5000.0);
+    }
+
+    // A master move names no deck, so without re-checking every deck the track
+    // would not be recorded until its own next event, which may never come.
+    #[test]
+    fn bringing_the_crossfader_back_records_without_a_deck_event() {
+        let events = vec![
+            assign_event(0.0, "B", "b"),
+            SessionEvent::param(0.0, None, "xfader", "position", -1.0),
+            SessionEvent {
+                path: Some("/b.wav".to_string()),
+                ..make_event(100.0, "load_track", "B")
+            },
+            make_event(200.0, "play", "B"),
+            SessionEvent::param(4000.0, None, "xfader", "position", 1.0),
+        ];
+        let points = build_cue_points(&events);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].track_path, "/b.wav");
+        assert_eq!(points[0].elapsed_ms, 4000.0);
+    }
+
+    // Thru is the default, so a session that never touches the crossfader has to
+    // behave exactly as it did before it existed.
+    #[test]
+    fn a_thru_deck_ignores_the_crossfader() {
+        let events = vec![
+            SessionEvent::param(0.0, None, "xfader", "position", 1.0),
+            SessionEvent {
+                path: Some("/a.wav".to_string()),
+                ..make_event(100.0, "load_track", "A")
+            },
+            make_event(200.0, "play", "A"),
+        ];
+        let points = build_cue_points(&events);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].elapsed_ms, 200.0);
     }
 
     #[test]
@@ -179,10 +321,7 @@ mod tests {
                 gain: Some(0.0),
                 ..make_event(0.0, "deck_snapshot", "A")
             },
-            SessionEvent {
-                gain: Some(1.0),
-                ..make_event(8000.0, "set_volume", "A")
-            },
+            SessionEvent::param(8000.0, Some("A"), "fader", "gain", 1.0),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);
@@ -210,14 +349,8 @@ mod tests {
                 ..make_event(0.0, "load_track", "A")
             },
             make_event(100.0, "play", "A"),
-            SessionEvent {
-                gain: Some(0.0),
-                ..make_event(2000.0, "set_volume", "A")
-            },
-            SessionEvent {
-                gain: Some(1.0),
-                ..make_event(4000.0, "set_volume", "A")
-            },
+            SessionEvent::param(2000.0, Some("A"), "fader", "gain", 0.0),
+            SessionEvent::param(4000.0, Some("A"), "fader", "gain", 1.0),
         ];
         let points = build_cue_points(&events);
         assert_eq!(points.len(), 1);

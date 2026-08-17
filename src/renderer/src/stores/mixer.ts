@@ -1,24 +1,35 @@
 import { defineStore } from 'pinia';
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { DECKS_DISPOSITION, type DeckId } from './decks';
+import { call } from '@renderer/tauriCommands';
+import { listen } from '@tauri-apps/api/event';
+import { DECKS_DISPOSITION } from './decks';
+import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { useSettingsStore } from '@renderer/stores/settings';
+import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
+import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
-type EqBand = 'low' | 'mid' | 'high';
-type EqState = { low: number; mid: number; high: number };
-
-// Defined in session-core; copies exist here because WASM is not initialized
-// at module-evaluation time. Pinned by the editConstants parity test.
-export const DEFAULT_MASTER_GAIN = 0.7943;
-export const EQ_MIN_DB = -26;
-export const EQ_MAX_DB = 6;
-export const FILTER_DEAD_ZONE = 0.05;
+type ParamChange = { deck: string; slot: string; param: string; value: number };
+export type XfaderAssign = 'thru' | 'a' | 'b';
+export type XfaderSide = 'a' | 'b';
 
 const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
 
+// How `mixerParams` keys its specs, and how the store keys a deck's values, so a
+// param the manifest gained is reachable without anything here naming it.
+export function paramKey(slot: string, param: string): string {
+  return `${slot}/${param}`;
+}
+
+export const FADER_GAIN = paramKey('fader', 'gain');
+export const FILTER_VALUE = paramKey('filter', 'value');
+export const FILTER_ACTIVE = paramKey('filter', 'active');
+
 export const useMixerStore = defineStore('mixer', () => {
+  // Store setup runs on first use, which is after the app's async init().
+  const { defaultMasterGain } = editConstants();
+
   const outputDevices = ref<DeviceInfo[]>([]);
   const devicesLoaded = ref(false);
   const mainDeviceId = ref('');
@@ -27,7 +38,6 @@ export const useMixerStore = defineStore('mixer', () => {
   const cueChannelOffset = ref(0);
   const deviceError = ref('');
 
-  const volume = reactive<Record<DeckId, number>>({ A: 1, B: 1, C: 1, D: 1, E: 1 });
   const cueActive = reactive<Record<DeckId, boolean>>({
     A: false,
     B: false,
@@ -35,21 +45,79 @@ export const useMixerStore = defineStore('mixer', () => {
     D: false,
     E: false // can never be active
   });
-  const filter = reactive<Record<DeckId, number>>({ A: 0, B: 0, C: 0, D: 0, E: 0 });
-  const filterEnabled = reactive<Record<DeckId, boolean>>({
-    A: false,
-    B: false,
-    C: false,
-    D: false,
-    E: false // can never be active
+
+  // Centre, and every deck through, so the crossfader is inert until a deck is
+  // deliberately put on a side. Matches the engine's own default.
+  const xfaderPosition = ref(0);
+  const xfaderAssign = reactive<Record<DeckId, XfaderAssign>>({
+    A: 'thru',
+    B: 'thru',
+    C: 'thru',
+    D: 'thru',
+    E: 'thru' // the edit deck never reaches the live mixer
   });
-  const eq = reactive<Record<DeckId, EqState>>({
-    A: { low: 0, mid: 0, high: 0 },
-    B: { low: 0, mid: 0, high: 0 },
-    C: { low: 0, mid: 0, high: 0 },
-    D: { low: 0, mid: 0, high: 0 },
-    E: { low: 0, mid: 0, high: 0 }
+
+  // The live engine builds every strip on this one manifest. Ranges, steps and
+  // defaults come from its descriptors rather than being restated here.
+  const deckParams = mixerParams(LIVE_MIXER_ID);
+
+  // Left to right on the strip. Where a control sits is a layout decision, so it is stated
+  // here rather than read off the manifest. A band this omits still renders, after these.
+  const EQ_BAND_ORDER = ['low', 'mid', 'high'];
+
+  function specsForSlot(slot: string, order: string[]): MixerParamSpec[] {
+    const rank = (spec: MixerParamSpec) => {
+      const index = order.indexOf(spec.param);
+      return index === -1 ? order.length : index;
+    };
+    return Object.values(deckParams)
+      .filter((spec) => spec.slot === slot)
+      .sort((left, right) => rank(left) - rank(right));
+  }
+
+  const eqSpecs = specsForSlot('eq', EQ_BAND_ORDER);
+  const filterSpec = deckParams[FILTER_VALUE];
+  const faderSpec = deckParams[FADER_GAIN];
+
+  function defaultParams(): Record<string, number> {
+    return Object.fromEntries(
+      Object.entries(deckParams).map(([key, spec]) => [key, spec.defaultValue])
+    );
+  }
+
+  // One entry per deck-scope address the manifest describes, so a param it gains
+  // needs no field here, no setter and no command of its own.
+  const params = reactive<Record<DeckId, Record<string, number>>>({
+    A: defaultParams(),
+    B: defaultParams(),
+    C: defaultParams(),
+    D: defaultParams(),
+    E: defaultParams()
   });
+
+  function paramValue(deckId: DeckId, key: string): number {
+    return params[deckId][key] ?? deckParams[key]?.defaultValue ?? 0;
+  }
+
+  function paramActive(deckId: DeckId, key: string): boolean {
+    return paramValue(deckId, key) !== 0;
+  }
+
+  function setParam(deckId: DeckId, key: string, value: number): void {
+    const spec = deckParams[key];
+    if (!spec) return;
+    params[deckId][key] = Math.max(spec.min, Math.min(spec.max, value));
+    call('set_deck_param', {
+      deck: deckId,
+      slot: spec.slot,
+      param: spec.param,
+      value: params[deckId][key]
+    });
+  }
+
+  function toggleParam(deckId: DeckId, key: string): void {
+    setParam(deckId, key, paramActive(deckId, key) ? 0 : 1);
+  }
 
   const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
   const deckCount = ref<2 | 4>(storedCount === 2 ? 2 : 4);
@@ -75,18 +143,18 @@ export const useMixerStore = defineStore('mixer', () => {
     storageSet(STORAGE_KEYS.showWaveformStrip, showWaveformStrip.value);
   }
 
-  const masterGain = ref(DEFAULT_MASTER_GAIN);
+  const masterGain = ref(defaultMasterGain);
 
   function setMasterGain(gain: number) {
     masterGain.value = Math.max(0, Math.min(1, gain));
-    invoke('set_master_gain', { gain: masterGain.value });
+    call('set_master_gain', { gain: masterGain.value });
   }
 
   const cueMix = ref(0);
 
   function setCueMix(mix: number) {
     cueMix.value = Math.max(0, Math.min(1, mix));
-    invoke('set_cue_mix', { mix: cueMix.value });
+    call('set_cue_mix', { mix: cueMix.value });
   }
 
   const swarmMode = ref(false);
@@ -111,44 +179,136 @@ export const useMixerStore = defineStore('mixer', () => {
     swarmSelected[deckId] = active;
   }
 
-  function setVolume(deckId: DeckId, v: number) {
-    volume[deckId] = Math.max(0, Math.min(1, v));
-    invoke('set_volume', { deck: deckId, gain: volume[deckId] });
+  // Per deck, because scrubs overlap: two at once, or one whose end is lost to a window
+  // blur, used to restore one deck's volume onto another and leave the second silent.
+  const scrubSavedVolume: Partial<Record<DeckId, number>> = {};
+
+  function startScrubMute(deckId: DeckId) {
+    if (scrubSavedVolume[deckId] === undefined) {
+      scrubSavedVolume[deckId] = paramValue(deckId, FADER_GAIN);
+    }
+    setParam(deckId, FADER_GAIN, 0);
+  }
+
+  function endScrubMute(deckId: DeckId) {
+    const saved = scrubSavedVolume[deckId];
+    if (saved === undefined) return;
+    delete scrubSavedVolume[deckId];
+    setParam(deckId, FADER_GAIN, saved);
+  }
+
+  function setXfaderPosition(position: number) {
+    xfaderPosition.value = Math.max(-1, Math.min(1, position));
+    call('set_xfader_position', { position: xfaderPosition.value });
+  }
+
+  function setXfaderAssign(deckId: DeckId, assign: XfaderAssign) {
+    xfaderAssign[deckId] = assign;
+    call('set_xfader_assign', { deck: deckId, assign });
+  }
+
+  // The UI has no button for `thru`: the two sides are one exclusive pair, so
+  // deselecting the lit one is what takes the deck off the crossfader.
+  function toggleXfaderAssign(deckId: DeckId, side: XfaderSide) {
+    setXfaderAssign(deckId, xfaderAssign[deckId] === side ? 'thru' : side);
   }
 
   function setCueActive(deckId: DeckId, active: boolean) {
     cueActive[deckId] = active;
-    invoke('set_cue_active', { deck: deckId, active });
+    call('set_cue_active', { deck: deckId, active });
   }
 
-  function setFilter(deckId: DeckId, v: number) {
-    filter[deckId] = Math.max(-1, Math.min(1, v));
-    invoke('set_filter', { deck: deckId, value: filter[deckId] });
+  function paramDefault(key: string): number {
+    return deckParams[key]?.defaultValue ?? 0;
   }
 
-  function toggleFilter(deckId: DeckId) {
-    filterEnabled[deckId] = !filterEnabled[deckId];
-    invoke('set_filter_active', { deck: deckId, active: filterEnabled[deckId] });
+  function swarmAffected(deckId: DeckId): DeckId[] {
+    const selected = activeDecks.value.filter((candidate) => swarmSelected[candidate]);
+    if (!selected.includes(deckId)) selected.push(deckId);
+    return selected;
   }
 
-  function setEq(deckId: DeckId, band: EqBand, db: number) {
-    eq[deckId][band] = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db));
-    invoke('set_eq', { deck: deckId, band, db: eq[deckId][band] });
-  }
-
-  function reset(): void {
-    for (const deckId of LIVE_DECKS) {
-      setVolume(deckId, 1);
-      setEq(deckId, 'low', 0);
-      setEq(deckId, 'mid', 0);
-      setEq(deckId, 'high', 0);
-      setFilter(deckId, 0);
-      filterEnabled[deckId] = false;
-      invoke('set_filter_active', { deck: deckId, active: false });
-      cueActive[deckId] = false;
-      invoke('set_cue_active', { deck: deckId, active: false });
+  // A drag carries the gesture's delta to every selected channel, so they keep
+  // the offsets the DJ set between them instead of collapsing onto one value.
+  function swarmAdjust(deckId: DeckId, key: string, value: number) {
+    if (!swarmMode.value) {
+      setParam(deckId, key, value);
+      return;
+    }
+    const delta = value - paramValue(deckId, key);
+    for (const affected of swarmAffected(deckId)) {
+      setParam(affected, key, paramValue(affected, key) + delta);
     }
   }
+
+  function swarmReset(deckId: DeckId, key: string, value: number) {
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) setParam(deck, key, value);
+  }
+
+  function isDeckId(id: string): id is DeckId {
+    return Object.prototype.hasOwnProperty.call(params, id);
+  }
+
+  // Engine-originated only, and deliberately does not invoke back: Rust never pushes a
+  // value the UI wrote, so anything arriving here is a move the store has not made.
+  function assignFromValue(value: number): XfaderAssign {
+    if (value === 1) return 'a';
+    if (value === 2) return 'b';
+    return 'thru';
+  }
+
+  function applyEngineParam(change: ParamChange): void {
+    // Master scope, so it arrives with no deck and has to be read before the
+    // guard below rejects it.
+    if (change.slot === 'xfader' && change.param === 'position') {
+      xfaderPosition.value = change.value;
+      return;
+    }
+    if (!isDeckId(change.deck)) return;
+    // Neither of these is a manifest param: the assign is categorical and cue is
+    // engine-only routing, so they are the two addresses `params` cannot hold.
+    if (change.slot === 'xfader' && change.param === 'assign') {
+      xfaderAssign[change.deck] = assignFromValue(change.value);
+      return;
+    }
+    if (change.slot === 'cue' && change.param === 'active') {
+      cueActive[change.deck] = change.value !== 0;
+      return;
+    }
+    const key = paramKey(change.slot, change.param);
+    if (deckParams[key]) params[change.deck][key] = change.value;
+  }
+
+  listen<ParamChange[]>('engine-params', (event) => {
+    event.payload.forEach(applyEngineParam);
+  });
+
+  function reset(): void {
+    setXfaderPosition(0);
+    for (const deckId of LIVE_DECKS) {
+      setXfaderAssign(deckId, 'thru');
+      for (const key of Object.keys(deckParams)) setParam(deckId, key, paramDefault(key));
+      cueActive[deckId] = false;
+      call('set_cue_active', { deck: deckId, active: false });
+    }
+    engageFiltersIfPreferred();
+  }
+
+  function engageFiltersIfPreferred(): void {
+    if (!useSettingsStore().filtersEngagedAtStart) return;
+    for (const deckId of LIVE_DECKS) setParam(deckId, FILTER_ACTIVE, 1);
+  }
+
+  // Keyed on the settings arriving rather than the value, because the preference names the
+  // launch and flipping the switch mid-set must not reach into a live mixer either way.
+  watch(
+    () => useSettingsStore().hydrated,
+    (hydrated) => {
+      if (hydrated) engageFiltersIfPreferred();
+    },
+    { immediate: true }
+  );
 
   async function loadOutputDevices(): Promise<void> {
     deviceError.value = '';
@@ -186,7 +346,7 @@ export const useMixerStore = defineStore('mixer', () => {
         if (newCueOffset !== null) {
           cueChannelOffset.value = newCueOffset;
           try {
-            await invoke('set_cue_device', { deviceId, channelOffset: newCueOffset });
+            await call('set_cue_device', { deviceId, channelOffset: newCueOffset });
           } catch {
             /* best-effort */
           }
@@ -194,7 +354,7 @@ export const useMixerStore = defineStore('mixer', () => {
       } else {
         cueDeviceId.value = '';
         try {
-          await invoke('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value });
+          await call('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value });
         } catch {
           /* best-effort */
         }
@@ -203,18 +363,18 @@ export const useMixerStore = defineStore('mixer', () => {
     mainDeviceId.value = deviceId;
     if (channelOffset !== undefined) mainChannelOffset.value = channelOffset;
     try {
-      await invoke('set_main_device', { deviceId, channelOffset: mainChannelOffset.value });
+      await call('set_main_device', { deviceId, channelOffset: mainChannelOffset.value });
     } catch (e) {
       deviceError.value = `Master out: ${e}`;
     }
   }
 
   async function getDeckLevels(): Promise<Record<string, [number, number]>> {
-    return invoke<Record<string, [number, number]>>('get_deck_levels');
+    return call('get_deck_levels');
   }
 
   async function getMasterLevel(): Promise<[number, number]> {
-    return invoke<[number, number]>('get_master_level');
+    return call('get_master_level');
   }
 
   const isRecording = ref(false);
@@ -228,7 +388,7 @@ export const useMixerStore = defineStore('mixer', () => {
     isRecording.value = true;
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
-    await invoke('start_recording', {
+    await call('start_recording', {
       bitDepth: fmt === 'wav-16' ? 16 : 32,
       useFlac: fmt === 'flac',
       // The cue sheet is derived from the event log, so writing one requires
@@ -238,24 +398,24 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function stopRecording(): Promise<string> {
-    const tempPath = await invoke<string>('stop_recording');
+    const tempPath = await call('stop_recording');
     isRecording.value = false;
     return tempPath;
   }
 
-  async function pickSavePath(): Promise<string | null> {
+  async function pickSavePath(baseName: string): Promise<string | null> {
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
     const dialogFormat = fmt === 'flac' ? 'flac' : fmt === 'session' ? 'session' : 'wav';
-    return invoke<string | null>('pick_save_path', { format: dialogFormat });
+    return call('pick_save_path', { format: dialogFormat, baseName });
   }
 
   async function saveRecording(src: string, dest: string): Promise<void> {
     const settings = useSettingsStore();
     if (settings.recordingFormat === 'session') {
-      await invoke('save_bms_only', { src, dest });
+      await call('save_bms_only', { src, dest });
     } else {
-      await invoke('save_recording', {
+      await call('save_recording', {
         src,
         dest,
         writeBms: settings.recordBms,
@@ -265,7 +425,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function discardRecording(path: string): Promise<void> {
-    await invoke('discard_recording', { path });
+    await call('discard_recording', { path });
   }
 
   async function renderSession(
@@ -273,7 +433,7 @@ export const useMixerStore = defineStore('mixer', () => {
     outputPath: string,
     useFlac: boolean
   ): Promise<void> {
-    await invoke('render_session_to_file', {
+    await call('render_session_to_file', {
       sessionPath,
       outputPath,
       useFlac,
@@ -281,8 +441,11 @@ export const useMixerStore = defineStore('mixer', () => {
     });
   }
 
-  async function pickRenderOutputPath(useFlac: boolean): Promise<string | null> {
-    return invoke<string | null>('pick_save_path', { format: useFlac ? 'flac' : 'wav' });
+  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
+    return call('pick_save_path', {
+      format: useFlac ? 'flac' : 'wav',
+      baseName
+    });
   }
 
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
@@ -299,7 +462,7 @@ export const useMixerStore = defineStore('mixer', () => {
         if (newMainOffset !== null) {
           mainChannelOffset.value = newMainOffset;
           try {
-            await invoke('set_main_device', { deviceId, channelOffset: newMainOffset });
+            await call('set_main_device', { deviceId, channelOffset: newMainOffset });
           } catch {
             /* best-effort */
           }
@@ -307,7 +470,7 @@ export const useMixerStore = defineStore('mixer', () => {
       } else {
         mainDeviceId.value = '';
         try {
-          await invoke('set_main_device', { deviceId: '', channelOffset: mainChannelOffset.value });
+          await call('set_main_device', { deviceId: '', channelOffset: mainChannelOffset.value });
         } catch {
           /* best-effort */
         }
@@ -317,14 +480,19 @@ export const useMixerStore = defineStore('mixer', () => {
     if (channelOffset !== undefined) cueChannelOffset.value = channelOffset;
     if (!deviceId) return;
     try {
-      await invoke('set_cue_device', { deviceId, channelOffset: cueChannelOffset.value });
+      await call('set_cue_device', { deviceId, channelOffset: cueChannelOffset.value });
     } catch (e) {
       deviceError.value = `Cue out: ${e}`;
     }
   }
 
   return {
+    startScrubMute,
+    endScrubMute,
     activeDecks,
+    eqSpecs,
+    faderSpec,
+    filterSpec,
     cueActive,
     cueChannelOffset,
     cueDeviceId,
@@ -332,9 +500,12 @@ export const useMixerStore = defineStore('mixer', () => {
     deckCount,
     deviceError,
     devicesLoaded,
-    eq,
-    filter,
-    filterEnabled,
+    params,
+    paramValue,
+    paramActive,
+    paramDefault,
+    setParam,
+    toggleParam,
     mainChannelOffset,
     mainDeviceId,
     masterGain,
@@ -342,10 +513,12 @@ export const useMixerStore = defineStore('mixer', () => {
     showWaveformStrip,
     swarmMode,
     swarmSelected,
-    volume,
+    xfaderPosition,
+    xfaderAssign,
     isRecording,
     playedPaths,
     markPlayed,
+    applyEngineParam,
     discardRecording,
     getDeckLevels,
     getMasterLevel,
@@ -359,17 +532,18 @@ export const useMixerStore = defineStore('mixer', () => {
     setCueMix,
     setCueOutputDevice,
     setDeckCount,
-    setEq,
-    setFilter,
     setMainOutputDevice,
     setMasterGain,
     setSwarmChannel,
     setSwarmMode,
-    setVolume,
+    swarmAdjust,
+    swarmReset,
+    setXfaderAssign,
+    setXfaderPosition,
+    toggleXfaderAssign,
     startRecording,
     stopRecording,
     toggleDeckCount,
-    toggleFilter,
     toggleWaveformStrip
   };
 });

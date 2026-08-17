@@ -1,21 +1,13 @@
 import { defineStore } from 'pinia';
 import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { currentBeat as coreCurrentBeat } from '@renderer/utils/sessionCore';
-
-export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
+import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
-
-export const DECK_ACCENTS: Readonly<Record<string, string>> = {
-  A: '#3b82f6',
-  B: '#f97316',
-  C: '#208043',
-  D: '#d631b0',
-  E: '#a855f7'
-};
 
 type LoopRegion = {
   startSec: number;
@@ -53,12 +45,73 @@ type DeckSyncPayload = {
   positionSec: number;
   loopActive: boolean;
   loopRegionCleared: boolean;
+  loopRegion: LoopRegion | null;
 };
+
+type TransportPush = DeckSyncPayload & { deck: DeckId };
+
+type RatePush = { deck: DeckId; rate: number };
 
 // The deck header shows BPM with two decimals; the audible rate is computed
 // from the rounded value so display and playback always agree.
 function roundBpm(bpm: number): number {
   return Math.round(bpm * 100) / 100;
+}
+
+// Everything a track puts on a deck. Ejecting applies this again rather than
+// naming each field to clear, so a field added here cannot be forgotten there.
+type DeckTrackState = {
+  trackName: string;
+  trackLoaded: boolean;
+  loading: boolean;
+  waveformLoading: boolean;
+  loadedPath: string | null;
+  trackData: TrackData | null;
+  // Low-rate overview over the whole track, used by the overview strip and as a
+  // first-paint fallback in WaveformDisplay while the dense LOD loads.
+  fullSpectralData: Float32Array | null;
+  // Higher-rate LOD over the whole track, sliced in JS for any zoom the rate can satisfy.
+  // Deeper zooms fall back to on-demand fetches, see WaveformDisplay.
+  denseSpectralData: Float32Array | null;
+  denseSpectralRate: number;
+  coverArt: string | null;
+  loopPlaying: boolean;
+  loopRegion: LoopRegion | null;
+  loopActive: boolean;
+  ejectPending: boolean;
+  trackBpm: number | null;
+  beatOffset: number;
+  cuePoint: number;
+  targetBpm: number | null;
+  pitchOffset: number;
+  nudging: 'back' | 'forward' | null;
+  cueing: boolean;
+};
+
+function emptyDeck(): DeckTrackState {
+  return {
+    trackName: '',
+    trackLoaded: false,
+    loading: false,
+    waveformLoading: false,
+    loadedPath: null,
+    trackData: null,
+    fullSpectralData: null,
+    denseSpectralData: null,
+    denseSpectralRate: 0,
+    coverArt: null,
+    loopPlaying: false,
+    loopRegion: null,
+    loopActive: false,
+    ejectPending: false,
+    trackBpm: null,
+    beatOffset: 0,
+    cuePoint: 0,
+    targetBpm: null,
+    pitchOffset: 0,
+    nudging: null,
+    cueing: false
+  };
 }
 
 function createDeck(id: DeckId, accent: string, name: string) {
@@ -118,6 +171,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
     if (payload.isPlaying) clockAtPlay = performance.now();
     if (payload.loopRegionCleared) {
       state.loopRegion = null;
+    } else if (payload.loopRegion) {
+      state.loopRegion = payload.loopRegion;
     }
   }
 
@@ -143,36 +198,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
     id,
     accent,
     name,
-    trackName: '',
-    trackLoaded: false,
-    loading: false,
-    waveformLoading: false,
-    loadedPath: null as string | null,
-    trackData: null as TrackData | null,
-    // Low-rate overview covering the whole track (few points per second).
-    // Used by the overview strip and by WaveformDisplay as a first-paint
-    // fallback while the dense LOD is still loading.
-    fullSpectralData: null as Float32Array | null,
-    // Higher-rate LOD covering the whole track. WaveformDisplay slices this
-    // directly in JS for any zoom level the rate can satisfy, avoiding IPC
-    // round-trips on pan/zoom. Deeper zoom levels fall back to on-demand
-    // fetches; see WaveformDisplay for the switching logic.
-    denseSpectralData: null as Float32Array | null,
-    denseSpectralRate: 0,
-    coverArt: null as string | null,
-    loopPlaying: false,
-    loopRegion: null as LoopRegion | null,
-    loopActive: false,
+    ...emptyDeck(),
+    // Not part of the empty deck: it is a setting, and survives the track.
     quantized: true,
-
-    trackBpm: null as number | null,
-    beatOffset: 0,
-    cuePoint: 0,
-    targetBpm: null as number | null,
-    pitchOffset: 0,
-
-    nudging: null as 'back' | 'forward' | null,
-    cueing: false,
 
     get trackPosition(): number | null {
       return state.loopPlaying ? interpolatedPosition() : null;
@@ -206,12 +234,14 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const pitchRange = useSettingsStore().pitchRange;
       const minBpm = state.trackBpm * (1 - pitchRange / 100);
       const maxBpm = state.trackBpm * (1 + pitchRange / 100);
-      const clamped = roundBpm(Math.max(minBpm, Math.min(maxBpm, value)));
+      // Rounding up at the top of the range would otherwise leave it.
+      const rounded = roundBpm(Math.max(minBpm, Math.min(maxBpm, value)));
+      const clamped = Math.max(minBpm, Math.min(maxBpm, rounded));
       state.targetBpm = clamped;
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
       syncPosition();
       localRate = clamped / state.trackBpm;
-      invoke('set_playback_rate', { deck: id, rate: localRate });
+      call('set_playback_rate', { deck: id, rate: localRate });
     },
 
     setTrackBpm(bpm: number) {
@@ -220,18 +250,22 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.pitchOffset = 0;
       syncPosition();
       localRate = 1.0;
-      invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      invoke('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
+      call('set_playback_rate', { deck: id, rate: 1.0 });
+      call('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
     },
 
     setPitchOffset(pct: number) {
       if (state.trackBpm === null) return;
       const pitchRange = useSettingsStore().pitchRange;
       state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
-      state.targetBpm = roundBpm(state.trackBpm * (1 + state.pitchOffset / 100));
+      const minBpm = state.trackBpm * (1 - pitchRange / 100);
+      const maxBpm = state.trackBpm * (1 + pitchRange / 100);
+      // The rate below comes from this bpm, and rounding can cross the range edge.
+      const rounded = roundBpm(state.trackBpm * (1 + state.pitchOffset / 100));
+      state.targetBpm = Math.max(minBpm, Math.min(maxBpm, rounded));
       syncPosition();
       localRate = state.targetBpm / state.trackBpm;
-      invoke('set_playback_rate', { deck: id, rate: localRate });
+      call('set_playback_rate', { deck: id, rate: localRate });
     },
 
     async loadTrack(data: LoadableTrack) {
@@ -241,7 +275,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.loading = true;
       state.waveformLoading = true;
       if (state.loopPlaying) {
-        await invoke('stop', { deck: id });
+        await call('stop', { deck: id });
         state.loopPlaying = false;
       }
       state.cueing = false;
@@ -275,8 +309,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       positionCache = data.beatOffset;
       clockAtPlay = performance.now();
       localRate = 1.0;
-      await invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      invoke('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
+      await call('set_playback_rate', { deck: id, rate: 1.0 });
+      call('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
 
       // Spectral bands are computed in the background by Rust. Listen for
       // bands-ready, then fetch both the low-rate overview and the dense
@@ -308,7 +342,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.beatOffset = sec;
       onBeatOffsetChangeCb?.(sec);
       if (state.trackBpm !== null) {
-        invoke('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
+        call('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
       }
     },
 
@@ -317,7 +351,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const dur = state.loopRegion.endSec - state.loopRegion.startSec;
       const endSec = startSec + dur;
       state.loopRegion = { ...state.loopRegion, startSec, endSec };
-      invoke('set_loop_region', { deck: id, startSec, endSec });
+      call('set_loop_region', { deck: id, startSec, endSec });
     },
 
     async setLoopIn() {
@@ -359,6 +393,24 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
+    // Engine-originated, and deliberately does not invoke back: Rust never pushes a change
+    // the UI made, so anything arriving here moved the engine without passing this store.
+    applyEngineTransport(payload: DeckSyncPayload) {
+      applyDeckState(payload);
+    },
+
+    // The engine owns the rate; bpm and pitch offset are this store's derived
+    // display of it, so they are recomputed here rather than invoked back.
+    applyEngineRate(rate: number) {
+      // Ahead of the grid check: the tempo fader is not gated on a grid, so a deck showing
+      // --.- still has to interpolate at the rate the engine is actually playing.
+      syncPosition();
+      localRate = rate;
+      if (state.trackBpm === null) return;
+      state.targetBpm = roundBpm(state.trackBpm * rate);
+      state.pitchOffset = (rate - 1) * 100;
+    },
+
     async togglePlay() {
       const payload = await invoke<DeckSyncPayload>('toggle_play', { deck: id });
       applyDeckState(payload);
@@ -393,7 +445,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     toggleQuantized() {
       state.quantized = !state.quantized;
-      invoke('set_quantize', { deck: id, quantize: state.quantized });
+      call('set_quantize', { deck: id, quantize: state.quantized });
     },
 
     async nudgeStart(direction: 'back' | 'forward') {
@@ -453,36 +505,37 @@ function createDeck(id: DeckId, accent: string, name: string) {
       bandsReadyUnlisten?.();
       bandsReadyUnlisten = null;
       loadGeneration++;
-      state.loading = false;
-      state.waveformLoading = false;
-      state.loopPlaying = false;
-      state.cueing = false;
-      state.nudging = null;
-      state.loopRegion = null;
-      state.loopActive = false;
-      state.trackData = null;
-      state.fullSpectralData = null;
-      state.denseSpectralData = null;
-      state.denseSpectralRate = 0;
-      state.coverArt = null;
-      state.trackName = '';
-      state.trackLoaded = false;
-      state.loadedPath = null;
-      state.trackBpm = null;
-      state.targetBpm = null;
-      state.pitchOffset = 0;
-      state.cuePoint = 0;
-      state.beatOffset = 0;
       positionCache = 0;
       clockAtPlay = 0;
       localRate = 1.0;
       onBeatOffsetChangeCb = null;
-      await invoke('eject_track', { deck: id });
+      Object.assign(state, emptyDeck());
+      await call('eject_track', { deck: id });
+    },
+
+    // The confirmation lives here rather than in the button, so the eject key on
+    // a controller passes the same guard the mouse does.
+    async requestEject() {
+      if (!state.trackLoaded) return;
+      if (state.loopPlaying) {
+        state.ejectPending = true;
+        return;
+      }
+      await state.ejectTrack();
+    },
+
+    async confirmEject() {
+      state.ejectPending = false;
+      await state.ejectTrack();
+    },
+
+    cancelEject() {
+      state.ejectPending = false;
     },
 
     async stop() {
       if (!state.loopPlaying) return;
-      await invoke('stop', { deck: id });
+      await call('stop', { deck: id });
       state.loopPlaying = false;
       state.cueing = false;
     },
@@ -490,7 +543,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     async destroy() {
       bandsReadyUnlisten?.();
       try {
-        await invoke('stop', { deck: id });
+        await call('stop', { deck: id });
       } catch {
         // ignore stop errors on teardown
       }
@@ -540,6 +593,36 @@ export const useDecksStore = defineStore('decks', () => {
     const deck = decks[event.payload as DeckId];
     if (!deck) return;
     deck.returnToCue();
+  });
+
+  // Rust forwards the press rather than flipping the flag: the store owns it,
+  // and writing back through `set_quantize` is what lights the button.
+  listen<string>('midi-quantize', (event) => {
+    const found = DECKS_DISPOSITION.find((id) => id === event.payload);
+    if (!found) return;
+    decks[found].toggleQuantized();
+  });
+
+  listen<string>('midi-eject', async (event) => {
+    const found = DECKS_DISPOSITION.find((id) => id === event.payload);
+    if (!found) return;
+    await decks[found].requestEject();
+  });
+
+  listen<TransportPush[]>('engine-transport', (event) => {
+    for (const push of event.payload) {
+      const deck = decks[push.deck];
+      if (!deck) continue;
+      deck.applyEngineTransport(push);
+    }
+  });
+
+  listen<RatePush[]>('engine-rate', (event) => {
+    for (const push of event.payload) {
+      const deck = decks[push.deck];
+      if (!deck) continue;
+      deck.applyEngineRate(push.rate);
+    }
   });
 
   async function ejectAll(): Promise<void> {

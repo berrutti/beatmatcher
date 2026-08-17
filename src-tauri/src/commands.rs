@@ -1,7 +1,22 @@
-use crate::audio::{self, ChannelStrip, CuePressOutcome, DeviceInfo, TrackInfo};
-use crate::AppState;
+use crate::audio::{self, ChannelStrip, DeviceInfo, TrackInfo};
+use crate::{AppState, ParamOrigin};
 use std::sync::Arc;
 use tauri::Emitter;
+
+/// Mode is owned by the frontend, and this is the mirror the MIDI thread reads. Clearing
+/// the memory matches reconnect: a half stranded by a mode switch would join across it.
+#[tauri::command]
+pub fn set_app_mode(
+    state: tauri::State<'_, AppState>,
+    midi: tauri::State<'_, crate::midi::MidiState>,
+    mode: crate::AppMode,
+) {
+    state.set_app_mode(mode);
+    midi.clear_control_memory();
+    // The gate in `midi::apply` drops the release edge of anything still held, so the hold
+    // is ended here rather than left latched with the button already back up.
+    state.audio.release_held_controls();
+}
 
 pub(crate) fn get_deck(
     state: &tauri::State<'_, AppState>,
@@ -51,15 +66,26 @@ fn band_normalization_scale(band: &[f32]) -> f32 {
 //                       disappears). Only true when the cue point moves to a new
 //                       position (CueMoved) or loop_in is pressed, because those
 //                       actions invalidate the old loop_end.
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeckSyncPayload {
-    is_playing: bool,
-    is_cueing: bool,
-    cue_point_sec: f64,
-    position_sec: f64,
-    loop_active: bool,
-    loop_region_cleared: bool,
+    pub(crate) is_playing: bool,
+    pub(crate) is_cueing: bool,
+    pub(crate) cue_point_sec: f64,
+    pub(crate) position_sec: f64,
+    pub(crate) loop_active: bool,
+    pub(crate) loop_region_cleared: bool,
+    // A controller press never sees `LoopOutResult`, so the region it just
+    // defined has to arrive with the state rather than as a return value.
+    pub(crate) loop_region: Option<LoopRegionPayload>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoopRegionPayload {
+    start_sec: f64,
+    end_sec: f64,
+    beats: i64,
 }
 
 impl DeckSyncPayload {
@@ -76,16 +102,35 @@ impl DeckSyncPayload {
             position_sec: deck_state.position_sec(),
             loop_active: deck_state.loop_active,
             loop_region_cleared,
+            loop_region: loop_region_of(deck_state, sr),
         }
     }
+}
+
+/// The loop's start is the cue point, which `loop_in` and `set_loop_region` both
+/// write, so a defined region is `loop_end` above it rather than a pair.
+fn loop_region_of(deck_state: &audio::DeckState, sr: f64) -> Option<LoopRegionPayload> {
+    if sr <= 0.0 || deck_state.loop_end <= deck_state.cue_point {
+        return None;
+    }
+    let start_sec = deck_state.cue_point / sr;
+    let end_sec = deck_state.loop_end / sr;
+    Some(LoopRegionPayload {
+        start_sec,
+        end_sec,
+        beats: match deck_state.bpm {
+            Some(bpm) => ((end_sec - start_sec) * bpm / 60.0).round() as i64,
+            None => 0,
+        },
+    })
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoopOutResult {
-    start_sec: f64,
-    end_sec: f64,
-    beats: i64,
+    pub(crate) start_sec: f64,
+    pub(crate) end_sec: f64,
+    pub(crate) beats: i64,
     // Some when a late quantized press caused an immediate seek; frontend must sync positionCache.
     seek_to_sec: Option<f64>,
 }
@@ -255,7 +300,7 @@ pub(crate) async fn load_track(
         deck_state.bpm = None;
         deck_state.beat_offset_frames = 0.0;
         deck_state.playback_rate = 1.0;
-        deck_state.nudge_factor = 1.0;
+        deck_state.jog_hold_factor = 1.0;
         deck_state.bass_band = Arc::new(Vec::new());
         deck_state.mid_band = Arc::new(Vec::new());
         deck_state.high_band = Arc::new(Vec::new());
@@ -349,36 +394,7 @@ pub(crate) fn press_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (outcome, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if deck_state.quantize {
-            if let Some(bpm) = deck_state.bpm {
-                let sr = deck_state.device_sample_rate as f64;
-                deck_state.main_pos =
-                    quantize_to_beat(deck_state.main_pos, bpm, deck_state.beat_offset_frames, sr);
-            }
-        }
-        let had_loop = deck_state.loop_end > 0.0;
-        let out = deck_state.press_cue();
-        let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
-        if loop_cleared {
-            deck_state.loop_active = false;
-            deck_state.loop_end = 0.0;
-        }
-        (out, DeckSyncPayload::from_deck(&deck_state, loop_cleared))
-    };
-    let (event, cue_sec) = match outcome {
-        CuePressOutcome::NoTrack => return Ok(payload),
-        CuePressOutcome::PreviewStarted => ("cue_preview_start", payload.cue_point_sec),
-        CuePressOutcome::CueMoved { new_cue_point_sec } => ("cue_move", new_cue_point_sec),
-        CuePressOutcome::StoppedAtCue { cue_point_sec } => ("stopped_at_cue", cue_point_sec),
-    };
-    state.log(
-        event,
-        serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
-    );
-    Ok(payload)
+    state.press_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -386,20 +402,7 @@ pub(crate) fn release_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_cueing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_cueing;
-        deck_state.release_cue();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_cueing {
-        state.log(
-            "cue_preview_end",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.release_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -407,17 +410,7 @@ pub(crate) fn toggle_play(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.toggle_play();
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    state.log(
-        if payload.is_playing { "play" } else { "stop" },
-        serde_json::json!({ "deck": deck }),
-    );
-    Ok(payload)
+    state.toggle_play(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -425,20 +418,7 @@ pub(crate) fn set_cue_and_stop(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_playing;
-        deck_state.set_cue_and_stop();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_playing {
-        state.log(
-            "cue_set_and_stop",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.set_cue_and_stop(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -446,20 +426,7 @@ pub(crate) fn stop_at_cue(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (was_playing, payload) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let was = deck_state.is_playing;
-        deck_state.stop_at_cue();
-        (was, DeckSyncPayload::from_deck(&deck_state, false))
-    };
-    if was_playing {
-        state.log(
-            "stop_at_cue",
-            serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-        );
-    }
-    Ok(payload)
+    state.stop_at_cue(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -515,16 +482,7 @@ pub(crate) fn set_loop_active(
     deck: String,
     active: bool,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.loop_active = active;
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    if !active {
-        state.log("exit_loop", serde_json::json!({ "deck": deck }));
-    }
-    Ok(payload)
+    state.set_loop_active(ParamOrigin::Ui, &deck, active)
 }
 
 #[tauri::command]
@@ -552,18 +510,7 @@ pub(crate) fn set_loop_in(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (payload, cue_sec, quantize) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let sec = loop_in_core(&mut deck_state)?;
-        let payload = DeckSyncPayload::from_deck(&deck_state, true);
-        (payload, sec, deck_state.quantize)
-    };
-    state.log(
-        "loop_in",
-        serde_json::json!({ "deck": deck, "cue_sec": cue_sec, "quantized": quantize }),
-    );
-    Ok(payload)
+    state.loop_in(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -571,25 +518,7 @@ pub(crate) fn set_loop_out(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<Option<LoopOutResult>, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let (result, quantize) = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let quantize = deck_state.quantize;
-        (loop_out_core(&mut deck_state)?, quantize)
-    };
-    if let Some(r) = &result {
-        state.log(
-            "loop_out",
-            serde_json::json!({
-                "deck": deck,
-                "start_sec": r.start_sec,
-                "end_sec": r.end_sec,
-                "beats": r.beats,
-                "quantized": quantize,
-            }),
-        );
-    }
-    Ok(result)
+    state.loop_out(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -604,21 +533,17 @@ pub(crate) fn clear_loop_region(
     Ok(())
 }
 
+/// Every deck-scope mixer move, addressed the way the manifest addresses it. An unknown
+/// address is ignored, the same way a richer mixer's session replays everything else.
 #[tauri::command]
-pub(crate) fn set_volume(
+pub(crate) fn set_deck_param(
     state: tauri::State<'_, AppState>,
     deck: String,
-    gain: f32,
+    slot: String,
+    param: String,
+    value: f32,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_gain(gain);
-    state.log(
-        "set_volume",
-        serde_json::json!({ "deck": deck, "gain": gain }),
-    );
-    Ok(())
+    state.set_deck_param(ParamOrigin::Ui, &deck, &slot, &param, value)
 }
 
 // Session-view mute/solo. Not logged: it is a monitoring control, not a
@@ -642,15 +567,25 @@ pub(crate) fn set_playback_rate(
     deck: String,
     rate: f64,
 ) -> Result<(), String> {
-    get_deck(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .playback_rate = rate.max(0.1);
-    state.log(
-        "set_playback_rate",
-        serde_json::json!({ "deck": deck, "rate": rate }),
-    );
-    Ok(())
+    state.set_playback_rate(ParamOrigin::Ui, &deck, rate)
+}
+
+#[tauri::command]
+pub(crate) fn set_pitch_range(state: tauri::State<'_, AppState>, percent: f64) {
+    state.audio.set_pitch_range_percent(percent);
+}
+
+#[tauri::command]
+pub(crate) fn set_fader_curve(state: tauri::State<'_, AppState>, curve: session_core::FaderCurve) {
+    state.set_fader_curve(curve);
+}
+
+#[tauri::command]
+pub(crate) fn set_jog_rotation_speed(
+    state: tauri::State<'_, AppState>,
+    speed: session_core::JogRotationSpeed,
+) {
+    state.audio.set_jog_rotation_speed(speed);
 }
 
 #[tauri::command]
@@ -662,10 +597,10 @@ pub(crate) fn set_nudge(
     let result = {
         let deck_arc = get_deck(&state, &deck)?;
         let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck_state.nudge_factor = 1.0 + percent / 100.0;
+        deck_state.set_nudge_percent(percent);
         NudgeResult {
             position_sec: deck_state.position_sec(),
-            effective_rate: deck_state.playback_rate * deck_state.nudge_factor,
+            effective_rate: deck_state.playback_rate * deck_state.jog_hold_factor,
         }
     };
     state.log(
@@ -685,58 +620,7 @@ pub(crate) fn set_quantize(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .quantize = quantize;
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn set_eq(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    band: String,
-    db: f32,
-) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_eq_band(&band, db);
-    state.log(
-        "set_eq",
-        serde_json::json!({ "deck": deck, "band": band, "db": db }),
-    );
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn set_filter(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    value: f32,
-) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_filter(value);
-    state.log(
-        "set_filter",
-        serde_json::json!({ "deck": deck, "value": value }),
-    );
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn set_filter_active(
-    state: tauri::State<'_, AppState>,
-    deck: String,
-    active: bool,
-) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_filter_active(active);
-    state.log(
-        "set_filter_active",
-        serde_json::json!({ "deck": deck, "active": active }),
-    );
+    state.light(crate::midi::Feedback::Quantize, &deck, quantize);
     Ok(())
 }
 
@@ -783,20 +667,7 @@ pub(crate) fn set_reloop(
     state: tauri::State<'_, AppState>,
     deck: String,
 ) -> Result<DeckSyncPayload, String> {
-    let deck_arc = get_deck(&state, &deck)?;
-    let payload = {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if deck_state.loop_end > deck_state.cue_point {
-            deck_state.main_pos = deck_state.cue_point;
-            deck_state.cue_pos = deck_state.cue_point;
-            if deck_state.is_playing {
-                deck_state.loop_active = true;
-            }
-        }
-        DeckSyncPayload::from_deck(&deck_state, false)
-    };
-    state.log("reloop", serde_json::json!({ "deck": deck }));
-    Ok(payload)
+    state.reloop(ParamOrigin::Ui, &deck)
 }
 
 #[tauri::command]
@@ -805,15 +676,7 @@ pub(crate) fn set_cue_active(
     deck: String,
     active: bool,
 ) -> Result<(), String> {
-    get_strip(&state, &deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .cue_active = active;
-    state.log(
-        "set_cue_active",
-        serde_json::json!({ "deck": deck, "active": active }),
-    );
-    Ok(())
+    state.set_cue_active(ParamOrigin::Ui, &deck, active)
 }
 
 #[tauri::command]
@@ -839,16 +702,18 @@ pub(crate) fn set_main_device(
     state.audio.set_main_device(&device_id, channel_offset)
 }
 
+/// `base_name` comes from the caller because it is translated and carries a
+/// formatted date; the extension is the only part this knows about.
 #[tauri::command]
-pub(crate) async fn pick_save_path(format: String) -> Option<String> {
-    let (label, ext, name) = match format.as_str() {
-        "flac" => ("FLAC Audio", "flac", "mix.flac"),
-        "session" => ("Beatmatcher Session", "bms", "mix.bms"),
-        _ => ("WAV Audio", "wav", "mix.wav"),
+pub(crate) async fn pick_save_path(format: String, base_name: String) -> Option<String> {
+    let (label, ext) = match format.as_str() {
+        "flac" => ("FLAC Audio", "flac"),
+        "session" => ("Beatmatcher Session", "bms"),
+        _ => ("WAV Audio", "wav"),
     };
     rfd::AsyncFileDialog::new()
         .add_filter(label, &[ext])
-        .set_file_name(name)
+        .set_file_name(format!("{base_name}.{ext}"))
         .save_file()
         .await
         .map(|f| f.path().to_string_lossy().into_owned())
@@ -866,6 +731,172 @@ pub(crate) fn get_deck_levels(
     state.audio.get_deck_levels()
 }
 
+/// Where the crossfader was when recording started. Thru is skipped because every reader
+/// already defaults to it, and stamping it would head every session with inert events.
+fn crossfader_start_events(
+    position: f32,
+    assigns: &[(&str, session_core::XfaderAssign)],
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = vec![(
+        "set_param",
+        serde_json::json!({ "slot": "xfader", "param": "position", "value": crate::f32_json(position) }),
+    )];
+    for (deck, assign) in assigns {
+        if *assign == session_core::XfaderAssign::Thru {
+            continue;
+        }
+        events.push((
+            "set_xfader_assign",
+            serde_json::json!({ "deck": deck, "assign": assign.as_str() }),
+        ));
+    }
+    events
+}
+
+/// Where a deck's strip stood when recording started. A knob moved before the first event
+/// is otherwise lost, and a reader replays the manifest default in its place. Params
+/// already at their default are skipped, as `crossfader_start_events` skips thru.
+fn strip_start_events(
+    manifest: &'static session_core::MixerManifest,
+    deck_id: &'static str,
+    read: impl Fn(&str, &str) -> Option<f32>,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = Vec::new();
+    for slot in manifest.strip {
+        for param in slot.params {
+            let Some(value) = read(slot.slot, param.id) else {
+                continue;
+            };
+            if f64::from(value) == param.default {
+                continue;
+            }
+            events.push((
+                "set_param",
+                serde_json::json!({
+                    "deck": deck_id,
+                    "slot": slot.slot,
+                    "param": param.id,
+                    "value": crate::f32_json(value),
+                }),
+            ));
+        }
+    }
+    events
+}
+
+/// A tick is worth 60/rpm seconds of audio, so a session that omits this cannot say how
+/// far its scrubs travelled. Stamped for the same reason the fader curve is.
+fn jog_speed_start_event(
+    speed: session_core::JogRotationSpeed,
+) -> (&'static str, serde_json::Value) {
+    (
+        "set_jog_rotation_speed",
+        serde_json::json!({ "speed": speed.as_str() }),
+    )
+}
+
+/// 0 means "driver default", which is what the offline renderer falls back to.
+fn recorded_buffer_frames(setting: u32) -> u32 {
+    match setting {
+        0 => crate::audio::DEFAULT_BUFFER_FRAMES,
+        frames => frames,
+    }
+}
+
+fn xfader_assigns(
+    audio: &crate::audio::AppAudio,
+) -> Vec<(&'static str, session_core::XfaderAssign)> {
+    crate::audio::LIVE_DECK_IDS
+        .into_iter()
+        .map(|deck_id| {
+            let assign = audio
+                .strip(deck_id)
+                .map(|strip| {
+                    strip
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .xfader_assign
+                })
+                .unwrap_or_default();
+            (deck_id, assign)
+        })
+        .collect()
+}
+
+/// None for a deck with nothing loaded, which has no state worth restoring.
+fn deck_snapshot_event(
+    audio: &crate::audio::AppAudio,
+    deck_id: &'static str,
+) -> Option<(&'static str, serde_json::Value)> {
+    let arc = audio.deck(deck_id)?;
+    // Read the strip gain before locking the deck so the cue sheet
+    // knows whether a deck already playing at record start is audible.
+    let gain = audio
+        .strip(deck_id)
+        .map(|strip| {
+            strip
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .target_gain()
+        })
+        .unwrap_or(1.0);
+    let deck = arc.lock().unwrap_or_else(|e| e.into_inner());
+    let path = deck.loaded_path.as_ref()?;
+    let sample_rate = deck.device_sample_rate as f64;
+    Some((
+        "deck_snapshot",
+        serde_json::json!({
+            "deck": deck_id,
+            "path": path,
+            "position_sec": deck.main_pos / sample_rate,
+            "cue_point_sec": deck.cue_point / sample_rate,
+            "is_playing": deck.is_playing,
+            "gain": gain,
+            "bpm": deck.bpm,
+            "playback_rate": deck.playback_rate,
+            "loop_active": deck.loop_active,
+            "loop_end_sec": deck.loop_end / sample_rate,
+        }),
+    ))
+}
+
+/// Everything a session has to say about the state it started from, in the order it
+/// is written. A reader applies all of it before the first performed move.
+fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = vec![
+        (
+            "recording_start",
+            serde_json::json!({ "buffer_size_frames": recorded_buffer_frames(audio.get_buffer_frames()) }),
+        ),
+        // A setting rather than a performed move, so nothing else in the
+        // session would ever say which curve the fader moves were played on.
+        (
+            "set_fader_curve",
+            serde_json::json!({ "curve": audio.monitor.fader_curve().as_str() }),
+        ),
+        jog_speed_start_event(audio.jog_rotation_speed()),
+    ];
+    events.extend(crossfader_start_events(
+        audio.monitor.xfader_position(),
+        &xfader_assigns(audio),
+    ));
+    for deck_id in crate::audio::LIVE_DECK_IDS {
+        let Some(arc) = audio.strip(deck_id) else {
+            continue;
+        };
+        let strip = arc.lock().unwrap_or_else(|e| e.into_inner());
+        events.extend(strip_start_events(audio.mixer(), deck_id, |slot, param| {
+            strip.param(slot, param)
+        }));
+    }
+    events.extend(
+        crate::audio::LIVE_DECK_IDS
+            .into_iter()
+            .filter_map(|deck_id| deck_snapshot_event(audio, deck_id)),
+    );
+    events
+}
+
 #[tauri::command]
 pub(crate) fn start_recording(
     state: tauri::State<'_, AppState>,
@@ -873,62 +904,24 @@ pub(crate) fn start_recording(
     use_flac: bool,
     record_session: bool,
 ) -> Result<(), String> {
-    {
-        let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
-        *session = if record_session {
-            Some(crate::SessionLogger::new())
-        } else {
-            None
-        };
-        if let Some(logger) = session.as_mut() {
-            // 0 means "driver default"; macOS Core Audio default is 512 frames.
-            let buf = state.audio.get_buffer_frames();
-            let buffer_size_frames = if buf == 0 { 512 } else { buf };
-            logger.log(
-                "recording_start",
-                serde_json::json!({
-                    "buffer_size_frames": buffer_size_frames,
-                }),
-            );
-            for deck_id in ["A", "B", "C", "D"] {
-                let Some(arc) = state.audio.deck(deck_id) else {
-                    continue;
-                };
-                // Read the strip gain before locking the deck so the cue sheet
-                // knows whether a deck already playing at record start is audible.
-                let gain = state
-                    .audio
-                    .strip(deck_id)
-                    .map(|strip| {
-                        strip
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .target_gain()
-                    })
-                    .unwrap_or(1.0);
-                let deck_state = arc.lock().unwrap_or_else(|e| e.into_inner());
-                let Some(ref path) = deck_state.loaded_path else {
-                    continue;
-                };
-                logger.log(
-                    "deck_snapshot",
-                    serde_json::json!({
-                        "deck": deck_id,
-                        "path": path,
-                        "position_sec": deck_state.main_pos / deck_state.device_sample_rate as f64,
-                        "cue_point_sec": deck_state.cue_point / deck_state.device_sample_rate as f64,
-                        "is_playing": deck_state.is_playing,
-                        "gain": gain,
-                        "bpm": deck_state.bpm,
-                        "playback_rate": deck_state.playback_rate,
-                        "loop_active": deck_state.loop_active,
-                        "loop_end_sec": deck_state.loop_end / deck_state.device_sample_rate as f64,
-                    }),
-                );
-            }
+    // Armed before anything is logged, so every event is timed against the first
+    // captured frame rather than against the JSON written on the way there.
+    state.audio.start_recording(bit_depth, use_flac)?;
+
+    let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
+    *session = record_session.then(|| {
+        crate::SessionLogger::new(
+            state.audio.mixer(),
+            state.audio.monitor.output_frames_handle(),
+            state.audio.monitor.capture_start_handle(),
+        )
+    });
+    if let Some(logger) = session.as_mut() {
+        for (event_type, payload) in start_events(&state.audio) {
+            logger.log(event_type, payload);
         }
     }
-    state.audio.start_recording(bit_depth, use_flac)
+    Ok(())
 }
 
 #[tauri::command]
@@ -997,6 +990,39 @@ fn cue_timecode(elapsed_ms: f64) -> String {
     format!("{minutes:02}:{seconds:02}:{frames:02}")
 }
 
+// Tag lookup is injected so a test can pin the formatting without the filesystem.
+fn cue_sheet_text(
+    file_name: &str,
+    set_title: &str,
+    points: &[session_core::CuePoint],
+    tags_for: impl Fn(&str) -> audio::TrackTags,
+) -> String {
+    let mut sheet = String::new();
+    sheet.push_str(&format!("TITLE \"{}\"\n", cue_escape(set_title)));
+    sheet.push_str(&format!("FILE \"{}\" WAVE\n", cue_escape(file_name)));
+    for (index, point) in points.iter().enumerate() {
+        let tags = tags_for(&point.track_path);
+        let fallback = std::path::Path::new(&point.track_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(CUE_TRACK_TITLE_FALLBACK)
+            .to_string();
+        sheet.push_str(&format!("  TRACK {:02} AUDIO\n", index + 1));
+        sheet.push_str(&format!(
+            "    TITLE \"{}\"\n",
+            cue_escape(&tags.title.unwrap_or(fallback))
+        ));
+        if let Some(artist) = tags.artist {
+            sheet.push_str(&format!("    PERFORMER \"{}\"\n", cue_escape(&artist)));
+        }
+        sheet.push_str(&format!(
+            "    INDEX 01 {}\n",
+            cue_timecode(point.elapsed_ms)
+        ));
+    }
+    sheet
+}
+
 // Writes a CUE sheet next to `audio_path` (same stem, .cue extension) listing
 // when each track entered the mix. FILE references the audio by name only, so
 // the .cue must sit beside it; name collisions go through unique_path like the
@@ -1022,29 +1048,7 @@ fn write_cue_sheet(audio_path: &str, events: &[session_core::SessionEvent]) {
         .and_then(|s| s.to_str())
         .unwrap_or(CUE_SET_TITLE_FALLBACK);
 
-    let mut sheet = String::new();
-    sheet.push_str(&format!("TITLE \"{}\"\n", cue_escape(set_title)));
-    sheet.push_str(&format!("FILE \"{}\" WAVE\n", cue_escape(file_name)));
-    for (index, point) in points.iter().enumerate() {
-        let tags = audio::read_tags(&point.track_path);
-        let fallback = std::path::Path::new(&point.track_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(CUE_TRACK_TITLE_FALLBACK)
-            .to_string();
-        sheet.push_str(&format!("  TRACK {:02} AUDIO\n", index + 1));
-        sheet.push_str(&format!(
-            "    TITLE \"{}\"\n",
-            cue_escape(&tags.title.unwrap_or(fallback))
-        ));
-        if let Some(artist) = tags.artist {
-            sheet.push_str(&format!("    PERFORMER \"{}\"\n", cue_escape(&artist)));
-        }
-        sheet.push_str(&format!(
-            "    INDEX 01 {}\n",
-            cue_timecode(point.elapsed_ms)
-        ));
-    }
+    let sheet = cue_sheet_text(file_name, set_title, &points, audio::read_tags);
 
     let cue_path = unique_path(&audio_file.with_extension("cue").to_string_lossy());
     match std::fs::write(&cue_path, sheet.as_bytes()) {
@@ -1151,6 +1155,11 @@ pub(crate) async fn render_session_to_file(
         .unwrap_or_else(|e| e.into_inner())
         .get(&session_path)
         .cloned();
+    let limiter = if state.audio.monitor.limiter_enabled() {
+        crate::offline_render::MasterLimiter::On
+    } else {
+        crate::offline_render::MasterLimiter::Off
+    };
     tokio::task::spawn_blocking(move || {
         let session = match cached {
             Some(cached_session) => cached_session,
@@ -1158,13 +1167,20 @@ pub(crate) async fn render_session_to_file(
                 let json = std::fs::read_to_string(&session_path)
                     .map_err(|e| format!("{session_path}: {e}"))?;
                 std::sync::Arc::new(
-                    serde_json::from_str::<crate::offline_render::SessionFile>(&json)
+                    crate::offline_render::SessionFile::parse(&json)
                         .map_err(|e| format!("parse error: {e}"))?,
                 )
             }
         };
         let sample_rate = 44100u32;
-        let rendered = crate::offline_render::render_session(&session, sample_rate, 0)?;
+        let rendered = crate::offline_render::render_session(
+            &session,
+            crate::offline_render::RenderRequest {
+                sample_rate,
+                min_frames: 0,
+                limiter,
+            },
+        )?;
         let write_result = if use_flac {
             crate::offline_render::write_flac_f32(&output_path, &rendered, sample_rate)
         } else {
@@ -1187,7 +1203,25 @@ pub(crate) fn save_session(path: String, content: String) -> Result<(), String> 
 #[tauri::command]
 pub(crate) fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
     state.audio.monitor.set_master_gain(gain);
-    state.log("set_master_gain", serde_json::json!({ "gain": gain }));
+    state.log_param(None, "gain", "gain", gain);
+}
+
+#[tauri::command]
+pub(crate) fn set_xfader_position(state: tauri::State<'_, AppState>, position: f32) {
+    state.set_xfader_position(ParamOrigin::Ui, position);
+}
+
+#[tauri::command]
+pub(crate) fn set_xfader_assign(
+    state: tauri::State<'_, AppState>,
+    deck: &str,
+    assign: &str,
+) -> Result<(), String> {
+    state.set_xfader_assign(
+        ParamOrigin::Ui,
+        deck,
+        session_core::XfaderAssign::from_str_or_thru(assign),
+    )
 }
 
 #[tauri::command]
@@ -1363,36 +1397,20 @@ pub(crate) async fn get_track_amplitude_region(
     num_points: usize,
 ) -> Result<Vec<f32>, String> {
     let sr = state.audio.device_sample_rate;
-    let cached = {
-        let cache = state
-            .session_track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache
-            .get(&path)
-            .map(|(samples, channels)| (samples.clone(), *channels))
-    };
-
-    if let Some((samples, channels)) = cached {
-        return tokio::task::spawn_blocking(move || {
-            let start_frame = (start_sec * sr as f64).max(0.0) as usize;
-            let end_frame = (end_sec * sr as f64).max(0.0) as usize;
-            Ok(audio::compute_amplitude_region(
-                &samples,
-                channels,
-                start_frame,
-                end_frame,
-                num_points,
-            ))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    // Shares the session preload's decode rather than starting a competing one.
+    let (samples, channels) = crate::session_playback::load_track(
+        &state.session_track_cache,
+        &state.session_track_loads,
+        &state.decode_permits,
+        &path,
+        sr,
+    )
+    .await
+    .ok_or_else(|| format!("could not decode {path}"))?;
 
     tokio::task::spawn_blocking(move || {
-        let (samples, channels, file_sr) = audio::decode_audio(&path).map_err(|e| e.to_string())?;
-        let start_frame = (start_sec * file_sr as f64).max(0.0) as usize;
-        let end_frame = (end_sec * file_sr as f64).max(0.0) as usize;
+        let start_frame = (start_sec * sr as f64).max(0.0) as usize;
+        let end_frame = (end_sec * sr as f64).max(0.0) as usize;
         Ok(audio::compute_amplitude_region(
             &samples,
             channels,
@@ -1408,7 +1426,139 @@ pub(crate) async fn get_track_amplitude_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio::DeckState;
+    use audio::{CuePressOutcome, DeckState};
+
+    // A logged tick is worth 60/rpm seconds of audio, so a session that does not name the
+    // speed it was played at replays every scrub at the wrong distance.
+    #[test]
+    fn record_start_stamps_the_jog_rotation_speed() {
+        for speed in [
+            session_core::JogRotationSpeed::Rpm33,
+            session_core::JogRotationSpeed::Rpm45,
+        ] {
+            let (event_type, payload) = jog_speed_start_event(speed);
+            assert_eq!(event_type, "set_jog_rotation_speed");
+            assert_eq!(payload, serde_json::json!({ "speed": speed.as_str() }));
+        }
+    }
+
+    // Stamped for the same reason the fader curve is: a deck crossfaded away at record
+    // start is silent, and without this the cue sheet and the render both call it audible.
+    #[test]
+    fn record_start_stamps_the_crossfader_and_every_assigned_deck() {
+        let events = crossfader_start_events(
+            -1.0,
+            &[
+                ("A", session_core::XfaderAssign::A),
+                ("B", session_core::XfaderAssign::B),
+                ("C", session_core::XfaderAssign::Thru),
+            ],
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "set_param",
+                    serde_json::json!({ "slot": "xfader", "param": "position", "value": -1.0 })
+                ),
+                (
+                    "set_xfader_assign",
+                    serde_json::json!({ "deck": "A", "assign": "a" })
+                ),
+                (
+                    "set_xfader_assign",
+                    serde_json::json!({ "deck": "B", "assign": "b" })
+                ),
+            ]
+        );
+    }
+
+    // Thru is the default every reader already assumes, so stamping it would put three
+    // inert events at the head of every session recorded without the crossfader.
+    #[test]
+    fn a_centred_crossfader_with_no_assigns_stamps_only_its_position() {
+        let events = crossfader_start_events(
+            0.0,
+            &[
+                ("A", session_core::XfaderAssign::Thru),
+                ("B", session_core::XfaderAssign::Thru),
+            ],
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "set_param");
+    }
+
+    // Both sides have to resolve "driver default" to the same number, or the session
+    // records one buffer size and a reader assumes another.
+    #[test]
+    fn a_default_buffer_setting_records_the_shared_default() {
+        assert_eq!(
+            recorded_buffer_frames(0),
+            crate::audio::DEFAULT_BUFFER_FRAMES
+        );
+        assert_eq!(recorded_buffer_frames(128), 128);
+        assert_eq!(recorded_buffer_frames(1024), 1024);
+    }
+
+    // A filter engaged before the first event was replayed bypassed, so a whole sweep
+    // was inaudible in the render while the recording had it 17 dB down.
+    #[test]
+    fn record_start_stamps_a_filter_that_was_already_engaged() {
+        let events =
+            strip_start_events(&session_core::CLASSIC_3BAND_V2, "A", |slot, param| {
+                match (slot, param) {
+                    ("filter", "active") => Some(1.0),
+                    _ => None,
+                }
+            });
+        assert_eq!(
+            events,
+            vec![(
+                "set_param",
+                serde_json::json!({ "deck": "A", "slot": "filter", "param": "active", "value": 1.0 })
+            )]
+        );
+    }
+
+    #[test]
+    fn record_start_stamps_every_moved_strip_param() {
+        let events =
+            strip_start_events(&session_core::CLASSIC_3BAND_V2, "B", |slot, param| {
+                match (slot, param) {
+                    ("eq", "low") => Some(-6.0),
+                    ("filter", "value") => Some(0.4),
+                    ("fader", "gain") => Some(0.75),
+                    _ => None,
+                }
+            });
+        let moved: Vec<_> = events
+            .iter()
+            .map(|(_, payload)| (payload["slot"].clone(), payload["param"].clone()))
+            .collect();
+        assert_eq!(
+            moved,
+            vec![
+                (serde_json::json!("eq"), serde_json::json!("low")),
+                (serde_json::json!("filter"), serde_json::json!("value")),
+                (serde_json::json!("fader"), serde_json::json!("gain")),
+            ]
+        );
+    }
+
+    // A strip nobody touched would otherwise head every session with inert events,
+    // which is the reason crossfader_start_events skips thru.
+    #[test]
+    fn an_untouched_strip_stamps_nothing() {
+        let manifest = &session_core::CLASSIC_3BAND_V2;
+        let events = strip_start_events(manifest, "A", |slot, param| {
+            manifest
+                .strip_slot(slot)
+                .and_then(|entry| entry.param(param))
+                .map(|descriptor| descriptor.default as f32)
+        });
+        assert!(events.is_empty(), "{events:?}");
+    }
 
     // Compile-time guard for the SendStream SAFETY contract (audio/stream.rs):
     // making any stream-mutating command async moves cpal::Stream drops onto
@@ -1528,7 +1678,7 @@ mod tests {
 
     // --- press_cue with quantize (command-layer logic) ---
 
-    // Mirrors the quantize-then-press sequence in the press_cue Tauri command.
+    // Mirrors the quantize-then-press sequence in `AppState::press_cue`.
     fn press_cue_quantized(deck_state: &mut DeckState) -> CuePressOutcome {
         if let Some(bpm) = deck_state.bpm {
             let sr = deck_state.device_sample_rate as f64;
@@ -1578,7 +1728,7 @@ mod tests {
         deck_state.loop_end = beat_dur() * 4.0;
         deck_state.loop_active = true;
         deck_state.main_pos = beat_dur() * 2.0;
-        // Simulate press_cue Tauri command: quantize then check loop_cleared
+        // Simulate AppState::press_cue: quantize then check loop_cleared
         let had_loop = deck_state.loop_end > 0.0;
         let out = press_cue_quantized(&mut deck_state);
         let loop_cleared = matches!(out, CuePressOutcome::CueMoved { .. }) && had_loop;
@@ -1958,5 +2108,74 @@ mod tests {
         deck_state.loop_active = true;
         assert!(deck_state.loop_active);
         assert!((deck_state.main_pos - beat_dur() * 4.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod cue_fixture {
+    use super::*;
+    use crate::offline_render::corpus::CORPUS;
+
+    // Falls back to the file stem, so the expected text is machine independent.
+    fn no_tags(_path: &str) -> audio::TrackTags {
+        audio::TrackTags::default()
+    }
+
+    fn sheet_for(json: &str) -> String {
+        let session: session_core::SessionFile =
+            serde_json::from_str(json).expect("parse corpus fixture");
+        let points = session_core::build_cue_points(&session.events);
+        cue_sheet_text("set.wav", "set", &points, no_tags)
+    }
+
+    fn sheet_named(name: &str) -> String {
+        let (_, json) = CORPUS
+            .iter()
+            .find(|(id, _)| *id == name)
+            .unwrap_or_else(|| panic!("no corpus fixture named {name}"));
+        sheet_for(json)
+    }
+
+    #[test]
+    fn transport_fixture_cue_sheet_is_unchanged() {
+        assert_eq!(
+            sheet_named("transport"),
+            "TITLE \"set\"\n\
+             FILE \"set.wav\" WAVE\n\
+             \x20 TRACK 01 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:08\n"
+        );
+    }
+
+    #[test]
+    fn multideck_fixture_lists_each_deck_once_in_audible_order() {
+        assert_eq!(
+            sheet_named("rate_and_multideck"),
+            "TITLE \"set\"\n\
+             FILE \"set.wav\" WAVE\n\
+             \x20 TRACK 01 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:00\n\
+             \x20 TRACK 02 AUDIO\n\
+             \x20   TITLE \"__SOURCE__\"\n\
+             \x20   INDEX 01 00:00:30\n"
+        );
+    }
+
+    #[test]
+    fn every_corpus_fixture_produces_a_stable_sheet() {
+        for (name, json) in CORPUS {
+            let sheet = sheet_for(json);
+            assert!(
+                sheet.starts_with("TITLE \"set\"\nFILE \"set.wav\" WAVE\n"),
+                "{name}: header changed"
+            );
+            assert_eq!(
+                sheet,
+                sheet_for(json),
+                "{name}: sheet generation is not deterministic"
+            );
+        }
     }
 }

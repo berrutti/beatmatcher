@@ -3,6 +3,8 @@
 // offline render) all match exhaustively on `SessionCommand`, so adding a
 // variant forces a compile error in each until its behavior is decided.
 
+use crate::param::ParamScope;
+
 // Serializes back to the same shape the frontend writes to .bms: only the
 // fields actually set appear (skip_serializing_if), so edit ops that synthesize
 // events round-trip to clean JSON without a wall of nulls.
@@ -22,11 +24,23 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,11 +71,20 @@ pub struct SessionEvent {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffer_size_frames: Option<u32>,
+    /// Output frames since capture began: which buffer the command landed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<u64>,
 }
 
 impl SessionEvent {
-    // Builds a per-deck event with only `elapsed_ms`, `event_type`, and `deck`
-    // set; callers fill in the remaining fields via struct-update syntax.
+    pub fn synthesized_at(&self, elapsed_ms: f64) -> SessionEvent {
+        SessionEvent {
+            elapsed_ms,
+            frame: None,
+            ..self.clone()
+        }
+    }
+
     pub fn at(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
         SessionEvent {
             elapsed_ms,
@@ -70,11 +93,100 @@ impl SessionEvent {
             ..Default::default()
         }
     }
+
+    // `deck` is None for master scope, which is how the scope is inferred back.
+    pub fn param(
+        elapsed_ms: f64,
+        deck: Option<&str>,
+        slot: &str,
+        param: &str,
+        value: f64,
+    ) -> SessionEvent {
+        SessionEvent {
+            elapsed_ms,
+            event_type: "set_param".to_string(),
+            deck: deck.map(str::to_string),
+            slot: Some(slot.to_string()),
+            param: Some(param.to_string()),
+            value: Some(value as f32),
+            ..Default::default()
+        }
+    }
+
+    pub fn is_param(&self, deck: Option<&str>, slot: &str, param: &str) -> bool {
+        self.event_type == "set_param"
+            && self.deck.as_deref() == deck
+            && self.slot.as_deref() == Some(slot)
+            && self.param.as_deref() == Some(param)
+    }
+
+    fn port_v1_to_v2(&mut self) -> bool {
+        let deck_scoped = self.deck.is_some();
+        let (slot, param, value) = match self.event_type.as_str() {
+            "set_volume" if deck_scoped => ("fader".to_string(), "gain".to_string(), self.gain),
+            "set_eq" if deck_scoped => match (self.band.clone(), self.db) {
+                (Some(band), Some(db)) => ("eq".to_string(), band, Some(db)),
+                _ => return false,
+            },
+            "set_filter" if deck_scoped => ("filter".to_string(), "value".to_string(), self.value),
+            "set_filter_active" if deck_scoped => (
+                "filter".to_string(),
+                "active".to_string(),
+                self.active.map(|active| if active { 1.0 } else { 0.0 }),
+            ),
+            // Master scope, so it carries no deck and the master slot is named "gain".
+            "set_master_gain" if !deck_scoped => {
+                ("gain".to_string(), "gain".to_string(), self.gain)
+            }
+            _ => return false,
+        };
+        let Some(value) = value else {
+            return false;
+        };
+        self.event_type = "set_param".to_string();
+        self.slot = Some(slot);
+        self.param = Some(param);
+        self.value = Some(value);
+        true
+    }
+}
+
+fn port_v1_events(events: &mut [SessionEvent]) -> usize {
+    let mut ported = 0;
+    for event in events.iter_mut() {
+        if event.port_v1_to_v2() {
+            ported += 1;
+        }
+    }
+    ported
+}
+
+pub fn port_events(events: &mut [SessionEvent], from_version: u32) -> usize {
+    match from_version {
+        1 => port_v1_events(events),
+        _ => 0,
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionFile {
+    pub version: u32,
     pub events: Vec<SessionEvent>,
+    // Absent in sessions recorded before manifests existed.
+    #[serde(default)]
+    pub mixer: Option<crate::param::MixerHeader>,
+}
+
+pub const BMS_VERSION: u32 = 2;
+
+impl SessionFile {
+    /// Read a `.bms` only through here: plain deserialization drops an older session's
+    /// mixer moves in silence.
+    pub fn parse(json: &str) -> Result<Self, serde_json::Error> {
+        let mut file: Self = serde_json::from_str(json)?;
+        port_events(&mut file.events, file.version);
+        Ok(file)
+    }
 }
 
 // Every replayable command, with the fields each one actually consumes.
@@ -115,22 +227,36 @@ pub enum SessionCommand<'a> {
         deck: &'a str,
         sec: f64,
     },
-    SetVolume {
-        deck: &'a str,
-        gain: f32,
+    // Only this axis is string-addressed; transport stays one variant per
+    // command so the three interpreters fail to compile when one is added.
+    SetParam {
+        scope: ParamScope,
+        deck: Option<&'a str>,
+        slot: &'a str,
+        param: &'a str,
+        value: f64,
     },
-    SetEq {
+    // Categorical, so it gets its own variant rather than riding SetParam as a number.
+    // Same reasoning as `set_cue_active`: per-strip state the manifest does not describe.
+    SetXfaderAssign {
         deck: &'a str,
-        band: &'a str,
-        db: f32,
+        assign: crate::XfaderAssign,
     },
-    SetFilter {
-        deck: &'a str,
-        value: f32,
+    // Categorical for the same reason, and master scope: one switch sets the
+    // taper of every channel fader.
+    SetFaderCurve {
+        curve: crate::FaderCurve,
     },
-    SetFilterActive {
+    // The wheel's own input rather than its effect, which is computed per audio block and
+    // so is never known on the thread that logs.
+    Jog {
         deck: &'a str,
-        active: bool,
+        ticks: f64,
+    },
+    // Categorical, and it decides what one logged tick is worth, so a session that omits
+    // it cannot be replayed at the speed it was played on.
+    SetJogRotationSpeed {
+        speed: crate::JogRotationSpeed,
     },
     SetPlaybackRate {
         deck: &'a str,
@@ -139,9 +265,6 @@ pub enum SessionCommand<'a> {
     SetNudge {
         deck: &'a str,
         percent: f64,
-    },
-    SetMasterGain {
-        gain: f32,
     },
     SetBeatGrid {
         deck: &'a str,
@@ -178,7 +301,8 @@ impl<'a> SessionCommand<'a> {
     pub fn deck_id(&self) -> Option<&'a str> {
         use SessionCommand::*;
         match *self {
-            SetMasterGain { .. } => None,
+            SetParam { deck, .. } => deck,
+            SetFaderCurve { .. } | SetJogRotationSpeed { .. } => None,
             DeckSnapshot { deck, .. }
             | LoadTrack { deck, .. }
             | EjectTrack { deck }
@@ -186,10 +310,8 @@ impl<'a> SessionCommand<'a> {
             | Stop { deck }
             | StopAtCue { deck, .. }
             | Seek { deck, .. }
-            | SetVolume { deck, .. }
-            | SetEq { deck, .. }
-            | SetFilter { deck, .. }
-            | SetFilterActive { deck, .. }
+            | SetXfaderAssign { deck, .. }
+            | Jog { deck, .. }
             | SetPlaybackRate { deck, .. }
             | SetNudge { deck, .. }
             | SetBeatGrid { deck, .. }
@@ -241,22 +363,30 @@ impl SessionEvent {
                 deck: deck?,
                 sec: self.sec?,
             },
-            "set_volume" => SetVolume {
-                deck: deck?,
-                gain: self.gain?,
+            "set_param" => SetParam {
+                scope: if self.deck.is_some() {
+                    ParamScope::Deck
+                } else {
+                    ParamScope::Master
+                },
+                deck,
+                slot: self.slot.as_deref()?,
+                param: self.param.as_deref()?,
+                value: self.value? as f64,
             },
-            "set_eq" => SetEq {
+            "set_xfader_assign" => SetXfaderAssign {
                 deck: deck?,
-                band: self.band.as_deref()?,
-                db: self.db?,
+                assign: crate::XfaderAssign::from_str_or_thru(self.assign.as_deref()?),
             },
-            "set_filter" => SetFilter {
-                deck: deck?,
-                value: self.value?,
+            "set_fader_curve" => SetFaderCurve {
+                curve: crate::FaderCurve::from_str_or_linear(self.curve.as_deref()?),
             },
-            "set_filter_active" => SetFilterActive {
+            "jog" => Jog {
                 deck: deck?,
-                active: self.active?,
+                ticks: self.ticks?,
+            },
+            "set_jog_rotation_speed" => SetJogRotationSpeed {
+                speed: crate::JogRotationSpeed::from_str_or_33(self.speed.as_deref()?),
             },
             "set_playback_rate" => SetPlaybackRate {
                 deck: deck?,
@@ -266,7 +396,6 @@ impl SessionEvent {
                 deck: deck?,
                 percent: self.percent?,
             },
-            "set_master_gain" => SetMasterGain { gain: self.gain? },
             "set_beat_grid" => SetBeatGrid {
                 deck: deck?,
                 bpm: self.bpm,
@@ -308,6 +437,180 @@ mod tests {
         }
     }
 
+    // The exact shapes read out of a real session recorded before manifests.
+    #[test]
+    fn the_v1_vocabulary_ports_onto_classic_slots() {
+        let mut events = vec![
+            SessionEvent {
+                gain: Some(0.0),
+                ..make_event("set_volume")
+            },
+            SessionEvent {
+                band: Some("low".to_string()),
+                db: Some(-2.5),
+                ..make_event("set_eq")
+            },
+            SessionEvent {
+                value: Some(0.35),
+                ..make_event("set_filter")
+            },
+            SessionEvent {
+                active: Some(true),
+                ..make_event("set_filter_active")
+            },
+        ];
+        assert_eq!(port_events(&mut events, 1), 4);
+
+        assert!(events[0].is_param(Some("A"), "fader", "gain"));
+        assert_eq!(events[0].value, Some(0.0));
+        assert!(events[1].is_param(Some("A"), "eq", "low"));
+        assert_eq!(events[1].value, Some(-2.5));
+        assert!(events[2].is_param(Some("A"), "filter", "value"));
+        assert_eq!(events[2].value, Some(0.35));
+        assert!(events[3].is_param(Some("A"), "filter", "active"));
+        assert_eq!(events[3].value, Some(1.0));
+
+        for event in &events {
+            assert!(event.command().is_some(), "{:?} still does not replay", event);
+        }
+    }
+
+    #[test]
+    fn every_ported_address_exists_on_the_classic_mixer() {
+        let mut events = vec![
+            SessionEvent {
+                gain: Some(0.8),
+                ..make_event("set_volume")
+            },
+            SessionEvent {
+                band: Some("mid".to_string()),
+                db: Some(3.0),
+                ..make_event("set_eq")
+            },
+            SessionEvent {
+                band: Some("high".to_string()),
+                db: Some(3.0),
+                ..make_event("set_eq")
+            },
+            SessionEvent {
+                value: Some(-0.5),
+                ..make_event("set_filter")
+            },
+            SessionEvent {
+                active: Some(false),
+                ..make_event("set_filter_active")
+            },
+        ];
+        port_events(&mut events, 1);
+        let manifest = crate::param::resolve_manifest(None).expect("a headerless session");
+        for event in &events {
+            let slot = event.slot.as_deref().expect("ported to a slot");
+            let param = event.param.as_deref().expect("ported to a param");
+            assert!(
+                manifest
+                    .descriptor(crate::ParamScope::Deck, slot, param)
+                    .is_some(),
+                "{slot}/{param} is not on {}",
+                manifest.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_current_vocabulary_is_left_alone() {
+        let mut events = vec![
+            SessionEvent::param(0.0, Some("A"), "eq", "low", -6.0),
+            make_event("play"),
+            make_event("set_nudge"),
+        ];
+        let before = serde_json::to_string(&events).expect("serialize");
+        assert_eq!(port_events(&mut events, 1), 0);
+        assert_eq!(serde_json::to_string(&events).expect("serialize"), before);
+    }
+
+    #[test]
+    fn a_v1_event_missing_its_value_is_not_ported() {
+        let mut events = vec![
+            make_event("set_volume"),
+            SessionEvent {
+                db: Some(-3.0),
+                ..make_event("set_eq")
+            },
+            SessionEvent {
+                gain: Some(0.5),
+                deck: None,
+                ..make_event("set_volume")
+            },
+        ];
+        assert_eq!(port_events(&mut events, 1), 0);
+        assert_eq!(events[0].event_type, "set_volume");
+        assert_eq!(events[1].event_type, "set_eq");
+        assert_eq!(events[2].event_type, "set_volume");
+    }
+
+    // Master gain is the one v1 event with no deck. Skipping it lost the master fader
+    // automation on load, unrecoverable once the session was saved at the current version.
+    #[test]
+    fn the_v1_master_gain_ports_onto_the_master_slot() {
+        let mut events = vec![SessionEvent {
+            gain: Some(0.6),
+            deck: None,
+            ..make_event("set_master_gain")
+        }];
+        assert_eq!(port_events(&mut events, 1), 1);
+        assert!(events[0].is_param(None, "gain", "gain"));
+        assert_eq!(events[0].value, Some(0.6));
+        assert!(events[0].command().is_some(), "it has to replay");
+    }
+
+    #[test]
+    fn a_deck_scoped_v1_event_still_needs_its_deck() {
+        let mut events = vec![SessionEvent {
+            gain: Some(0.5),
+            deck: None,
+            ..make_event("set_volume")
+        }];
+        assert_eq!(port_events(&mut events, 1), 0);
+        assert_eq!(events[0].event_type, "set_volume");
+    }
+
+    // A writer is free to emit the key with a null, and porting reads the scope off the
+    // deck alone, so the two spellings of "no deck" have to port the same way.
+    #[test]
+    fn an_explicit_null_deck_reads_as_no_deck() {
+        let mut events: Vec<SessionEvent> = serde_json::from_str(
+            r#"[
+                {"elapsed_ms": 1, "type": "set_volume", "deck": null, "gain": 0.5},
+                {"elapsed_ms": 2, "type": "set_master_gain", "deck": null, "gain": 0.6}
+            ]"#,
+        )
+        .expect("a session with null decks");
+        assert_eq!(port_events(&mut events, 1), 1);
+        assert_eq!(events[0].event_type, "set_volume");
+        assert!(events[1].is_param(None, "gain", "gain"));
+    }
+
+    #[test]
+    fn a_current_version_is_never_ported() {
+        let mut events = vec![SessionEvent {
+            gain: Some(0.5),
+            ..make_event("set_volume")
+        }];
+        assert_eq!(port_events(&mut events, BMS_VERSION), 0);
+        assert_eq!(events[0].event_type, "set_volume");
+    }
+
+    #[test]
+    fn parsing_a_session_ports_it() {
+        let json = r#"{"version":1,"events":[
+            {"elapsed_ms":1.0,"type":"set_volume","deck":"A","gain":0.25},
+            {"elapsed_ms":2.0,"type":"set_eq","deck":"B","band":"high","db":2.0}
+        ]}"#;
+        let session = SessionFile::parse(json).expect("parse");
+        assert!(session.events[0].is_param(Some("A"), "fader", "gain"));
+        assert!(session.events[1].is_param(Some("B"), "eq", "high"));
+    }
+
     #[test]
     fn every_replayable_type_converts() {
         let full = SessionEvent {
@@ -337,13 +640,8 @@ mod tests {
             "stopped_at_cue",
             "stop_at_cue",
             "seek",
-            "set_volume",
-            "set_eq",
-            "set_filter",
-            "set_filter_active",
             "set_playback_rate",
             "set_nudge",
-            "set_master_gain",
             "set_beat_grid",
             "loop_in",
             "loop_out",
@@ -393,7 +691,7 @@ mod tests {
     #[test]
     fn missing_required_fields_convert_to_none() {
         assert!(make_event("seek").command().is_none(), "seek without sec");
-        assert!(make_event("set_volume").command().is_none(), "set_volume w/o gain");
+        assert!(make_event("set_param").command().is_none(), "set_param w/o slot");
         assert!(make_event("deck_snapshot").command().is_none(), "snapshot w/o path");
         assert!(make_event("load_track").command().is_none(), "load_track w/o path");
         let no_deck = SessionEvent {

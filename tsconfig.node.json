@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["vite.tauri.config.ts", "vite.web.config.ts"]
+  "include": ["vite.tauri.config.ts", "vite.web.config.ts", "tests/**/*.ts"]
 }

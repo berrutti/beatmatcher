@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "XDJ-1000MK2",
+  "match": ["XDJ-1000"],
+  "decks": "assigned",
+  "bindings": [
+    { "channel": 1, "cc": 48, "resolution": "centre_delta", "action": "jog" },
+    { "channel": 1, "cc": 29, "resolution": "7bit", "action": "tempo_fader" },
+    { "channel": 1, "note": 0, "action": "play_toggle" },
+    { "channel": 1, "note": 1, "action": "transport_cue" },
+    { "channel": 1, "note": 6, "action": "loop_in" },
+    { "channel": 1, "note": 7, "action": "loop_out" },
+    { "channel": 1, "note": 8, "action": "loop_exit_or_reloop" },
+    { "channel": 1, "note": 5, "action": "browse", "steps": -1 },
+    { "channel": 1, "note": 4, "action": "browse", "steps": 1 },
+    { "channel": 1, "cc": 79, "resolution": "signed_step", "action": "browse" },
+    { "channel": 1, "note": 51, "action": "enter" },
+    { "channel": 1, "note": 50, "action": "back" },
+    { "channel": 1, "note": 9, "action": "quantize_toggle" },
+    { "channel": 1, "note": 48, "action": "eject" }
+  ]
+}

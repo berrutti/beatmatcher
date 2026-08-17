@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
-import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { useSessionStore, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
 import { laneSpecFor, spliceLaneEvents } from '@renderer/utils/sessionEditOps';
@@ -20,7 +20,8 @@ import {
   moveTransportBlock,
   trimTransportBlock,
   splitTransportBlock,
-  deleteTransportRanges
+  deleteTransportRanges,
+  bmsVersion
 } from '@renderer/utils/sessionCore';
 import {
   TransportBlock,
@@ -87,7 +88,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   ): Promise<void> {
     if (previous) await previous;
     try {
-      await invoke('update_session_events', { path, eventsJson });
+      await call('update_session_events', { path, eventsJson });
     } catch (err) {
       console.error('[sessionEdit] failed to sync session events to Rust:', err);
     }
@@ -98,9 +99,17 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (syncPromise) await syncPromise;
   }
 
+  // A rejected edit returns its input unchanged, but every wrapper round-trips through
+  // JSON, so the result is always a fresh array and a reference check alone would miss it.
+  function isSameEdit(next: SessionEvent[], current: SessionEvent[]): boolean {
+    if (next === current) return true;
+    if (next.length !== current.length) return false;
+    return JSON.stringify(next) === JSON.stringify(current);
+  }
+
   function applyEdit(next: SessionEvent[]) {
     const session = sessionStore.session;
-    if (!session || next === session.events) return;
+    if (!session || isSameEdit(next, session.events)) return;
     undoStack.value.push(session.events);
     if (undoStack.value.length > MAX_UNDO) undoStack.value.shift();
     redoStack.value = [];
@@ -120,9 +129,9 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!session || samples.length === 0) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
 
-    const spec = laneSpecFor(lane, opts);
+    const spec = laneSpecFor(lane, session.mixerId, opts);
     const points = decimateSteps(normalizeGestureSamples(samples), spec.epsilon);
-    applyEdit(spliceLaneEvents(session.events, spec, deck, t0, t1, points));
+    applyEdit(spliceLaneEvents(session.events, spec, session.mixerId, deck, t0, t1, points));
   }
 
   async function commitFilterActiveToggle(deck: string, t0: number, t1: number): Promise<void> {
@@ -281,9 +290,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (typeof folder !== 'string') return;
     if (sessionStore.isPlaying) await sessionStore.stop();
 
-    const found = await invoke<string[]>('scan_folder', { path: folder }).catch(
-      () => [] as string[]
-    );
+    const found = await call('scan_folder', { path: folder }).catch(() => [] as string[]);
     const byName = indexByBasename(found);
 
     // Identity mappings are skipped: a file found at the path the session
@@ -322,15 +329,21 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     syncToRust();
   }
 
+  // Stamped rather than carried over from `raw`: loading ports the events, so a
+  // session read as an older version is current by the time it can be saved.
   function serialize(session: ParsedSession): string {
-    return JSON.stringify({ ...session.raw, events: session.events }, null, 2);
+    return JSON.stringify(
+      { ...session.raw, version: bmsVersion(), events: session.events },
+      null,
+      2
+    );
   }
 
   async function save(): Promise<boolean> {
     const session = sessionStore.session;
     if (!session) return false;
     try {
-      await invoke('save_session', { path: session.path, content: serialize(session) });
+      await call('save_session', { path: session.path, content: serialize(session) });
     } catch {
       return false;
     }
@@ -341,10 +354,11 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   async function saveAs(): Promise<boolean> {
     const session = sessionStore.session;
     if (!session) return false;
-    const path = await invoke<string | null>('pick_save_path', { format: 'session' });
+    const baseName = session.filename.replace(/\.bms$/i, '');
+    const path = await call('pick_save_path', { format: 'session', baseName });
     if (!path) return false;
     try {
-      await invoke('save_session', { path, content: serialize(session) });
+      await call('save_session', { path, content: serialize(session) });
     } catch {
       return false;
     }

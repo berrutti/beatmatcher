@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "events": [
+    { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
+    { "elapsed_ms": 0, "type": "load_track", "deck": "B", "path": "__SOURCE__" },
+    { "elapsed_ms": 0, "type": "set_param", "deck": "B", "slot": "fader", "param": "gain", "value": 0.8 },
+    { "elapsed_ms": 0, "type": "set_beat_grid", "deck": "B", "bpm": 128.0, "beat_offset_sec": 0.05 },
+    { "elapsed_ms": 100, "type": "play", "deck": "B", "sec": 0.0 },
+    { "elapsed_ms": 400, "type": "loop_in", "deck": "B", "cue_sec": 0.3 },
+    { "elapsed_ms": 700, "type": "loop_out", "deck": "B", "start_sec": 0.3, "end_sec": 0.7 },
+    { "elapsed_ms": 1600, "type": "exit_loop", "deck": "B" },
+    { "elapsed_ms": 1900, "type": "reloop", "deck": "B" },
+    { "elapsed_ms": 2600, "type": "exit_loop", "deck": "B" },
+    { "elapsed_ms": 2900, "type": "stop", "deck": "B" },
+    { "elapsed_ms": 3000, "type": "recording_stop" }
+  ]
+}

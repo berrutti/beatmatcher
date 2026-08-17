@@ -10,6 +10,9 @@ export type SessionEvent = {
   gain?: number;
   band?: string;
   db?: number;
+  // On `set_param` events, `value` carries 0/1 for a toggle.
+  slot?: string;
+  param?: string;
   value?: number;
   active?: boolean;
   rate?: number;
@@ -26,10 +29,46 @@ export type SessionEvent = {
   bpm?: number;
   playback_rate?: number;
   duration?: number;
+  // Output frames since capture began; absent on synthesized events.
+  frame?: number;
 };
 
-export type EditableLaneKey =
-  'gain' | 'eqLow' | 'eqMid' | 'eqHigh' | 'filter' | 'rate' | 'masterGain';
+// Master-scope lanes have no deck row, so they are excluded from the per-deck
+// picker and offered on the master row instead.
+export const EDITABLE_DECK_LANE_KEYS = [
+  'gain',
+  'filter',
+  'rate',
+  'eqLow',
+  'eqMid',
+  'eqHigh'
+] as const;
+// The wheel lane plots recorded gestures rather than a mixer param, so it has no
+// entry in the manifest's lane specs and never reaches the splice path.
+export const DECK_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, 'jog'] as const;
+export const MASTER_LANE_KEYS = ['masterGain', 'xfader'] as const;
+export const ALL_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
+
+export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
+
+export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
+
+export const DECK_ACCENTS: Readonly<Record<string, string>> = {
+  A: '#3b82f6',
+  B: '#f97316',
+  C: '#208043',
+  D: '#d631b0',
+  E: '#a855f7'
+};
+
+// Stands where a deck id goes, so a hit or a lane pick can name the master row.
+export const MASTER_ROW_ID = 'master';
+
+export function isMasterLaneKey(key: string): key is MasterLaneKey {
+  return MASTER_LANE_KEYS.some((master) => master === key);
+}
+
+export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips
@@ -98,4 +137,6 @@ export type DeckLanes = {
 
 export type MasterLanes = {
   gain: LanePoint[];
+  // Empty for a session recorded on a mixer with no crossfader.
+  xfader: LanePoint[];
 };

@@ -47,9 +47,17 @@ pub(crate) async fn open_session_dialog() -> Option<OpenedFile> {
 
 #[tauri::command]
 pub(crate) async fn preload_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let reporter = LoadReporter {
+        app: &app,
+        path: path.clone(),
+    };
+    reporter.phase("reading");
+
     let json = tokio::task::spawn_blocking({
         let p = path.clone();
         move || std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
@@ -57,10 +65,20 @@ pub(crate) async fn preload_session(
     .await
     .map_err(|e| e.to_string())??;
 
-    let session: crate::offline_render::SessionFile =
-        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+    reporter.phase("parsing");
+    // Off the async thread: a long session's event array takes seconds to deserialize, and
+    // blocking here stalls every other command including this load's own progress events.
+    let session = tokio::task::spawn_blocking(move || {
+        crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
-    index_session(&state, path, session).await;
+    index_session(&state, path, session, Some(&app)).await;
+    log::info!(
+        "preload_session: ready in {}ms",
+        started.elapsed().as_millis()
+    );
 
     Ok(())
 }
@@ -71,10 +89,19 @@ async fn index_session(
     state: &tauri::State<'_, AppState>,
     path: String,
     session: crate::offline_render::SessionFile,
+    app: Option<&tauri::AppHandle>,
 ) {
     let sr = state.audio.device_sample_rate;
     let paths = session_track_paths(&session.events);
-    populate_track_cache(state, paths, sr).await;
+    let reporter = app.map(|app| LoadReporter {
+        app,
+        path: path.clone(),
+    });
+    populate_track_cache(state, paths, sr, reporter.as_ref()).await;
+
+    if let Some(reporter) = &reporter {
+        reporter.phase("indexing");
+    }
 
     // Build state snapshots with the now-complete cache.
     let snapshots = {
@@ -94,7 +121,21 @@ async fn index_session(
         .session_files
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(path, Arc::new(session));
+        .insert(path.clone(), Arc::new(session));
+
+    // Only here: scrubbing and playback both need the snapshots, so a `done`
+    // sent when the last track finished decoding would open the gate early.
+    if let Some(reporter) = &reporter {
+        reporter.emit(SessionLoadProgress {
+            path,
+            phase: "done",
+            loaded_bytes: 0,
+            total_bytes: 0,
+            loaded_tracks: 0,
+            total_tracks: 0,
+            done: true,
+        });
+    }
 }
 
 // Frees everything cached for a session when it is ejected: decoded track
@@ -136,7 +177,27 @@ pub(crate) async fn update_session_events(
     let events: Vec<SessionEvent> =
         serde_json::from_str(&events_json).map_err(|e| format!("parse error: {e}"))?;
 
-    index_session(&state, path, crate::offline_render::SessionFile { events }).await;
+    // Editing events does not change which mixer the session was played on, so
+    // the header carries over from the file that was loaded.
+    let mixer = state
+        .session_files
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&path)
+        .and_then(|session| session.mixer.clone());
+
+    index_session(
+        &state,
+        path,
+        // Current, not carried over: loading ported these events forward.
+        crate::offline_render::SessionFile {
+            version: session_core::BMS_VERSION,
+            events,
+            mixer,
+        },
+        None,
+    )
+    .await;
 
     Ok(())
 }
@@ -167,8 +228,8 @@ pub(crate) async fn start_session_playback(
                 .await
                 .map_err(|e| e.to_string())??
             };
-            let parsed: crate::offline_render::SessionFile =
-                serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+            let parsed = crate::offline_render::SessionFile::parse(&json)
+                .map_err(|e| format!("parse error: {e}"))?;
             let parsed = Arc::new(parsed);
             state
                 .session_files
@@ -204,12 +265,22 @@ pub(crate) async fn start_session_playback(
         let _ = handle.await;
     }
 
+    // Refused rather than replayed against the wrong scales, which would differ from
+    // the offline render. Hosting beats an id match, so pre-versioned sessions play.
+    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+    if !state.audio.mixer().can_host(manifest) {
+        return Err(format!(
+            "this session was recorded on mixer '{}', which this build cannot play live",
+            manifest.id
+        ));
+    }
+
     let audio = state.audio.clone();
     let sr = audio.device_sample_rate;
 
     // Ensure cache is populated (fast path if preload already ran).
     let paths = session_track_paths(&session.events);
-    populate_track_cache(&state, paths, sr).await;
+    populate_track_cache(&state, paths, sr, None).await;
     let cache: Arc<SampleCache> = Arc::new(
         state
             .session_track_cache
@@ -253,16 +324,7 @@ pub(crate) async fn start_session_playback(
         for ev in sorted_events.iter().filter(|e| {
             e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
         }) {
-            if matches!(
-                ev.command(),
-                Some(
-                    SessionCommand::SetVolume { .. }
-                        | SessionCommand::SetEq { .. }
-                        | SessionCommand::SetFilter { .. }
-                        | SessionCommand::SetFilterActive { .. }
-                        | SessionCommand::SetMasterGain { .. }
-                )
-            ) {
+            if reconstructs_mixer_state(ev) {
                 apply_event_live(ev, &audio, sr, &cache, 0);
             }
             sim_apply_event(ev, &mut sim, &cache, sr);
@@ -304,7 +366,7 @@ pub(crate) async fn start_session_playback(
                 d.loop_active = ds.loop_active;
                 d.loop_end = ds.loop_end.min(total_frames as f64);
                 d.playback_rate = ds.rate;
-                d.nudge_factor = ds.nudge_factor;
+                d.jog_hold_factor = ds.jog_hold_factor;
                 d.bpm = ds.bpm;
                 d.beat_offset_frames = ds.beat_offset_frames;
                 d.is_playing = false;
@@ -353,7 +415,7 @@ pub(crate) async fn start_session_playback(
         }
 
         if !cancel.load(Ordering::Acquire) {
-            for id in ["A", "B", "C", "D"] {
+            for id in crate::audio::LIVE_DECK_IDS {
                 if let Some(deck_arc) = audio.deck(id) {
                     deck_arc
                         .lock()
@@ -382,7 +444,7 @@ pub(crate) fn stop_session_playback(state: tauri::State<'_, AppState>) {
     if let Some(cancel) = guard.take() {
         cancel.store(true, Ordering::Release);
     }
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = state.audio.deck(id) {
             deck_arc
                 .lock()
@@ -406,7 +468,115 @@ fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
         .collect()
 }
 
-async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<String>, sr: u32) {
+pub(crate) type TrackEntry = (Arc<Vec<f32>>, usize);
+pub(crate) type TrackLoads = Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<String, Arc<tokio::sync::OnceCell<Option<TrackEntry>>>>,
+    >,
+>;
+
+/// The one place a track is decoded. The waveform strip and the session preload want the
+/// same samples at once, and decoding per caller made 13 tracks into 26 competing decodes.
+pub(crate) async fn load_track(
+    cache: &crate::TrackCache,
+    loads: &TrackLoads,
+    permits: &Arc<tokio::sync::Semaphore>,
+    path: &str,
+    sr: u32,
+) -> Option<TrackEntry> {
+    if let Some(hit) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+    {
+        return Some(hit);
+    }
+
+    let cell = {
+        let mut loads = loads.lock().unwrap_or_else(|e| e.into_inner());
+        loads
+            .entry(path.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+            .clone()
+    };
+
+    // Whoever gets here first decodes; everyone else waits on that same decode
+    // rather than starting their own.
+    let entry = cell
+        .get_or_init(|| async {
+            let permit = permits.clone().acquire_owned().await;
+            let owned = path.to_string();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let (raw, channels, native_sr) = audio::decode_audio(&owned).ok()?;
+                let resampled = if native_sr == sr {
+                    raw
+                } else {
+                    audio::resample_linear(&raw, channels, native_sr, sr)
+                };
+                Some((Arc::new(resampled), channels))
+            })
+            .await
+            .ok()
+            .flatten()
+        })
+        .await
+        .clone();
+
+    if let Some(entry) = &entry {
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_string(), entry.clone());
+    }
+    loads.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+    entry
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionLoadProgress {
+    pub path: String,
+    pub phase: &'static str,
+    pub loaded_bytes: u64,
+    pub total_bytes: u64,
+    pub loaded_tracks: usize,
+    pub total_tracks: usize,
+    pub done: bool,
+}
+
+struct LoadReporter<'a> {
+    app: &'a tauri::AppHandle,
+    path: String,
+}
+
+impl LoadReporter<'_> {
+    fn emit(&self, progress: SessionLoadProgress) {
+        self.app.emit("session-load-progress", progress).ok();
+    }
+
+    // The read and the parse each take seconds on a long session and report no
+    // increments, so they are announced rather than left as a still bar.
+    fn phase(&self, phase: &'static str) {
+        self.emit(SessionLoadProgress {
+            path: self.path.clone(),
+            phase,
+            loaded_bytes: 0,
+            total_bytes: 0,
+            loaded_tracks: 0,
+            total_tracks: 0,
+            done: false,
+        });
+    }
+}
+
+async fn populate_track_cache(
+    state: &tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    sr: u32,
+    reporter: Option<&LoadReporter<'_>>,
+) {
     let missing: Vec<String> = {
         let cache = state
             .session_track_cache
@@ -418,43 +588,84 @@ async fn populate_track_cache(state: &tauri::State<'_, AppState>, paths: Vec<Str
             .collect()
     };
 
-    let handles: Vec<_> = missing
-        .iter()
+    // Byte-weighted so one long track and three short ones does not sit at 25% for most of
+    // the wait, and smallest-first so the earliest slots free soonest.
+    let mut sized: Vec<(String, u64)> = missing
+        .into_iter()
         .map(|p| {
-            let p = p.clone();
-            tokio::task::spawn_blocking(move || -> Result<(String, Vec<f32>, usize), String> {
-                let (raw, channels, native_sr) =
-                    audio::decode_audio(&p).map_err(|e| e.to_string())?;
-                let resampled = if native_sr == sr {
-                    raw
-                } else {
-                    audio::resample_linear(&raw, channels, native_sr, sr)
-                };
-                Ok((p, resampled, channels))
+            let bytes = std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0);
+            (p, bytes)
+        })
+        .collect();
+    sized.sort_by_key(|(_, bytes)| *bytes);
+
+    let total_bytes: u64 = sized.iter().map(|(_, bytes)| bytes).sum();
+    let total_tracks = sized.len();
+    let mut loaded_bytes: u64 = 0;
+    let mut loaded_tracks: usize = 0;
+
+    if let Some(reporter) = &reporter {
+        reporter.emit(SessionLoadProgress {
+            path: reporter.path.clone(),
+            phase: "decoding",
+            loaded_bytes: 0,
+            total_bytes,
+            loaded_tracks: 0,
+            total_tracks,
+            done: false,
+        });
+    }
+
+    // Every decode in the app shares one permit pool, so a burst of waveform
+    // requests cannot crowd out the load the modal is reporting on.
+    let handles: Vec<_> = sized
+        .iter()
+        .map(|(p, _)| {
+            let path = p.clone();
+            let cache = state.session_track_cache.clone();
+            let loads = state.session_track_loads.clone();
+            let permits = state.decode_permits.clone();
+            tokio::spawn(async move {
+                load_track(&cache, &loads, &permits, &path, sr)
+                    .await
+                    .is_some()
             })
         })
         .collect();
 
-    let mut newly_loaded = Vec::new();
-    for handle in handles {
-        match handle.await {
-            Ok(Ok((p, s, c))) => newly_loaded.push((p, s, c)),
-            Ok(Err(e)) => eprintln!("session_playback: track load failed: {e}"),
-            Err(e) => eprintln!("session_playback: spawn_blocking panic: {e}"),
+    for (handle, (path, bytes)) in handles.into_iter().zip(sized.iter()) {
+        // Counted even when it fails: a track that cannot be decoded is never
+        // coming, and a bar that stops short of 100% reads as a hang.
+        loaded_bytes += bytes;
+        if !matches!(handle.await, Ok(true)) {
+            eprintln!("session_playback: track load failed: {path}");
         }
-    }
-
-    let mut cache = state
-        .session_track_cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    for (p, samples, channels) in newly_loaded {
-        cache.insert(p, (Arc::new(samples), channels));
+        loaded_tracks += 1;
+        if let Some(reporter) = &reporter {
+            reporter.emit(SessionLoadProgress {
+                path: reporter.path.clone(),
+                phase: "decoding",
+                loaded_bytes,
+                total_bytes,
+                loaded_tracks,
+                total_tracks,
+                done: false,
+            });
+        }
     }
 }
 
+/// Mixer state a mid-session start rebuilds by replaying the events before it. Transport
+/// is excluded, since deck positions come from the snapshot and `sim_pos`.
+fn reconstructs_mixer_state(ev: &SessionEvent) -> bool {
+    matches!(
+        ev.command(),
+        Some(SessionCommand::SetParam { .. } | SessionCommand::SetXfaderAssign { .. })
+    )
+}
+
 fn reset_all(audio: &audio::AppAudio) {
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = audio.deck(id) {
             deck_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
@@ -467,7 +678,7 @@ fn reset_all(audio: &audio::AppAudio) {
 
 fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     audio.monitor.set_master_gain(sim.master_gain);
-    for id in ["A", "B", "C", "D"] {
+    for id in crate::audio::LIVE_DECK_IDS {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
             let mut s = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
@@ -477,6 +688,9 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
             s.set_eq_band("high", snap.eq_high);
             s.set_filter(snap.filter_value);
             s.set_filter_active(snap.filter_active);
+            s.set_xfader_assign(snap.xfader_assign);
+            s.set_xfader_position(sim.xfader_position);
+            s.set_fader_curve(sim.fader_curve);
         }
     }
 }
@@ -536,8 +750,51 @@ fn apply_event_live(
     let Some(cmd) = ev.command() else { return };
 
     let Some(id) = cmd.deck_id() else {
-        if let SessionCommand::SetMasterGain { gain } = cmd {
-            audio.monitor.set_master_gain(gain);
+        match cmd {
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot: "gain",
+                param: "gain",
+                value,
+                ..
+            } => audio.monitor.set_master_gain(value as f32),
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot: "xfader",
+                param: "position",
+                value,
+                ..
+            } => {
+                for id in crate::audio::LIVE_DECK_IDS {
+                    if let Some(strip_arc) = audio.strip(id) {
+                        strip_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_xfader_position(value as f32);
+                    }
+                }
+            }
+            SessionCommand::SetFaderCurve { curve } => {
+                for id in crate::audio::LIVE_DECK_IDS {
+                    if let Some(strip_arc) = audio.strip(id) {
+                        strip_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_fader_curve(curve);
+                    }
+                }
+            }
+            SessionCommand::SetJogRotationSpeed { speed } => {
+                for id in crate::audio::LIVE_DECK_IDS {
+                    if let Some(deck_arc) = audio.deck(id) {
+                        deck_arc
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_jog_rotation_speed(speed);
+                    }
+                }
+            }
+            _ => {}
         }
         return;
     };
@@ -572,6 +829,23 @@ mod tests {
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;
+
+    // A deck assigned to a bus at t=10s and started from t=60s used to play as
+    // `Thru`, because an assign is its own command rather than a `SetParam`.
+    #[test]
+    fn a_mid_session_start_rebuilds_assigns_as_well_as_params() {
+        let assign = SessionEvent {
+            assign: Some("a".to_string()),
+            ..deck_ev("set_xfader_assign", 10_000.0, "A")
+        };
+        let param = SessionEvent::param(11_000.0, Some("A"), "fader", "gain", 0.5);
+        let position = SessionEvent::param(12_000.0, None, "xfader", "position", -1.0);
+
+        assert!(reconstructs_mixer_state(&assign));
+        assert!(reconstructs_mixer_state(&param));
+        assert!(reconstructs_mixer_state(&position));
+        assert!(!reconstructs_mixer_state(&deck_ev("play", 13_000.0, "A")));
+    }
 
     fn deck_ev(event_type: &str, elapsed_ms: f64, deck: &str) -> SessionEvent {
         SessionEvent {
@@ -664,6 +938,44 @@ mod tests {
             .expect("apply_deck_command failed in parity test");
     }
 
+    fn param_ev(elapsed_ms: f64, slot: &str, param: &str, value: f32) -> SessionEvent {
+        SessionEvent {
+            slot: Some(slot.to_string()),
+            param: Some(param.to_string()),
+            value: Some(value),
+            ..deck_ev("set_param", elapsed_ms, "A")
+        }
+    }
+
+    #[test]
+    fn an_unknown_slot_or_param_is_skipped_and_the_rest_still_applies() {
+        let events = [
+            param_ev(0.0, "resonator", "drive", 0.9),
+            param_ev(10.0, "eq", "sub", 1.0),
+            param_ev(20.0, "fader", "gain", 0.25),
+        ];
+
+        let cache: SampleCache = HashMap::new();
+        let mut deck = DeckState::empty(SR);
+        let mut strip = ChannelStrip::new(SR_F as f32);
+        let mut sim = SimState::new();
+        for event in &events {
+            apply_deck_event(&mut deck, &mut strip, event, &cache);
+            sim_apply_event(event, &mut sim, &cache, SR);
+        }
+
+        assert!(
+            (strip.target_gain() - 0.25).abs() < 1e-6,
+            "engine stopped at the unknown params, gain is {}",
+            strip.target_gain()
+        );
+        assert!(
+            (sim.strips["A"].gain - 0.25).abs() < 1e-6,
+            "sim stopped at the unknown params, gain is {}",
+            sim.strips["A"].gain
+        );
+    }
+
     fn check_sim_vs_engine(events: &[SessionEvent], cache: &SampleCache, seconds: usize) {
         check_sim_vs_engine_deck(events, cache, seconds, "A");
     }
@@ -680,6 +992,8 @@ mod tests {
             "sim_pos diverges from real engine by {max_diff} frames at t={worst_t}ms"
         );
     }
+
+    const PARITY_BLOCK: usize = 512;
 
     fn max_sim_engine_divergence(
         events: &[SessionEvent],
@@ -718,6 +1032,11 @@ mod tests {
                         worst_t = cur_ms;
                     }
                 }
+            }
+            // The wheel is drained once per block by `render_block`, so a per-frame model
+            // that skips it leaves every logged tick unconsumed.
+            if n % PARITY_BLOCK == 0 {
+                d.consume_jog(PARITY_BLOCK);
             }
             d.main_tick();
         }
@@ -859,16 +1178,18 @@ mod tests {
             SessionCommand::CuePreviewStart { .. } => ("cue_preview_start", true),
             SessionCommand::CuePreviewEnd { .. } => ("cue_preview_end", true),
             SessionCommand::SetBeatGrid { .. } => ("set_beat_grid", false),
-            SessionCommand::SetVolume { .. } => ("set_volume", false),
-            SessionCommand::SetEq { .. } => ("set_eq", false),
-            SessionCommand::SetFilter { .. } => ("set_filter", false),
-            SessionCommand::SetFilterActive { .. } => ("set_filter_active", false),
-            SessionCommand::SetMasterGain { .. } => ("set_master_gain", false),
+            // No mixer param affects position, hence the single false.
+            SessionCommand::SetParam { .. } => ("set_param", false),
+            SessionCommand::SetXfaderAssign { .. } => ("set_xfader_assign", false),
+            SessionCommand::SetFaderCurve { .. } => ("set_fader_curve", false),
+            SessionCommand::SetJogRotationSpeed { .. } => ("set_jog_rotation_speed", false),
+            SessionCommand::Jog { .. } => ("jog", true),
         }
     }
 
     // The `true` arms of variant_catalog; coverage_list_matches_catalog binds them.
-    const POSITION_AFFECTING_TAGS: [&str; 15] = [
+    const POSITION_AFFECTING_TAGS: [&str; 16] = [
+        "jog",
         "deck_snapshot",
         "load_track",
         "eject_track",
@@ -918,26 +1239,14 @@ mod tests {
                 ..deck_ev("set_nudge", 3500.0, "A")
             },
             SessionEvent {
-                gain: Some(0.8),
-                ..deck_ev("set_volume", 4000.0, "A")
+                ticks: Some(6.0),
+                ..deck_ev("jog", 3700.0, "A")
             },
-            SessionEvent {
-                band: Some("low".to_string()),
-                db: Some(-3.0),
-                ..deck_ev("set_eq", 4100.0, "A")
-            },
-            SessionEvent {
-                value: Some(0.5),
-                ..deck_ev("set_filter", 4200.0, "A")
-            },
-            SessionEvent {
-                active: Some(true),
-                ..deck_ev("set_filter_active", 4300.0, "A")
-            },
-            SessionEvent {
-                gain: Some(0.9),
-                ..deck_ev("set_master_gain", 4500.0, "A")
-            },
+            SessionEvent::param(4000.0, Some("A"), "fader", "gain", 0.8),
+            SessionEvent::param(4100.0, Some("A"), "eq", "low", -3.0),
+            SessionEvent::param(4200.0, Some("A"), "filter", "value", 0.5),
+            SessionEvent::param(4300.0, Some("A"), "filter", "active", 1.0),
+            SessionEvent::param(4500.0, None, "gain", "gain", 0.9),
             SessionEvent {
                 cue_sec: Some(5.0),
                 ..deck_ev("loop_in", 5000.0, "A")

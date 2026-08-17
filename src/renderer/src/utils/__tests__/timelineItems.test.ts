@@ -3,16 +3,21 @@ import {
   filterSelectionItem,
   clipBandItem,
   blockAtPoint,
-  waveformSeparatorItem
+  laneSurfaceItem,
+  masterItem,
+  waveformSeparatorItem,
+  overviewItem,
+  readOverviewHit
 } from '@renderer/utils/timelineItems';
 import {
   LABEL_W,
   laneValuePad,
+  MASTER_GAIN_INSET_Y,
   type RowLayout,
   type SublaneLayout
 } from '@renderer/utils/timelineDraw';
 import type { ViewContext } from '@renderer/utils/timelineEngine';
-import type { Clip } from '@renderer/utils/types';
+import { MASTER_ROW_ID, type Clip } from '@renderer/utils/types';
 
 // ms -> x as identity-ish; pt.x in these tests is given directly in ms units.
 const vc = { msToX: (ms: number) => ms, trackW: 10_000 } as ViewContext;
@@ -53,6 +58,36 @@ describe('filterSelectionItem', () => {
     expect(r.h).toBe(lane.height - 2 * pad);
     // The divider is drawn at the lane bottom; the border must stay above it.
     expect(r.y + r.h).toBeLessThan(lane.top + lane.height);
+  });
+});
+
+// The gesture takes the value rect straight from the hit, so an item that reports
+// its frame instead puts drawn points where they are not rendered.
+describe('lane hit-test', () => {
+  it('reports the deck lane value area, not its frame', () => {
+    const lane: SublaneLayout = { key: 'filter', top: 100, height: 80 };
+    const hit = laneSurfaceItem(lane, 'A', undefined).hitTest({ x: LABEL_W + 10, y: 140 }, vc);
+    const pad = laneValuePad(lane.height);
+    expect(hit?.target).toBe('lane');
+    expect(hit?.data).toEqual({ top: lane.top + pad, height: lane.height - 2 * pad });
+  });
+
+  it('reports the master row as a lane so it draws like a deck lane', () => {
+    const masterLanes = { gain: [], xfader: [] };
+    const item = masterItem(200, 20, masterLanes, 'masterGain');
+    const hit = item.hitTest({ x: LABEL_W + 10, y: 210 }, vc);
+    expect(hit?.target).toBe('lane');
+    expect(hit?.deck).toBe(MASTER_ROW_ID);
+    expect(hit?.part).toBe('masterGain');
+    expect(hit?.data).toEqual({
+      top: 200 + MASTER_GAIN_INSET_Y,
+      height: 20 - 2 * MASTER_GAIN_INSET_Y
+    });
+  });
+
+  it('keeps the master label column on the dropdown', () => {
+    const item = masterItem(200, 20, { gain: [], xfader: [] }, 'xfader');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.target).toBe('laneDropdown');
   });
 });
 
@@ -104,5 +139,36 @@ describe('waveformSeparatorItem', () => {
     expect(separator.hitTest({ x: 100, y: 80 }, vc)?.target).toBe('waveformSeparator');
     expect(separator.hitTest({ x: 100, y: 82 }, vc)?.target).toBe('waveformSeparator');
     expect(separator.hitTest({ x: 100, y: 90 }, vc)).toBeNull();
+  });
+});
+
+describe('readOverviewHit', () => {
+  const overviewVc = {
+    canvasW: 1000,
+    canvasH: 400,
+    trackW: 800,
+    view: { start: 200, duration: 300 },
+    msToX: (ms: number) => ms
+  } as ViewContext;
+
+  it('reads back every hit the overview item produces', () => {
+    const item = overviewItem(1000, [], 0, {});
+
+    for (let x = 0; x <= 1000; x++) {
+      const hit = item.hitTest({ x, y: 380 }, overviewVc);
+      if (!hit) continue;
+      const overview = readOverviewHit(hit);
+      expect(overview, `x=${x}`).not.toBeNull();
+      expect(typeof overview?.frac, `x=${x}`).toBe('number');
+      expect(Number.isFinite(overview?.frac), `x=${x}`).toBe(true);
+    }
+  });
+
+  it('rejects a hit that is not the overview, or carries no fraction', () => {
+    expect(readOverviewHit({ target: 'clip', part: 'move', data: 0.5 })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move' })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move', data: 'half' })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'move', data: NaN })).toBeNull();
+    expect(readOverviewHit({ target: 'overview', part: 'wobble', data: 0.5 })).toBeNull();
   });
 });

@@ -1,4 +1,7 @@
 {
+  "files": {
+    "defaultName": "aufnahme-{date}"
+  },
   "appBar": {
     "performance": "Performance",
     "edit": "Bearbeiten",
@@ -16,8 +19,6 @@
     "continue": "Weiter"
   },
   "topStrip": {
-    "stopRecording": "Aufnahme stoppen",
-    "recordMaster": "Master-Ausgang aufnehmen",
     "rec": "Rec",
     "fourDecks": "4 Decks",
     "twoDecks": "2 Decks",
@@ -45,6 +46,25 @@
       "title": "Nudge-Empfindlichkeit",
       "hint": "Tempoabweichung beim Halten einer Nudge-Taste oder -Schaltfläche."
     },
+    "jog": {
+      "title": "Jog-Drehzahl",
+      "hint": "Plattentellerdrehzahl, die das Jograd nachbildet. Eine Umdrehung entspricht 1,8 Sekunden Audio bei 33 U/min und 1,33 bei 45, 45 sucht also feiner.",
+      "rpm33": "33 U/min",
+      "rpm45": "45 U/min"
+    },
+    "faderCurve": {
+      "title": "Kanalfader-Kurve",
+      "hint": "Wie der Weg eines Kanalfaders auf die Lautstärke abgebildet wird. Linear erreicht Stille erst ganz unten, exponentiell fällt deutlich früher ab.",
+      "exponential": "Exponentiell",
+      "linear": "Linear",
+      "logarithmic": "Logarithmisch"
+    },
+    "filterStart": {
+      "title": "Filter beim Start",
+      "on": "Aktiv",
+      "off": "Aus",
+      "hint": "Aktiviert beim Öffnen der App den Filter jedes Kanals. Praktisch bei Controllern, deren Filterregler keinen eigenen Ein-/Ausschalter hat."
+    },
     "pitch": {
       "title": "Pitch-Bereich",
       "hint": "Maximale Abweichung des Pitch-Reglers vom Original-BPM."
@@ -53,6 +73,13 @@
       "title": "Audio-Puffergröße",
       "default": "Standard",
       "hint": "Samples pro Audio-Callback. Kleinere Werte reduzieren die Latenz, erhöhen aber die CPU-Last. Eine Änderung verursacht eine kurze Audiopause."
+    },
+    "midi": {
+      "title": "MIDI-Controller",
+      "rescan": "Neu suchen",
+      "noDevices": "Keine MIDI-Geräte verbunden.",
+      "unmapped": "Keine Zuordnung für dieses Gerät",
+      "hint": "Alle verbundenen Geräte sind gleichzeitig aktiv. Ein Gerät, das ein einzelnes Deck spielt, braucht hier eine Auswahl."
     },
     "bpmRange": {
       "title": "BPM-Erkennungsbereich",
@@ -183,6 +210,8 @@
   "deck": {
     "loadTitle": "Neuen Track laden?",
     "loadBody": "Die Wiedergabe wird gestoppt und der aktuelle Track ersetzt.",
+    "ejectConfirmTitle": "Laufenden Track auswerfen?",
+    "ejectConfirmBody": "Die Wiedergabe wird gestoppt und das Deck geleert.",
     "label": "DECK {id}",
     "ejectTitle": "Track auswerfen",
     "notLoaded": "Track laden",
@@ -205,7 +234,11 @@
   },
   "mixer": {
     "cue": "CUE",
-    "cueHint": "CUE umschalten: Leertaste + Zahl"
+    "cueHint": "CUE umschalten: Leertaste + Zahl",
+    "assignA": "A",
+    "assignB": "B",
+    "assignHint": "Crossfader-Zuweisung: A oder B, keins zum Umgehen",
+    "xfaderHint": "Crossfader. Doppelklick zum Zentrieren."
   },
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",
@@ -216,7 +249,10 @@
       "rate": "Pitch",
       "eqLow": "EQ Bass",
       "eqMid": "EQ Mitten",
-      "eqHigh": "EQ Höhen"
+      "eqHigh": "EQ Höhen",
+      "jog": "Jog",
+      "masterGain": "Master",
+      "xfader": "Crossfader"
     },
     "rendering": "Wird gerendert...",
     "renderWav": "Als WAV rendern",
@@ -236,7 +272,14 @@
     "splitClip": "Clip hier teilen",
     "mute": "Mute",
     "solo": "Solo",
-    "lanesMenu": "Parameter"
+    "lanesMenu": "Parameter",
+    "loadingTitle": "Session wird geladen",
+    "loadingBody": "Tracks werden dekodiert. Die Wiedergabe startet, sobald alle bereit sind.",
+    "loadingTracks": "{loaded} von {total} Tracks",
+    "loadingPhaseReading": "Session-Datei wird gelesen",
+    "loadingPhaseParsing": "Events werden gelesen",
+    "loadingPhaseDecoding": "Tracks werden dekodiert",
+    "loadingPhaseIndexing": "Index wird erstellt"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",

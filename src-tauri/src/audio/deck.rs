@@ -1,43 +1,135 @@
-use super::dsp::{EqState, FilterState};
+use super::unit::{make_unit, AudioUnit};
+use session_core::{MixerManifest, ParamScope};
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
 };
 
-const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
+// Gain smoothing, filter smoothing and IIR decay all run per sample, so a stopped
+// strip cannot be skipped until they settle. One second is ~20 tau of the slowest.
+const SETTLE_SECONDS: f32 = 1.0;
+// Matches the fader's own smoothing, so a cut feels as immediate as the fader.
+const XFADER_SMOOTHING_TAU_SEC: f32 = 0.010;
+
+// Interleaved stereo, `frames * 2` long, accumulated into rather than
+// overwritten, since several decks mix into the same buffer.
+pub struct RenderTargets<'a> {
+    pub main: Option<&'a mut [f32]>,
+    pub cue: Option<&'a mut [f32]>,
+}
+
+struct Slot {
+    name: &'static str,
+    main: Box<dyn AudioUnit>,
+    // A second instance of the same unit for the pre-fader cue path, so cue
+    // filter state tracks the main path instead of sharing its delay lines.
+    cue: Option<Box<dyn AudioUnit>>,
+}
 
 pub struct ChannelStrip {
-    target_gain: f32,
-    current_gain: f32,
-    gain_smooth_coeff: f32,
-    muted: bool,
-    mute_gain: f32,
+    manifest: &'static MixerManifest,
+    slots: Vec<Slot>,
+    fader_slot: usize,
     pub(crate) cue_active: bool,
-    eq: EqState,
-    eq_cue: EqState,
-    filter: FilterState,
-    filter_cue: FilterState,
+    // The assign is an enum, so neither half is a manifest param. Both live here to give
+    // the resolved gain one owner, since a missed re-resolve anywhere is audible.
+    pub(crate) xfader_assign: session_core::XfaderAssign,
+    xfader_position: f32,
+    xfader_gain: f32,
+    metered: (f32, f32),
+    xfader_gain_target: f32,
+    xfader_smooth_coeff: f32,
+    pub(crate) next_render_frame: u64,
     level_l: Arc<AtomicU32>,
     level_r: Arc<AtomicU32>,
+    settle_frames: usize,
+    settle_window_frames: usize,
 }
 
 impl ChannelStrip {
     pub fn new(sample_rate: f32) -> Self {
-        let gain_smooth_coeff = 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp();
+        Self::from_manifest(super::MIXER, sample_rate)
+    }
+
+    /// Panics on a manifest this build cannot realize. Callers resolve it first through
+    /// `session_core::resolve_manifest`, which reports an unusable one to the user.
+    pub fn from_manifest(manifest: &'static MixerManifest, sample_rate: f32) -> Self {
+        let cue_tap = manifest
+            .strip
+            .iter()
+            .position(|slot| slot.slot == manifest.cue_tap)
+            .unwrap_or_else(|| panic!("manifest '{}' has no cue tap slot", manifest.id));
+        let fader_slot = manifest
+            .strip
+            .iter()
+            .position(|slot| slot.slot == session_core::FADER_GAIN.0)
+            .unwrap_or_else(|| panic!("manifest '{}' has no fader slot", manifest.id));
+
+        let slots = manifest
+            .strip
+            .iter()
+            .enumerate()
+            .map(|(index, descriptor)| {
+                let build = || {
+                    make_unit(descriptor.unit_id, sample_rate).unwrap_or_else(|| {
+                        panic!(
+                            "no unit '{}' for slot '{}'",
+                            descriptor.unit_id, descriptor.slot
+                        )
+                    })
+                };
+                Slot {
+                    name: descriptor.slot,
+                    main: build(),
+                    cue: (index < cue_tap).then(build),
+                }
+            })
+            .collect();
+
+        // Units construct themselves at their descriptor defaults, so a strip is usable without
+        // a reset pass. `constructed_units_match_the_manifest_defaults` holds those in step.
+        let settle_window_frames = (sample_rate * SETTLE_SECONDS) as usize;
         Self {
-            target_gain: 1.0,
-            current_gain: 1.0,
-            gain_smooth_coeff,
-            muted: false,
-            mute_gain: 1.0,
+            manifest,
+            slots,
+            fader_slot,
             cue_active: false,
-            eq: EqState::new(sample_rate),
-            eq_cue: EqState::new(sample_rate),
-            filter: FilterState::new(sample_rate),
-            filter_cue: FilterState::new(sample_rate),
+            xfader_assign: session_core::XfaderAssign::Thru,
+            xfader_position: 0.0,
+            xfader_gain: 1.0,
+            metered: (0.0, 0.0),
+            xfader_gain_target: 1.0,
+            xfader_smooth_coeff: 1.0 - (-1.0 / (sample_rate * XFADER_SMOOTHING_TAU_SEC)).exp(),
+            next_render_frame: 0,
             level_l: Arc::new(AtomicU32::new(0)),
             level_r: Arc::new(AtomicU32::new(0)),
+            settle_frames: settle_window_frames,
+            settle_window_frames,
         }
+    }
+
+    /// Master scope, so the strip's own param loop never reaches it.
+    pub(crate) fn set_fader_curve(&mut self, curve: session_core::FaderCurve) {
+        self.restart_settle();
+        self.slots[self.fader_slot].main.set_fader_curve(curve);
+    }
+
+    pub(crate) fn set_xfader_assign(&mut self, assign: session_core::XfaderAssign) {
+        self.xfader_assign = assign;
+        self.resolve_xfader();
+        self.restart_settle();
+    }
+
+    pub(crate) fn set_xfader_position(&mut self, position: f32) {
+        self.xfader_position = position.clamp(-1.0, 1.0);
+        self.resolve_xfader();
+        // A settled strip renders nothing, so without this the smoothing ramp would
+        // not run until playback resumed and the first samples would use the old gain.
+        self.restart_settle();
+    }
+
+    fn resolve_xfader(&mut self) {
+        self.xfader_gain_target = self.xfader_assign.gain(f64::from(self.xfader_position)) as f32;
     }
 
     pub fn store_level(&self, l: f32, r: f32) {
@@ -53,78 +145,125 @@ impl ChannelStrip {
     }
 
     pub(crate) fn target_gain(&self) -> f32 {
-        self.target_gain
+        self.param(session_core::FADER_GAIN.0, session_core::FADER_GAIN.1)
+            .unwrap_or(1.0)
+    }
+
+    pub(crate) fn param(&self, slot: &str, param: &str) -> Option<f32> {
+        self.slots
+            .iter()
+            .find(|entry| entry.name == slot)?
+            .main
+            .param(param)
+    }
+
+    pub(crate) fn set_next_render_frame(&mut self, buffer_end: u64) {
+        self.next_render_frame = buffer_end;
+    }
+
+    fn restart_settle(&mut self) {
+        self.settle_frames = self.settle_window_frames;
+    }
+
+    fn settled(&self) -> bool {
+        self.settle_frames == 0
+    }
+
+    fn consume_settle(&mut self, frames: usize) {
+        self.settle_frames = self.settle_frames.saturating_sub(frames);
+    }
+
+    /// Both output paths, so the cue signal tracks the main one. An address the manifest
+    /// does not describe is ignored, which lets a richer mixer's session replay the rest.
+    pub fn set_param(&mut self, slot: &str, param: &str, value: f32) {
+        let Some(descriptor) = self.manifest.descriptor(ParamScope::Deck, slot, param) else {
+            return;
+        };
+        let value = descriptor.clamp(f64::from(value)) as f32;
+        let Some(entry) = self.slots.iter_mut().find(|entry| entry.name == slot) else {
+            return;
+        };
+        entry.main.set_param(param, value);
+        if let Some(cue) = entry.cue.as_mut() {
+            cue.set_param(param, value);
+        }
+        self.restart_settle();
     }
 
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
-        match band {
-            "low" => {
-                self.eq.set_low(db);
-                self.eq_cue.set_low(db);
-            }
-            "mid" => {
-                self.eq.set_mid(db);
-                self.eq_cue.set_mid(db);
-            }
-            "high" => {
-                self.eq.set_high(db);
-                self.eq_cue.set_high(db);
-            }
-            _ => {}
-        }
+        self.set_param("eq", band, db);
     }
 
     pub fn set_filter(&mut self, v: f32) {
-        self.filter.set_knob(v);
-        self.filter_cue.set_knob(v);
+        self.set_param("filter", "value", v);
     }
 
     pub fn set_filter_active(&mut self, active: bool) {
-        self.filter.set_active(active);
-        self.filter_cue.set_active(active);
+        self.set_param("filter", "active", if active { 1.0 } else { 0.0 });
     }
 
     pub fn set_gain(&mut self, v: f32) {
-        self.target_gain = v.clamp(0.0, 1.0);
+        self.set_param(session_core::FADER_GAIN.0, session_core::FADER_GAIN.1, v);
     }
 
     // Session-view mute (per-deck mute/solo). Independent of the fader gain so
-    // replayed set_volume events cannot override it, and deliberately NOT
+    // replayed fader events cannot override it, and deliberately NOT
     // cleared by reset(): scrubbing resets strips to reconstruct session
     // state, and the mute must survive that.
     pub fn set_muted(&mut self, muted: bool) {
-        self.muted = muted;
+        self.restart_settle();
+        self.slots[self.fader_slot].main.set_muted(muted);
     }
 
     pub(crate) fn reset(&mut self) {
-        self.set_gain(1.0);
-        self.set_eq_band("low", 0.0);
-        self.set_eq_band("mid", 0.0);
-        self.set_eq_band("high", 0.0);
-        self.set_filter(0.0);
-        self.set_filter_active(false);
+        for slot in self.manifest.strip {
+            for param in slot.params {
+                self.set_param(slot.slot, param.id, param.default as f32);
+            }
+        }
+        // The crossfader is master scope, so the strip loop above never reaches it. A throw left
+        // over from performance mode would silence a deck for a whole session.
+        self.set_xfader_assign(session_core::XfaderAssign::Thru);
+        self.set_xfader_position(0.0);
+        self.set_fader_curve(session_core::FaderCurve::default());
     }
 
-    // Applied to the master output path: EQ, filter, then fader gain.
+    // The full strip, in manifest order.
     #[inline]
-    pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let (el, er) = self.eq.process(l, r);
-        let (fl, fr) = self.filter.process(el, er);
-        self.current_gain += (self.target_gain - self.current_gain) * self.gain_smooth_coeff;
-        // Mute fades over the same time constant as the fader to avoid clicks.
-        let mute_target = if self.muted { 0.0 } else { 1.0 };
-        self.mute_gain += (mute_target - self.mute_gain) * self.gain_smooth_coeff;
-        let gain = self.current_gain * self.mute_gain;
-        (fl * gain, fr * gain)
+    /// The channel's own level, read before the crossfader. Hardware channel meters do
+    /// not follow the throw, and the cue sheet's audibility test reads the fader instead.
+    pub(crate) fn metered(&self) -> (f32, f32) {
+        self.metered
     }
 
-    // Applied to the cue output path: EQ then filter (pre-fader), gated by
-    // cue_active. Always called so filter state stays in sync; output is
-    // silenced when cue_active is false.
+    pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let (mut l, mut r) = (l, r);
+        for slot in &mut self.slots {
+            (l, r) = slot.main.process(l, r);
+        }
+        // Kept pre-crossfader, because a channel meter reads the channel: on hardware it
+        // does not drop when the throw moves away from it.
+        self.metered = (l.abs(), r.abs());
+        // Post-fader and after the cue tap, so a deck crossfaded away is still audible in
+        // headphones. Smoothed on the fader's one-pole because a fast throw clicks otherwise.
+        self.xfader_gain = super::unit::approach(
+            self.xfader_gain,
+            self.xfader_gain_target,
+            self.xfader_smooth_coeff,
+        );
+        (l * self.xfader_gain, r * self.xfader_gain)
+    }
+
+    // Everything before the manifest's cue tap, gated by cue_active. Always called so the
+    // cue units stay in sync with the main path, silencing the output over skipping work.
     #[inline]
     pub fn process_cue(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let (l, r) = self.eq_cue.process(l, r);
-        let (l, r) = self.filter_cue.process(l, r);
+        let (mut l, mut r) = (l, r);
+        for slot in &mut self.slots {
+            if let Some(cue) = slot.cue.as_mut() {
+                (l, r) = cue.process(l, r);
+            }
+        }
         if self.cue_active {
             (l, r)
         } else {
@@ -146,6 +285,16 @@ pub enum CuePressOutcome {
     NoTrack,
 }
 
+/// Shift is scaled where the ticks are logged, so a replay needs no shift state of its
+/// own. It lengthens a scrub only, leaving a playing deck's bend as the hardware does.
+pub fn logged_jog_ticks(ticks: f64, shift_held: bool, is_playing: bool) -> f64 {
+    if shift_held && !is_playing {
+        ticks * session_core::JOG_SHIFT_MULTIPLIER
+    } else {
+        ticks
+    }
+}
+
 pub struct DeckState {
     pub(crate) samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub(crate) channels: usize,
@@ -164,7 +313,15 @@ pub struct DeckState {
     pub(crate) bpm: Option<f64>,
     pub(crate) beat_offset_frames: f64,
     pub(crate) playback_rate: f64,
-    pub(crate) nudge_factor: f64, // 1 + nudge_percent/100
+    pub(crate) jog_hold_factor: f64, // 1 + nudge_percent/100
+    pub(crate) jog_pending: f64,
+    jog_filtered: f64,
+    jog_bend: f64,
+    jog_frames_since_step: f64,
+    jog_ticks_since_step: f64,
+    pub(crate) next_render_frame: u64,
+    pub(crate) jog_rotation_speed: session_core::JogRotationSpeed,
+    pub(crate) jog_shift: bool,
     pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
@@ -199,7 +356,15 @@ impl DeckState {
             bpm: None,
             beat_offset_frames: 0.0,
             playback_rate: 1.0,
-            nudge_factor: 1.0,
+            jog_hold_factor: 1.0,
+            jog_pending: 0.0,
+            jog_filtered: 0.0,
+            jog_bend: 0.0,
+            jog_frames_since_step: Self::JOG_FILTER_STEP_FRAMES,
+            jog_ticks_since_step: 0.0,
+            next_render_frame: 0,
+            jog_rotation_speed: session_core::JogRotationSpeed::Rpm33,
+            jog_shift: false,
             quantize: true,
             bass_band: Arc::new(Vec::new()),
             mid_band: Arc::new(Vec::new()),
@@ -230,7 +395,18 @@ impl DeckState {
     pub(crate) fn reset(&mut self) {
         self.eject();
         self.playback_rate = 1.0;
-        self.nudge_factor = 1.0;
+        self.jog_hold_factor = 1.0;
+        self.jog_pending = 0.0;
+        self.jog_filtered = 0.0;
+        self.jog_bend = 0.0;
+        self.jog_frames_since_step = Self::JOG_FILTER_STEP_FRAMES;
+        self.jog_ticks_since_step = 0.0;
+    }
+
+    /// Ticks arriving after this point are consumed by the buffer starting at `buffer_end`.
+    /// Called under the same lock as `consume_jog`, which is what makes the answer exact.
+    pub(crate) fn set_next_render_frame(&mut self, buffer_end: u64) {
+        self.next_render_frame = buffer_end;
     }
 
     // Threshold for "position is at the cue point" used by press_cue.
@@ -275,6 +451,13 @@ impl DeckState {
         self.cue_pos = self.cue_point;
     }
 
+    /// A held control's release never arrives once the surface stops being listened to,
+    /// and nothing else clears it, so leaving performance mode ends the hold instead.
+    pub(crate) fn release_held_controls(&mut self) {
+        self.jog_shift = false;
+        self.release_cue();
+    }
+
     pub fn toggle_play(&mut self) {
         if self.total_frames == 0 {
             return;
@@ -314,12 +497,110 @@ impl DeckState {
         self.main_pos / self.device_sample_rate as f64
     }
 
+    // Wall clock, not per block. The one-pole runs once a block, so a fixed
+    // coefficient would settle over a time that moves with the buffer setting.
+
+    // How much further a hand movement seeks a paused deck than it bends a playing
+    // one. Set by ear: a smaller value overshoots the beat.
+
+    pub fn set_jog_rotation_speed(&mut self, speed: session_core::JogRotationSpeed) {
+        self.jog_rotation_speed = speed;
+    }
+
+    pub(crate) fn set_jog_shift(&mut self, held: bool) {
+        self.jog_shift = held;
+    }
+
+    fn jog_frames_per_tick(&self) -> f64 {
+        self.jog_rotation_speed
+            .frames_per_tick(self.device_sample_rate as f64)
+    }
+
+    fn jog_filter_alpha(&self) -> f64 {
+        if self.device_sample_rate == 0 {
+            return 1.0;
+        }
+        let step_seconds = Self::JOG_FILTER_STEP_FRAMES / self.device_sample_rate as f64;
+        1.0 - (-step_seconds / session_core::JOG_FILTER_TAU_SEC).exp()
+    }
+
+    // A callback is whatever length the driver feels like, and stepping the filter on it
+    // let the buffer cadence change how far the wheel travelled.
+    const JOG_FILTER_STEP_FRAMES: f64 = 128.0;
+
+    fn jog_idle(&self) -> bool {
+        self.jog_ticks_since_step == 0.0 && self.jog_filtered == 0.0
+    }
+
+    fn step_jog_filter(&mut self) -> f64 {
+        let arrived = std::mem::take(&mut self.jog_ticks_since_step);
+        self.jog_filtered += (arrived - self.jog_filtered) * self.jog_filter_alpha();
+        if self.jog_filtered.abs() < f64::EPSILON {
+            self.jog_filtered = 0.0;
+        }
+        self.jog_filtered * self.jog_frames_per_tick()
+    }
+
+    fn advance_jog_grid_one_frame(&mut self) {
+        if self.jog_idle() && self.jog_bend == 0.0 {
+            return;
+        }
+        if self.jog_frames_since_step >= Self::JOG_FILTER_STEP_FRAMES {
+            self.jog_frames_since_step -= Self::JOG_FILTER_STEP_FRAMES;
+            let travel = self.step_jog_filter();
+            self.jog_bend =
+                travel / (Self::JOG_FILTER_STEP_FRAMES * session_core::JOG_PAUSED_MULTIPLIER);
+        }
+        self.jog_frames_since_step += 1.0;
+    }
+
+    pub(crate) fn deposit_jog(&mut self, ticks: f64) {
+        self.jog_ticks_since_step += ticks;
+    }
+
+    fn advance_paused_jog_one_frame(&mut self) {
+        if self.jog_idle() {
+            self.jog_frames_since_step = Self::JOG_FILTER_STEP_FRAMES;
+            return;
+        }
+        if self.jog_frames_since_step >= Self::JOG_FILTER_STEP_FRAMES {
+            self.jog_frames_since_step -= Self::JOG_FILTER_STEP_FRAMES;
+            let travel = self.step_jog_filter();
+            self.main_pos = (self.main_pos + travel).clamp(0.0, self.total_frames as f64);
+        }
+        self.jog_frames_since_step += 1.0;
+    }
+
+    pub(crate) fn consume_jog(&mut self, frames: usize) {
+        self.jog_ticks_since_step += std::mem::take(&mut self.jog_pending);
+        if self.is_playing {
+            return;
+        }
+        self.jog_bend = 0.0;
+        for _ in 0..frames {
+            self.advance_paused_jog_one_frame();
+        }
+        self.cue_pos = self.main_pos;
+        // The same guard `Seek` applies: a playhead scrubbed out of the region would
+        // otherwise be wrapped straight back into it on the first frame of playback.
+        if self.loop_active && (self.main_pos < self.cue_point || self.main_pos >= self.loop_end) {
+            self.loop_active = false;
+        }
+    }
+
+    // Floored so the effective step stays positive. A hand-edited .bms or MIDI mapping can
+    // reach this directly, and a percent below -100 drives next_pos and read_at backwards.
+    pub fn set_nudge_percent(&mut self, percent: f64) {
+        self.jog_hold_factor = (1.0 + percent / 100.0).max(session_core::JOG_FACTOR_MIN);
+    }
+
     // Reads the next master output sample and advances main_pos.
     #[inline]
     pub fn main_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
             return (0.0, 0.0);
         }
+        self.advance_jog_grid_one_frame();
         let (l, r) = self.read_at(self.main_pos);
         self.main_pos = self.next_pos(self.main_pos, true);
         (l, r)
@@ -337,10 +618,91 @@ impl DeckState {
         (l, r)
     }
 
+    // Main and cue step together because `next_pos` clears `is_playing` and resets `cue_pos`
+    // at end of track, which the cue path has to observe on the frame it happened.
+    pub fn render_block(
+        &mut self,
+        strip: &mut ChannelStrip,
+        frames: usize,
+        targets: RenderTargets<'_>,
+    ) -> (f32, f32) {
+        let RenderTargets { main, cue } = targets;
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
+        // A separate cue device gives this deck two callbacks per period. Anything consumed once
+        // per period belongs to the main one, or a paused scrub travels double distance.
+        let owns_period = main.is_some();
+
+        // Ahead of the settled check below, because scrubbing a paused deck is
+        // the one thing that has to happen on a block that renders no audio.
+        if owns_period {
+            self.consume_jog(frames);
+        }
+
+        // Not gated on `cue_active`: the cue path is silenced at its output,
+        // and its filter state has to keep tracking the main path.
+        if !self.is_playing {
+            if strip.settled() {
+                return (0.0, 0.0);
+            }
+            if owns_period {
+                strip.consume_settle(frames);
+            }
+        } else {
+            strip.restart_settle();
+        }
+
+        match (main, cue) {
+            // One loop over both paths, because `main_tick` resets `cue_pos` at end of track.
+            // Pinned by `end_of_track_inside_the_block_still_matches`.
+            (Some(main), Some(cue)) => {
+                for frame in 0..frames {
+                    let (l, r) = self.main_tick();
+                    let (ml, mr) = strip.process_main(l, r);
+                    let (metered_l, metered_r) = strip.metered();
+                    sum_l += metered_l;
+                    sum_r += metered_r;
+                    main[frame * 2] += ml;
+                    main[frame * 2 + 1] += mr;
+
+                    let (l, r) = self.cue_tick();
+                    let (cl, cr) = strip.process_cue(l, r);
+                    cue[frame * 2] += cl;
+                    cue[frame * 2 + 1] += cr;
+                }
+            }
+            (Some(main), None) => {
+                for frame in 0..frames {
+                    let (l, r) = self.main_tick();
+                    let (ml, mr) = strip.process_main(l, r);
+                    let (metered_l, metered_r) = strip.metered();
+                    sum_l += metered_l;
+                    sum_r += metered_r;
+                    main[frame * 2] += ml;
+                    main[frame * 2 + 1] += mr;
+                }
+            }
+            (None, Some(cue)) => {
+                for frame in 0..frames {
+                    let (l, r) = self.cue_tick();
+                    let (cl, cr) = strip.process_cue(l, r);
+                    cue[frame * 2] += cl;
+                    cue[frame * 2 + 1] += cr;
+                }
+            }
+            (None, None) => {}
+        }
+
+        (sum_l, sum_r)
+    }
+
     fn read_at(&self, pos: f64) -> (f32, f32) {
         if self.channels == 0 {
             return (0.0, 0.0);
         }
+        // A negative pos makes interp_factor negative and extrapolates off the front of the
+        // buffer, growing without bound: a -44100 position yields samples ~2700x full scale.
+        let pos = pos.max(0.0);
         let frame_index = pos as usize;
         let interp_factor = (pos - frame_index as f64) as f32;
 
@@ -364,16 +726,18 @@ impl DeckState {
     }
 
     fn next_pos(&mut self, pos: f64, is_main: bool) -> f64 {
-        let step = self.playback_rate * self.nudge_factor;
+        // One bend for both inputs. A held nudge is the constant case of a wheel velocity, so
+        // with the wheel idle this reduces to `jog_hold_factor` and sessions replay frame for frame.
+        let wheel = self.jog_bend;
+        let factor = (self.jog_hold_factor + wheel).max(session_core::JOG_FACTOR_MIN);
+        let step = self.playback_rate * factor;
         let new_pos = pos + step;
 
-        if self.loop_active && new_pos >= self.loop_end {
-            let dur = self.loop_end - self.cue_point;
-            return if dur > 0.0 {
-                self.cue_point + (new_pos - self.loop_end) % dur
-            } else {
-                self.cue_point
-            };
+        // A degenerate loop counts as no loop. Wrapping to cue_point would re-enter this
+        // branch every tick, pinning the playhead and never reaching end of track.
+        let loop_len = self.loop_end - self.cue_point;
+        if self.loop_active && loop_len > 0.0 && new_pos >= self.loop_end {
+            return self.cue_point + (new_pos - self.loop_end) % loop_len;
         }
 
         if new_pos >= self.total_frames as f64 {
@@ -397,7 +761,7 @@ impl DeckState {
         if !self.is_playing || overshoot_frames <= 0.0 {
             return;
         }
-        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.nudge_factor;
+        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.jog_hold_factor;
         if self.loop_active && self.loop_end > self.cue_point && pos >= self.loop_end {
             let dur = self.loop_end - self.cue_point;
             pos = self.cue_point + (pos - self.loop_end).rem_euclid(dur);
@@ -415,6 +779,7 @@ mod tests {
     use super::*;
 
     const SR: u32 = 44100;
+    const BLOCK: usize = 512;
 
     impl DeckState {
         // Creates a DeckState loaded with a 440 Hz sine wave. No audio hardware.
@@ -474,6 +839,521 @@ mod tests {
         );
     }
 
+    // A separate cue device renders this deck from two callbacks per period, and the wheel
+    // is consumed once, so scrubbing must not depend on how many outputs are configured.
+    #[test]
+    fn a_scrub_moves_the_same_distance_with_a_separate_cue_device() {
+        fn scrubbed(separate_cue: bool) -> f64 {
+            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut strip = ChannelStrip::new(SR as f32);
+            deck.is_playing = false;
+            deck.main_pos = 44_100.0;
+            deck.jog_pending = 20.0;
+            let mut main = vec![0.0f32; 512 * 2];
+            let mut cue = vec![0.0f32; 512 * 2];
+
+            deck.render_block(
+                &mut strip,
+                512,
+                RenderTargets {
+                    main: Some(&mut main),
+                    cue: if separate_cue { None } else { Some(&mut cue) },
+                },
+            );
+            if separate_cue {
+                deck.render_block(
+                    &mut strip,
+                    512,
+                    RenderTargets {
+                        main: None,
+                        cue: Some(&mut cue),
+                    },
+                );
+            }
+            deck.main_pos
+        }
+
+        let one_stream = scrubbed(false);
+        assert!(one_stream > 44_100.0, "the wheel should have scrubbed");
+        assert!((scrubbed(true) - one_stream).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_cue_path_keeps_pace_with_the_main_path_whether_cue_is_on_or_off() {
+        for cue_active in [false, true] {
+            let mut deck = DeckState::loaded_for_testing(SR, 5.0);
+            let mut strip = ChannelStrip::new(SR as f32);
+            strip.cue_active = cue_active;
+            deck.is_playing = true;
+            let mut main = vec![0.0f32; 512 * 2];
+            let mut cue = vec![0.0f32; 512 * 2];
+
+            deck.render_block(
+                &mut strip,
+                512,
+                RenderTargets {
+                    main: Some(&mut main),
+                    cue: Some(&mut cue),
+                },
+            );
+
+            assert_eq!(deck.cue_pos, deck.main_pos, "cue_active = {cue_active}");
+            assert!(deck.cue_pos > 0.0, "cue_active = {cue_active}");
+        }
+    }
+
+    // read_at used to extrapolate off the front of the buffer for a negative position, so a
+    // -44100 read produced samples ~2700x full scale.
+    #[test]
+    fn read_at_clamps_negative_position() {
+        let d = DeckState::loaded_for_testing(SR, 1.0);
+        for pos in [-1.0f64, -400.0, -44_100.0] {
+            let (l, r) = d.read_at(pos);
+            assert!(l.abs() <= 1.0, "pos {pos} produced l={l}");
+            assert!(r.abs() <= 1.0, "pos {pos} produced r={r}");
+        }
+        assert_eq!(d.read_at(-500.0), d.read_at(0.0));
+    }
+
+    #[test]
+    fn set_nudge_percent_floors_the_factor() {
+        let mut d = DeckState::loaded_for_testing(SR, 1.0);
+        d.set_nudge_percent(-200.0);
+        assert!(
+            d.jog_hold_factor >= 0.1,
+            "jog_hold_factor must stay positive, got {}",
+            d.jog_hold_factor
+        );
+        d.set_nudge_percent(4.0);
+        assert!((d.jog_hold_factor - 1.04).abs() < 1e-9);
+        d.set_nudge_percent(-4.0);
+        assert!((d.jog_hold_factor - 0.96).abs() < 1e-9);
+    }
+
+    // Porting nudge onto the wheel's velocity model is only safe if a held button advances
+    // the playhead exactly as far as it used to, or sessions drift against their renders.
+    #[test]
+    fn a_held_nudge_advances_exactly_as_it_did_before_the_wheel_existed() {
+        for (rate, percent) in [(1.0, 4.0), (1.0, -4.0), (0.94, 8.0), (1.08, -2.0)] {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.playback_rate = rate;
+            deck.set_nudge_percent(percent);
+            deck.is_playing = true;
+
+            let expected = rate * (1.0 + percent / 100.0);
+            for _ in 0..8 {
+                deck.consume_jog(BLOCK);
+                let before = deck.main_pos;
+                let after = deck.next_pos(before, false);
+                assert!(
+                    (after - before - expected).abs() < 1e-12,
+                    "rate {rate} percent {percent}: stepped {}, expected {expected}",
+                    after - before
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_decks_audio_does_not_depend_on_how_the_caller_chunks_the_frames() {
+        const TOTAL: usize = 4096;
+
+        let render = |sizes: &[usize]| -> Vec<f32> {
+            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, SR as f32);
+            deck.is_playing = true;
+            deck.main_pos = 50_000.0;
+            deck.jog_pending += 40.0;
+
+            let mut out = Vec::with_capacity(TOTAL * 2);
+            let mut frame = 0;
+            let mut block = 0;
+            while frame < TOTAL {
+                let size = sizes[block % sizes.len()].min(TOTAL - frame);
+                let mut main = vec![0.0f32; size * 2];
+                deck.render_block(
+                    &mut strip,
+                    size,
+                    RenderTargets {
+                        main: Some(&mut main),
+                        cue: None,
+                    },
+                );
+                out.extend_from_slice(&main);
+                frame += size;
+                block += 1;
+            }
+            out
+        };
+
+        let steady = render(&[128]);
+        for sizes in [&[117usize, 118, 118, 117, 118][..], &[64][..], &[512][..]] {
+            let chunked = render(sizes);
+            let worst = steady
+                .iter()
+                .zip(&chunked)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                worst == 0.0,
+                "chunking {sizes:?} moved the audio by {worst}, so the driver's block length is audible"
+            );
+        }
+    }
+
+    // The whole basis for logging raw ticks: the one-pole has unity DC gain, so it shapes
+    // when the travel happens and never how much. Without this the sim cannot stay analytic.
+    #[test]
+    fn a_paused_scrubs_total_travel_is_its_tick_count_whatever_the_block_size() {
+        let schedules: [(&str, fn(usize) -> usize); 6] = [
+            ("64", |_| 64),
+            ("128", |_| 128),
+            ("512", |_| 512),
+            ("1024", |_| 1024),
+            ("117/118 alternating", |block| {
+                117 + usize::from(block % 5 < 3)
+            }),
+            ("ragged", |block| [61, 512, 128, 7, 1024, 199][block % 6]),
+        ];
+
+        for (label, block_frames) in schedules {
+            for ticks in [1.0, 6.0, -13.0, 400.0] {
+                let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+                deck.main_pos = 100_000.0;
+                let start = deck.main_pos;
+                let expected = ticks * deck.jog_frames_per_tick();
+
+                deck.jog_pending += ticks;
+                for block in 0..4096 {
+                    deck.consume_jog(block_frames(block));
+                }
+
+                let travelled = deck.main_pos - start;
+                assert!(
+                    (travelled - expected).abs() < 1e-6,
+                    "block {label} ticks {ticks}: travelled {travelled}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    // The playing half of the same closed form: the wheel's contribution to position is the
+    // paused travel divided by the multiplier, which is what lets the sim skip the filter.
+    #[test]
+    fn a_playing_bends_total_travel_is_the_paused_travel_over_the_multiplier() {
+        const BLOCK_FRAMES: usize = 512;
+        // Three seconds against the wheel filter's 40 ms tau, so the tail is long settled.
+        const BLOCKS: usize = 256;
+        for ticks in [6.0, -6.0, 40.0] {
+            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            deck.is_playing = true;
+            deck.playback_rate = 1.0;
+            deck.main_pos = 100_000.0;
+            let start = deck.main_pos;
+            let expected = ticks * deck.jog_frames_per_tick() / session_core::JOG_PAUSED_MULTIPLIER
+                + (BLOCKS * BLOCK_FRAMES) as f64;
+
+            deck.jog_pending += ticks;
+            for _ in 0..BLOCKS {
+                deck.consume_jog(BLOCK_FRAMES);
+                for _ in 0..BLOCK_FRAMES {
+                    deck.main_tick();
+                }
+            }
+
+            let travelled = deck.main_pos - start;
+            assert!(
+                (travelled - expected).abs() < 1e-3,
+                "ticks {ticks}: travelled {travelled}, expected {expected}"
+            );
+        }
+    }
+
+    fn looping_deck_at(pos: f64) -> DeckState {
+        let mut deck = DeckState::loaded_for_testing(SR, 600.0);
+        deck.cue_point = 100_000.0;
+        deck.loop_end = 200_000.0;
+        deck.loop_active = true;
+        deck.main_pos = pos;
+        deck
+    }
+
+    fn settle_jog(deck: &mut DeckState, ticks: f64) {
+        deck.jog_pending += ticks;
+        for _ in 0..4096 {
+            deck.consume_jog(512);
+        }
+    }
+
+    // Seek disarms a loop it lands outside of. Without the same guard here the first frame
+    // of playback wraps the playhead back into the region the DJ just scrubbed out of.
+    #[test]
+    fn scrubbing_a_paused_deck_out_of_its_loop_disarms_it() {
+        let mut deck = looping_deck_at(150_000.0);
+
+        settle_jog(&mut deck, 2000.0);
+
+        assert!(deck.main_pos > deck.loop_end);
+        assert!(!deck.loop_active);
+    }
+
+    #[test]
+    fn scrubbing_a_paused_deck_backwards_past_the_loop_in_disarms_it() {
+        let mut deck = looping_deck_at(150_000.0);
+
+        settle_jog(&mut deck, -2000.0);
+
+        assert!(deck.main_pos < deck.cue_point);
+        assert!(!deck.loop_active);
+    }
+
+    #[test]
+    fn scrubbing_around_inside_the_loop_keeps_it_armed() {
+        let mut deck = looping_deck_at(150_000.0);
+
+        settle_jog(&mut deck, 100.0);
+
+        assert!(deck.main_pos > 150_000.0 && deck.main_pos < deck.loop_end);
+        assert!(deck.loop_active);
+    }
+
+    // An idle wheel must contribute nothing at all, not merely something small.
+    #[test]
+    fn an_untouched_wheel_leaves_a_paused_deck_where_it_was() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 1000.0;
+        for _ in 0..64 {
+            deck.consume_jog(BLOCK);
+        }
+        assert_eq!(deck.main_pos, 1000.0);
+    }
+
+    // What replaces the release watchdog: the accumulator reads zero once the
+    // hand is gone, so the bend has to settle on its own.
+    #[test]
+    fn a_released_wheel_rings_down_to_no_bend() {
+        let mut deck = DeckState::loaded_for_testing(SR, 30.0);
+        deck.is_playing = true;
+        for _ in 0..8 {
+            deck.jog_pending += 20.0;
+            deck.consume_jog(BLOCK);
+            for _ in 0..BLOCK {
+                deck.main_tick();
+            }
+        }
+        let bent = deck.next_pos(0.0, false);
+        assert!(bent > 1.0, "a turned wheel should bend forward, got {bent}");
+
+        for _ in 0..400 {
+            deck.consume_jog(BLOCK);
+            for _ in 0..BLOCK {
+                deck.main_tick();
+            }
+        }
+        assert_eq!(deck.next_pos(0.0, false), 1.0);
+    }
+
+    #[test]
+    fn a_turned_wheel_scrubs_a_paused_deck_both_ways() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 20_000.0;
+
+        deck.jog_pending += 50.0;
+        deck.consume_jog(BLOCK);
+        assert!(deck.main_pos > 20_000.0);
+        assert_eq!(deck.cue_pos, deck.main_pos);
+
+        let forward = deck.main_pos;
+        deck.jog_pending -= 200.0;
+        deck.consume_jog(BLOCK);
+        assert!(deck.main_pos < forward);
+    }
+
+    #[test]
+    fn the_wheel_settles_over_the_same_wall_clock_time_at_any_buffer_size() {
+        const TICKS_PER_FRAME: f64 = 0.05;
+        const TURN_MS: f64 = 120.0;
+        const SETTLE_SLACK: f64 = 0.02;
+        let settled_fraction = |frames: usize| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.is_playing = true;
+            let blocks = (TURN_MS / 1000.0 * f64::from(SR) / frames as f64).round() as usize;
+            for _ in 0..blocks {
+                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.consume_jog(frames);
+            }
+            deck.jog_filtered / (TICKS_PER_FRAME * DeckState::JOG_FILTER_STEP_FRAMES)
+        };
+        assert!((settled_fraction(256) - settled_fraction(1024)).abs() < SETTLE_SLACK);
+        assert!((settled_fraction(128) - settled_fraction(1024)).abs() < SETTLE_SLACK);
+        assert!((settled_fraction(117) - settled_fraction(1024)).abs() < SETTLE_SLACK);
+    }
+
+    #[test]
+    fn a_paused_scrub_travels_the_same_at_any_block_schedule() {
+        let scrub = |sizes: &[usize]| {
+            const TOTAL: usize = 44_100;
+            let mut deck = DeckState::loaded_for_testing(SR, 2.0);
+            deck.main_pos = 20_000.0;
+            deck.jog_pending += 500.0;
+            let mut frame = 0usize;
+            let mut index = 0usize;
+            while frame < TOTAL {
+                let size = sizes[index % sizes.len()].min(TOTAL - frame);
+                deck.consume_jog(size);
+                frame += size;
+                index += 1;
+            }
+            deck.main_pos - 20_000.0
+        };
+        assert!(scrub(&[128]) > 0.0);
+        assert_eq!(scrub(&[128]), scrub(&[512]));
+        assert_eq!(scrub(&[128]), scrub(&[117, 118, 118, 117, 118]));
+        assert_eq!(scrub(&[128]), scrub(&[61, 512, 128, 7, 1024, 199]));
+    }
+
+    #[test]
+    fn the_same_hand_speed_bends_the_same_at_any_buffer_size() {
+        const TICKS_PER_FRAME: f64 = 0.05;
+        let bend = |frames: usize| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.is_playing = true;
+            for _ in 0..200 {
+                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.consume_jog(frames);
+            }
+            deck.next_pos(0.0, false)
+        };
+        assert!((bend(256) - bend(1024)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_revolution_covers_a_fixed_ratio_less_audio_at_the_faster_speed() {
+        let travel = |speed| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.set_jog_rotation_speed(speed);
+            deck.main_pos = 20_000.0;
+            deck.jog_pending += 50.0;
+            deck.consume_jog(BLOCK);
+            deck.main_pos - 20_000.0
+        };
+        let slow = travel(session_core::JogRotationSpeed::Rpm33);
+        let fast = travel(session_core::JogRotationSpeed::Rpm45);
+        assert!(
+            (slow / fast - session_core::JogRotationSpeed::Rpm45.scrub_scale().recip()).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn shift_doubles_the_scrub_and_leaves_the_bend_alone() {
+        assert_eq!(logged_jog_ticks(50.0, true, false), 100.0);
+        assert_eq!(logged_jog_ticks(50.0, false, false), 50.0);
+        assert_eq!(logged_jog_ticks(50.0, true, true), 50.0);
+
+        let scrub = |held| {
+            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            deck.main_pos = 20_000.0;
+            deck.jog_pending += logged_jog_ticks(50.0, held, false);
+            deck.consume_jog(BLOCK);
+            deck.main_pos - 20_000.0
+        };
+        assert!((scrub(true) / scrub(false) - 2.0).abs() < 1e-12);
+    }
+
+    // The surface stops being listened to outside performance, so a button that is down
+    // when the mode changes never delivers its release and nothing else would clear it.
+    #[test]
+    fn releasing_held_controls_ends_a_cue_preview_and_drops_shift() {
+        let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+        deck.set_jog_shift(true);
+        deck.cue_point = 20_000.0;
+        deck.main_pos = deck.cue_point;
+        deck.press_cue();
+        assert!(deck.is_cueing, "the preview has to be running to be ended");
+        deck.main_pos = deck.cue_point + 800.0;
+
+        deck.release_held_controls();
+
+        assert!(!deck.jog_shift);
+        assert!(!deck.is_cueing);
+        assert!(!deck.is_playing);
+        assert!((deck.main_pos - deck.cue_point).abs() < 1.0);
+    }
+
+    // A deck playing normally holds nothing, so the same call must not stop it.
+    #[test]
+    fn releasing_held_controls_leaves_normal_playback_alone() {
+        let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+        deck.is_playing = true;
+        deck.main_pos = 30_000.0;
+
+        deck.release_held_controls();
+
+        assert!(deck.is_playing);
+        assert!((deck.main_pos - 30_000.0).abs() < 1.0);
+    }
+
+    // The button is held on the surface, so a track change cannot release it.
+    #[test]
+    fn shift_survives_a_track_change() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.set_jog_shift(true);
+        deck.reset();
+        assert!(deck.jog_shift);
+    }
+
+    #[test]
+    fn the_rotation_speed_survives_a_track_change() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.set_jog_rotation_speed(session_core::JogRotationSpeed::Rpm45);
+        deck.reset();
+        assert_eq!(
+            deck.jog_rotation_speed,
+            session_core::JogRotationSpeed::Rpm45
+        );
+    }
+
+    // Scrubbing backwards past the start would read at a negative frame.
+    #[test]
+    fn scrubbing_cannot_leave_the_track() {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.main_pos = 10.0;
+        for _ in 0..200 {
+            deck.jog_pending -= 500.0;
+            deck.consume_jog(BLOCK);
+        }
+        assert!(deck.main_pos >= 0.0);
+
+        for _ in 0..2000 {
+            deck.jog_pending += 500.0;
+            deck.consume_jog(BLOCK);
+        }
+        assert!(deck.main_pos <= deck.total_frames as f64);
+    }
+
+    // A hand-edited .bms reaches set_param directly, and the eq unit has no clamp of its
+    // own, so +60 dB below 200 Hz used to duck the whole mix through the limiter.
+    #[test]
+    fn a_param_outside_the_descriptors_range_lands_on_the_range() {
+        let mut strip = ChannelStrip::new(48000.0);
+
+        strip.set_param("eq", "low", 60.0);
+        assert_eq!(
+            strip.param("eq", "low"),
+            Some(session_core::EQ_MAX_DB as f32)
+        );
+
+        strip.set_param("eq", "high", -200.0);
+        assert_eq!(
+            strip.param("eq", "high"),
+            Some(session_core::EQ_MIN_DB as f32)
+        );
+
+        strip.set_param("filter", "value", 4.0);
+        assert_eq!(strip.param("filter", "value"), Some(1.0));
+    }
+
     // --- ChannelStrip gain smoothing ---
 
     #[test]
@@ -505,6 +1385,157 @@ mod tests {
         let (l, r) = strip.process_main(1.0, 1.0);
         assert!(l > 0.99, "expected l near 1.0, got {}", l);
         assert!(r > 0.99, "expected r near 1.0, got {}", r);
+    }
+
+    // On hardware a channel meter reads the channel, so throwing the crossfader away from a
+    // deck must not make its meter drop to nothing while the fader is still up.
+    #[test]
+    fn the_channel_meter_reads_the_channel_rather_than_the_crossfader() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        strip.set_xfader_position(1.0);
+
+        let mut out = 0.0;
+        for _ in 0..48000 {
+            out = strip.process_main(1.0, 1.0).0;
+        }
+
+        assert!(out.abs() < 0.01, "the deck is crossfaded away, got {out}");
+        assert!(strip.metered().0 > 0.99, "meter read {}", strip.metered().0);
+    }
+
+    // The edit deck has no channel on the mixer, so a broadcast, a recording or a crossfader
+    // resolve that walked it would be reporting a deck the audience never hears.
+    #[test]
+    fn the_edit_deck_is_not_a_live_deck() {
+        assert!(!crate::audio::LIVE_DECK_IDS.contains(&crate::audio::EDIT_DECK_ID));
+    }
+
+    // Every caller of `new` is a test, so a strip built here exercising a manifest the app
+    // never runs would leave the real one untested wherever the two differ.
+    #[test]
+    fn the_convenience_constructor_builds_the_manifest_the_app_runs() {
+        let strip = ChannelStrip::new(48000.0);
+        assert_eq!(strip.manifest.id, crate::audio::MIXER.id);
+    }
+
+    fn settled_xfader_gain(strip: &mut ChannelStrip) -> f32 {
+        let mut left = 0.0;
+        for _ in 0..48000 {
+            left = strip.process_main(1.0, 1.0).0;
+        }
+        left
+    }
+
+    #[test]
+    fn a_settled_fader_gain_does_not_remember_where_it_came_from() {
+        let settled_from = |start: f32| -> f32 {
+            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, 48000.0);
+            strip.set_param(
+                session_core::FADER_GAIN.0,
+                session_core::FADER_GAIN.1,
+                start,
+            );
+            for _ in 0..96000 {
+                strip.process_main(1.0, 1.0);
+            }
+            strip.set_param(session_core::FADER_GAIN.0, session_core::FADER_GAIN.1, 1.0);
+            for _ in 0..96000 {
+                strip.process_main(1.0, 1.0);
+            }
+            strip.process_main(1.0, 1.0).0
+        };
+
+        assert_eq!(settled_from(0.0), settled_from(1.0));
+    }
+
+    #[test]
+    fn a_settled_crossfader_gain_does_not_remember_where_it_came_from() {
+        let settled_from = |start: f32| -> f32 {
+            let mut strip = ChannelStrip::new(48000.0);
+            strip.set_xfader_position(start);
+            settled_xfader_gain(&mut strip);
+            strip.set_xfader_position(0.0);
+            settled_xfader_gain(&mut strip);
+            strip.xfader_gain
+        };
+
+        assert_eq!(settled_from(-1.0), settled_from(1.0));
+        assert_eq!(settled_from(-1.0), settled_from(0.25));
+    }
+
+    // A stopped deck's strip settles and stops processing, so a crossfader thrown while it
+    // is paused has to reopen the window or the first samples after play use the old gain.
+    #[test]
+    fn reset_returns_the_crossfader_to_thru_at_centre() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) < 0.01);
+
+        strip.reset();
+
+        assert_eq!(strip.xfader_assign, session_core::XfaderAssign::Thru);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+    }
+
+    #[test]
+    fn a_crossfader_move_while_stopped_still_converges() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        strip.consume_settle(usize::MAX);
+        assert!(strip.settled(), "the strip should have settled");
+
+        strip.set_xfader_position(1.0);
+        assert!(!strip.settled(), "the throw must reopen the window");
+        assert!(settled_xfader_gain(&mut strip) < 0.01);
+    }
+
+    #[test]
+    fn a_thru_strip_is_untouched_wherever_the_crossfader_sits() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_position(-1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+    }
+
+    #[test]
+    fn an_assigned_strip_is_cut_at_the_far_end_and_open_at_its_own() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+
+        strip.set_xfader_position(-1.0);
+        assert!(settled_xfader_gain(&mut strip) > 0.99);
+        strip.set_xfader_position(1.0);
+        assert!(settled_xfader_gain(&mut strip) < 0.001);
+    }
+
+    // Assign and position are resolved by the strip, so a caller that changes only one still
+    // ends up correct. Live playback, session playback and the renderer each touch one.
+    #[test]
+    fn assigning_after_the_crossfader_moved_still_resolves() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_position(1.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        assert!(settled_xfader_gain(&mut strip) < 0.001);
+    }
+
+    // A hard cut has to ramp, not step, or it clicks. Centred and assigned is
+    // 0.707 rather than unity, which is what constant power means.
+    #[test]
+    fn the_crossfader_does_not_step_when_thrown() {
+        let mut strip = ChannelStrip::new(48000.0);
+        strip.set_xfader_assign(session_core::XfaderAssign::A);
+        let settled = settled_xfader_gain(&mut strip);
+        assert!((settled - 0.707).abs() < 0.01, "centred gain was {settled}");
+
+        strip.set_xfader_position(1.0);
+        let first = strip.process_main(1.0, 1.0).0;
+        assert!(
+            (settled - first).abs() < 0.01,
+            "the cut stepped from {settled} to {first} in one sample"
+        );
     }
 
     #[test]
@@ -907,6 +1938,44 @@ mod loop_behavior {
         );
     }
 
+    // A loop ending at or before the cue point used to pin the playhead there forever.
+    // session-core's sim_pos has always guarded it, so the engine was the divergent side.
+    #[test]
+    fn zero_length_loop_does_not_freeze_playback() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_frames();
+        d.loop_end = beat_frames();
+        d.loop_active = true;
+        d.is_playing = true;
+        d.main_pos = beat_frames();
+        for _ in 0..1000 {
+            d.main_tick();
+        }
+        assert!(
+            d.main_pos > beat_frames(),
+            "playhead must advance past a zero-length loop, stuck at {}",
+            d.main_pos
+        );
+    }
+
+    #[test]
+    fn inverted_loop_does_not_freeze_playback() {
+        let mut d = deck_with_grid(10.0);
+        d.cue_point = beat_frames() * 2.0;
+        d.loop_end = beat_frames();
+        d.loop_active = true;
+        d.is_playing = true;
+        d.main_pos = beat_frames() * 2.0;
+        for _ in 0..1000 {
+            d.main_tick();
+        }
+        assert!(
+            d.main_pos > beat_frames() * 2.0,
+            "playhead must advance past an inverted loop, stuck at {}",
+            d.main_pos
+        );
+    }
+
     #[test]
     fn loop_does_not_wrap_when_inactive() {
         let mut d = deck_with_grid(10.0);
@@ -918,5 +1987,245 @@ mod loop_behavior {
         d.main_tick();
         // should advance past loop_end without wrapping
         assert!(d.main_pos >= d.loop_end);
+    }
+}
+
+// The loops these replace run only inside a live cpal callback, so nothing else
+// in the suite exercises them.
+#[cfg(test)]
+mod render_block_equivalence {
+    use super::*;
+
+    const SR: u32 = 44100;
+    const FRAMES: usize = 512;
+
+    fn deck_and_strip(duration_secs: f64) -> (DeckState, ChannelStrip) {
+        let mut deck = DeckState::loaded_for_testing(SR, duration_secs);
+        deck.is_playing = true;
+        let mut strip = ChannelStrip::new(SR as f32);
+        strip.set_eq_band("low", 4.0);
+        strip.set_eq_band("high", -6.0);
+        strip.set_filter(-0.4);
+        strip.set_filter_active(true);
+        strip.set_gain(0.3);
+        strip.cue_active = true;
+        (deck, strip)
+    }
+
+    fn rendered(duration_secs: f64, targets: (bool, bool)) -> (Vec<f32>, Vec<f32>, (f32, f32)) {
+        let (mut deck, mut strip) = deck_and_strip(duration_secs);
+        let mut main = vec![0.0f32; FRAMES * 2];
+        let mut cue = vec![0.0f32; FRAMES * 2];
+        let level = deck.render_block(
+            &mut strip,
+            FRAMES,
+            RenderTargets {
+                main: targets.0.then_some(&mut main),
+                cue: targets.1.then_some(&mut cue),
+            },
+        );
+        (main, cue, level)
+    }
+
+    fn reference(duration_secs: f64, targets: (bool, bool)) -> (Vec<f32>, Vec<f32>, (f32, f32)) {
+        let (mut deck, mut strip) = deck_and_strip(duration_secs);
+        let mut main = vec![0.0f32; FRAMES * 2];
+        let mut cue = vec![0.0f32; FRAMES * 2];
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
+        for frame in 0..FRAMES {
+            if targets.0 {
+                let (l, r) = deck.main_tick();
+                let (ml, mr) = strip.process_main(l, r);
+                sum_l += ml.abs();
+                sum_r += mr.abs();
+                main[frame * 2] += ml;
+                main[frame * 2 + 1] += mr;
+            }
+            if targets.1 {
+                let (l, r) = deck.cue_tick();
+                let (cl, cr) = strip.process_cue(l, r);
+                cue[frame * 2] += cl;
+                cue[frame * 2 + 1] += cr;
+            }
+        }
+        (main, cue, (sum_l, sum_r))
+    }
+
+    fn assert_same(label: &str, duration_secs: f64, targets: (bool, bool)) {
+        let (main, cue, level) = rendered(duration_secs, targets);
+        let (want_main, want_cue, want_level) = reference(duration_secs, targets);
+        assert_eq!(main, want_main, "{label}: main output differs");
+        assert_eq!(cue, want_cue, "{label}: cue output differs");
+        assert_eq!(level, want_level, "{label}: metering sum differs");
+    }
+
+    #[test]
+    fn main_only_matches_the_loop_it_replaced() {
+        assert_same("main only", 1.0, (true, false));
+    }
+
+    #[test]
+    fn cue_only_matches_the_loop_it_replaced() {
+        assert_same("cue only", 1.0, (false, true));
+    }
+
+    #[test]
+    fn main_and_cue_together_match_the_interleaved_loop() {
+        assert_same("both", 1.0, (true, true));
+    }
+
+    #[test]
+    fn end_of_track_inside_the_block_still_matches() {
+        let short = (FRAMES / 2) as f64 / SR as f64;
+        assert_same("end of track mid-block", short, (true, true));
+
+        let (_, cue, _) = rendered(short, (true, true));
+
+        let (mut deck, mut strip) = deck_and_strip(short);
+        let mut reordered = vec![0.0f32; FRAMES * 2];
+        for _ in 0..FRAMES {
+            let (l, r) = deck.main_tick();
+            strip.process_main(l, r);
+        }
+        for frame in 0..FRAMES {
+            let (l, r) = deck.cue_tick();
+            let (cl, cr) = strip.process_cue(l, r);
+            reordered[frame * 2] += cl;
+            reordered[frame * 2 + 1] += cr;
+        }
+
+        assert_ne!(
+            cue, reordered,
+            "interleaving main and cue per frame must matter across end of track"
+        );
+        let peak = |slice: &[f32]| slice.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        assert!(
+            peak(&cue) > peak(&reordered) * 10.0,
+            "the reordered render loses the cue tail: {:e} vs {:e}",
+            peak(&cue),
+            peak(&reordered)
+        );
+    }
+
+    #[test]
+    fn a_path_that_was_not_requested_is_left_untouched() {
+        let (main, cue, level) = rendered(1.0, (false, true));
+        assert!(main.iter().all(|s| *s == 0.0), "main buffer was written");
+        assert!(cue.iter().any(|s| *s != 0.0), "cue buffer was not written");
+        assert_eq!(level, (0.0, 0.0), "cue-only render reported a main level");
+    }
+}
+
+#[cfg(test)]
+mod silence_early_out {
+    use super::*;
+
+    const SR: u32 = 44100;
+    const FRAMES: usize = 512;
+
+    fn stopped_pair() -> (DeckState, ChannelStrip) {
+        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        deck.is_playing = false;
+        (deck, ChannelStrip::new(SR as f32))
+    }
+
+    fn render(deck: &mut DeckState, strip: &mut ChannelStrip, blocks: usize) {
+        let mut main = vec![0.0f32; FRAMES * 2];
+        for _ in 0..blocks {
+            main.fill(0.0);
+            deck.render_block(
+                strip,
+                FRAMES,
+                RenderTargets {
+                    main: Some(&mut main),
+                    cue: None,
+                },
+            );
+        }
+    }
+
+    fn blocks_to_settle() -> usize {
+        (SR as usize).div_ceil(FRAMES) + 1
+    }
+
+    #[test]
+    fn a_stopped_deck_is_skipped_once_its_strip_has_settled() {
+        let (mut deck, mut strip) = stopped_pair();
+        render(&mut deck, &mut strip, blocks_to_settle());
+        assert!(strip.settled(), "strip should have settled by now");
+    }
+
+    #[test]
+    fn a_playing_deck_is_never_skipped() {
+        let (mut deck, mut strip) = stopped_pair();
+        render(&mut deck, &mut strip, blocks_to_settle());
+        assert!(strip.settled());
+
+        deck.is_playing = true;
+        render(&mut deck, &mut strip, 1);
+        assert!(!strip.settled(), "playing must restart the settle window");
+    }
+
+    #[test]
+    fn a_fader_moved_while_stopped_still_converges() {
+        let (mut deck, mut strip) = stopped_pair();
+        render(&mut deck, &mut strip, blocks_to_settle());
+        assert!(strip.settled(), "precondition: already skipping");
+
+        strip.set_gain(0.25);
+        assert!(!strip.settled(), "a fader move must restart processing");
+        render(&mut deck, &mut strip, blocks_to_settle());
+
+        let (out, _) = strip.process_main(1.0, 1.0);
+        assert!(
+            (out - 0.25).abs() < 1e-4,
+            "gain stalled at {out} instead of converging to 0.25"
+        );
+    }
+
+    #[test]
+    fn a_filter_moved_while_stopped_still_converges() {
+        let (mut deck, mut strip) = stopped_pair();
+        render(&mut deck, &mut strip, blocks_to_settle());
+
+        strip.set_filter(-0.8);
+        strip.set_filter_active(true);
+        assert!(!strip.settled());
+        render(&mut deck, &mut strip, blocks_to_settle());
+
+        // A knob frozen near 0 leaves the low pass wide open, so a tone well
+        // above the swept cutoff coming through is the symptom.
+        let mut sum = 0.0;
+        for frame in 0..1000 {
+            let phase = frame as f32 / SR as f32;
+            let sample = (std::f32::consts::TAU * 10_000.0 * phase).sin();
+            let (l, _) = strip.process_main(sample, sample);
+            sum += l * l;
+        }
+        let rms = (sum / 1000.0).sqrt();
+        assert!(rms < 0.05, "filter knob stalled mid-smoothing, rms {rms}");
+    }
+
+    #[test]
+    fn a_skipped_block_leaves_the_buffer_untouched() {
+        let (mut deck, mut strip) = stopped_pair();
+        render(&mut deck, &mut strip, blocks_to_settle());
+        assert!(strip.settled());
+
+        let mut main = vec![0.25f32; FRAMES * 2];
+        let level = deck.render_block(
+            &mut strip,
+            FRAMES,
+            RenderTargets {
+                main: Some(&mut main),
+                cue: None,
+            },
+        );
+        assert!(
+            main.iter().all(|s| *s == 0.25),
+            "a skipped block wrote into the mix buffer"
+        );
+        assert_eq!(level, (0.0, 0.0));
     }
 }

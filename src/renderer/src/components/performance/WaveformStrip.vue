@@ -10,7 +10,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useDecksStore, type DeckId } from '@renderer/stores/decks';
+import { useDecksStore } from '@renderer/stores/decks';
+import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 
@@ -36,6 +37,8 @@ const sources = computed(() =>
       getDenseData: () => deck.denseSpectralData,
       getDenseRate: () => deck.denseSpectralRate,
       isWaveformLoading: () => deck.waveformLoading,
+      getLoopRegion: () => deck.loopRegion,
+      getLoopActive: () => deck.loopActive,
       accent: deck.accent
     };
   })

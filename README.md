@@ -1,6 +1,6 @@
 # Beatmatcher
 
-A desktop app for practicing beat matching. Two or Four independent decks to play local audio.
+DJ software for live mixing and session editing, played on a keyboard or MIDI controller. Two or Four independent decks to play local audio.
 
 ![Beatmatcher screenshot](assets/screenshot.png)
 
@@ -60,6 +60,13 @@ You can press the following buttons to control the decks.
 yarn install
 yarn dev
 ```
+
+| script                                                        |                                                                                                                                                                  |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `yarn test` / `yarn test:rust`                                | frontend and Rust suites                                                                                                                                         |
+| `yarn build:wasm`                                             | rebuild `session-core` into WASM. Needed after any change under `session-core/src`, because the frontend runs against the built artifact and not the Rust source |
+| `yarn check:wasm`                                             | fail if that artifact is older than its source. Runs as part of `yarn test`                                                                                      |
+| `yarn compare-session <session.bms> <recorded.wav> [out.wav]` | render a `.bms` offline and diff it against the WAV captured while it was played. Exits non-zero when they diverge                                               |
 
 Built with Tauri + Vue 3 + TypeScript + Vite. See [architecture.md](architecture.md) for diagrams of the audio engine, signal chain, and IPC layer.
 

@@ -1,7 +1,7 @@
 [package]
 name = "beatmatcher"
-version = "7.0.0"
-description = "Beat matching trainer app"
+version = "8.1.0"
+description = "DJ software for live mixing and session editing. Play on your keyboard or MIDI controller"
 authors = ["berrutti"]
 edition = "2021"
 rust-version = "1.77.2"
@@ -33,10 +33,12 @@ tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 flacenc = "0.5"
 cpal = "0.15"
+midir = "0.10"
 symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "vorbis", "wav", "ogg"] }
 rfd = "0.15"
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "time", "sync"] }
 base64 = "0.22"
+dirs = "6"
 
 # Optimize all dependencies (symphonia, cpal, etc.) even in dev builds.
 # Our own code stays unoptimized for fast recompiles and usable stack traces.
