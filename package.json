@@ -38,7 +38,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-store": "^2.4.4",
     "pinia": "^3.0.4",
-    "vue": "^3.5.40",
+    "vue": "^3.5.41",
     "vue-i18n": "^11.4.8"
   },
   "simple-git-hooks": {
