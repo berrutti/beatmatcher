@@ -22,7 +22,7 @@ pub use param::{
     is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, JogRotationSpeed, MixerHeader,
     MixerManifest, ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
     XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2,
-    JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER,
+    jog_settled_fraction, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER,
     MANIFESTS,
     REQUIRED_STRIP_ROLES,
 };

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { currentBeat as coreCurrentBeat } from '@renderer/utils/sessionCore';
@@ -240,7 +241,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.pitchOffset = (clamped / state.trackBpm - 1) * 100;
       syncPosition();
       localRate = clamped / state.trackBpm;
-      invoke('set_playback_rate', { deck: id, rate: localRate });
+      call('set_playback_rate', { deck: id, rate: localRate });
     },
 
     setTrackBpm(bpm: number) {
@@ -249,8 +250,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.pitchOffset = 0;
       syncPosition();
       localRate = 1.0;
-      invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      invoke('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
+      call('set_playback_rate', { deck: id, rate: 1.0 });
+      call('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
     },
 
     setPitchOffset(pct: number) {
@@ -264,7 +265,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.targetBpm = Math.max(minBpm, Math.min(maxBpm, rounded));
       syncPosition();
       localRate = state.targetBpm / state.trackBpm;
-      invoke('set_playback_rate', { deck: id, rate: localRate });
+      call('set_playback_rate', { deck: id, rate: localRate });
     },
 
     async loadTrack(data: LoadableTrack) {
@@ -274,7 +275,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.loading = true;
       state.waveformLoading = true;
       if (state.loopPlaying) {
-        await invoke('stop', { deck: id });
+        await call('stop', { deck: id });
         state.loopPlaying = false;
       }
       state.cueing = false;
@@ -308,8 +309,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       positionCache = data.beatOffset;
       clockAtPlay = performance.now();
       localRate = 1.0;
-      await invoke('set_playback_rate', { deck: id, rate: 1.0 });
-      invoke('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
+      await call('set_playback_rate', { deck: id, rate: 1.0 });
+      call('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
 
       // Spectral bands are computed in the background by Rust. Listen for
       // bands-ready, then fetch both the low-rate overview and the dense
@@ -341,7 +342,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.beatOffset = sec;
       onBeatOffsetChangeCb?.(sec);
       if (state.trackBpm !== null) {
-        invoke('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
+        call('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
       }
     },
 
@@ -350,7 +351,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const dur = state.loopRegion.endSec - state.loopRegion.startSec;
       const endSec = startSec + dur;
       state.loopRegion = { ...state.loopRegion, startSec, endSec };
-      invoke('set_loop_region', { deck: id, startSec, endSec });
+      call('set_loop_region', { deck: id, startSec, endSec });
     },
 
     async setLoopIn() {
@@ -444,7 +445,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     toggleQuantized() {
       state.quantized = !state.quantized;
-      invoke('set_quantize', { deck: id, quantize: state.quantized });
+      call('set_quantize', { deck: id, quantize: state.quantized });
     },
 
     async nudgeStart(direction: 'back' | 'forward') {
@@ -509,7 +510,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       localRate = 1.0;
       onBeatOffsetChangeCb = null;
       Object.assign(state, emptyDeck());
-      await invoke('eject_track', { deck: id });
+      await call('eject_track', { deck: id });
     },
 
     // The confirmation lives here rather than in the button, so the eject key on
@@ -534,7 +535,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     async stop() {
       if (!state.loopPlaying) return;
-      await invoke('stop', { deck: id });
+      await call('stop', { deck: id });
       state.loopPlaying = false;
       state.cueing = false;
     },
@@ -542,7 +543,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     async destroy() {
       bandsReadyUnlisten?.();
       try {
-        await invoke('stop', { deck: id });
+        await call('stop', { deck: id });
       } catch {
         // ignore stop errors on teardown
       }

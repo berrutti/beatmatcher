@@ -1,16 +1,3 @@
-// Offline session renderer and comparison tool.
-//
-// Replays a .session.json file through the audio engine without a real audio
-// device, producing a rendered WAV. When compared against the WAV that was
-// recorded during the original live session, any divergence indicates a bug in
-// the event recording or replay logic.
-//
-// Usage (binary):
-//   cargo run --bin compare_session -- <session.json> <recorded.wav> [output.wav]
-//
-// The binary prints per-channel RMS difference (dBFS), max absolute sample
-// error, and the frame index of the first divergence above 1e-4.
-
 use crate::audio::{self, ChannelStrip, DeckState, LimiterState};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -241,6 +228,7 @@ pub fn render_and_compare(
     session_path: &str,
     reference_path: &str,
     output_path: Option<&str>,
+    limiter: MasterLimiter,
 ) -> Result<CompareResult, String> {
     let (reference, sample_rate, ref_channels) = read_wav_f32(reference_path)?;
     if ref_channels != 2 {
@@ -252,7 +240,14 @@ pub fn render_and_compare(
     let json = std::fs::read_to_string(session_path).map_err(|e| format!("{session_path}: {e}"))?;
     let session = SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))?;
 
-    let rendered = render_session(&session, sample_rate, reference.len())?;
+    let rendered = render_session(
+        &session,
+        RenderRequest {
+            sample_rate,
+            min_frames: reference.len() / 2,
+            limiter,
+        },
+    )?;
 
     if let Some(out) = output_path {
         write_wav_f32(out, &rendered, sample_rate, 2)?;
@@ -318,50 +313,103 @@ fn diff_signals(a: &[f32], b: &[f32]) -> CompareResult {
     }
 }
 
-const CHUNK: usize = 512;
+/// Named so a call site cannot silently pass the wrong flag: the two branches are
+/// different master chains, not a feature being switched off.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MasterLimiter {
+    On,
+    Off,
+}
 
-pub fn render_session(
-    session: &SessionFile,
+pub struct RenderRequest {
+    pub sample_rate: u32,
+    /// Render at least this many frames, so a comparison covers the whole reference.
+    pub min_frames: usize,
+    pub limiter: MasterLimiter,
+}
+
+/// The decks and strips a session plays through, and the master chain they mix into.
+struct Mixer {
+    decks: HashMap<String, DeckState>,
+    strips: HashMap<String, ChannelStrip>,
+    master_gain: f32,
+    xfader_position: f32,
+    limiter: Option<LimiterState>,
     sample_rate: u32,
-    reference_len: usize,
-) -> Result<Vec<f32>, String> {
-    // Refused rather than rendered on a best guess: a mixer this build cannot
-    // reproduce would diverge from the recording without saying so.
-    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+}
 
-    let mut decks: HashMap<String, DeckState> = crate::audio::LIVE_DECK_IDS
-        .iter()
-        .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
-        .collect();
-    let mut strips: HashMap<String, ChannelStrip> = crate::audio::LIVE_DECK_IDS
-        .iter()
-        .map(|&id| {
-            (
-                id.to_string(),
-                ChannelStrip::from_manifest(manifest, sample_rate as f32),
-            )
+impl Mixer {
+    fn new(session: &SessionFile, request: &RenderRequest) -> Result<Self, String> {
+        // Refused rather than rendered on a best guess: a mixer this build cannot
+        // reproduce would diverge from the recording without saying so.
+        let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+        let sample_rate = request.sample_rate;
+        Ok(Self {
+            decks: crate::audio::LIVE_DECK_IDS
+                .iter()
+                .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
+                .collect(),
+            strips: crate::audio::LIVE_DECK_IDS
+                .iter()
+                .map(|&id| {
+                    (
+                        id.to_string(),
+                        ChannelStrip::from_manifest(manifest, sample_rate as f32),
+                    )
+                })
+                .collect(),
+            master_gain: crate::audio::DEFAULT_MASTER_GAIN,
+            xfader_position: 0.0,
+            limiter: (request.limiter == MasterLimiter::On)
+                .then(|| LimiterState::new(sample_rate as f32)),
+            sample_rate,
         })
-        .collect();
-    let mut master_gain = crate::audio::DEFAULT_MASTER_GAIN;
-    let mut xfader_position = 0.0f32;
+    }
 
-    // The live audio engine applies commands on the next callback after they fire,
-    // so recorded audio always starts `buffer_size_frames` after the event timestamp.
-    // Read this from the recording_start event; default 512 (macOS Core Audio default).
-    let buffer_latency = session
-        .events
-        .iter()
-        .find(|e| e.event_type == "recording_start")
-        .and_then(|e| e.buffer_size_frames)
-        .unwrap_or(512) as usize;
+    fn apply(&mut self, cmd: SessionCommand<'_>) -> Result<(), String> {
+        apply_event(
+            cmd,
+            &mut self.decks,
+            &mut self.strips,
+            &mut self.master_gain,
+            &mut self.xfader_position,
+            self.sample_rate,
+        )
+    }
 
-    // Build sample-accurate event timeline, offset by buffer latency.
+    fn tick(&mut self) -> (f32, f32) {
+        let mut mix_l = 0.0f32;
+        let mut mix_r = 0.0f32;
+        for id in crate::audio::LIVE_DECK_IDS {
+            if let (Some(deck), Some(strip)) = (self.decks.get_mut(id), self.strips.get_mut(id)) {
+                deck.consume_jog(1);
+                let (deck_l, deck_r) = deck.main_tick();
+                let (strip_l, strip_r) = strip.process_main(deck_l, deck_r);
+                mix_l += strip_l;
+                mix_r += strip_r;
+            }
+        }
+        crate::audio::master_output(
+            self.limiter.as_mut(),
+            mix_l * self.master_gain,
+            mix_r * self.master_gain,
+        )
+    }
+}
+
+/// Every event dispatches at a frame. A recorded one carries the output frame the live
+/// engine applied it at; a synthesized one has no live moment to recover, so its
+/// timestamp is the position, converted and not rounded to anything.
+fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &SessionEvent)> {
     let mut timeline: Vec<(usize, &SessionEvent)> = session
         .events
         .iter()
         .map(|ev| {
-            let pos = (ev.elapsed_ms.max(0.0) * sample_rate as f64 / 1000.0).round() as usize;
-            (pos + buffer_latency, ev)
+            let pos = match ev.frame {
+                Some(frame) => frame as usize,
+                None => (ev.elapsed_ms.max(0.0) * sample_rate as f64 / 1000.0).round() as usize,
+            };
+            (pos, ev)
         })
         .collect();
     // A deck_snapshot is initial state; at a shared frame it must apply before
@@ -372,58 +420,54 @@ pub fn render_session(
                 .cmp(&u8::from(b.1.event_type != "deck_snapshot"))
         })
     });
+    timeline
+}
 
-    // Render at least as many frames as the reference, plus a small margin.
-    let total_frames = (reference_len / 2).max(
-        timeline
-            .last()
-            .map(|(p, _)| p + sample_rate as usize)
-            .unwrap_or(0),
-    );
+fn render_timeline(
+    mixer: &mut Mixer,
+    timeline: &[(usize, &SessionEvent)],
+    total_frames: usize,
+) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
-    let mut limiter = LimiterState::new(sample_rate as f32);
-
-    let mut ev_idx = 0;
+    let mut next_event = 0;
     let mut frame = 0usize;
 
     while frame < total_frames {
-        let chunk_end = (frame + CHUNK).min(total_frames);
-
-        // Dispatch events whose position falls before this chunk's end.
-        while ev_idx < timeline.len() && timeline[ev_idx].0 < chunk_end {
-            if let Some(cmd) = timeline[ev_idx].1.command() {
-                apply_event(
-                    cmd,
-                    &mut decks,
-                    &mut strips,
-                    &mut master_gain,
-                    &mut xfader_position,
-                    sample_rate,
-                )?;
+        while next_event < timeline.len() && timeline[next_event].0 <= frame {
+            if let Some(cmd) = timeline[next_event].1.command() {
+                mixer.apply(cmd)?;
             }
-            ev_idx += 1;
+            next_event += 1;
         }
 
-        for f in frame..chunk_end {
-            let mut mix_l = 0.0f32;
-            let mut mix_r = 0.0f32;
-            for id in crate::audio::LIVE_DECK_IDS {
-                if let (Some(deck), Some(strip)) = (decks.get_mut(id), strips.get_mut(id)) {
-                    let (l, r) = deck.main_tick();
-                    let (pl, pr) = strip.process_main(l, r);
-                    mix_l += pl;
-                    mix_r += pr;
-                }
-            }
-            let (lim_l, lim_r) = limiter.process(mix_l * master_gain, mix_r * master_gain);
-            output[f * 2] = lim_l;
-            output[f * 2 + 1] = lim_r;
+        let chunk_end = timeline
+            .get(next_event)
+            .map_or(total_frames, |(pos, _)| *pos)
+            .min(total_frames);
+
+        for output_frame in frame..chunk_end {
+            let (l, r) = mixer.tick();
+            output[output_frame * 2] = l;
+            output[output_frame * 2 + 1] = r;
         }
 
         frame = chunk_end;
     }
 
     Ok(output)
+}
+
+pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<Vec<f32>, String> {
+    let mut mixer = Mixer::new(session, &request)?;
+    let timeline = build_timeline(session, request.sample_rate);
+
+    // Plus a second of tail so a decay is never truncated.
+    let tail_from = timeline.last().map_or(0, |(pos, _)| *pos);
+    let total_frames = request
+        .min_frames
+        .max(tail_from + request.sample_rate as usize);
+
+    render_timeline(&mut mixer, &timeline, total_frames)
 }
 
 fn resolve_xfader_gains(strips: &mut HashMap<String, ChannelStrip>, position: f32) {
@@ -575,7 +619,15 @@ mod golden {
         let source = source_wav_path();
         let session: SessionFile =
             serde_json::from_str(&session_json(&source)).expect("parse golden session");
-        render_session(&session, SAMPLE_RATE, 0).expect("render golden session")
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render golden session")
     }
 
     fn probes(rendered: &[f32]) -> Vec<[f32; 2]> {
@@ -585,122 +637,121 @@ mod golden {
             .collect()
     }
 
-    const EXPECTED_FRAMES: usize = 110762;
+    const EXPECTED_FRAMES: usize = 110250;
 
     #[rustfmt::skip]
     const EXPECTED: &[[f32; 2]] = &[
-    [0.000000000e0, 0.000000000e0],
-    [0.000000000e0, 0.000000000e0],
-    [0.000000000e0, 0.000000000e0],
-    [-2.451000959e-1, 5.901873484e-2],
-    [-2.505692542e-1, 3.483803570e-1],
-    [4.144902229e-1, 1.363246739e-1],
-    [2.867051363e-1, -6.976687163e-2],
-    [3.088264167e-1, 4.218139946e-1],
-    [-4.852249473e-2, -3.039745092e-1],
-    [2.889249027e-1, -4.354272783e-2],
-    [2.175512761e-1, 8.366455138e-2],
-    [7.661589980e-2, 7.354977727e-2],
-    [-3.339681923e-1, -1.062664986e-1],
-    [6.372825056e-2, -4.276291728e-1],
-    [2.327685058e-1, -4.337161183e-1],
-    [-1.450516731e-1, -2.980370224e-1],
-    [3.238647580e-1, -1.438434273e-1],
-    [2.921864092e-1, 1.848343611e-1],
-    [-1.533872038e-1, 1.448842138e-1],
-    [3.356818557e-1, -1.758697033e-1],
-    [3.726332188e-1, -1.758898348e-1],
-    [2.787356377e-1, -1.152877510e-1],
-    [1.496326029e-1, 1.740391999e-1],
-    [5.103135016e-3, -5.228232741e-1],
-    [6.187922135e-2, -7.287115441e-4],
-    [-2.032785118e-1, -2.200358361e-1],
-    [-1.169534773e-1, -3.876072764e-1],
-    [-4.612441957e-1, 1.024869755e-1],
-    [1.054645702e-2, -1.027540639e-1],
-    [-9.422796965e-2, -2.121517062e-2],
-    [7.987920195e-2, -2.011877857e-2],
-    [-5.580013618e-2, -2.091827430e-2],
-    [-5.914475769e-3, -1.056312025e-2],
-    [2.967280569e-3, -4.243732989e-2],
-    [-1.239206363e-2, 5.251218006e-2],
-    [-7.242294494e-3, -9.063800797e-3],
-    [8.643057663e-4, -1.297821291e-2],
-    [-1.833692379e-2, 4.707301408e-2],
-    [6.107360870e-2, -6.488546729e-3],
-    [-5.615364015e-2, -1.694514230e-2],
-    [2.090674639e-2, -6.082290318e-3],
-    [4.188980907e-2, -2.861808753e-3],
-    [-4.320310056e-2, -1.394836977e-2],
-    [5.384303629e-3, -4.473705590e-2],
-    [-2.854429185e-2, 3.116499633e-2],
-    [1.272700727e-2, 2.822212316e-2],
-    [-5.851341411e-2, -3.880524263e-2],
-    [1.213700883e-2, -2.658736426e-3],
-    [5.584542081e-2, 7.480273489e-3],
-    [1.773027703e-2, 8.946559392e-3],
-    [-5.455503985e-2, -1.206981577e-2],
-    [-3.180675954e-2, 6.665207446e-2],
-    [-2.896897681e-2, -1.679952256e-2],
-    [-3.488714993e-2, -1.414723694e-2],
-    [-6.142280623e-2, -3.337088600e-2],
-    [-1.985147409e-2, 2.203846350e-2],
-    [-5.709733348e-3, -7.426121086e-2],
-    [3.124684654e-2, 4.818338901e-2],
-    [-3.373233601e-3, -2.613295987e-2],
-    [-1.581236161e-2, -2.028466575e-2],
-    [3.744208720e-3, 1.403369103e-2],
-    [9.827684611e-3, 1.581091993e-2],
-    [1.561063109e-3, -8.332787082e-3],
-    [-1.586777344e-2, 1.346421801e-2],
-    [2.419789135e-2, -5.017070100e-3],
-    [-2.460696269e-3, 1.853706432e-3],
-    [-4.308318254e-3, -3.021943197e-2],
-    [-1.492889714e-4, 1.163298512e-4],
-    [-8.061145067e-13, 1.532258803e-12],
-    [2.539761297e-20, 1.171367012e-21],
-    [7.659263055e-28, -2.893192148e-28],
-    [1.295160451e-35, -6.732960296e-36],
-    [5.465064011e-44, -7.847271400e-44],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
-    [-4.091791516e-43, 1.401298464e-45],
+        [0e0, 0e0],
+        [0e0, 0e0],
+        [0e0, 0e0],
+        [-3.2688314e-1, -2.8689215e-1],
+        [-1.7820081e-1, -1.3198644e-1],
+        [-2.9432967e-1, 1.796442e-1],
+        [2.6306394e-1, -3.1698087e-1],
+        [2.7785844e-1, 2.5995547e-1],
+        [1.19956106e-1, 9.051184e-2],
+        [-3.4444642e-1, -1.9433258e-1],
+        [-1.1272958e-1, -1.5034916e-1],
+        [-4.34953e-2, 4.0885064e-1],
+        [-4.0797862e-1, 1.0387305e-1],
+        [-3.1113583e-1, 4.1604045e-1],
+        [9.453289e-2, 3.988101e-1],
+        [2.4684455e-1, -1.467382e-1],
+        [-1.2649426e-1, -4.1618858e-2],
+        [8.4187895e-2, -4.5606866e-2],
+        [4.0311837e-1, -1.5946354e-1],
+        [2.6211578e-1, 1.403633e-1],
+        [-5.1981694e-1, -3.8707575e-1],
+        [1.0013949e-1, 3.0669987e-1],
+        [-3.1847298e-1, -2.9300603e-1],
+        [6.624613e-1, -2.8951975e-2],
+        [-5.504219e-1, 3.366386e-1],
+        [2.4361841e-1, -1.8195681e-1],
+        [-2.7261797e-1, -2.1407054e-1],
+        [-2.4786117e-2, 3.9481632e-2],
+        [2.378092e-1, 4.168314e-2],
+        [-3.867634e-2, -7.499512e-2],
+        [-5.4630734e-2, 6.265101e-2],
+        [5.2529544e-2, -1.5084036e-1],
+        [-6.830194e-2, -3.1637726e-3],
+        [3.210717e-2, 3.8821388e-2],
+        [8.302816e-3, 6.4336704e-3],
+        [8.7451e-3, 4.4180702e-2],
+        [4.9616005e-3, 4.516171e-2],
+        [1.9346999e-2, -2.8697213e-2],
+        [-2.9477507e-3, 1.2615366e-3],
+        [2.565301e-2, -3.6690456e-3],
+        [5.347026e-2, 1.29902195e-2],
+        [7.1496926e-3, -3.238475e-2],
+        [4.7561888e-2, 2.7933057e-2],
+        [4.0670508e-3, 7.650873e-2],
+        [3.1063432e-2, 2.1795638e-2],
+        [5.6275995e-3, -9.213159e-3],
+        [4.4673537e-3, 1.6097106e-2],
+        [-1.9113488e-2, -8.832177e-3],
+        [2.0083334e-2, 7.1130255e-3],
+        [1.5871154e-2, 2.5810203e-2],
+        [-5.017438e-3, -3.8550207e-3],
+        [-8.932088e-2, 1.9584265e-2],
+        [-5.773527e-2, 3.852888e-3],
+        [1.2124234e-1, 4.413637e-2],
+        [-9.257765e-3, -1.9677222e-2],
+        [1.3516799e-2, 3.6217444e-2],
+        [9.1687925e-3, -2.2575619e-2],
+        [-9.23872e-3, 5.0417304e-2],
+        [1.373919e-2, 4.3017273e-3],
+        [1.1392089e-2, 8.7756e-4],
+        [2.932046e-2, -1.0795273e-2],
+        [6.4321345e-4, -1.2843515e-2],
+        [2.978315e-3, 6.5846095e-4],
+        [-1.1329926e-2, -5.4054824e-3],
+        [-2.035909e-2, -3.287505e-2],
+        [1.6288932e-2, 2.4078498e-2],
+        [-1.2516787e-2, -2.0530168e-3],
+        [7.496227e-8, 2.7248444e-8],
+        [1.6613806e-15, 3.6057335e-16],
+        [2.0601945e-23, 1.8120938e-24],
+        [1.6220977e-31, -2.627784e-32],
+        [2.61746e-40, -8.79141e-40],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
+        [4.26e-43, -4.04e-43],
     ];
 
     #[test]
@@ -823,8 +874,15 @@ pub(crate) mod corpus {
 
     pub(super) fn digest_of(name: &str, json: &str) -> Digest {
         let session = parse(name, json);
-        let rendered = render_session(&session, SAMPLE_RATE, 0)
-            .unwrap_or_else(|err| panic!("{name}: render failed: {err}"));
+        let rendered = render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .unwrap_or_else(|err| panic!("{name}: render failed: {err}"));
 
         let frames = rendered.len() / 2;
         let peak = rendered.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
@@ -846,10 +904,10 @@ pub(crate) mod corpus {
 
     #[rustfmt::skip]
     const DIGESTS: &[(&str, Digest)] = &[
-    ("transport", Digest { frames: 146042, peak: 4.050964117e-1, rms: 1.623620540e-1, probes: [1.472007632e-1, -3.464962840e-1, 0.000000000e0, 1.398182660e-1, 2.248586267e-1, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
-    ("loops", Digest { frames: 176912, peak: 3.812676072e-1, rms: 1.841667891e-1, probes: [-2.260529250e-1, -2.055428736e-2, 1.592096984e-1, -2.008791417e-1, -3.016780913e-1, 1.546460688e-1, 0.000000000e0, 0.000000000e0] }),
-    ("mixer", Digest { frames: 154862, peak: 8.452718854e-1, rms: 1.412521601e-1, probes: [-1.562566310e-1, -1.870270371e-1, 7.054805011e-2, 2.928561844e-5, -1.448095292e-1, -1.325848047e-3, -2.185082994e-18, 1.177177433e-29] }),
-    ("rate_and_multideck", Digest { frames: 146042, peak: 6.129323840e-1, rms: 1.628303677e-1, probes: [7.014070451e-2, 1.297436953e-1, 1.324779540e-2, 9.184795618e-2, -3.289961070e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+    ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+    ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
+    ("mixer", Digest { frames: 154350, peak: 8.726367950e-1, rms: 1.416834742e-1, probes: [2.880797386e-1, -1.891948432e-1, 1.530065667e-2, 5.541073187e-5, -3.012379408e-1, 2.342810482e-2, 5.901104008e-18, -1.350032203e-29] }),
+    ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.672426015e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
     #[test]
@@ -917,7 +975,15 @@ mod param_addressing {
         let json = format!(r#"{{"version":2,"events":[{events}]}}"#)
             .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&json).expect("parse session");
-        render_session(&session, SAMPLE_RATE, 0).expect("render session")
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render session")
     }
 
     const PREAMBLE: &str = r#"
@@ -994,7 +1060,15 @@ mod param_addressing {
         )
         .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&json).expect("parse session");
-        let error = render_session(&session, SAMPLE_RATE, 0).expect_err("should refuse");
+        let error = render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect_err("should refuse");
         assert!(error.contains("isolator"), "{error}");
     }
 
@@ -1011,7 +1085,15 @@ mod param_addressing {
             )
             .replace("__SOURCE__", &source_wav_path());
             let session: SessionFile = serde_json::from_str(&json).expect("parse session");
-            render_session(&session, SAMPLE_RATE, 0).expect("render")
+            render_session(
+                &session,
+                RenderRequest {
+                    sample_rate: SAMPLE_RATE,
+                    min_frames: 0,
+                    limiter: MasterLimiter::On,
+                },
+            )
+            .expect("render")
         };
         // 0.0 is a flat shelf on the classic mixer and a full kill on the
         // isolator, so the same event has to produce different audio.
@@ -1028,7 +1110,15 @@ mod param_addressing {
             .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&stamped).expect("parse session");
         assert_eq!(
-            render_session(&session, SAMPLE_RATE, 0).expect("render"),
+            render_session(
+                &session,
+                RenderRequest {
+                    sample_rate: SAMPLE_RATE,
+                    min_frames: 0,
+                    limiter: MasterLimiter::On
+                }
+            )
+            .expect("render"),
             render(&format!("{PREAMBLE}{STOP}")),
             "the header changed the render"
         );
@@ -1053,5 +1143,456 @@ mod param_addressing {
             window_rms(&quiet),
             window_rms(&full)
         );
+    }
+}
+
+// The .bms records no limiter setting, so the renderer takes it from the caller.
+// It diverged from the live path once by always limiting; these pin both branches.
+#[cfg(test)]
+mod master_limiter {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    // Noise at 0.6 through both shelves at their +6 dB maximum, at full master
+    // gain, drives the mix past full scale.
+    fn loud_session() -> SessionFile {
+        let json = r#"{"version":2,"events":[
+{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512},
+{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"},
+{"elapsed_ms":0,"type":"set_param","slot":"gain","param":"gain","value":1.0},
+{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"eq","param":"low","value":6.0},
+{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"eq","param":"high","value":6.0},
+{"elapsed_ms":50,"type":"play","deck":"A","sec":0.0},
+{"elapsed_ms":400,"type":"stop","deck":"A"}
+]}"#
+        .replace("__SOURCE__", &source_wav_path());
+        serde_json::from_str(&json).expect("parse session")
+    }
+
+    fn peak(rendered: &[f32]) -> f32 {
+        rendered
+            .iter()
+            .fold(0.0f32, |acc, sample| acc.max(sample.abs()))
+    }
+
+    #[test]
+    fn a_disabled_limiter_hard_clips_at_full_scale() {
+        let rendered = render_session(
+            &loud_session(),
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("render");
+        assert_eq!(peak(&rendered), 1.0);
+    }
+
+    #[test]
+    fn an_enabled_limiter_holds_the_mix_under_its_threshold() {
+        let rendered = render_session(
+            &loud_session(),
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render");
+        assert!(
+            peak(&rendered) <= LimiterState::THRESHOLD + 1e-6,
+            "peaked at {}",
+            peak(&rendered)
+        );
+    }
+
+    #[test]
+    fn the_setting_changes_the_rendered_audio() {
+        let limited = render_session(
+            &loud_session(),
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render");
+        let clipped = render_session(
+            &loud_session(),
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("render");
+        assert_ne!(limited, clipped);
+    }
+}
+
+// The recorded output-frame count is the buffer the command actually landed in.
+// Inferring it from the timestamp is out by one buffer whenever a boundary falls
+// between the engine being mutated and the event being logged.
+#[cfg(test)]
+mod recorded_frame {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    fn first_audible_frame(rendered: &[f32]) -> usize {
+        rendered
+            .iter()
+            .position(|sample| *sample != 0.0)
+            .expect("render is silent")
+            / 2
+    }
+
+    fn render_with_play(play_frame: Option<u64>, buffer_size_frames: u32) -> Vec<f32> {
+        let stamp = match play_frame {
+            Some(frame) => format!(r#","frame":{frame}"#),
+            None => String::new(),
+        };
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":{buffer_size_frames}}},
+{{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
+{{"elapsed_ms":50,"type":"play","deck":"A"{stamp}}},
+{{"elapsed_ms":900,"type":"stop","deck":"A"}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn a_stamped_frame_is_used_verbatim() {
+        assert_eq!(
+            first_audible_frame(&render_with_play(Some(7000), 128)),
+            7000
+        );
+    }
+
+    // The stamp records where the command landed, so nothing about it may be
+    // re-derived from the buffer the session happened to run at.
+    #[test]
+    fn a_stamped_frame_ignores_the_buffer_size() {
+        for buffer_size_frames in [64u32, 128, 512, 1024] {
+            assert_eq!(
+                first_audible_frame(&render_with_play(Some(7000), buffer_size_frames)),
+                7000,
+                "buffer {buffer_size_frames}"
+            );
+        }
+    }
+
+    // Guards the two above against a stamp that happens to agree with the timestamp.
+    #[test]
+    fn an_unstamped_event_dispatches_at_its_timestamp() {
+        let nominal = (50.0 * SAMPLE_RATE as f64 / 1000.0).round() as usize;
+        assert_eq!(first_audible_frame(&render_with_play(None, 128)), nominal);
+        assert_ne!(nominal, 7000);
+    }
+}
+
+#[cfg(test)]
+mod jog {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    // 500 ticks at 0.002 s each, bent by JOG_PAUSED_MULTIPLIER on a playing deck:
+    // 500 * 0.002 * 44100 / 100 lands on exactly 441 frames.
+    const EXPECTED_TRAVEL: i64 = 441;
+
+    fn render_with(jog: &str) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512}},
+{{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
+{{"elapsed_ms":50,"type":"play","deck":"A"}}{jog},
+{{"elapsed_ms":2500,"type":"stop","deck":"A"}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    fn best_travel(jogged: &[f32], plain: &[f32], start_frame: usize, frames: usize) -> i64 {
+        let mut best = 0;
+        let mut best_error = f64::INFINITY;
+        for shift in -2000i64..=2000 {
+            let mut error = 0.0;
+            for frame in (0..frames).step_by(4) {
+                let left = jogged[(start_frame + frame) * 2];
+                let index = (start_frame + frame) as i64 + shift;
+                let right = plain[index as usize * 2];
+                error += f64::from(left - right).powi(2);
+            }
+            if error < best_error {
+                best_error = error;
+                best = shift;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn a_jog_on_a_playing_deck_moves_the_render_by_its_travel() {
+        let jogged = render_with(r#",{"elapsed_ms":200,"type":"jog","deck":"A","ticks":500}"#);
+        let plain = render_with("");
+        let settled = (SAMPLE_RATE as usize) * 3 / 4;
+        assert_eq!(
+            best_travel(&jogged, &plain, settled, 16384),
+            EXPECTED_TRAVEL
+        );
+    }
+}
+
+#[cfg(test)]
+mod jog_block_size {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    fn render_at_buffer(buffer_size_frames: u32) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":{buffer_size_frames}}},
+{{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
+{{"elapsed_ms":50,"type":"play","deck":"A"}},
+{{"elapsed_ms":200,"type":"jog","deck":"A","ticks":500}},
+{{"elapsed_ms":2500,"type":"stop","deck":"A"}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn the_recorded_block_size_does_not_shape_the_wheel() {
+        assert_eq!(render_at_buffer(128), render_at_buffer(1024));
+    }
+}
+
+#[cfg(test)]
+mod live_parity {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+    use crate::audio::RenderTargets;
+
+    const BLOCK: usize = 128;
+    const PLAY_FRAME: usize = 256;
+    const JOG_FRAME: usize = 1280;
+    const SCRUB_FRAME: usize = 256;
+    const SCRUB_PLAY_FRAME: usize = 22_050;
+    const STOP_FRAME: usize = 22_050;
+    // Past `SETTLE_SECONDS` of silence, so the live path skips whole blocks before this.
+    const RESUME_FRAME: usize = 88_200;
+    const TICKS: f64 = 500.0;
+    const BLOCKS: usize = 900;
+
+    const SCHEDULES: [&[usize]; 5] = [
+        &[BLOCK],
+        &[117, 118, 118, 117, 118],
+        &[64],
+        &[512],
+        &[61, 512, 128, 7, 1024, 199],
+    ];
+
+    #[derive(Clone, Copy)]
+    enum Cue {
+        Play,
+        Stop,
+        Jog,
+    }
+
+    // One shared buffer across the decks rather than a scratch each: `render_block` accumulates
+    // into it, which is the same sequence of additions `mix_frame` performs on the device buffer.
+    fn live_render(sizes: &[usize], script: &[(usize, &str, Cue)]) -> (Vec<f32>, Vec<usize>) {
+        let mut fired = vec![0usize; script.len()];
+        let mut next_cue = 0usize;
+        let path = source_wav_path();
+        let (raw, channels, native_rate) = crate::audio::decode_audio(&path).expect("decode");
+        let samples = if native_rate == SAMPLE_RATE {
+            raw
+        } else {
+            crate::audio::resample_linear(&raw, channels, native_rate, SAMPLE_RATE)
+        };
+        let samples = Arc::new(samples);
+        let total_frames = samples.len() / channels;
+
+        let mut channel_pairs: Vec<(&str, DeckState, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
+            .iter()
+            .map(|&id| {
+                let mut deck = DeckState::empty(SAMPLE_RATE);
+                deck.samples = Arc::clone(&samples);
+                deck.channels = channels;
+                deck.device_sample_rate = SAMPLE_RATE;
+                deck.total_frames = total_frames;
+                deck.duration = total_frames as f64 / SAMPLE_RATE as f64;
+                let strip = ChannelStrip::from_manifest(
+                    &session_core::CLASSIC_3BAND_V2,
+                    SAMPLE_RATE as f32,
+                );
+                (id, deck, strip)
+            })
+            .collect();
+
+        let mut limiter = LimiterState::new(SAMPLE_RATE as f32);
+        let mut out = Vec::with_capacity(TOTAL * 2);
+        let mut block_buffer: Vec<f32> = Vec::new();
+
+        let mut frame = 0usize;
+        let mut index = 0usize;
+        while frame < TOTAL {
+            let size = sizes[index % sizes.len()].min(TOTAL - frame);
+            while next_cue < script.len() && frame >= script[next_cue].0 {
+                let (_, id, cue) = script[next_cue];
+                let (_, deck, _) = channel_pairs
+                    .iter_mut()
+                    .find(|(pair_id, _, _)| *pair_id == id)
+                    .expect("scripted deck");
+                match cue {
+                    Cue::Play => deck.is_playing = true,
+                    Cue::Stop => deck.is_playing = false,
+                    Cue::Jog => deck.jog_pending += TICKS,
+                }
+                fired[next_cue] = frame;
+                next_cue += 1;
+            }
+            block_buffer.clear();
+            block_buffer.resize(size * 2, 0.0);
+            for (_, deck, strip) in channel_pairs.iter_mut() {
+                deck.render_block(
+                    strip,
+                    size,
+                    RenderTargets {
+                        main: Some(&mut block_buffer),
+                        cue: None,
+                    },
+                );
+            }
+            for frame_index in 0..size {
+                let (l, r) = crate::audio::master_output(
+                    Some(&mut limiter),
+                    block_buffer[frame_index * 2] * crate::audio::DEFAULT_MASTER_GAIN,
+                    block_buffer[frame_index * 2 + 1] * crate::audio::DEFAULT_MASTER_GAIN,
+                );
+                out.push(l);
+                out.push(r);
+            }
+            frame += size;
+            index += 1;
+        }
+        (out, fired)
+    }
+
+    const TOTAL: usize = BLOCKS * BLOCK;
+
+    fn offline_render(script: &[(usize, &str, Cue)], fired: &[usize]) -> Vec<f32> {
+        let mut events = vec![format!(
+            r#"{{"elapsed_ms":0,"frame":0,"type":"recording_start","buffer_size_frames":{BLOCK}}}"#
+        )];
+        for id in crate::audio::LIVE_DECK_IDS {
+            events.push(format!(
+                r#"{{"elapsed_ms":0,"frame":0,"type":"load_track","deck":"{id}","path":"__SOURCE__"}}"#
+            ));
+        }
+        for ((_, id, cue), frame) in script.iter().zip(fired) {
+            events.push(match cue {
+                Cue::Play => {
+                    format!(r#"{{"elapsed_ms":1,"frame":{frame},"type":"play","deck":"{id}"}}"#)
+                }
+                Cue::Stop => {
+                    format!(r#"{{"elapsed_ms":1,"frame":{frame},"type":"stop","deck":"{id}"}}"#)
+                }
+                Cue::Jog => format!(
+                    r#"{{"elapsed_ms":1,"frame":{frame},"type":"jog","deck":"{id}","ticks":{TICKS}}}"#
+                ),
+            });
+        }
+        let json = format!(
+            r#"{{"version":2,"mixer":{header},"events":[{events}]}}"#,
+            header =
+                serde_json::to_string(&session_core::CLASSIC_3BAND_V2.header()).expect("header"),
+            events = events.join(",\n")
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: TOTAL,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    fn assert_parity(script: &[(usize, &str, Cue)]) {
+        for sizes in SCHEDULES {
+            let (live, fired) = live_render(sizes, script);
+            let offline = offline_render(script, &fired);
+            assert_eq!(live, offline[..live.len()], "block schedule {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn the_offline_render_matches_the_live_block_path_at_any_block_length() {
+        assert_parity(&[(PLAY_FRAME, "A", Cue::Play), (JOG_FRAME, "A", Cue::Jog)]);
+    }
+
+    #[test]
+    fn a_resume_after_the_strip_settles_matches_the_live_block_path_at_any_block_length() {
+        assert_parity(&[
+            (PLAY_FRAME, "A", Cue::Play),
+            (STOP_FRAME, "A", Cue::Stop),
+            (RESUME_FRAME, "A", Cue::Play),
+        ]);
+    }
+
+    #[test]
+    fn a_scrub_before_play_matches_the_live_block_path_at_any_block_length() {
+        assert_parity(&[
+            (SCRUB_FRAME, "A", Cue::Jog),
+            (SCRUB_PLAY_FRAME, "A", Cue::Play),
+        ]);
+    }
+
+    #[test]
+    fn two_decks_summed_and_limited_match_the_live_block_path_at_any_block_length() {
+        assert_parity(&[
+            (PLAY_FRAME, "A", Cue::Play),
+            (JOG_FRAME, "B", Cue::Play),
+            (SCRUB_PLAY_FRAME, "A", Cue::Jog),
+            (STOP_FRAME + BLOCK, "B", Cue::Jog),
+            (RESUME_FRAME, "A", Cue::Stop),
+        ]);
     }
 }

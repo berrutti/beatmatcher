@@ -739,7 +739,7 @@ fn crossfader_start_events(
 ) -> Vec<(&'static str, serde_json::Value)> {
     let mut events = vec![(
         "set_param",
-        serde_json::json!({ "slot": "xfader", "param": "position", "value": position }),
+        serde_json::json!({ "slot": "xfader", "param": "position", "value": crate::f32_json(position) }),
     )];
     for (deck, assign) in assigns {
         if *assign == session_core::XfaderAssign::Thru {
@@ -749,6 +749,37 @@ fn crossfader_start_events(
             "set_xfader_assign",
             serde_json::json!({ "deck": deck, "assign": assign.as_str() }),
         ));
+    }
+    events
+}
+
+/// Where a deck's strip stood when recording started. A knob moved before the first event
+/// is otherwise lost, and a reader replays the manifest default in its place. Params
+/// already at their default are skipped, as `crossfader_start_events` skips thru.
+fn strip_start_events(
+    manifest: &'static session_core::MixerManifest,
+    deck_id: &'static str,
+    read: impl Fn(&str, &str) -> Option<f32>,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = Vec::new();
+    for slot in manifest.strip {
+        for param in slot.params {
+            let Some(value) = read(slot.slot, param.id) else {
+                continue;
+            };
+            if f64::from(value) == param.default {
+                continue;
+            }
+            events.push((
+                "set_param",
+                serde_json::json!({
+                    "deck": deck_id,
+                    "slot": slot.slot,
+                    "param": param.id,
+                    "value": crate::f32_json(value),
+                }),
+            ));
+        }
     }
     events
 }
@@ -764,6 +795,108 @@ fn jog_speed_start_event(
     )
 }
 
+/// 0 means "driver default", which is what the offline renderer falls back to.
+fn recorded_buffer_frames(setting: u32) -> u32 {
+    match setting {
+        0 => crate::audio::DEFAULT_BUFFER_FRAMES,
+        frames => frames,
+    }
+}
+
+fn xfader_assigns(
+    audio: &crate::audio::AppAudio,
+) -> Vec<(&'static str, session_core::XfaderAssign)> {
+    crate::audio::LIVE_DECK_IDS
+        .into_iter()
+        .map(|deck_id| {
+            let assign = audio
+                .strip(deck_id)
+                .map(|strip| {
+                    strip
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .xfader_assign
+                })
+                .unwrap_or_default();
+            (deck_id, assign)
+        })
+        .collect()
+}
+
+/// None for a deck with nothing loaded, which has no state worth restoring.
+fn deck_snapshot_event(
+    audio: &crate::audio::AppAudio,
+    deck_id: &'static str,
+) -> Option<(&'static str, serde_json::Value)> {
+    let arc = audio.deck(deck_id)?;
+    // Read the strip gain before locking the deck so the cue sheet
+    // knows whether a deck already playing at record start is audible.
+    let gain = audio
+        .strip(deck_id)
+        .map(|strip| {
+            strip
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .target_gain()
+        })
+        .unwrap_or(1.0);
+    let deck = arc.lock().unwrap_or_else(|e| e.into_inner());
+    let path = deck.loaded_path.as_ref()?;
+    let sample_rate = deck.device_sample_rate as f64;
+    Some((
+        "deck_snapshot",
+        serde_json::json!({
+            "deck": deck_id,
+            "path": path,
+            "position_sec": deck.main_pos / sample_rate,
+            "cue_point_sec": deck.cue_point / sample_rate,
+            "is_playing": deck.is_playing,
+            "gain": gain,
+            "bpm": deck.bpm,
+            "playback_rate": deck.playback_rate,
+            "loop_active": deck.loop_active,
+            "loop_end_sec": deck.loop_end / sample_rate,
+        }),
+    ))
+}
+
+/// Everything a session has to say about the state it started from, in the order it
+/// is written. A reader applies all of it before the first performed move.
+fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = vec![
+        (
+            "recording_start",
+            serde_json::json!({ "buffer_size_frames": recorded_buffer_frames(audio.get_buffer_frames()) }),
+        ),
+        // A setting rather than a performed move, so nothing else in the
+        // session would ever say which curve the fader moves were played on.
+        (
+            "set_fader_curve",
+            serde_json::json!({ "curve": audio.monitor.fader_curve().as_str() }),
+        ),
+        jog_speed_start_event(audio.jog_rotation_speed()),
+    ];
+    events.extend(crossfader_start_events(
+        audio.monitor.xfader_position(),
+        &xfader_assigns(audio),
+    ));
+    for deck_id in crate::audio::LIVE_DECK_IDS {
+        let Some(arc) = audio.strip(deck_id) else {
+            continue;
+        };
+        let strip = arc.lock().unwrap_or_else(|e| e.into_inner());
+        events.extend(strip_start_events(audio.mixer(), deck_id, |slot, param| {
+            strip.param(slot, param)
+        }));
+    }
+    events.extend(
+        crate::audio::LIVE_DECK_IDS
+            .into_iter()
+            .filter_map(|deck_id| deck_snapshot_event(audio, deck_id)),
+    );
+    events
+}
+
 #[tauri::command]
 pub(crate) fn start_recording(
     state: tauri::State<'_, AppState>,
@@ -771,92 +904,24 @@ pub(crate) fn start_recording(
     use_flac: bool,
     record_session: bool,
 ) -> Result<(), String> {
-    {
-        let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
-        *session = if record_session {
-            Some(crate::SessionLogger::new(state.audio.mixer()))
-        } else {
-            None
-        };
-        if let Some(logger) = session.as_mut() {
-            // 0 means "driver default"; macOS Core Audio default is 512 frames.
-            let buf = state.audio.get_buffer_frames();
-            let buffer_size_frames = if buf == 0 { 512 } else { buf };
-            logger.log(
-                "recording_start",
-                serde_json::json!({
-                    "buffer_size_frames": buffer_size_frames,
-                }),
-            );
-            // A setting rather than a performed move, so nothing else in the
-            // session would ever say which curve the fader moves were played on.
-            logger.log(
-                "set_fader_curve",
-                serde_json::json!({ "curve": state.audio.monitor.fader_curve().as_str() }),
-            );
-            let (speed_event, speed_payload) =
-                jog_speed_start_event(state.audio.jog_rotation_speed());
-            logger.log(speed_event, speed_payload);
-            let assigns: Vec<(&str, session_core::XfaderAssign)> = crate::audio::LIVE_DECK_IDS
-                .into_iter()
-                .map(|deck_id| {
-                    let assign = state
-                        .audio
-                        .strip(deck_id)
-                        .map(|strip| {
-                            strip
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .xfader_assign
-                        })
-                        .unwrap_or_default();
-                    (deck_id, assign)
-                })
-                .collect();
-            for (event_type, payload) in
-                crossfader_start_events(state.audio.monitor.xfader_position(), &assigns)
-            {
-                logger.log(event_type, payload);
-            }
-            for deck_id in crate::audio::LIVE_DECK_IDS {
-                let Some(arc) = state.audio.deck(deck_id) else {
-                    continue;
-                };
-                // Read the strip gain before locking the deck so the cue sheet
-                // knows whether a deck already playing at record start is audible.
-                let gain = state
-                    .audio
-                    .strip(deck_id)
-                    .map(|strip| {
-                        strip
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .target_gain()
-                    })
-                    .unwrap_or(1.0);
-                let deck_state = arc.lock().unwrap_or_else(|e| e.into_inner());
-                let Some(ref path) = deck_state.loaded_path else {
-                    continue;
-                };
-                logger.log(
-                    "deck_snapshot",
-                    serde_json::json!({
-                        "deck": deck_id,
-                        "path": path,
-                        "position_sec": deck_state.main_pos / deck_state.device_sample_rate as f64,
-                        "cue_point_sec": deck_state.cue_point / deck_state.device_sample_rate as f64,
-                        "is_playing": deck_state.is_playing,
-                        "gain": gain,
-                        "bpm": deck_state.bpm,
-                        "playback_rate": deck_state.playback_rate,
-                        "loop_active": deck_state.loop_active,
-                        "loop_end_sec": deck_state.loop_end / deck_state.device_sample_rate as f64,
-                    }),
-                );
-            }
+    // Armed before anything is logged, so every event is timed against the first
+    // captured frame rather than against the JSON written on the way there.
+    state.audio.start_recording(bit_depth, use_flac)?;
+
+    let mut session = state.session.lock().unwrap_or_else(|e| e.into_inner());
+    *session = record_session.then(|| {
+        crate::SessionLogger::new(
+            state.audio.mixer(),
+            state.audio.monitor.output_frames_handle(),
+            state.audio.monitor.capture_start_handle(),
+        )
+    });
+    if let Some(logger) = session.as_mut() {
+        for (event_type, payload) in start_events(&state.audio) {
+            logger.log(event_type, payload);
         }
     }
-    state.audio.start_recording(bit_depth, use_flac)
+    Ok(())
 }
 
 #[tauri::command]
@@ -1090,6 +1155,11 @@ pub(crate) async fn render_session_to_file(
         .unwrap_or_else(|e| e.into_inner())
         .get(&session_path)
         .cloned();
+    let limiter = if state.audio.monitor.limiter_enabled() {
+        crate::offline_render::MasterLimiter::On
+    } else {
+        crate::offline_render::MasterLimiter::Off
+    };
     tokio::task::spawn_blocking(move || {
         let session = match cached {
             Some(cached_session) => cached_session,
@@ -1103,7 +1173,14 @@ pub(crate) async fn render_session_to_file(
             }
         };
         let sample_rate = 44100u32;
-        let rendered = crate::offline_render::render_session(&session, sample_rate, 0)?;
+        let rendered = crate::offline_render::render_session(
+            &session,
+            crate::offline_render::RenderRequest {
+                sample_rate,
+                min_frames: 0,
+                limiter,
+            },
+        )?;
         let write_result = if use_flac {
             crate::offline_render::write_flac_f32(&output_path, &rendered, sample_rate)
         } else {
@@ -1126,7 +1203,7 @@ pub(crate) fn save_session(path: String, content: String) -> Result<(), String> 
 #[tauri::command]
 pub(crate) fn set_master_gain(state: tauri::State<'_, AppState>, gain: f32) {
     state.audio.monitor.set_master_gain(gain);
-    state.log_param(None, "gain", "gain", gain as f64);
+    state.log_param(None, "gain", "gain", gain);
 }
 
 #[tauri::command]
@@ -1410,6 +1487,77 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "set_param");
+    }
+
+    // Both sides have to resolve "driver default" to the same number, or the session
+    // records one buffer size and a reader assumes another.
+    #[test]
+    fn a_default_buffer_setting_records_the_shared_default() {
+        assert_eq!(
+            recorded_buffer_frames(0),
+            crate::audio::DEFAULT_BUFFER_FRAMES
+        );
+        assert_eq!(recorded_buffer_frames(128), 128);
+        assert_eq!(recorded_buffer_frames(1024), 1024);
+    }
+
+    // A filter engaged before the first event was replayed bypassed, so a whole sweep
+    // was inaudible in the render while the recording had it 17 dB down.
+    #[test]
+    fn record_start_stamps_a_filter_that_was_already_engaged() {
+        let events =
+            strip_start_events(&session_core::CLASSIC_3BAND_V2, "A", |slot, param| {
+                match (slot, param) {
+                    ("filter", "active") => Some(1.0),
+                    _ => None,
+                }
+            });
+        assert_eq!(
+            events,
+            vec![(
+                "set_param",
+                serde_json::json!({ "deck": "A", "slot": "filter", "param": "active", "value": 1.0 })
+            )]
+        );
+    }
+
+    #[test]
+    fn record_start_stamps_every_moved_strip_param() {
+        let events =
+            strip_start_events(&session_core::CLASSIC_3BAND_V2, "B", |slot, param| {
+                match (slot, param) {
+                    ("eq", "low") => Some(-6.0),
+                    ("filter", "value") => Some(0.4),
+                    ("fader", "gain") => Some(0.75),
+                    _ => None,
+                }
+            });
+        let moved: Vec<_> = events
+            .iter()
+            .map(|(_, payload)| (payload["slot"].clone(), payload["param"].clone()))
+            .collect();
+        assert_eq!(
+            moved,
+            vec![
+                (serde_json::json!("eq"), serde_json::json!("low")),
+                (serde_json::json!("filter"), serde_json::json!("value")),
+                (serde_json::json!("fader"), serde_json::json!("gain")),
+            ]
+        );
+    }
+
+    // A strip nobody touched would otherwise head every session with inert events,
+    // which is the reason crossfader_start_events skips thru.
+    #[test]
+    fn an_untouched_strip_stamps_nothing() {
+        let manifest = &session_core::CLASSIC_3BAND_V2;
+        let events = strip_start_events(manifest, "A", |slot, param| {
+            manifest
+                .strip_slot(slot)
+                .and_then(|entry| entry.param(param))
+                .map(|descriptor| descriptor.default as f32)
+        });
+        assert!(events.is_empty(), "{events:?}");
     }
 
     // Compile-time guard for the SendStream SAFETY contract (audio/stream.rs):

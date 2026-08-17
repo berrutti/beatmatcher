@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import { DECKS_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
@@ -106,7 +107,7 @@ export const useMixerStore = defineStore('mixer', () => {
     const spec = deckParams[key];
     if (!spec) return;
     params[deckId][key] = Math.max(spec.min, Math.min(spec.max, value));
-    invoke('set_deck_param', {
+    call('set_deck_param', {
       deck: deckId,
       slot: spec.slot,
       param: spec.param,
@@ -146,14 +147,14 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function setMasterGain(gain: number) {
     masterGain.value = Math.max(0, Math.min(1, gain));
-    invoke('set_master_gain', { gain: masterGain.value });
+    call('set_master_gain', { gain: masterGain.value });
   }
 
   const cueMix = ref(0);
 
   function setCueMix(mix: number) {
     cueMix.value = Math.max(0, Math.min(1, mix));
-    invoke('set_cue_mix', { mix: cueMix.value });
+    call('set_cue_mix', { mix: cueMix.value });
   }
 
   const swarmMode = ref(false);
@@ -198,12 +199,12 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function setXfaderPosition(position: number) {
     xfaderPosition.value = Math.max(-1, Math.min(1, position));
-    invoke('set_xfader_position', { position: xfaderPosition.value });
+    call('set_xfader_position', { position: xfaderPosition.value });
   }
 
   function setXfaderAssign(deckId: DeckId, assign: XfaderAssign) {
     xfaderAssign[deckId] = assign;
-    invoke('set_xfader_assign', { deck: deckId, assign });
+    call('set_xfader_assign', { deck: deckId, assign });
   }
 
   // The UI has no button for `thru`: the two sides are one exclusive pair, so
@@ -214,7 +215,7 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function setCueActive(deckId: DeckId, active: boolean) {
     cueActive[deckId] = active;
-    invoke('set_cue_active', { deck: deckId, active });
+    call('set_cue_active', { deck: deckId, active });
   }
 
   function paramDefault(key: string): number {
@@ -289,7 +290,7 @@ export const useMixerStore = defineStore('mixer', () => {
       setXfaderAssign(deckId, 'thru');
       for (const key of Object.keys(deckParams)) setParam(deckId, key, paramDefault(key));
       cueActive[deckId] = false;
-      invoke('set_cue_active', { deck: deckId, active: false });
+      call('set_cue_active', { deck: deckId, active: false });
     }
     engageFiltersIfPreferred();
   }
@@ -345,7 +346,7 @@ export const useMixerStore = defineStore('mixer', () => {
         if (newCueOffset !== null) {
           cueChannelOffset.value = newCueOffset;
           try {
-            await invoke('set_cue_device', { deviceId, channelOffset: newCueOffset });
+            await call('set_cue_device', { deviceId, channelOffset: newCueOffset });
           } catch {
             /* best-effort */
           }
@@ -353,7 +354,7 @@ export const useMixerStore = defineStore('mixer', () => {
       } else {
         cueDeviceId.value = '';
         try {
-          await invoke('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value });
+          await call('set_cue_device', { deviceId: '', channelOffset: cueChannelOffset.value });
         } catch {
           /* best-effort */
         }
@@ -362,18 +363,18 @@ export const useMixerStore = defineStore('mixer', () => {
     mainDeviceId.value = deviceId;
     if (channelOffset !== undefined) mainChannelOffset.value = channelOffset;
     try {
-      await invoke('set_main_device', { deviceId, channelOffset: mainChannelOffset.value });
+      await call('set_main_device', { deviceId, channelOffset: mainChannelOffset.value });
     } catch (e) {
       deviceError.value = `Master out: ${e}`;
     }
   }
 
   async function getDeckLevels(): Promise<Record<string, [number, number]>> {
-    return invoke<Record<string, [number, number]>>('get_deck_levels');
+    return call('get_deck_levels');
   }
 
   async function getMasterLevel(): Promise<[number, number]> {
-    return invoke<[number, number]>('get_master_level');
+    return call('get_master_level');
   }
 
   const isRecording = ref(false);
@@ -387,7 +388,7 @@ export const useMixerStore = defineStore('mixer', () => {
     isRecording.value = true;
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
-    await invoke('start_recording', {
+    await call('start_recording', {
       bitDepth: fmt === 'wav-16' ? 16 : 32,
       useFlac: fmt === 'flac',
       // The cue sheet is derived from the event log, so writing one requires
@@ -397,7 +398,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function stopRecording(): Promise<string> {
-    const tempPath = await invoke<string>('stop_recording');
+    const tempPath = await call('stop_recording');
     isRecording.value = false;
     return tempPath;
   }
@@ -406,15 +407,15 @@ export const useMixerStore = defineStore('mixer', () => {
     const settings = useSettingsStore();
     const fmt = settings.recordingFormat;
     const dialogFormat = fmt === 'flac' ? 'flac' : fmt === 'session' ? 'session' : 'wav';
-    return invoke<string | null>('pick_save_path', { format: dialogFormat, baseName });
+    return call('pick_save_path', { format: dialogFormat, baseName });
   }
 
   async function saveRecording(src: string, dest: string): Promise<void> {
     const settings = useSettingsStore();
     if (settings.recordingFormat === 'session') {
-      await invoke('save_bms_only', { src, dest });
+      await call('save_bms_only', { src, dest });
     } else {
-      await invoke('save_recording', {
+      await call('save_recording', {
         src,
         dest,
         writeBms: settings.recordBms,
@@ -424,7 +425,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function discardRecording(path: string): Promise<void> {
-    await invoke('discard_recording', { path });
+    await call('discard_recording', { path });
   }
 
   async function renderSession(
@@ -432,7 +433,7 @@ export const useMixerStore = defineStore('mixer', () => {
     outputPath: string,
     useFlac: boolean
   ): Promise<void> {
-    await invoke('render_session_to_file', {
+    await call('render_session_to_file', {
       sessionPath,
       outputPath,
       useFlac,
@@ -441,7 +442,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
-    return invoke<string | null>('pick_save_path', {
+    return call('pick_save_path', {
       format: useFlac ? 'flac' : 'wav',
       baseName
     });
@@ -461,7 +462,7 @@ export const useMixerStore = defineStore('mixer', () => {
         if (newMainOffset !== null) {
           mainChannelOffset.value = newMainOffset;
           try {
-            await invoke('set_main_device', { deviceId, channelOffset: newMainOffset });
+            await call('set_main_device', { deviceId, channelOffset: newMainOffset });
           } catch {
             /* best-effort */
           }
@@ -469,7 +470,7 @@ export const useMixerStore = defineStore('mixer', () => {
       } else {
         mainDeviceId.value = '';
         try {
-          await invoke('set_main_device', { deviceId: '', channelOffset: mainChannelOffset.value });
+          await call('set_main_device', { deviceId: '', channelOffset: mainChannelOffset.value });
         } catch {
           /* best-effort */
         }
@@ -479,7 +480,7 @@ export const useMixerStore = defineStore('mixer', () => {
     if (channelOffset !== undefined) cueChannelOffset.value = channelOffset;
     if (!deviceId) return;
     try {
-      await invoke('set_cue_device', { deviceId, channelOffset: cueChannelOffset.value });
+      await call('set_cue_device', { deviceId, channelOffset: cueChannelOffset.value });
     } catch (e) {
       deviceError.value = `Cue out: ${e}`;
     }

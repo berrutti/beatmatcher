@@ -42,6 +42,7 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
     deckLanes: {},
     masterLanes: { gain: [], xfader: [] },
     deckNudges: {},
+    deckJog: {},
     waveforms: new Map(),
     playheadMs: 0,
     durationMs: 1000,
@@ -89,6 +90,49 @@ describe('the master row', () => {
     expect(hitsAt(xfader.items, trackX, insideMasterRow)).toContainEqual(
       expect.objectContaining({ target: 'lane', deck: 'master', part: 'xfader' })
     );
+  });
+});
+
+// The wheel lane is a read-only view of recorded gestures, so it must not put a
+// 'lane' hit on the surface: that is the target the draw/splice gesture arms on.
+describe('the jog lane', () => {
+  function jogInput(): SceneInput {
+    return {
+      ...input([]),
+      editMode: true,
+      laneFor: () => 'jog' as LaneKey,
+      deckJog: {
+        A: [
+          { ms: 0, value: 0 },
+          { ms: 500, value: 30 },
+          { ms: 520, value: 0 }
+        ]
+      },
+      deckNudges: { A: [{ startMs: 100, endMs: 300, percent: 4 }] }
+    };
+  }
+
+  it('reports no lane hit anywhere on its surface', () => {
+    const { items, rows } = buildScene(jogInput());
+    const lane = rows[0].lanes[0];
+    const y = lane.top + lane.height / 2;
+
+    const hits = items
+      .map((item) => item.hitTest?.({ x: LABEL_W + 10, y }, vc) ?? null)
+      .filter((hit) => hit !== null);
+
+    expect(hits.every((hit) => hit?.target !== 'lane')).toBe(true);
+  });
+
+  it('still opens the lane picker from the label column', () => {
+    const { items, rows } = buildScene(jogInput());
+    const lane = rows[0].lanes[0];
+
+    const hits = items
+      .map((item) => item.hitTest?.({ x: 4, y: lane.top + lane.height / 2 }, vc) ?? null)
+      .filter((hit) => hit !== null);
+
+    expect(hits).toContainEqual({ target: 'laneDropdown', deck: 'A' });
   });
 });
 

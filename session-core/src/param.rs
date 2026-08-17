@@ -511,6 +511,11 @@ pub const JOG_SHIFT_MULTIPLIER: f64 = 2.0;
 /// in time. The total is unaffected, so only a reader tracking the settle needs it.
 pub const JOG_FILTER_TAU_SEC: f64 = 0.040;
 
+/// How much of a gesture's travel has arrived `elapsed_sec` after the wheel moved.
+pub fn jog_settled_fraction(elapsed_sec: f64) -> f64 {
+    1.0 - (-elapsed_sec / JOG_FILTER_TAU_SEC).exp()
+}
+
 impl JogRotationSpeed {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -539,7 +544,13 @@ impl JogRotationSpeed {
     /// What one logged tick is worth. The engine's filter shapes when this travel
     /// happens and never how much, so the total is reproducible without it.
     pub fn frames_per_tick(self, sample_rate: f64) -> f64 {
-        JOG_SCRUB_SEC_PER_TICK_AT_33 * self.scrub_scale() * sample_rate
+        self.sec_per_tick() * sample_rate
+    }
+
+    /// The sample rate cancels out of `frames_per_tick / sample_rate`, so a reader
+    /// working in track seconds needs no device to ask what a tick was worth.
+    pub fn sec_per_tick(self) -> f64 {
+        JOG_SCRUB_SEC_PER_TICK_AT_33 * self.scrub_scale()
     }
 }
 

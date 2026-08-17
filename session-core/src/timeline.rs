@@ -70,6 +70,8 @@ pub struct LoadedSpan {
 pub struct ClipsBuild {
     pub clips: Vec<Clip>,
     pub loaded_spans: Vec<LoadedSpan>,
+    // Percent deviation from each deck's own rate, nudge and wheel summed as `next_pos` sums them.
+    pub deck_jog: BTreeMap<String, Vec<LanePoint>>,
 }
 
 #[derive(Default)]
@@ -96,6 +98,10 @@ struct DeckState {
     beat_offset_sec: f64,
     // (wall_ms, effective_rate) whenever rate or nudge changed, in event order.
     eff_rate_changes: Vec<(f64, f64)>,
+    // The same instants carrying the deck's own rate, so the wheel's share of the
+    // effective rate can be separated back out for the lane.
+    rate_changes: Vec<(f64, f64)>,
+    jog_impulses: Vec<JogImpulse>,
 }
 
 fn make_deck_state() -> DeckState {
@@ -134,20 +140,9 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
 // `deck.rate` or `deck.jog_hold_factor`.
 fn record_eff_rate(deck: &mut DeckState, ms: f64) {
     deck.eff_rate_changes.push((ms, deck.rate * deck.jog_hold_factor));
+    deck.rate_changes.push((ms, deck.rate));
 }
 
-// Effective rate in force at `ms` (the last recorded change at/before it).
-fn eff_rate_at(changes: &[(f64, f64)], ms: f64) -> f64 {
-    let mut rate = 1.0;
-    for &(t, r) in changes {
-        if t <= ms {
-            rate = r;
-        } else {
-            break;
-        }
-    }
-    rate
-}
 
 // Slice [clip_start_ms, clip_end_ms] at each rate change inside it, integrating
 // the track position forward at each piece's effective rate. The piece track
@@ -163,22 +158,31 @@ fn wave_segments_for(
         return Vec::new();
     }
     let mut bounds = vec![clip_start_ms];
-    for &(t, _) in changes {
-        if t > clip_start_ms && t < clip_end_ms {
-            bounds.push(t);
-        }
-    }
+    bounds.extend(
+        changes
+            .iter()
+            .map(|&(ms, _)| ms)
+            .filter(|&ms| ms > clip_start_ms && ms < clip_end_ms),
+    );
     bounds.push(clip_end_ms);
     bounds.dedup();
 
+    // Walked rather than searched per bound: a wheel-heavy deck contributes a change
+    // every JOG_CURVE_STEP_MS, which made the per-bound lookup quadratic.
+    let mut cursor = 0;
+    let mut rate = 1.0;
     let mut segs = Vec::new();
     let mut track = track_start_sec;
     for pair in bounds.windows(2) {
-        let (w0, w1) = (pair[0], pair[1]);
-        let track_end = track + ((w1 - w0) / 1000.0) * eff_rate_at(changes, w0);
+        let (wall_start, wall_end) = (pair[0], pair[1]);
+        while cursor < changes.len() && changes[cursor].0 <= wall_start {
+            rate = changes[cursor].1;
+            cursor += 1;
+        }
+        let track_end = track + ((wall_end - wall_start) / 1000.0) * rate;
         segs.push(WaveSeg {
-            wall_start_ms: w0,
-            wall_end_ms: w1,
+            wall_start_ms: wall_start,
+            wall_end_ms: wall_end,
             track_start_sec: track,
             track_end_sec: track_end,
         });
@@ -186,6 +190,7 @@ fn wave_segments_for(
     }
     segs
 }
+
 
 fn start_clip(deck: &mut DeckState, ms: f64) {
     deck.clip_start_ms = Some(ms);
@@ -346,13 +351,154 @@ fn exit_loop_and_continue(
     start_clip(deck, ms);
 }
 
+
+struct JogRateCurve {
+    // (wall_ms, effective_rate).
+    eff_rate: Vec<(f64, f64)>,
+    // Percent deviation from the deck's own rate.
+    deviation: Vec<LanePoint>,
+}
+
+/// Grid the wheel's settle is resolved onto. Fine enough that one step's travel stays
+/// below a millisecond of audio at any speed the wheel reaches.
+const JOG_CURVE_STEP_MS: f64 = 5.0;
+
+/// Past this many time constants an impulse has delivered over 99% of its travel; the
+/// remainder is folded into the last step so the curve still integrates exactly.
+const SETTLE_TAIL_TAUS: f64 = 5.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct JogImpulse {
+    ms: f64,
+    /// Rate-free: the caller scales by the deck's rate, which the wheel does not change.
+    travel_sec: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct JogRateStep {
+    start_ms: f64,
+    end_ms: f64,
+    /// Audio seconds per wall second, on top of what the deck was already playing at.
+    rate_delta: f64,
+}
+
+/// The wheel's contribution to the effective rate, as steps on a fixed grid.
+fn jog_rate_steps(impulses: &[JogImpulse], step_ms: f64) -> Vec<JogRateStep> {
+    if impulses.is_empty() || step_ms <= 0.0 {
+        return Vec::new();
+    }
+    let tail_ms = crate::JOG_FILTER_TAU_SEC * SETTLE_TAIL_TAUS * 1000.0;
+    let mut delivered: BTreeMap<i64, f64> = BTreeMap::new();
+
+    for impulse in impulses {
+        if impulse.travel_sec == 0.0 {
+            continue;
+        }
+        let first = (impulse.ms / step_ms).floor() as i64;
+        let last = ((impulse.ms + tail_ms) / step_ms).floor() as i64;
+        let mut spent = 0.0;
+        for cell in first..=last {
+            let cell_end_ms = (cell + 1) as f64 * step_ms;
+            let elapsed_sec = (cell_end_ms - impulse.ms).max(0.0) / 1000.0;
+            // The tail is truncated, so its residue goes in the last cell.
+            let share = if cell == last {
+                impulse.travel_sec - spent
+            } else {
+                impulse.travel_sec * crate::jog_settled_fraction(elapsed_sec) - spent
+            };
+            spent += share;
+            *delivered.entry(cell).or_insert(0.0) += share;
+        }
+    }
+
+    let step_sec = step_ms / 1000.0;
+    delivered
+        .into_iter()
+        .filter(|(_, travel)| *travel != 0.0)
+        .map(|(cell, travel)| JogRateStep {
+            start_ms: cell as f64 * step_ms,
+            end_ms: (cell + 1) as f64 * step_ms,
+            rate_delta: travel / step_sec,
+        })
+        .collect()
+}
+
+impl JogRateCurve {
+    // Folds the wheel's settle into the rate curve, so a gesture stretches the audio it
+    // covers instead of teleporting the playhead past it.
+    fn build(
+        eff_rate_changes: &[(f64, f64)],
+        rate_changes: &[(f64, f64)],
+        steps: &[JogRateStep],
+    ) -> Self {
+        let mut bounds: Vec<f64> = eff_rate_changes.iter().map(|&(ms, _)| ms).collect();
+        for step in steps {
+            bounds.push(step.start_ms);
+            bounds.push(step.end_ms);
+        }
+        bounds.sort_by(f64::total_cmp);
+        bounds.dedup();
+
+        // Every input is in ascending time, so each advances by a cursor. Searching them
+        // per bound was quadratic in the step count, which a gesture runs up quickly.
+        let mut eff_cursor = 0;
+        let mut rate_cursor = 0;
+        let mut step_cursor = 0;
+        let mut held_eff: Option<f64> = None;
+        let mut rate = 1.0;
+
+        let mut eff_rate = Vec::with_capacity(bounds.len());
+        let mut deviation = Vec::with_capacity(bounds.len());
+        for ms in bounds {
+            while rate_cursor < rate_changes.len() && rate_changes[rate_cursor].0 <= ms {
+                rate = rate_changes[rate_cursor].1;
+                rate_cursor += 1;
+            }
+            while eff_cursor < eff_rate_changes.len() && eff_rate_changes[eff_cursor].0 <= ms {
+                held_eff = Some(eff_rate_changes[eff_cursor].1);
+                eff_cursor += 1;
+            }
+            while step_cursor < steps.len() && steps[step_cursor].end_ms <= ms {
+                step_cursor += 1;
+            }
+
+            let hold = match held_eff {
+                Some(eff) if rate != 0.0 => eff / rate,
+                _ => 1.0,
+            };
+            let bend = steps
+                .get(step_cursor)
+                .filter(|step| ms >= step.start_ms)
+                .map_or(0.0, |step| step.rate_delta);
+            let factor = (hold + bend).max(crate::JOG_FACTOR_MIN);
+
+            eff_rate.push((ms, rate * factor));
+            deviation.push(LanePoint {
+                ms,
+                value: (factor - 1.0) * 100.0,
+            });
+        }
+        Self {
+            eff_rate,
+            deviation,
+        }
+    }
+}
+
 pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
     let mut deck_states: BTreeMap<String, DeckState> = BTreeMap::new();
     let mut clips: Vec<Clip> = Vec::new();
     let mut loaded_spans: Vec<LoadedSpan> = Vec::new();
     let mut next_block_id: u32 = 0;
+    let mut jog_rotation_speed = crate::JogRotationSpeed::default();
 
     for ev in events {
+        if ev.event_type == "set_jog_rotation_speed" {
+            jog_rotation_speed = crate::JogRotationSpeed::from_str_or_33(
+                ev.speed.as_deref().unwrap_or_default(),
+            );
+            continue;
+        }
         let Some(deck_id) = ev.deck.as_deref() else {
             continue;
         };
@@ -498,8 +644,27 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
             "set_nudge" => {
                 if let Some(percent) = ev.percent {
-                    deck.jog_hold_factor = 1.0 + percent / 100.0;
+                    deck.jog_hold_factor = (1.0 + percent / 100.0).max(crate::JOG_FACTOR_MIN);
                     record_eff_rate(deck, ev.elapsed_ms);
+                }
+            }
+
+            // A stopped platter scrubs the full travel; a playing one bends, so its
+            // share is recorded rate-free and scaled back up where it is consumed.
+            "jog" => {
+                if let Some(ticks) = ev.ticks {
+                    let playing = deck.clip_start_ms.is_some() || deck.loop_active;
+                    let travel = ticks * jog_rotation_speed.sec_per_tick();
+                    if playing {
+                        let bend = travel / crate::JOG_PAUSED_MULTIPLIER;
+                        deck.track_pos_sec += deck.rate * bend;
+                        deck.jog_impulses.push(JogImpulse {
+                            ms: ev.elapsed_ms,
+                            travel_sec: bend,
+                        });
+                    } else {
+                        deck.track_pos_sec += travel;
+                    }
                 }
             }
 
@@ -571,9 +736,33 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
         finalize_loaded_span(deck, deck_id, last_ms, &mut loaded_spans);
     }
 
+    let mut deck_jog: BTreeMap<String, Vec<LanePoint>> = BTreeMap::new();
+    for (deck_id, deck) in deck_states.iter() {
+        let steps = jog_rate_steps(&deck.jog_impulses, JOG_CURVE_STEP_MS);
+        let curve = JogRateCurve::build(&deck.eff_rate_changes, &deck.rate_changes, &steps);
+        deck_jog.insert(deck_id.clone(), curve.deviation);
+        if steps.is_empty() {
+            continue;
+        }
+        // Loop iterations tile from the loop's own rate, so re-slicing them here would
+        // move iteration boundaries the playhead never moved.
+        for clip in clips
+            .iter_mut()
+            .filter(|clip| clip.deck == *deck_id && clip.loop_region.is_none())
+        {
+            clip.wave_segments = wave_segments_for(
+                &curve.eff_rate,
+                clip.session_start_ms,
+                clip.session_end_ms,
+                clip.track_start_sec,
+            );
+        }
+    }
+
     ClipsBuild {
         clips,
         loaded_spans,
+        deck_jog,
     }
 }
 
@@ -673,6 +862,7 @@ pub struct TimelineBuild {
     pub deck_lanes: BTreeMap<String, DeckLanes>,
     pub master_lanes: MasterLanes,
     pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
+    pub deck_jog: BTreeMap<String, Vec<LanePoint>>,
 }
 
 // Clips and lanes from one event list. The editor needs both on every event
@@ -694,6 +884,7 @@ pub fn build_timeline(
         deck_lanes: lanes.deck_lanes,
         master_lanes: lanes.master_lanes,
         deck_nudges: lanes.deck_nudges,
+        deck_jog: clips.deck_jog,
     }
 }
 
@@ -1006,10 +1197,12 @@ mod tests {
         let json = serde_json::to_value(ClipsBuild {
             clips: vec![],
             loaded_spans: vec![],
+            deck_jog: BTreeMap::new(),
         })
         .unwrap();
         assert!(json.get("loadedSpans").is_some());
         assert!(json.get("loaded_spans").is_none());
+        assert!(json.get("deckJog").is_some());
     }
 
     #[test]
@@ -2018,5 +2211,351 @@ mod tests {
         assert_eq!(rate_range_pct_for(0.0, &rate_steps_pct(&PITCH_OPTS)), 8.0);
         assert_eq!(rate_range_pct_for(9.0, &rate_steps_pct(&PITCH_OPTS)), 10.0);
         assert_eq!(rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)), 100.0);
+    }
+
+    fn jog(elapsed_ms: f64, deck: &str, ticks: f64) -> SessionEvent {
+        SessionEvent {
+            ticks: Some(ticks),
+            ..ev("jog", elapsed_ms, Some(deck))
+        }
+    }
+
+    fn loaded(deck: &str) -> SessionEvent {
+        SessionEvent {
+            path: Some("/t/a.mp3".to_string()),
+            ..ev("load_track", 0.0, Some(deck))
+        }
+    }
+
+    // 1000 ticks at 33 rpm is 2.0s of audio under a stopped platter
+    // (JOG_SCRUB_SEC_PER_TICK_AT_33), and a hundredth of that as a bend while
+    // playing (JOG_PAUSED_MULTIPLIER).
+    #[test]
+    fn jog_on_a_stopped_deck_moves_where_the_next_play_starts() {
+        let events = vec![
+            loaded("A"),
+            jog(500.0, "A", 1000.0),
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 2000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 1);
+        assert!((clips[0].track_start_sec - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jog_while_playing_bends_the_position_by_a_hundredth_of_the_scrub() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            jog(2000.0, "A", 1000.0),
+            ev("stop", 3000.0, Some("A")),
+            ev("play", 4000.0, Some("A")),
+            ev("stop", 5000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert_eq!(clips.len(), 2);
+        assert!((clips[1].track_start_sec - 2.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jog_travel_follows_the_rotation_speed_in_force() {
+        let at_45 = vec![
+            loaded("A"),
+            SessionEvent {
+                speed: Some("rpm45".to_string()),
+                ..ev("set_jog_rotation_speed", 100.0, None)
+            },
+            jog(500.0, "A", 1000.0),
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 2000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&at_45);
+        let expected = 2.0 * (100.0 / 3.0) / 45.0;
+        assert!((clips[0].track_start_sec - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jog_reverses_the_position_on_negative_ticks() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 3000.0, Some("A")),
+            jog(3500.0, "A", -500.0),
+            ev("play", 4000.0, Some("A")),
+            ev("stop", 5000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert!((clips[1].track_start_sec - 1.0).abs() < 1e-9);
+    }
+
+    // Both land on one axis because the engine adds them, so a gesture on top of a
+    // held nudge has to read as the sum and not as either one alone.
+    #[test]
+    fn the_wheel_curve_sums_a_gesture_onto_the_nudge_under_it() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            SessionEvent {
+                percent: Some(4.0),
+                ..ev("set_nudge", 1500.0, Some("A"))
+            },
+            jog(2000.0, "A", 500.0),
+            SessionEvent {
+                percent: Some(0.0),
+                ..ev("set_nudge", 4000.0, Some("A"))
+            },
+            ev("stop", 5000.0, Some("A")),
+        ];
+        let curve = &build_clips(&events).deck_jog["A"];
+        let at = |ms: f64| {
+            curve
+                .iter()
+                .take_while(|point| point.ms <= ms)
+                .last()
+                .map_or(0.0, |point| point.value)
+        };
+
+        assert!((at(1600.0) - 4.0).abs() < 1e-9);
+        assert!(at(2000.0) > 4.0, "the gesture rides on top of the nudge");
+        assert!((at(3000.0) - 4.0).abs() < 1e-9, "and settles back onto it");
+        assert!((at(4500.0) - 0.0).abs() < 1e-9);
+    }
+
+    // The lane draws the wheel's contribution to playback speed, which a stopped
+    // platter has none of: it repositions instead.
+    #[test]
+    fn the_wheel_curve_covers_playing_decks_only() {
+        let scrubbed_then_played = vec![
+            loaded("A"),
+            jog(500.0, "A", 100.0),
+            ev("play", 1000.0, Some("A")),
+            ev("stop", 3000.0, Some("A")),
+        ];
+        let ClipsBuild { deck_jog, .. } = build_clips(&scrubbed_then_played);
+        assert!(deck_jog["A"].iter().all(|point| point.value == 0.0));
+    }
+
+    #[test]
+    fn the_wheel_curve_reads_in_percent_off_the_decks_own_rate() {
+        let at_double_rate = vec![
+            loaded("A"),
+            SessionEvent {
+                rate: Some(2.0),
+                ..ev("set_playback_rate", 500.0, Some("A"))
+            },
+            ev("play", 1000.0, Some("A")),
+            jog(2000.0, "A", 100.0),
+            ev("stop", 3000.0, Some("A")),
+        ];
+        let at_normal_rate = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            jog(2000.0, "A", 100.0),
+            ev("stop", 3000.0, Some("A")),
+        ];
+        let peak = |events: &[SessionEvent]| {
+            build_clips(events).deck_jog["A"]
+                .iter()
+                .map(|point| point.value)
+                .fold(f64::MIN, f64::max)
+        };
+        assert!((peak(&at_double_rate) - peak(&at_normal_rate)).abs() < 1e-9);
+    }
+
+    // The wheel speeds the deck up, so the audio under a gesture is stretched over
+    // less wall time, exactly as a nudge stretches it.
+    #[test]
+    fn a_jog_compresses_the_waveform_across_its_settle() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            jog(2000.0, "A", 1000.0),
+            ev("stop", 3000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        let segs = &clips[0].wave_segments;
+
+        let rate_of = |seg: &WaveSeg| {
+            (seg.track_end_sec - seg.track_start_sec) / ((seg.wall_end_ms - seg.wall_start_ms) / 1000.0)
+        };
+        let during = segs
+            .iter()
+            .find(|seg| seg.wall_start_ms >= 2000.0 && seg.wall_end_ms <= 2005.0)
+            .expect("the settle is sliced into its own segments");
+        let before = segs
+            .iter()
+            .find(|seg| seg.wall_end_ms <= 2000.0)
+            .expect("the clip runs before the gesture");
+
+        assert!(rate_of(during) > rate_of(before));
+        assert!((rate_of(before) - 1.0).abs() < 1e-9);
+    }
+
+    // Every segment starts where the previous ended: the wheel stretches the audio
+    // rather than skipping any of it.
+    #[test]
+    fn wave_segments_stay_contiguous_across_a_jog() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            jog(2000.0, "A", 1000.0),
+            ev("stop", 3000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        let segs = &clips[0].wave_segments;
+
+        for pair in segs.windows(2) {
+            assert!((pair[0].track_end_sec - pair[1].track_start_sec).abs() < 1e-12);
+            assert!((pair[0].wall_end_ms - pair[1].wall_start_ms).abs() < 1e-12);
+        }
+        let total = segs.last().unwrap().track_end_sec - segs[0].track_start_sec;
+        assert!((total - (2.0 + 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 / crate::JOG_PAUSED_MULTIPLIER)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn nudge_floors_the_factor_the_way_the_engine_does() {
+        let events = vec![
+            loaded("A"),
+            ev("play", 1000.0, Some("A")),
+            SessionEvent {
+                percent: Some(-200.0),
+                ..ev("set_nudge", 1000.0, Some("A"))
+            },
+            ev("stop", 2000.0, Some("A")),
+            ev("play", 3000.0, Some("A")),
+            ev("stop", 4000.0, Some("A")),
+        ];
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        assert!((clips[1].track_start_sec - crate::JOG_FACTOR_MIN).abs() < 1e-9);
+    }
+
+    // build_clips is the editor's position model and the sim is the engine's, so a
+    // jog that moves one and not the other silently shifts synthesized play events.
+    #[test]
+    fn build_clips_position_matches_the_sim_across_jogs() {
+        const SAMPLE_RATE: u32 = 44100;
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                is_playing: Some(false),
+                playback_rate: Some(1.0),
+                position_sec: Some(0.0),
+                ..ev("deck_snapshot", 0.0, Some("A"))
+            },
+            jog(200.0, "A", 800.0),
+            ev("play", 1000.0, Some("A")),
+            SessionEvent {
+                rate: Some(1.06),
+                ..ev("set_playback_rate", 1500.0, Some("A"))
+            },
+            jog(2000.0, "A", 1500.0),
+            SessionEvent {
+                percent: Some(3.0),
+                ..ev("set_nudge", 2500.0, Some("A"))
+            },
+            jog(3000.0, "A", -900.0),
+            ev("stop", 4000.0, Some("A")),
+            ev("play", 5000.0, Some("A")),
+            ev("stop", 6000.0, Some("A")),
+        ];
+
+        let mut cache = crate::sim::SampleCache::new();
+        cache.insert(
+            "/t/a.mp3".to_string(),
+            (std::sync::Arc::new(vec![0.0; SAMPLE_RATE as usize * 120]), 1),
+        );
+        // A stopped deck reports its last committed position for any ms, so the sim
+        // has to be asked at the resume and not after the session has run out.
+        let mut state = crate::sim::SimState::new();
+        for event in events.iter().filter(|e| e.elapsed_ms <= 5000.0) {
+            crate::sim::sim_apply_event(event, &mut state, &cache, SAMPLE_RATE);
+        }
+        let sim_sec =
+            crate::sim::sim_pos(&state.decks["A"], 5000.0, f64::from(SAMPLE_RATE)) / f64::from(SAMPLE_RATE);
+
+        let ClipsBuild { clips, .. } = build_clips(&events);
+        let resumed = clips.last().unwrap();
+        assert!(
+            (resumed.track_start_sec - sim_sec).abs() < 1e-9,
+            "timeline {}, sim {sim_sec}",
+            resumed.track_start_sec
+        );
+    }
+
+
+
+    fn total_travel(steps: &[JogRateStep]) -> f64 {
+        steps
+            .iter()
+            .map(|step| step.rate_delta * (step.end_ms - step.start_ms) / 1000.0)
+            .sum()
+    }
+
+    #[test]
+    fn steps_deliver_exactly_the_impulse_travel() {
+        let steps = jog_rate_steps(&[JogImpulse { ms: 1000.0, travel_sec: 0.031 }], JOG_CURVE_STEP_MS);
+        assert!((total_travel(&steps) - 0.031).abs() < 1e-12);
+    }
+
+    #[test]
+    fn steps_deliver_exactly_the_total_of_overlapping_impulses() {
+        let gesture: Vec<JogImpulse> = (0..40)
+            .map(|index| JogImpulse {
+                ms: 1000.0 + f64::from(index) * 3.0,
+                travel_sec: 0.002,
+            })
+            .collect();
+        let steps = jog_rate_steps(&gesture, JOG_CURVE_STEP_MS);
+        assert!((total_travel(&steps) - 40.0 * 0.002).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_reverse_gesture_delivers_negative_travel() {
+        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: -0.02 }], JOG_CURVE_STEP_MS);
+        assert!((total_travel(&steps) + 0.02).abs() < 1e-12);
+        assert!(steps.iter().all(|step| step.rate_delta <= 0.0));
+    }
+
+    // The filter is a decay, so the deck is bent hardest the instant the wheel moves.
+    #[test]
+    fn the_first_step_carries_the_most_travel() {
+        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.05 }], JOG_CURVE_STEP_MS);
+        let peak = steps
+            .iter()
+            .map(|step| step.rate_delta)
+            .fold(f64::MIN, f64::max);
+        assert_eq!(steps[0].rate_delta, peak);
+    }
+
+    #[test]
+    fn steps_land_on_a_shared_grid_so_gestures_can_be_summed() {
+        let steps = jog_rate_steps(
+            &[
+                JogImpulse { ms: 102.0, travel_sec: 0.01 },
+                JogImpulse { ms: 104.0, travel_sec: 0.01 },
+            ],
+            JOG_CURVE_STEP_MS,
+        );
+        assert!(steps
+            .iter()
+            .all(|step| (step.start_ms / JOG_CURVE_STEP_MS).fract() == 0.0));
+        let starts: Vec<f64> = steps.iter().map(|step| step.start_ms).collect();
+        let mut deduped = starts.clone();
+        deduped.dedup();
+        assert_eq!(starts, deduped);
+    }
+
+    #[test]
+    fn no_wheel_movement_is_no_steps() {
+        assert!(jog_rate_steps(&[], JOG_CURVE_STEP_MS).is_empty());
+        assert!(jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.0 }], JOG_CURVE_STEP_MS).is_empty());
+    }
+
+    #[test]
+    fn the_settle_is_bounded_so_one_flick_cannot_span_a_session() {
+        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.01 }], JOG_CURVE_STEP_MS);
+        let end = steps.last().unwrap().end_ms;
+        assert!(end <= crate::JOG_FILTER_TAU_SEC * SETTLE_TAIL_TAUS * 1000.0 + JOG_CURVE_STEP_MS);
     }
 }

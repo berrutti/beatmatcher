@@ -71,11 +71,20 @@ pub struct SessionEvent {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffer_size_frames: Option<u32>,
+    /// Output frames since capture began: which buffer the command landed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<u64>,
 }
 
 impl SessionEvent {
-    // Builds a per-deck event with only `elapsed_ms`, `event_type`, and `deck`
-    // set; callers fill in the remaining fields via struct-update syntax.
+    pub fn synthesized_at(&self, elapsed_ms: f64) -> SessionEvent {
+        SessionEvent {
+            elapsed_ms,
+            frame: None,
+            ..self.clone()
+        }
+    }
+
     pub fn at(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
         SessionEvent {
             elapsed_ms,

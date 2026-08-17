@@ -19,10 +19,8 @@ type ChannelPairs = Vec<ChannelPair>;
 
 pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
-// Shared between AppAudio and every master stream callback via Arc clones.
-// level_l/r are peak values from the last audio buffer, read by get_master_level.
-// record_tx is None when not recording; the callback does a try_lock so it
-// never blocks the audio thread.
+// What a buffer-size setting of 0 ("driver default") resolves to on macOS Core Audio.
+pub(crate) const DEFAULT_BUFFER_FRAMES: u32 = 512;
 
 #[derive(Clone)]
 pub struct MasterMonitor {
@@ -30,19 +28,20 @@ pub struct MasterMonitor {
     pub level_r: Arc<std::sync::atomic::AtomicU32>,
     pub master_gain: Arc<std::sync::atomic::AtomicU32>,
     pub cue_mix: Arc<std::sync::atomic::AtomicU32>,
-    // Held here rather than on the strips because it is one master value; the
-    // strips carry only the gain it resolves to against their own assign.
+    // Here and not on the strips, which carry only the gain it resolves to against their assign.
     pub xfader_position: Arc<std::sync::atomic::AtomicU32>,
-    // Also one master value the strips resolve against. Categorical, so it is not
-    // an atomic number; nothing on the audio thread reads it.
+    // A Mutex and not an atomic because it is categorical, and the audio thread never reads it.
     pub fader_curve: Arc<Mutex<session_core::FaderCurve>>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
-    // Free-running count of master output frames produced by the audio device.
-    // It is the soundcard's own clock; session playback schedules events against
-    // it instead of wall-clock time so replay stays locked to the audio output.
+    // The soundcard's clock, not the OS one: they are different oscillators, so anything
+    // scheduled against wall time drifts against the audio output.
     pub output_frames: Arc<std::sync::atomic::AtomicU64>,
+    // Only the callback can know it: whether the buffer in flight reaches the file is decided there.
+    capture_start: Arc<std::sync::atomic::AtomicU64>,
 }
+
+pub(crate) const NOT_CAPTURING: u64 = u64::MAX;
 
 impl MasterMonitor {
     pub(crate) fn new() -> Self {
@@ -58,11 +57,31 @@ impl MasterMonitor {
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            capture_start: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
         }
     }
 
     pub fn output_frames(&self) -> u64 {
         self.output_frames.load(Ordering::Relaxed)
+    }
+
+    /// Claims the buffer about to be rendered, so a command that reads the clock while the
+    /// callback is running still names the first frame it can reach. Once per master buffer.
+    fn claim_output_frames(&self, frames: usize) -> u64 {
+        self.output_frames
+            .fetch_add(frames as u64, Ordering::Relaxed)
+    }
+
+    pub fn capture_start_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.capture_start)
+    }
+
+    pub(crate) fn arm_capture(&self) {
+        self.capture_start.store(NOT_CAPTURING, Ordering::Relaxed);
+    }
+
+    pub fn output_frames_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.output_frames)
     }
 
     pub fn get_levels(&self) -> [f32; 2] {
@@ -112,6 +131,10 @@ impl MasterMonitor {
 
     pub fn set_limiter_enabled(&self, enabled: bool) {
         self.limiter_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn limiter_enabled(&self) -> bool {
+        self.limiter_enabled.load(Ordering::Relaxed)
     }
 
     pub(crate) fn store_levels(&self, l: f32, r: f32) {
@@ -438,6 +461,7 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
     scratch.resize(frames * 2, 0.0);
+    let buffer_start = monitor.as_ref().map(|m| m.claim_output_frames(frames));
 
     for (deck_arc, strip_arc) in channels.iter() {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
@@ -456,6 +480,8 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
                 cue: None,
             }
         };
+        deck.set_next_render_frame(buffer_start.unwrap_or_default() + frames as u64);
+        strip.set_next_render_frame(buffer_start.unwrap_or_default() + frames as u64);
         let (sum_l, sum_r) = deck.render_block(&mut strip, frames, targets);
         for i in 0..frames {
             mix_frame(
@@ -478,18 +504,23 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
         for i in 0..frames {
             let base = i * output_channels + channel_offset;
             if base + 1 < data.len() {
-                let l = data[base] * gain;
-                let r = data[base + 1] * gain;
-                let (l, r) = if use_limiter {
-                    limiter.process(l, r)
-                } else {
-                    (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
-                };
+                let (l, r) = super::master_output(
+                    use_limiter.then_some(&mut *limiter),
+                    data[base] * gain,
+                    data[base + 1] * gain,
+                );
                 data[base] = l;
                 data[base + 1] = r;
             }
         }
-        tap_master_output(data, frames, output_channels, channel_offset, m);
+        tap_master_output(
+            data,
+            frames,
+            output_channels,
+            channel_offset,
+            m,
+            buffer_start.unwrap_or_default(),
+        );
     } else {
         for sample in data.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
@@ -514,6 +545,7 @@ fn fill_cue_with_master_tap(
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
+    let buffer_start = monitor.claim_output_frames(frames);
     master_mix.resize(frames * 2, 0.0);
     master_mix.fill(0.0);
     cue_buf.resize(frames * 2, 0.0);
@@ -522,6 +554,8 @@ fn fill_cue_with_master_tap(
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+        deck.set_next_render_frame(buffer_start + frames as u64);
+        strip.set_next_render_frame(buffer_start + frames as u64);
         let (sum_l, sum_r) = deck.render_block(
             &mut strip,
             frames,
@@ -536,13 +570,11 @@ fn fill_cue_with_master_tap(
     let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
     let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
     for i in 0..frames {
-        let l = master_mix[i * 2] * gain;
-        let r = master_mix[i * 2 + 1] * gain;
-        let (l, r) = if use_limiter {
-            limiter.process(l, r)
-        } else {
-            (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
-        };
+        let (l, r) = super::master_output(
+            use_limiter.then_some(&mut *limiter),
+            master_mix[i * 2] * gain,
+            master_mix[i * 2 + 1] * gain,
+        );
         master_mix[i * 2] = l;
         master_mix[i * 2 + 1] = r;
     }
@@ -556,7 +588,7 @@ fn fill_cue_with_master_tap(
         let out_r = cr * (1.0 - mix) + mr * mix;
         mix_frame(data, i, output_channels, cue_offset, out_l, out_r);
     }
-    tap_master_output(master_mix, frames, 2, 0, monitor);
+    tap_master_output(master_mix, frames, 2, 0, monitor, buffer_start);
 }
 
 #[inline]
@@ -592,6 +624,8 @@ fn fill_output_combined(
 
     let frames = data.len() / output_channels.max(1);
 
+    let buffer_start = ctx.monitor.claim_output_frames(frames);
+
     ctx.cue_buf.resize(frames * 2, 0.0);
     ctx.cue_buf.fill(0.0);
 
@@ -602,6 +636,8 @@ fn fill_output_combined(
         let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         ctx.main_scratch.fill(0.0);
+        deck.set_next_render_frame(buffer_start + frames as u64);
+        strip.set_next_render_frame(buffer_start + frames as u64);
         let (sum_l, sum_r) = deck.render_block(
             &mut strip,
             frames,
@@ -632,14 +668,11 @@ fn fill_output_combined(
         let idx = i * output_channels + ctx.main_offset;
 
         if idx + 1 < data.len() {
-            let l = data[idx] * gain;
-            let r = data[idx + 1] * gain;
-
-            let (l, r) = if use_limiter {
-                ctx.limiter.process(l, r)
-            } else {
-                (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
-            };
+            let (l, r) = super::master_output(
+                use_limiter.then_some(&mut *ctx.limiter),
+                data[idx] * gain,
+                data[idx + 1] * gain,
+            );
 
             data[idx] = l;
             data[idx + 1] = r;
@@ -672,7 +705,14 @@ fn fill_output_combined(
         mix_frame(data, i, output_channels, ctx.cue_offset, out_l, out_r);
     }
 
-    tap_master_output(data, frames, output_channels, ctx.main_offset, ctx.monitor);
+    tap_master_output(
+        data,
+        frames,
+        output_channels,
+        ctx.main_offset,
+        ctx.monitor,
+        buffer_start,
+    );
 }
 
 // Reads the final clamped master L/R samples from the output buffer, stores
@@ -684,6 +724,7 @@ fn tap_master_output(
     output_channels: usize,
     channel_offset: usize,
     monitor: &MasterMonitor,
+    buffer_start: u64,
 ) {
     let mut sum_l = 0.0f32;
     let mut sum_r = 0.0f32;
@@ -699,12 +740,6 @@ fn tap_master_output(
     let n = counted.max(1) as f32;
     monitor.store_levels(sum_l / n, sum_r / n);
 
-    // Advance the master output frame clock. Runs once per master buffer in
-    // every routing mode (main, combined, cue-with-master-tap).
-    monitor
-        .output_frames
-        .fetch_add(frames as u64, Ordering::Relaxed);
-
     if let Ok(guard) = monitor.record_tx.try_lock() {
         if let Some(ref tx) = *guard {
             let mut chunk = Vec::with_capacity(frames * 2);
@@ -715,7 +750,14 @@ fn tap_master_output(
                     chunk.push(data[base + 1]);
                 }
             }
-            let _ = tx.try_send(chunk);
+            if tx.try_send(chunk).is_ok() {
+                let _ = monitor.capture_start.compare_exchange(
+                    NOT_CAPTURING,
+                    buffer_start,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
         }
     }
 }
@@ -723,6 +765,32 @@ fn tap_master_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The callback claims the whole buffer up front but locks decks one at a time, so between
+    // the claim and the last deck's turn the master clock already names the next buffer while
+    // that deck will still consume into this one. Stamping a tick from the clock puts it a
+    // buffer late for every deck that has not rendered yet.
+    #[test]
+    fn the_master_clock_is_a_buffer_ahead_of_a_deck_that_has_not_rendered() {
+        const FRAMES: usize = 128;
+        let monitor = MasterMonitor::new();
+        let mut deck = DeckState::empty(44_100);
+
+        let first = monitor.claim_output_frames(FRAMES);
+        deck.set_next_render_frame(first + FRAMES as u64);
+        assert_eq!(deck.next_render_frame, monitor.output_frames());
+
+        // The next callback claims before this deck renders again.
+        let second = monitor.claim_output_frames(FRAMES);
+        assert_eq!(monitor.output_frames(), 256);
+        assert_eq!(
+            deck.next_render_frame, 128,
+            "a tick arriving now is consumed by the buffer this deck has yet to render"
+        );
+
+        deck.set_next_render_frame(second + FRAMES as u64);
+        assert_eq!(deck.next_render_frame, 256);
+    }
 
     // A 14-bit crossfader resolves a move on each half and quantizes onto 201 steps, so one
     // sweep repeats every value. Without this the .bms gets thousands of inaudible events.

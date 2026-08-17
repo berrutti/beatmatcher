@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { midiConsoleLine, type MidiMessage } from '@renderer/utils/midi';
 import type { DeckId } from '@renderer/utils/types';
@@ -49,7 +50,7 @@ export const useMidiStore = defineStore('midi', () => {
   async function assignDeck(port: string, deck: DeckId | null): Promise<void> {
     error.value = '';
     try {
-      await invoke('set_midi_device_deck', { port, deck });
+      await call('set_midi_device_deck', { port, deck });
       const next = { ...assignments.value };
       if (deck === null) delete next[port];
       else next[port] = deck;
@@ -77,7 +78,7 @@ export const useMidiStore = defineStore('midi', () => {
       });
     }
     await listening;
-    await invoke('set_midi_monitor', { enabled: true });
+    await call('set_midi_monitor', { enabled: true });
   }
 
   refresh();

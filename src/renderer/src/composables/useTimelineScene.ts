@@ -20,7 +20,7 @@ import {
   tickRowItem,
   deckChromeItem,
   clipBandItem,
-  nudgeItem,
+  jogLaneItem,
   laneSurfaceItem,
   filterRegionItem,
   filterSelectionItem,
@@ -39,7 +39,8 @@ import type {
   DeckLanes,
   MasterLanes,
   MasterLaneKey,
-  NudgeSpan
+  NudgeSpan,
+  LanePoint
 } from '@renderer/utils/types';
 
 export type SceneInput = {
@@ -50,6 +51,7 @@ export type SceneInput = {
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  deckJog: Record<string, LanePoint[]>;
   waveforms: Map<string, TrackWaveform>;
   playheadMs: number;
   durationMs: number;
@@ -111,12 +113,15 @@ export function buildScene(input: SceneInput): SceneResult {
         input.editMode ? selectionSpansFor(input.clipSelection, deck) : []
       )
     );
-    for (const span of input.deckNudges[deck] ?? []) {
-      items.push(nudgeItem(row, span, deck));
-    }
     const lane = row.lanes[0];
     if (lane) {
-      items.push(laneSurfaceItem(lane, deck, input.deckLanes[deck]));
+      if (lane.key === 'jog') {
+        items.push(
+          jogLaneItem(lane, deck, input.deckJog[deck] ?? [], input.deckNudges[deck] ?? [])
+        );
+      } else {
+        items.push(laneSurfaceItem(lane, deck, input.deckLanes[deck]));
+      }
       if (lane.key === 'filter') {
         for (const span of input.deckLanes[deck]?.filterActive ?? []) {
           items.push(filterRegionItem(lane, deck, span));

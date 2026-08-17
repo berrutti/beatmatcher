@@ -43,7 +43,7 @@ export default [
   },
   {
     files: ['**/*.ts', '**/*.vue'],
-    ignores: ['**/stores/**'],
+    ignores: ['**/stores/**', '**/tauriCommands.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

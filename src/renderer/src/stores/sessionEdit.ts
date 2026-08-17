@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
-import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { useSessionStore, type ParsedSession } from './session';
 import { useSettingsStore } from './settings';
 import { laneSpecFor, spliceLaneEvents } from '@renderer/utils/sessionEditOps';
@@ -88,7 +88,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   ): Promise<void> {
     if (previous) await previous;
     try {
-      await invoke('update_session_events', { path, eventsJson });
+      await call('update_session_events', { path, eventsJson });
     } catch (err) {
       console.error('[sessionEdit] failed to sync session events to Rust:', err);
     }
@@ -290,9 +290,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (typeof folder !== 'string') return;
     if (sessionStore.isPlaying) await sessionStore.stop();
 
-    const found = await invoke<string[]>('scan_folder', { path: folder }).catch(
-      () => [] as string[]
-    );
+    const found = await call('scan_folder', { path: folder }).catch(() => [] as string[]);
     const byName = indexByBasename(found);
 
     // Identity mappings are skipped: a file found at the path the session
@@ -345,7 +343,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     const session = sessionStore.session;
     if (!session) return false;
     try {
-      await invoke('save_session', { path: session.path, content: serialize(session) });
+      await call('save_session', { path: session.path, content: serialize(session) });
     } catch {
       return false;
     }
@@ -356,10 +354,11 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   async function saveAs(): Promise<boolean> {
     const session = sessionStore.session;
     if (!session) return false;
-    const path = await invoke<string | null>('pick_save_path', { format: 'session' });
+    const baseName = session.filename.replace(/\.bms$/i, '');
+    const path = await call('pick_save_path', { format: 'session', baseName });
     if (!path) return false;
     try {
-      await invoke('save_session', { path, content: serialize(session) });
+      await call('save_session', { path, content: serialize(session) });
     } catch {
       return false;
     }

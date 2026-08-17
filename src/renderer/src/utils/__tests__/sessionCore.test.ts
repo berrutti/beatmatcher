@@ -178,6 +178,57 @@ describe('lane edit wrappers', () => {
     expect(gains).toContain(0.4);
   });
 
+  // Runs against the built pkg, so a wasm predating `frame` fails here.
+  it('keeps the recorded frame on an event the edit did not touch', () => {
+    const events: SessionEvent[] = [
+      {
+        elapsed_ms: 1000,
+        type: 'set_param',
+        deck: 'A',
+        slot: 'fader',
+        param: 'gain',
+        value: 0.8,
+        frame: 44100
+      },
+      {
+        elapsed_ms: 20000,
+        type: 'set_param',
+        deck: 'A',
+        slot: 'eq',
+        param: 'low',
+        value: 3,
+        frame: 882000
+      }
+    ];
+    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
+      { ms: 5000, value: 0.4 },
+      { ms: 6000, value: 0.4 }
+    ]);
+    const untouched = out.find((event) => event.elapsed_ms === 20000);
+    expect(untouched?.frame).toBe(882000);
+  });
+
+  it('gives an event the edit created no frame', () => {
+    const events: SessionEvent[] = [
+      {
+        elapsed_ms: 1000,
+        type: 'set_param',
+        deck: 'A',
+        slot: 'fader',
+        param: 'gain',
+        value: 0.8,
+        frame: 44100
+      }
+    ];
+    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
+      { ms: 5000, value: 0.4 },
+      { ms: 6000, value: 0.4 }
+    ]);
+    const created = out.filter((event) => event.elapsed_ms >= 5000 && event.elapsed_ms <= 8000);
+    expect(created.length).toBeGreaterThan(0);
+    for (const event of created) expect(event.frame).toBeUndefined();
+  });
+
   it('toggles a filter-active range and reads it back', () => {
     const out = toggleFilterActiveRange([], 'A', 1000, 4000);
     expect(filterActiveAt(out, 'A', 2000)).toBe(true);
