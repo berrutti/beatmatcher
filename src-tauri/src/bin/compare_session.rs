@@ -9,7 +9,29 @@ fn main() {
     let recorded_path = &args[2];
     let output_path = args.get(3).map(|arg| arg.as_str());
 
-    match app_lib::offline_render::render_and_compare(session_path, recorded_path, output_path) {
+    // The .bms does not record the limiter, so a wrong guess here diverges from
+    // the reference without saying why. Print what was assumed.
+    let stored = app_lib::settings::limiter_enabled();
+    let limiter_enabled = stored.unwrap_or(true);
+    println!(
+        "limiter          : {} ({})",
+        if limiter_enabled { "on" } else { "off" },
+        match stored {
+            Some(_) => "from settings.json",
+            None => "default, no stored setting",
+        }
+    );
+
+    match app_lib::offline_render::render_and_compare(
+        session_path,
+        recorded_path,
+        output_path,
+        if limiter_enabled {
+            app_lib::offline_render::MasterLimiter::On
+        } else {
+            app_lib::offline_render::MasterLimiter::Off
+        },
+    ) {
         Err(error) => {
             eprintln!("error: {error}");
             std::process::exit(1);

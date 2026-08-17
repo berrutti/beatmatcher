@@ -11,13 +11,18 @@ pub use analysis::{
     compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
     compute_spectral_waveform_region, detect_bpm, detect_silence_end,
 };
+#[cfg(test)]
+pub use deck::RenderTargets;
 pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, DeckState};
+pub(crate) use dsp::master_output;
 pub(crate) use dsp::LimiterState;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
 pub(crate) use session_apply::apply_deck_command;
 pub use stream::MasterMonitor;
+pub(crate) use stream::DEFAULT_BUFFER_FRAMES;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;
+pub(crate) use stream::NOT_CAPTURING;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
@@ -521,6 +526,9 @@ impl AppAudio {
             .collect()
     }
 
+    /// Returns the output-frame count at which the tap was armed. `output_frames` is
+    /// advanced after each buffer is filled, so that count is the first frame the
+    /// recording captures, and it is the origin every event is timed against.
     pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
         let mut recording = self.recording.lock().unwrap_or_else(|e| e.into_inner());
         if recording.is_some() {
@@ -537,11 +545,15 @@ impl AppAudio {
             .into_owned();
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
-        *self
-            .monitor
-            .record_tx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        {
+            let mut slot = self
+                .monitor
+                .record_tx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.monitor.arm_capture();
+            *slot = Some(tx);
+        }
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
         let thread = if use_flac {

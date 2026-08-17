@@ -5,6 +5,7 @@ mod engine_push;
 mod midi;
 pub mod offline_render;
 mod session_playback;
+pub mod settings;
 
 use audio::AppAudio;
 use commands::DeckSyncPayload;
@@ -66,37 +67,93 @@ fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
     )
 }
 
+/// `serde_json::Value` holds an f64, so a widened f32 is written with the noise tail of
+/// a value the mixer never had. Rust's f32 `Display` is the shortest decimal that reads
+/// back as the same f32, so this narrows the spelling and not the value.
+pub(crate) fn f32_json(value: f32) -> serde_json::Value {
+    match format!("{value}").parse::<f64>() {
+        Ok(shortest) => serde_json::json!(shortest),
+        Err(_) => serde_json::json!(value),
+    }
+}
+
 struct SessionLogger {
     start: std::time::Instant,
     start_wall: std::time::SystemTime,
     mixer: &'static session_core::MixerManifest,
     events: Vec<serde_json::Value>,
     pending: Option<String>,
+    // The soundcard's own clock. A wall-clock timestamp cannot say which buffer a
+    // command landed in, because the buffer boundary falls inside the gap between
+    // mutating the engine and logging, so a reader is out by up to a full buffer.
+    output_frames: Arc<std::sync::atomic::AtomicU64>,
+    capture_start: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SessionLogger {
-    fn new(mixer: &'static session_core::MixerManifest) -> Self {
+    fn new(
+        mixer: &'static session_core::MixerManifest,
+        output_frames: Arc<std::sync::atomic::AtomicU64>,
+        capture_start: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
         Self {
             start: std::time::Instant::now(),
             start_wall: std::time::SystemTime::now(),
             mixer,
             events: Vec::new(),
             pending: None,
+            output_frames,
+            capture_start,
         }
     }
 
+    fn output_frame(&self) -> u64 {
+        self.output_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn log(&mut self, event_type: &str, payload: serde_json::Value) {
+        self.log_at(self.output_frame(), event_type, payload);
+    }
+
+    fn log_at(&mut self, frame: u64, event_type: &str, payload: serde_json::Value) {
         let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
         let mut obj = serde_json::Map::new();
         obj.insert("elapsed_ms".into(), serde_json::json!(elapsed_ms));
         obj.insert("type".into(), serde_json::json!(event_type));
+        obj.insert("frame".into(), serde_json::json!(frame));
         if let serde_json::Value::Object(extra) = payload {
             obj.extend(extra);
         }
         self.events.push(serde_json::Value::Object(obj));
     }
 
+    // Only the audio callback knows which buffer reached the file, so events carry the raw
+    // clock until it has said so and are rebased onto the first captured frame here.
+    fn rebase_frames(&mut self) {
+        let origin = self
+            .capture_start
+            .load(std::sync::atomic::Ordering::Relaxed);
+        for event in self.events.iter_mut() {
+            let Some(frame) = event.get("frame").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let Some(object) = event.as_object_mut() else {
+                continue;
+            };
+            if origin == audio::NOT_CAPTURING {
+                object.remove("frame");
+            } else {
+                object.insert(
+                    "frame".into(),
+                    serde_json::json!(frame.saturating_sub(origin)),
+                );
+            }
+        }
+    }
+
     fn stop(&mut self) {
+        self.rebase_frames();
         let started_at = system_time_to_iso8601(self.start_wall);
         let log = serde_json::json!({
             "version": session_core::BMS_VERSION,
@@ -184,15 +241,30 @@ impl AppState {
         }
     }
 
-    fn log_param(&self, deck: Option<&str>, slot: &str, param: &str, value: f64) {
+    fn log_at(&self, frame: u64, event_type: &str, payload: serde_json::Value) {
+        if let Some(logger) = self
+            .session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            logger.log_at(frame, event_type, payload);
+        }
+    }
+
+    fn log_param_at(&self, frame: u64, deck: Option<&str>, slot: &str, param: &str, value: f32) {
         let mut payload = serde_json::Map::new();
         if let Some(deck) = deck {
             payload.insert("deck".into(), serde_json::json!(deck));
         }
         payload.insert("slot".into(), serde_json::json!(slot));
         payload.insert("param".into(), serde_json::json!(param));
-        payload.insert("value".into(), serde_json::json!(value));
-        self.log("set_param", serde_json::Value::Object(payload));
+        payload.insert("value".into(), f32_json(value));
+        self.log_at(frame, "set_param", serde_json::Value::Object(payload));
+    }
+
+    fn log_param(&self, deck: Option<&str>, slot: &str, param: &str, value: f32) {
+        self.log_param_at(self.audio.monitor.output_frames(), deck, slot, param, value);
     }
 
     /// The one path a deck param changes through, whoever moved it. Logging here puts a MIDI
@@ -209,7 +281,9 @@ impl AppState {
             .audio
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {}", deck))?;
-        {
+        // Read under the strip lock, which the audio callback also takes, so the count
+        // cannot advance between the mixer changing and the frame being noted.
+        let frame = {
             let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
             // A 14-bit control resolves a move on each half, so the same value arrives twice per
             // physical move. Logging both would write an event nothing can hear.
@@ -217,8 +291,9 @@ impl AppState {
                 return Ok(());
             }
             strip.set_param(slot, param, value);
-        }
-        self.log_param(Some(deck), slot, param, value as f64);
+            strip.next_render_frame
+        };
+        self.log_param_at(frame, Some(deck), slot, param, value);
         self.engine_push.mark(origin, deck, slot, param);
         Ok(())
     }
@@ -240,12 +315,16 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let payload = {
+        let (payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             deck_state.toggle_play();
-            DeckSyncPayload::from_deck(&deck_state, false)
+            (
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
-        self.log(
+        self.log_at(
+            frame,
             if payload.is_playing { "play" } else { "stop" },
             serde_json::json!({ "deck": deck }),
         );
@@ -260,7 +339,7 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (outcome, payload) = {
+        let (outcome, payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             if deck_state.quantize {
                 if let Some(bpm) = deck_state.bpm {
@@ -280,7 +359,11 @@ impl AppState {
                 deck_state.loop_active = false;
                 deck_state.loop_end = 0.0;
             }
-            (out, DeckSyncPayload::from_deck(&deck_state, loop_cleared))
+            (
+                out,
+                DeckSyncPayload::from_deck(&deck_state, loop_cleared),
+                deck_state.next_render_frame,
+            )
         };
         self.engine_push
             .mark_transport(origin, deck, payload.loop_region_cleared);
@@ -294,7 +377,8 @@ impl AppState {
                 ("stopped_at_cue", cue_point_sec)
             }
         };
-        self.log(
+        self.log_at(
+            frame,
             event,
             serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
         );
@@ -307,14 +391,19 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (was_cueing, payload) = {
+        let (was_cueing, payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let was = deck_state.is_cueing;
             deck_state.release_cue();
-            (was, DeckSyncPayload::from_deck(&deck_state, false))
+            (
+                was,
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
         if was_cueing {
-            self.log(
+            self.log_at(
+                frame,
                 "cue_preview_end",
                 serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
             );
@@ -330,14 +419,19 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (was_playing, payload) = {
+        let (was_playing, payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let was = deck_state.is_playing;
             deck_state.set_cue_and_stop();
-            (was, DeckSyncPayload::from_deck(&deck_state, false))
+            (
+                was,
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
         if was_playing {
-            self.log(
+            self.log_at(
+                frame,
                 "cue_set_and_stop",
                 serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
             );
@@ -353,14 +447,19 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (was_playing, payload) = {
+        let (was_playing, payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let was = deck_state.is_playing;
             deck_state.stop_at_cue();
-            (was, DeckSyncPayload::from_deck(&deck_state, false))
+            (
+                was,
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
         if was_playing {
-            self.log(
+            self.log_at(
+                frame,
                 "stop_at_cue",
                 serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
             );
@@ -376,11 +475,14 @@ impl AppState {
         deck: &str,
         rate: f64,
     ) -> Result<(), String> {
-        self.deck(deck)?
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .playback_rate = rate.max(MIN_PLAYBACK_RATE);
-        self.log(
+        let frame = {
+            let deck_arc = self.deck(deck)?;
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            deck_state.playback_rate = rate.max(MIN_PLAYBACK_RATE);
+            deck_state.next_render_frame
+        };
+        self.log_at(
+            frame,
             "set_playback_rate",
             serde_json::json!({ "deck": deck, "rate": rate }),
         );
@@ -415,7 +517,7 @@ impl AppState {
     pub(crate) fn jog(&self, origin: ParamOrigin, deck: &str, ticks: i32) -> Result<(), String> {
         // Shift is scaled here rather than at consume time so the logged ticks are exactly
         // the ones the engine acts on, and a replay needs no shift state of its own.
-        let scaled = {
+        let (scaled, frame) = {
             let deck_arc = self.deck(deck)?;
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let scaled = crate::audio::logged_jog_ticks(
@@ -424,9 +526,13 @@ impl AppState {
                 deck_state.is_playing,
             );
             deck_state.jog_pending += scaled;
-            scaled
+            (scaled, deck_state.next_render_frame)
         };
-        self.log("jog", serde_json::json!({ "deck": deck, "ticks": scaled }));
+        self.log_at(
+            frame,
+            "jog",
+            serde_json::json!({ "deck": deck, "ticks": scaled }),
+        );
         self.engine_push.mark_transport(origin, deck, false);
         Ok(())
     }
@@ -447,13 +553,19 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (payload, cue_sec, quantize) = {
+        let (payload, cue_sec, quantize, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let sec = commands::loop_in_core(&mut deck_state)?;
             let payload = DeckSyncPayload::from_deck(&deck_state, true);
-            (payload, sec, deck_state.quantize)
+            (
+                payload,
+                sec,
+                deck_state.quantize,
+                deck_state.next_render_frame,
+            )
         };
-        self.log(
+        self.log_at(
+            frame,
             "loop_in",
             serde_json::json!({ "deck": deck, "cue_sec": cue_sec, "quantized": quantize }),
         );
@@ -468,13 +580,18 @@ impl AppState {
         deck: &str,
     ) -> Result<Option<commands::LoopOutResult>, String> {
         let deck_arc = self.deck(deck)?;
-        let (result, quantize) = {
+        let (result, quantize, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             let quantize = deck_state.quantize;
-            (commands::loop_out_core(&mut deck_state)?, quantize)
+            (
+                commands::loop_out_core(&mut deck_state)?,
+                quantize,
+                deck_state.next_render_frame,
+            )
         };
         if let Some(region) = &result {
-            self.log(
+            self.log_at(
+                frame,
                 "loop_out",
                 serde_json::json!({
                     "deck": deck,
@@ -496,13 +613,16 @@ impl AppState {
         active: bool,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let payload = {
+        let (payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             deck_state.loop_active = active;
-            DeckSyncPayload::from_deck(&deck_state, false)
+            (
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
         if !active {
-            self.log("exit_loop", serde_json::json!({ "deck": deck }));
+            self.log_at(frame, "exit_loop", serde_json::json!({ "deck": deck }));
         }
         self.engine_push.mark_transport(origin, deck, false);
         Ok(payload)
@@ -514,7 +634,7 @@ impl AppState {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let payload = {
+        let (payload, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             if deck_state.loop_end > deck_state.cue_point {
                 deck_state.main_pos = deck_state.cue_point;
@@ -523,9 +643,12 @@ impl AppState {
                     deck_state.loop_active = true;
                 }
             }
-            DeckSyncPayload::from_deck(&deck_state, false)
+            (
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.next_render_frame,
+            )
         };
-        self.log("reloop", serde_json::json!({ "deck": deck }));
+        self.log_at(frame, "reloop", serde_json::json!({ "deck": deck }));
         self.engine_push.mark_transport(origin, deck, false);
         Ok(payload)
     }
@@ -589,7 +712,7 @@ impl AppState {
         }
         self.resolve_xfader_gains();
         let landed = self.audio.monitor.xfader_position();
-        self.log_param(None, "xfader", "position", landed as f64);
+        self.log_param(None, "xfader", "position", landed);
         self.engine_push.mark_xfader(origin);
     }
 
@@ -599,13 +722,17 @@ impl AppState {
         deck: &str,
         assign: session_core::XfaderAssign,
     ) -> Result<(), String> {
-        self.audio
-            .strip(deck)
-            .ok_or_else(|| format!("unknown deck: {}", deck))?
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .set_xfader_assign(assign);
-        self.log(
+        let frame = {
+            let strip_arc = self
+                .audio
+                .strip(deck)
+                .ok_or_else(|| format!("unknown deck: {}", deck))?;
+            let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
+            strip.set_xfader_assign(assign);
+            strip.next_render_frame
+        };
+        self.log_at(
+            frame,
             "set_xfader_assign",
             serde_json::json!({ "deck": deck, "assign": assign.as_str() }),
         );
@@ -626,7 +753,8 @@ impl AppState {
                 .unwrap_or_else(|error| error.into_inner())
                 .set_fader_curve(curve);
         }
-        self.log(
+        self.log_at(
+            self.audio.monitor.output_frames(),
             "set_fader_curve",
             serde_json::json!({ "curve": curve.as_str() }),
         );
@@ -997,7 +1125,11 @@ mod tests {
 
     #[test]
     fn session_logger_records_events_in_order() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.log("first", serde_json::json!({}));
         logger.log("second", serde_json::json!({}));
         logger.log("third", serde_json::json!({}));
@@ -1007,9 +1139,83 @@ mod tests {
         assert_eq!(logger.events[2]["type"], "third");
     }
 
+    // The widened f64 spelled the same f32 with a tail of noise, so the editor rewrote
+    // 279 values on the first save of a session nobody had meaningfully changed.
+    #[test]
+    fn a_logged_param_is_spelled_as_the_f32_the_mixer_acts_on() {
+        assert_eq!(f64::from(0.95f32), 0.949999988079071);
+        assert_eq!(f32_json(0.95f32).to_string(), "0.95");
+    }
+
+    #[test]
+    fn narrowing_the_spelling_keeps_the_value() {
+        for value in [0.95f32, 0.123456789, -0.0499999, 1.0, 0.0, -1.0, 6.0, -26.0] {
+            let written = f32_json(value);
+            let read_back = written.as_f64().map(|wide| wide as f32);
+            assert_eq!(read_back, Some(value), "{written} lost {value}");
+        }
+    }
+
+    // The audio callback can fire between mutating the engine and writing the event,
+    // which put the command a whole buffer away from where it actually landed.
+    #[test]
+    fn a_logged_frame_is_the_one_captured_at_the_mutation() {
+        let frames = Arc::new(std::sync::atomic::AtomicU64::new(4096));
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::clone(&frames),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+
+        let at_mutation = frames.load(std::sync::atomic::Ordering::Relaxed);
+        // A callback completes before the event reaches the log.
+        frames.store(4096 + 512, std::sync::atomic::Ordering::Relaxed);
+        logger.log_at(at_mutation, "play", serde_json::json!({ "deck": "A" }));
+
+        assert_eq!(logger.events[0]["frame"], 4096);
+    }
+
+    // Arming reads the clock from the command thread, which cannot see whether the buffer
+    // already in flight reached the file. Only the tap that sent it knows.
+    #[test]
+    fn frames_are_rebased_onto_the_buffer_the_tap_actually_captured() {
+        let frames = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let capture_start = Arc::new(std::sync::atomic::AtomicU64::new(audio::NOT_CAPTURING));
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::clone(&frames),
+            Arc::clone(&capture_start),
+        );
+
+        logger.log_at(8192, "recording_start", serde_json::json!({}));
+        logger.log_at(8192 + 256, "play", serde_json::json!({ "deck": "A" }));
+        capture_start.store(8192, std::sync::atomic::Ordering::Relaxed);
+        logger.rebase_frames();
+
+        assert_eq!(logger.events[0]["frame"], 0);
+        assert_eq!(logger.events[1]["frame"], 256);
+    }
+
+    #[test]
+    fn a_session_whose_audio_never_reached_the_file_carries_no_frames() {
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(audio::NOT_CAPTURING)),
+        );
+        logger.log_at(512, "play", serde_json::json!({ "deck": "A" }));
+        logger.rebase_frames();
+
+        assert!(logger.events[0].get("frame").is_none());
+    }
+
     #[test]
     fn session_logger_merges_payload_fields() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.log("play", serde_json::json!({ "deck": "A", "rate": 1.0 }));
         let event = &logger.events[0];
         assert_eq!(event["type"], "play");
@@ -1019,7 +1225,11 @@ mod tests {
 
     #[test]
     fn session_logger_timestamps_are_non_negative() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.log("e", serde_json::json!({}));
         let elapsed_ms = logger.events[0]["elapsed_ms"].as_f64().unwrap();
         assert!(elapsed_ms >= 0.0);
@@ -1027,7 +1237,11 @@ mod tests {
 
     #[test]
     fn session_logger_stop_produces_valid_json() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.log("recording_start", serde_json::json!({}));
         logger.stop();
         let pending = logger
@@ -1044,7 +1258,11 @@ mod tests {
     // nothing to check against and falls back to assuming the classic one.
     #[test]
     fn session_logger_stamps_the_mixer_it_recorded_on() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.stop();
         let parsed: serde_json::Value =
             serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
@@ -1063,7 +1281,11 @@ mod tests {
     // recording made on a mixer other than the one that constant names.
     #[test]
     fn session_logger_stamps_the_mixer_it_was_given() {
-        let mut logger = SessionLogger::new(&session_core::ISOLATOR_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::ISOLATOR_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.stop();
         let parsed: serde_json::Value =
             serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
@@ -1076,7 +1298,11 @@ mod tests {
 
     #[test]
     fn session_logger_take_pending_clears_state() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.stop();
         assert!(logger.take_pending().is_some());
         assert!(logger.take_pending().is_none());
@@ -1084,7 +1310,11 @@ mod tests {
 
     #[test]
     fn session_logger_stop_clears_events() {
-        let mut logger = SessionLogger::new(&session_core::CLASSIC_3BAND);
+        let mut logger = SessionLogger::new(
+            &session_core::CLASSIC_3BAND,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
         logger.log("a", serde_json::json!({}));
         logger.log("b", serde_json::json!({}));
         logger.stop();

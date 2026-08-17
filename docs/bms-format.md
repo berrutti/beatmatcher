@@ -95,6 +95,10 @@ The crossfader arrived in the `-v2` manifests. `classic-3band` and `isolator-3ba
 
 Recording writes the curve once at `recording_start`, because nothing else in the session would say which taper the fader moves were played through. All three curves hold both ends of the throw exactly, so the CUE sheet's audibility test is unaffected by the choice.
 
+## Mixer state at record start
+
+`recording_start` is followed by a `set_param` for every strip param that is not at its manifest default, one per deck. A knob moved before recording began is otherwise lost, and a reader replays the manifest default in its place: an engaged filter read as bypassed, so a whole sweep was silent in the render. Params already at their default are skipped, for the same reason a `thru` crossfader assign is.
+
 ## Jog wheel
 
 `jog` records the wheel's own input, because its effect is computed per audio block and is never known on the thread that logs. `ticks` already carries the shift scale, so a replay needs no shift state.
@@ -108,9 +112,13 @@ Recording writes the curve once at `recording_start`, because nothing else in th
 
 A tick is worth `0.002 s` of audio at 33. A paused deck scrubs that distance and a playing one bends by a hundredth of it. The engine spreads the travel over a 40 ms filter settle, which changes when it arrives and never how much, so a reader that wants only the total can ignore the filter.
 
-## Latency compensation
+## Command timing
 
-The live audio engine applies commands on the next callback after they fire. The offline renderer offsets every event by `buffer_size_frames` samples (read from the `recording_start` event, defaulting to 512) so rendered output aligns with the original live recording.
+Nothing is compensated. `elapsed_ms` is stamped in Rust when the command arrives, so the hop from the frontend is already outside it, and the renderer applies each command exactly where the live engine did.
+
+Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. The renderer reproduces this by rounding each event up to the next `buffer_size_frames` boundary, read from the `recording_start` event (defaulting to 512, the value the recorder stamps when the buffer-size setting is "default").
+
+The resulting delay is whatever reaches the boundary, between zero and one buffer, not a fixed offset: measured at 35 frames on a 128-frame buffer. Adding a fixed buffer to every event, or assuming a buffer size the recording did not use, puts every deck out.
 
 ## Offline render
 

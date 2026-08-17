@@ -4,14 +4,15 @@ import type {
   LoadedSpan,
   DeckLanes,
   LanePoint,
-  NudgeSpan,
   EditableLaneKey,
   MasterLaneKey,
   DeckId
 } from '@renderer/utils/types';
 import { DECK_ACCENTS, DECK_LANE_KEYS } from '@renderer/utils/types';
 import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
+import { jogLaneColumns, jogLaneScale } from '@renderer/utils/jogLane';
 import { formatMs } from '@renderer/utils/time';
+import { beatLineStep } from '@renderer/utils/beatGrid';
 import {
   overlapsRange,
   msToFrac,
@@ -30,8 +31,7 @@ export type WaveformRegion = { startSec: number; endSec: number; amps: Float32Ar
 export type TrackWaveform = WaveformRegion & { base?: WaveformRegion };
 
 export const DECK_ORDER = ['A', 'B', 'C', 'D'] as const;
-// Waveform/clip band height. Taller than the old 44 so the (now higher-res)
-// waveform and beat grid are legible.
+// Tall enough for the waveform and beat grid to stay legible together.
 export const ROW_H = 80;
 export const LABEL_W = 32;
 export const TICK_H = 16;
@@ -42,6 +42,8 @@ export const OVERVIEW_H = 22;
 export const OVERVIEW_GAP = 4;
 
 export type LaneKey = (typeof DECK_LANE_KEYS)[number];
+// The wheel lane has no manifest spec: it plots gestures, not a mixer param.
+type SpecLaneKey = Exclude<LaneKey, 'jog'>;
 
 const BAR_HALF_HEIGHT_FRACTION = 0.45;
 const BEAT_LINE_COLOR = '#ffffff1f';
@@ -108,6 +110,13 @@ const CLIP_BAND_INSET_Y = 4;
 const BPM_LABEL_MIN_PX = 30;
 const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
+const JOG_FILL_COLOR = '#fbbf24cc';
+const JOG_SCALE_LABEL_COLOR = '#777';
+const JOG_SHORT_LABEL = 'JOG';
+const JOG_LANE_RULE_H = 1;
+const JOG_SCALE_LABEL_INSET_PX = 3;
+// Below this a tenth of a percent still reads; above it the decimal is noise.
+const JOG_SCALE_LABEL_COARSE_PCT = 10;
 const NUDGE_LINE_W = 2;
 const OVERVIEW_BORDER_COLOR = '#222';
 const OVERVIEW_CLIP_ALPHA = 'aa';
@@ -281,8 +290,6 @@ function drawClipWaveform(
     const columnStart = Math.max(0, Math.floor(Math.max(visibleLeft, segX0) - segX0));
     const columnEnd = Math.ceil(Math.min(visibleRight, segX0 + segWidth) - segX0);
     for (let column = columnStart; column < columnEnd; column++) {
-      // The track-time window this column covers, then sample the high-detail
-      // region first and fall back to the coarse base while detail is loading.
       const columnStartSec = seg.trackStartSec + (column / segWidth) * segTrackSpan;
       const columnEndSec = seg.trackStartSec + ((column + 1) / segWidth) * segTrackSpan;
       const amp =
@@ -297,9 +304,8 @@ function drawClipWaveform(
   ctx.restore();
 }
 
-// Beat grid over a clip, drawn per wave segment so the lines compress/stretch
-// with the waveform when the rate changes. Ported from EditWaveform's LOD steps
-// (1 -> 4 -> 16 -> ... beats), but mapped through each segment's track->wall rate.
+// Drawn per wave segment, mapped through each segment's track->wall rate, so the
+// lines compress and stretch with the waveform when the rate changes.
 function drawClipBeatGrid(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -328,8 +334,7 @@ function drawClipBeatGrid(
     const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
     if (pxPerBeat < BEAT_LINE_W) continue;
 
-    let step = 1;
-    while (pxPerBeat * step < MIN_BEAT_SPACING_PX) step *= BEATS_PER_BAR;
+    const step = beatLineStep(pxPerBeat, MIN_BEAT_SPACING_PX, BEATS_PER_BAR);
 
     const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
     const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);
@@ -509,7 +514,7 @@ function drawRateLane(
 }
 
 function drawSpecLane(
-  key: LaneKey,
+  key: SpecLaneKey,
   ctx: CanvasRenderingContext2D,
   points: LanePoint[],
   color: string,
@@ -538,7 +543,7 @@ type LaneDrawer = (
   specs: LaneSpecs
 ) => void;
 
-const LANE_DRAWERS: Record<LaneKey, LaneDrawer> = {
+const LANE_DRAWERS: Record<SpecLaneKey, LaneDrawer> = {
   gain: (ctx, _canvasWidth, deckData, laneY, laneH, msToX, viewStart, viewEnd, specs) =>
     drawSpecLane(
       'gain',
@@ -627,8 +632,10 @@ export function drawDeckLanes(
   const specs = laneSpecs(mixerId);
   for (let laneIdx = 0; laneIdx < sublanes.length; laneIdx++) {
     const { key, top, height } = sublanes[laneIdx];
+    if (key === 'jog') continue;
+    const previous = laneIdx > 0 ? sublanes[laneIdx - 1].key : null;
     const group = specs[key].laneGroup;
-    const prevGroup = laneIdx > 0 ? specs[sublanes[laneIdx - 1].key].laneGroup : -1;
+    const prevGroup = previous && previous !== 'jog' ? specs[previous].laneGroup : -1;
     const trackW = canvasWidth - LABEL_W - PADDING;
 
     ctx.fillStyle = group % 2 === 0 ? LANE_GROUP_BG_COLOR_EVEN : LANE_GROUP_BG_COLOR_ODD;
@@ -761,23 +768,51 @@ export function drawClipSelection(
   ctx.strokeRect(selectionX + 0.5, selectionY + 0.5, selectionWidth - 1, selectionHeight - 1);
 }
 
-export function drawNudgeSpans(
+// Zero is centred: above the line is forward, below is reverse, height is speed.
+export function drawJogLane(
   ctx: CanvasRenderingContext2D,
-  nudgeSpans: NudgeSpan[],
-  rowY: number,
-  rowH: number,
-  msToX: (ms: number) => number
+  canvasWidth: number,
+  laneY: number,
+  laneH: number,
+  curve: LanePoint[],
+  xToMs: (x: number) => number
 ): void {
-  if (nudgeSpans.length === 0) return;
-  const innerY = rowY + CLIP_BAND_INSET_Y;
-  const innerHeight = rowH - 2 * CLIP_BAND_INSET_Y;
-  ctx.fillStyle = NUDGE_COLOR;
-  for (const span of nudgeSpans) {
-    const nudgeX = msToX(span.startMs);
-    const nudgeWidth = Math.max(2, msToX(span.endMs) - nudgeX);
-    const nudgeLineY = span.percent > 0 ? innerY - NUDGE_LINE_W : innerY + innerHeight;
-    ctx.fillRect(nudgeX, nudgeLineY, nudgeWidth, NUDGE_LINE_W);
+  const trackW = canvasWidth - LABEL_W - PADDING;
+  ctx.fillStyle = LANE_GROUP_BG_COLOR_EVEN;
+  ctx.fillRect(LABEL_W, laneY, trackW, laneH);
+  ctx.fillStyle = LANE_BORDER_COLOR_SAME_GROUP;
+  ctx.fillRect(LABEL_W, laneY, trackW, JOG_LANE_RULE_H);
+
+  const centerY = laneY + laneH / 2;
+  const halfH = laneH / 2 - laneValuePad(laneH);
+  ctx.fillStyle = LANE_CENTER_LINE_COLOR;
+  ctx.fillRect(LABEL_W, centerY, trackW, JOG_LANE_RULE_H);
+  if (halfH <= 0) return;
+
+  const columns = jogLaneColumns(curve, Math.ceil(trackW), (column) => xToMs(LABEL_W + column));
+  const scale = jogLaneScale(columns);
+
+  ctx.fillStyle = JOG_FILL_COLOR;
+  for (let column = 0; column < columns.length; column++) {
+    const height = (columns[column] / scale) * halfH;
+    if (height === 0) continue;
+    ctx.fillRect(LABEL_W + column, centerY - Math.max(height, 0), 1, Math.abs(height));
   }
+
+  drawJogLaneScale(ctx, scale, laneY);
+}
+
+function drawJogLaneScale(ctx: CanvasRenderingContext2D, scale: number, laneY: number): void {
+  ctx.fillStyle = JOG_SCALE_LABEL_COLOR;
+  ctx.font = LABEL_FONT;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const digits = scale < JOG_SCALE_LABEL_COARSE_PCT ? 1 : 0;
+  ctx.fillText(
+    `±${scale.toFixed(digits)}%`,
+    LABEL_W + JOG_SCALE_LABEL_INSET_PX,
+    laneY + JOG_SCALE_LABEL_INSET_PX
+  );
 }
 
 export function drawOverview(
@@ -965,7 +1000,7 @@ export function drawDeckRowChrome(
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
     ctx.font = BOLD_LABEL_FONT;
     ctx.fillText(
-      laneSpecs(mixerId)[lane.key].shortLabel,
+      lane.key === 'jog' ? JOG_SHORT_LABEL : laneSpecs(mixerId)[lane.key].shortLabel,
       LABEL_W / 2,
       centerY - LANE_LABEL_OFFSET_PX
     );
@@ -1052,7 +1087,12 @@ export function drawNudgeGesturePreview(
   msToX: (ms: number) => number,
   canvasW: number
 ): void {
-  drawNudgeSpans(ctx, [{ startMs, endMs, percent }], rowTop, rowH, msToX);
+  const innerY = rowTop + CLIP_BAND_INSET_Y;
+  const barY = percent > 0 ? innerY - NUDGE_LINE_W : innerY + rowH - 2 * CLIP_BAND_INSET_Y;
+  const barX = msToX(startMs);
+  ctx.fillStyle = NUDGE_COLOR;
+  ctx.fillRect(barX, barY, Math.max(NUDGE_LINE_W, msToX(endMs) - barX), NUDGE_LINE_W);
+
   const label = `${percent > 0 ? '+' : ''}${percent}%`;
   const labelX = Math.min(
     msToX(cursorMs) + GESTURE_LABEL_CURSOR_GAP_PX,

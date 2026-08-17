@@ -1,6 +1,7 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
@@ -70,7 +71,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function fetchRegion(req: RegionRequest, path: string): Promise<WaveformRegion> {
-    const amps = await invoke<number[]>('get_track_amplitude_region', {
+    const amps = await call('get_track_amplitude_region', {
       path,
       startSec: req.startSec,
       endSec: req.endSec,
@@ -164,7 +165,7 @@ export const useSessionStore = defineStore('session', () => {
       return;
     }
     try {
-      const sizes = await invoke<(number | null)[]>('files_info', { paths });
+      const sizes = await call('files_info', { paths });
       missingTracks.value = paths.filter(
         (_, index) => sizes[index] === null || sizes[index] === undefined
       );
@@ -196,7 +197,7 @@ export const useSessionStore = defineStore('session', () => {
 
   function applyAudibility() {
     for (const deck of DECKS_DISPOSITION) {
-      invoke('set_deck_muted', { deck, muted: !deckAudible(deck) }).catch(() => {});
+      call('set_deck_muted', { deck, muted: !deckAudible(deck) }).catch(() => {});
     }
   }
 
@@ -293,7 +294,7 @@ export const useSessionStore = defineStore('session', () => {
       raw: raw as unknown as Record<string, unknown>
     };
 
-    invoke('preload_session', { path }).catch(() => {
+    call('preload_session', { path }).catch(() => {
       if (loadProgress.value?.path !== path) return;
       loadProgress.value = null;
     });
@@ -308,7 +309,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function openSessionFromPath(path: string): Promise<boolean> {
-    const content = await invoke<string>('read_file', { path }).catch(() => null);
+    const content = await call('read_file', { path }).catch(() => null);
     if (!content) return openSession();
     return loadFromFile(path, content);
   }
@@ -339,7 +340,7 @@ export const useSessionStore = defineStore('session', () => {
     if (!session.value || isLoading.value) return;
     isPlaying.value = true;
     try {
-      await invoke('start_session_playback', { path: session.value.path, fromMs });
+      await call('start_session_playback', { path: session.value.path, fromMs });
     } catch {
       isPlaying.value = false;
     }
@@ -347,7 +348,7 @@ export const useSessionStore = defineStore('session', () => {
 
   async function stop(): Promise<void> {
     isPlaying.value = false;
-    await invoke('stop_session_playback');
+    await call('stop_session_playback');
   }
 
   async function unload(): Promise<void> {
@@ -358,7 +359,7 @@ export const useSessionStore = defineStore('session', () => {
     loadProgress.value = null;
     waveforms.value = new Map();
     waveformTarget.clear();
-    if (path) await invoke('unload_session', { path }).catch(() => {});
+    if (path) await call('unload_session', { path }).catch(() => {});
   }
 
   async function exit(): Promise<void> {

@@ -1,5 +1,16 @@
 // Audio EQ Cookbook biquad (Robert Bristow-Johnson), Direct Form II Transposed.
 
+/// A tail decaying into denormals keeps a bit pattern that depends on the history that got
+/// it there, so two mixers on the same signal stop agreeing 800 dB below anything audible.
+#[inline]
+fn flush_denormal(value: f32) -> f32 {
+    if value.abs() < 1.0e-30 {
+        0.0
+    } else {
+        value
+    }
+}
+
 #[derive(Copy, Clone)]
 pub(crate) struct Biquad {
     pub(crate) b0: f32,
@@ -27,8 +38,8 @@ impl Biquad {
     #[inline]
     pub(crate) fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.delay1;
-        self.delay1 = self.b1 * x - self.a1 * y + self.delay2;
-        self.delay2 = self.b2 * x - self.a2 * y;
+        self.delay1 = flush_denormal(self.b1 * x - self.a1 * y + self.delay2);
+        self.delay2 = flush_denormal(self.b2 * x - self.a2 * y);
         y
     }
 
@@ -200,8 +211,6 @@ impl Biquad {
         }
     }
 }
-
-// Low/high: two cascaded 2nd-order shelves (4th-order, kills decisively); mid: one wide-Q peak.
 
 const EQ_LOW_SHELF_HZ: f32 = 200.0;
 const EQ_MID_PEAK_HZ: f32 = 1000.0;
@@ -427,6 +436,15 @@ impl FilterState {
     }
 }
 
+/// Every output path ends here, so the live and offline chains cannot drift apart.
+#[inline]
+pub(crate) fn master_output(limiter: Option<&mut LimiterState>, l: f32, r: f32) -> (f32, f32) {
+    match limiter {
+        Some(limiter) => limiter.process(l, r),
+        None => (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)),
+    }
+}
+
 // True-peak brickwall: instantaneous attack (no sample exceeds THRESHOLD), ~150ms release.
 
 pub(crate) struct LimiterState {
@@ -470,6 +488,19 @@ impl LimiterState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_biquad_fed_silence_settles_on_exactly_zero() {
+        let mut filter = Biquad::peaking(48_000.0, 1_000.0, 0.7, 6.0);
+        for _ in 0..64 {
+            filter.process(1.0);
+        }
+        for _ in 0..4_000_000 {
+            filter.process(0.0);
+        }
+        assert_eq!(filter.delay1, 0.0);
+        assert_eq!(filter.delay2, 0.0);
+    }
+
     use super::*;
 
     fn sine_wave(freq_hz: f32, sample_rate: f32, n: usize) -> Vec<f32> {

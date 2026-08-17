@@ -1,10 +1,3 @@
-// Clip (transport block) editing: move and trim the draggable play segments on
-// the timeline by rewriting the event stream. A faithful port of the frontend's
-// clipEditOps.ts so the editor runs the SAME logic via WASM.
-//
-// A TransportBlock is one draggable unit: a regular play segment, or a whole run
-// of loop iterations (which always moves as a unit). Mixer/automation events are
-// deliberately untouched by moves/trims: automation stays at wall time.
 
 use crate::event::SessionEvent;
 use crate::timeline::{Clip, LoopRegion};
@@ -236,7 +229,7 @@ fn neighborhood_of(
 }
 
 // Signed audio seconds the deck advances between two session times, following
-// the piecewise-constant rate curve and nudges.
+// the piecewise-constant rate curve and nudges, plus the steps the jog wheel adds.
 fn audio_seconds_between(
     events: &[SessionEvent],
     deck: &str,
@@ -253,9 +246,17 @@ fn audio_seconds_between(
 
     let mut rate = fallback_rate;
     let mut nudge = 1.0;
+    let mut speed = crate::JogRotationSpeed::default();
     let mut total = 0.0;
     let mut cursor = lower;
     for event in events {
+        if event.event_type == "set_jog_rotation_speed" {
+            if event.elapsed_ms >= upper {
+                break;
+            }
+            speed = crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
+            continue;
+        }
         if event.deck.as_deref() != Some(deck) {
             continue;
         }
@@ -265,7 +266,8 @@ fn audio_seconds_between(
         let is_rate = event.event_type == "set_playback_rate" && event.rate.is_some();
         let is_snapshot = event.event_type == "deck_snapshot" && event.playback_rate.is_some();
         let is_nudge = event.event_type == "set_nudge" && event.percent.is_some();
-        if !is_rate && !is_snapshot && !is_nudge {
+        let is_jog = event.event_type == "jog" && event.ticks.is_some();
+        if !is_rate && !is_snapshot && !is_nudge && !is_jog {
             continue;
         }
         if event.elapsed_ms > lower {
@@ -280,6 +282,12 @@ fn audio_seconds_between(
         }
         if is_nudge {
             nudge = 1.0 + event.percent.unwrap() / 100.0;
+        }
+        // The deck is playing across this window by construction, so the wheel bends
+        // rather than scrubs.
+        if is_jog && event.elapsed_ms >= lower {
+            total += rate * event.ticks.unwrap() * speed.sec_per_tick()
+                / crate::JOG_PAUSED_MULTIPLIER;
         }
     }
     total += ((upper - cursor) / 1000.0) * rate * nudge;
@@ -454,9 +462,7 @@ pub fn move_transport_block(
             continue;
         }
         if in_load_window(event) {
-            let mut out = event.clone();
-            out.elapsed_ms = (event.elapsed_ms + load_shift).min(new_start);
-            kept.push(out);
+            kept.push(event.synthesized_at((event.elapsed_ms + load_shift).min(new_start)));
             continue;
         }
         if event.deck.as_deref() != Some(deck) || !is_transport(&event.event_type) {
@@ -491,9 +497,7 @@ pub fn move_transport_block(
         if near(ms, t1) {
             continue;
         }
-        let mut out = event.clone();
-        out.elapsed_ms = ms + applied;
-        kept.push(out);
+        kept.push(event.synthesized_at(ms + applied));
     }
 
     if prev_glued {
@@ -1055,6 +1059,62 @@ mod tests {
             .iter()
             .find(|e| e.event_type == event_type && near(e.elapsed_ms, ms))
             .cloned()
+    }
+
+    #[test]
+    fn audio_seconds_between_counts_jog_travel() {
+        let events = vec![SessionEvent {
+            ticks: Some(1000.0),
+            ..ev(500.0, "jog", "A")
+        }];
+        let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
+        assert!((advanced - 1.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audio_seconds_between_scales_jog_by_the_rate_in_force() {
+        let events = vec![
+            SessionEvent {
+                rate: Some(2.0),
+                ..ev(100.0, "set_playback_rate", "A")
+            },
+            SessionEvent {
+                ticks: Some(1000.0),
+                ..ev(500.0, "jog", "A")
+            },
+        ];
+        let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
+        assert!((advanced - (0.1 + 1.8 + 0.04)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audio_seconds_between_honours_the_rotation_speed() {
+        let events = vec![
+            SessionEvent {
+                speed: Some("rpm45".to_string()),
+                ..SessionEvent {
+                    deck: None,
+                    ..ev(10.0, "set_jog_rotation_speed", "A")
+                }
+            },
+            SessionEvent {
+                ticks: Some(1000.0),
+                ..ev(500.0, "jog", "A")
+            },
+        ];
+        let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
+        let expected = 1.0 + 0.02 * (100.0 / 3.0) / 45.0;
+        assert!((advanced - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audio_seconds_between_reverses_jog_travel_when_walking_backwards() {
+        let events = vec![SessionEvent {
+            ticks: Some(1000.0),
+            ..ev(500.0, "jog", "A")
+        }];
+        let advanced = audio_seconds_between(&events, "A", 1000.0, 0.0, 1.0);
+        assert!((advanced + 1.02).abs() < 1e-9);
     }
 
     #[test]
@@ -1807,6 +1867,45 @@ mod tests {
         assert_eq!(rebuilt.len(), 1);
         assert!((rebuilt[0].session_end_ms - 3000.0).abs() < 1.0);
     }
+
+    #[test]
+    fn moving_a_block_leaves_mixer_events_where_they_were() {
+        let events = vec![
+            SessionEvent {
+                path: Some("/t/a.mp3".to_string()),
+                ..ev(0.0, "load_track", "A")
+            },
+            ev(1000.0, "play", "A"),
+            SessionEvent {
+                slot: Some("fader".to_string()),
+                param: Some("gain".to_string()),
+                value: Some(0.5),
+                ..ev(2000.0, "set_param", "A")
+            },
+            SessionEvent {
+                slot: Some("eq".to_string()),
+                param: Some("low".to_string()),
+                value: Some(-6.0),
+                ..ev(3000.0, "set_param", "A")
+            },
+            ev(5000.0, "stop", "A"),
+        ];
+        let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
+        let block = blocks_for_deck(&clips, "A")[0].clone();
+
+        let result = move_transport_block(&events, &clips, &block, 1000.0);
+        assert_eq!(result.applied_delta_ms, 1000.0);
+
+        let moved_ms: Vec<f64> = result
+            .events
+            .iter()
+            .filter(|event| event.event_type == "set_param")
+            .map(|event| event.elapsed_ms)
+            .collect();
+        assert_eq!(moved_ms, vec![2000.0, 3000.0]);
+        assert!(find(&result.events, "play", 2000.0).is_some());
+    }
+
 }
 
 // Randomised sweeps over the edit operations. Block geometry interacts with neighbours,
@@ -2071,5 +2170,23 @@ mod fuzz {
         println!("SEMANTIC fuzz: delete {del_bad}/{del_n} | split {split_bad}/{split_n} | move {move_bad}/{move_n}");
         for e in &examples { println!("   {e}"); }
         assert_eq!(del_bad + split_bad + move_bad, 0);
+    }
+}
+
+#[cfg(test)]
+mod synthesized_events_carry_no_frame {
+    use super::*;
+
+    #[test]
+    fn synthesizing_an_event_drops_its_frame() {
+        let recorded = SessionEvent {
+            frame: Some(44_100),
+            ..SessionEvent::at(1000.0, "play", "A")
+        };
+        let moved = recorded.synthesized_at(2000.0);
+        assert_eq!(moved.elapsed_ms, 2000.0);
+        assert_eq!(moved.frame, None);
+        assert_eq!(moved.event_type, recorded.event_type);
+        assert_eq!(moved.deck, recorded.deck);
     }
 }

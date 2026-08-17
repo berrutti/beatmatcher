@@ -250,6 +250,7 @@
       "eqLow": "EQ Bass",
       "eqMid": "EQ Mitten",
       "eqHigh": "EQ Höhen",
+      "jog": "Jog",
       "masterGain": "Master",
       "xfader": "Crossfader"
     },

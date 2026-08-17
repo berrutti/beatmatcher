@@ -49,6 +49,7 @@
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
           :deck-nudges="deckNudges"
+          :deck-jog="deckJog"
           :waveforms="session.waveforms"
           @seek="onSeek"
         />
@@ -136,7 +137,7 @@ const mixer = useMixerStore();
 const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans, deckLanes, masterLanes, deckNudges } = useSessionTimeline(
+const { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path),
   (path) => {

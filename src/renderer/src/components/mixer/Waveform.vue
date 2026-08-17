@@ -18,6 +18,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { spectralColor } from '@renderer/utils/waveformImage';
+import { beatLineStep, beatTier } from '@renderer/utils/beatGrid';
+import { loopRegionRect, drawLoopRegionOverlay } from '@renderer/utils/loopRegionRect';
+import { computeCanvasSize } from '@renderer/utils/canvasResize';
 
 type WaveformStripsSource = {
   getPosition: () => number;
@@ -27,6 +30,8 @@ type WaveformStripsSource = {
   getDenseData: () => Float32Array | null;
   getDenseRate: () => number;
   isWaveformLoading: () => boolean;
+  getLoopRegion: () => { startSec: number; endSec: number } | null;
+  getLoopActive: () => boolean;
   accent: string;
 };
 
@@ -39,6 +44,23 @@ const emit = defineEmits<{
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_CROSS = 256;
+const MIN_BEAT_LINE_SPACING_PX = 6;
+const BEATS_PER_BAR = 4;
+const BEATS_PER_PHRASE = 16;
+const BEAT_LINE_ALPHA = 0.35;
+// Device pixels, not CSS lineWidth, since these are fillRect not stroke.
+const BEAT_LINE_DEVICE_WIDTH = 2;
+const BAR_LINE_OUTLINE_DEVICE_WIDTH = 6;
+const BAR_LINE_CORE_DEVICE_WIDTH = 2;
+const BAR_LINE_OUTLINE_COLOR = 'rgba(0,0,0,0.9)';
+const BAR_LINE_CORE_COLOR = '#ffffff';
+const BAR_MARKER_TRI_W = 5;
+const BAR_MARKER_TRI_H = 6;
+const BAR_MARKER_FILL_COLOR = '#ffffff';
+const BAR_MARKER_OUTLINE_COLOR = '#000000';
+const BAR_MARKER_OUTLINE_WIDTH = 1.5;
+const EMPTY_STRIP_BG = '#141414';
+const STRIP_SEPARATOR_COLOR = '#2a2a2a';
 // Pre-render ±30s around the playhead. At 250 pts/sec this caps the offscreen
 // at 15,000 columns, well within WebKit's ~32k canvas dimension limit.
 const BUFFER_SEC = 30;
@@ -245,9 +267,197 @@ async function buildOffscreenWindow(i: number, centerPos: number, mainSize: numb
   state.isBuilding = false;
 }
 
+function stripXFor(width: number, pos: number, rate: number, sec: number): number {
+  return width / 2 + (((sec - pos) / rate) * width) / (2 * HALF_WINDOW_SEC);
+}
+
+function snapToDevicePixel(x: number, dpr: number): number {
+  return Math.round(x * dpr) / dpr;
+}
+
+function drawEmptyStrip(
+  ctx: CanvasRenderingContext2D,
+  y0: number,
+  width: number,
+  stripH: number
+): void {
+  ctx.fillStyle = EMPTY_STRIP_BG;
+  ctx.fillRect(0, y0, width, stripH);
+}
+
+function drawStripWaveform(
+  ctx: CanvasRenderingContext2D,
+  bitmap: HTMLCanvasElement,
+  numSteps: number,
+  y0: number,
+  width: number,
+  stripH: number,
+  tx: number,
+  scaleX: number
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, y0, width, stripH);
+  ctx.clip();
+  ctx.drawImage(bitmap, 0, 0, numSteps, OFFSCREEN_CROSS, tx, y0, numSteps * scaleX, stripH);
+  ctx.restore();
+}
+
+function drawLoopRegion(
+  ctx: CanvasRenderingContext2D,
+  y0: number,
+  width: number,
+  stripH: number,
+  region: { startSec: number; endSec: number },
+  active: boolean,
+  xFor: (sec: number) => number
+): void {
+  const rect = loopRegionRect(xFor, region, width);
+  if (!rect) return;
+  drawLoopRegionOverlay(ctx, rect, y0, stripH, active);
+}
+
+// A stroke's anti-aliased edge would shimmer as position scrolls; a pixel-aligned fill can't.
+function fillPixelLine(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  y0: number,
+  height: number,
+  devicePxWidth: number,
+  dpr: number,
+  color: string
+): void {
+  const leftDevicePx = Math.round(centerX * dpr) - devicePxWidth / 2;
+  ctx.fillStyle = color;
+  ctx.fillRect(leftDevicePx / dpr, y0, devicePxWidth / dpr, height);
+}
+
+function drawPlainBeatLine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y0: number,
+  stripH: number,
+  dpr: number
+): void {
+  const color = `rgba(255,255,255,${BEAT_LINE_ALPHA})`;
+  fillPixelLine(ctx, x, y0, stripH, BEAT_LINE_DEVICE_WIDTH, dpr, color);
+}
+
+function drawBarLine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y0: number,
+  stripH: number,
+  dpr: number
+): void {
+  fillPixelLine(ctx, x, y0, stripH, BAR_LINE_OUTLINE_DEVICE_WIDTH, dpr, BAR_LINE_OUTLINE_COLOR);
+  fillPixelLine(ctx, x, y0, stripH, BAR_LINE_CORE_DEVICE_WIDTH, dpr, BAR_LINE_CORE_COLOR);
+}
+
+function drawTriangle(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  yBase: number,
+  pointHeight: number
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x - BAR_MARKER_TRI_W, yBase);
+  ctx.lineTo(x + BAR_MARKER_TRI_W, yBase);
+  ctx.lineTo(x, yBase + pointHeight);
+  ctx.closePath();
+  ctx.fillStyle = BAR_MARKER_FILL_COLOR;
+  ctx.strokeStyle = BAR_MARKER_OUTLINE_COLOR;
+  ctx.lineWidth = BAR_MARKER_OUTLINE_WIDTH;
+  ctx.stroke();
+  ctx.fill();
+}
+
+// Two triangles so a bar reads at a glance instead of only through line density.
+function drawBarMarker(ctx: CanvasRenderingContext2D, x: number, y0: number, stripH: number): void {
+  ctx.save();
+  drawTriangle(ctx, x, y0, BAR_MARKER_TRI_H);
+  drawTriangle(ctx, x, y0 + stripH, -BAR_MARKER_TRI_H);
+  ctx.restore();
+}
+
+// LOD-stepped so lines stay legibly spaced instead of overlapping into noise
+// at high BPM or when zoomed out.
+function drawBeatGrid(
+  ctx: CanvasRenderingContext2D,
+  y0: number,
+  width: number,
+  stripH: number,
+  bpm: number,
+  beatOffset: number,
+  rate: number,
+  pos: number,
+  xFor: (sec: number) => number,
+  dpr: number
+): void {
+  const beatPeriod = 60 / bpm;
+  const audioHalfWindow = HALF_WINDOW_SEC * rate;
+  const pxPerBeat = (beatPeriod / rate) * (width / (2 * HALF_WINDOW_SEC));
+  const step = beatLineStep(pxPerBeat, MIN_BEAT_LINE_SPACING_PX, BEATS_PER_BAR);
+
+  const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
+  const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
+
+  for (let bn = nStart; bn <= nEnd; bn++) {
+    if (bn % step !== 0) continue;
+    const tBeat = beatOffset + bn * beatPeriod;
+    const xBeat = xFor(tBeat);
+
+    if (beatTier(bn, BEATS_PER_BAR, BEATS_PER_PHRASE) === 'beat') {
+      drawPlainBeatLine(ctx, xBeat, y0, stripH, dpr);
+    } else {
+      drawBarLine(ctx, xBeat, y0, stripH, dpr);
+      drawBarMarker(ctx, xBeat, y0, stripH);
+    }
+  }
+}
+
+function drawLoadingOverlay(
+  ctx: CanvasRenderingContext2D,
+  y0: number,
+  width: number,
+  stripH: number
+): void {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, y0, width, stripH);
+}
+
+function drawPlayhead(ctx: CanvasRenderingContext2D, x: number, height: number): void {
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, height);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(220,30,30,1)';
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, height);
+  ctx.stroke();
+}
+
+function drawStripSeparators(
+  ctx: CanvasRenderingContext2D,
+  stripCount: number,
+  width: number,
+  stripH: number
+): void {
+  for (let i = 1; i < stripCount; i++) {
+    ctx.fillStyle = STRIP_SEPARATOR_COLOR;
+    ctx.fillRect(0, i * stripH, width, 1);
+  }
+}
+
 function draw() {
   const canvas = canvasEl.value;
   if (!canvas) return;
+  // Catches DPR changes too, not just CSS size (ResizeObserver misses those); no-ops if unchanged.
+  resizeCanvas(canvas);
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -283,7 +493,10 @@ function draw() {
       pos > bufferEndSec - edgeGuard;
 
     if (needsRebuild && !state.isBuilding) buildOffscreenWindow(i, pos, w, dpr).catch(() => {});
-    if (!state.canvas) continue;
+    if (!state.canvas) {
+      drawEmptyStrip(ctx, y0, w, stripH);
+      continue;
+    }
 
     // rate > 1 means pitched up: audio advances faster than real time, so the
     // waveform appears compressed horizontally (fewer audio seconds fit in the
@@ -295,91 +508,35 @@ function draw() {
     const txRaw = w / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleX;
     const tx = Math.round(txRaw * dpr) / dpr;
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, y0, w, stripH);
-    ctx.clip();
-    ctx.drawImage(
-      state.canvas,
-      0,
-      0,
-      state.numSteps,
-      OFFSCREEN_CROSS,
-      tx,
-      y0,
-      state.numSteps * scaleX,
-      stripH
-    );
-    ctx.restore();
+    drawStripWaveform(ctx, state.canvas, state.numSteps, y0, w, stripH, tx, scaleX);
 
-    // Beat grid markers. tBeat is in audio time; divide by rate to get real-time offset
+    const xFor = (sec: number) => stripXFor(w, pos, rate, sec);
+
+    const loopRegion = src.getLoopRegion();
+    if (loopRegion) drawLoopRegion(ctx, y0, w, stripH, loopRegion, src.getLoopActive(), xFor);
+
     const bpm = src.getBpm();
-    if (bpm !== null) {
-      const beatOffset = src.getBeatOffset();
-      const beatPeriod = 60 / bpm;
-      const audioHalfWindow = HALF_WINDOW_SEC * rate;
-      const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
-      const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
-
-      for (let bn = nStart; bn <= nEnd; bn++) {
-        const tBeat = beatOffset + bn * beatPeriod;
-        const xBeat = w / 2 + (((tBeat - pos) / rate) * w) / (2 * HALF_WINDOW_SEC);
-        const alpha = bn % 4 === 0 ? 0.8 : 0.4;
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = `rgba(0,0,0,${alpha})`;
-        ctx.beginPath();
-        ctx.moveTo(xBeat, y0);
-        ctx.lineTo(xBeat, y0 + stripH);
-        ctx.stroke();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
-        ctx.beginPath();
-        ctx.moveTo(xBeat, y0);
-        ctx.lineTo(xBeat, y0 + stripH);
-        ctx.stroke();
-      }
+    if (bpm !== null && bpm > 0) {
+      drawBeatGrid(ctx, y0, w, stripH, bpm, src.getBeatOffset(), rate, pos, xFor, dpr);
     }
 
-    // Vertical playhead. Same x across all strips; alignment = sync
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-    ctx.beginPath();
-    ctx.moveTo(w / 2, y0);
-    ctx.lineTo(w / 2, y0 + stripH);
-    ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(220,30,30,1)';
-    ctx.beginPath();
-    ctx.moveTo(w / 2, y0);
-    ctx.lineTo(w / 2, y0 + stripH);
-    ctx.stroke();
-
-    if (src.isWaveformLoading()) {
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(0, y0, w, stripH);
-    }
+    if (src.isWaveformLoading()) drawLoadingOverlay(ctx, y0, w, stripH);
   }
 
-  // Separators: drawn on top so waveform never covers them.
-  // Show whenever at least one adjacent strip is loaded; skip only between two empty strips.
-  for (let i = 1; i < n; i++) {
-    if (states[i - 1].canvas !== null || states[i].canvas !== null) {
-      ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(0, i * stripH, w, 1);
-    }
-  }
+  // x is the same for every strip, unlike the per-strip draws in the loop above.
+  drawPlayhead(ctx, snapToDevicePixel(w / 2, dpr), h);
+  drawStripSeparators(ctx, n, w, stripH);
 
   rafId = requestAnimationFrame(draw);
 }
 
 function resizeCanvas(canvas: HTMLCanvasElement) {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (!w || !h) return;
   const dpr = window.devicePixelRatio || 1;
-  if (canvas.width === w * dpr && canvas.height === h * dpr) return;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
+  const target = computeCanvasSize(canvas.clientWidth, canvas.clientHeight, dpr);
+  if (!target) return;
+  if (canvas.width === target.width && canvas.height === target.height) return;
+  canvas.width = target.width;
+  canvas.height = target.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.scale(dpr, dpr);

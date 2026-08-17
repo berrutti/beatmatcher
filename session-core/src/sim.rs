@@ -184,7 +184,7 @@ fn jog_settled(sim: &DeckSim, ms: f64) -> f64 {
         return 0.0;
     }
     let elapsed = (ms - sim.jog_ms).max(0.0) / 1000.0;
-    sim.jog_travel * (1.0 - (-elapsed / crate::JOG_FILTER_TAU_SEC).exp())
+    sim.jog_travel * crate::jog_settled_fraction(elapsed)
 }
 
 /// Banks the position reached so far and leaves the gesture its unsettled remainder, so
@@ -339,10 +339,10 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         }
         SessionCommand::Play { deck, sec } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            sim.play_start_frame = sec
-                .map(|s| s * sample_rate_f64)
-                .unwrap_or_else(|| sim_pos(sim, event.elapsed_ms, sample_rate_f64));
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
+            if let Some(sec) = sec {
+                sim.play_start_frame = sec * sample_rate_f64;
+            }
             sim.is_playing = true;
         }
         SessionCommand::Stop { deck } => {
@@ -355,17 +355,16 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             cue_point_sec,
         } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            let pos = cue_point_sec
-                .map(|sec| sec * sample_rate_f64)
-                .unwrap_or_else(|| sim_pos(sim, event.elapsed_ms, sample_rate_f64));
-            sim.play_start_frame = pos;
-            sim.play_start_ms = event.elapsed_ms;
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
+            if let Some(sec) = cue_point_sec {
+                sim.play_start_frame = sec * sample_rate_f64;
+            }
             sim.is_playing = false;
         }
         SessionCommand::Seek { deck, sec } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
+            commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.play_start_frame = sec * sample_rate_f64;
-            sim.play_start_ms = event.elapsed_ms;
             sim.loop_active =
                 sim.loop_active && (sec * sample_rate_f64 >= sim.loop_start) && (sec * sample_rate_f64 < sim.loop_end);
         }
@@ -1398,6 +1397,50 @@ mod tests {
         let expected = 6.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
         let settled = sim_pos(&state.decks["A"], 3000.0, SAMPLE_RATE_F64);
         assert!((settled - expected).abs() < 1e-6, "settled {settled}, want {expected}");
+    }
+
+    // A scrub that has already settled has moved the playhead, so an event that then
+    // sets a position must bank it and not leave it pending to be added a second time.
+    fn scrubbed_then(follow_up: SessionEvent) -> DeckSim {
+        let mut state = jogged(false, 1.0, 1000.0, "rpm33");
+        sim_apply_event(&follow_up, &mut state, &HashMap::new(), SAMPLE_RATE);
+        state.decks.remove("A").unwrap()
+    }
+
+    #[test]
+    fn play_after_a_scrub_starts_from_the_scrubbed_position() {
+        let deck = scrubbed_then(SessionEvent {
+            event_type: "play".to_string(),
+            elapsed_ms: 2000.0,
+            deck: Some("A".to_string()),
+            ..Default::default()
+        });
+        let scrubbed = 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
+        assert!((sim_pos(&deck, 2000.0, SAMPLE_RATE_F64) - scrubbed).abs() < 1e-3);
+    }
+
+    #[test]
+    fn seek_after_a_scrub_lands_on_the_seek_target() {
+        let deck = scrubbed_then(SessionEvent {
+            event_type: "seek".to_string(),
+            elapsed_ms: 2000.0,
+            deck: Some("A".to_string()),
+            sec: Some(30.0),
+            ..Default::default()
+        });
+        assert!((sim_pos(&deck, 2000.0, SAMPLE_RATE_F64) - 30.0 * SAMPLE_RATE_F64).abs() < 1e-3);
+    }
+
+    #[test]
+    fn stop_at_cue_after_a_scrub_lands_on_the_cue_point() {
+        let deck = scrubbed_then(SessionEvent {
+            event_type: "stopped_at_cue".to_string(),
+            elapsed_ms: 2000.0,
+            deck: Some("A".to_string()),
+            cue_point_sec: Some(12.0),
+            ..Default::default()
+        });
+        assert!((sim_pos(&deck, 2000.0, SAMPLE_RATE_F64) - 12.0 * SAMPLE_RATE_F64).abs() < 1e-3);
     }
 
     // 45 covers less audio per revolution, so the same tick is worth less.

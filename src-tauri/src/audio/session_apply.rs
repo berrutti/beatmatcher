@@ -133,15 +133,10 @@ pub(crate) fn apply_deck_command(
         SessionCommand::SetXfaderAssign { assign, .. } => {
             strip.set_xfader_assign(assign);
         }
-        // Master scope never reaches here: it has no deck, so callers route it
-        // separately.
         SessionCommand::SetFaderCurve { .. } => {}
-        // Master scope, and applied to every deck by the caller for the same reason.
         SessionCommand::SetJogRotationSpeed { .. } => {}
-        // Fed in as the wheel itself feeds it, so the filter, the shift scale and the
-        // paused-versus-playing split all stay in the one place that owns them.
         SessionCommand::Jog { ticks, .. } => {
-            deck.jog_pending += ticks;
+            deck.deposit_jog(ticks);
         }
         SessionCommand::SetParam {
             slot, param, value, ..

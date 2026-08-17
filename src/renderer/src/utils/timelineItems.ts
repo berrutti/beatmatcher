@@ -20,7 +20,7 @@ import {
   drawClipSelection,
   drawLoadedSpan,
   drawLoadedSpanLabel,
-  drawNudgeSpans,
+  drawJogLane,
   drawOverview,
   drawPlayhead,
   drawRowDividers,
@@ -44,9 +44,11 @@ import type {
   MasterLanes,
   MasterLaneKey,
   NudgeSpan,
+  LanePoint,
   FilterActiveSpan
 } from '@renderer/utils/types';
 import { MASTER_ROW_ID } from '@renderer/utils/types';
+import { nudgeSpanAt } from '@renderer/utils/jogLane';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 // Thin grab tolerance for edges/separators, in pixels.
@@ -219,27 +221,23 @@ export function blockAtPoint(
   return null;
 }
 
-export function nudgeItem(row: RowLayout, span: NudgeSpan, deck: string): SceneItem {
+// Read-only, because drawing a curve back into wheel ticks means inverting the filter.
+// The one hit it reports is the nudge span the deck menu deletes.
+export function jogLaneItem(
+  lane: SublaneLayout,
+  deck: string,
+  curve: LanePoint[],
+  nudgeSpans: NudgeSpan[]
+): SceneItem {
   return {
-    bounds: (viewContext) => ({
-      x: viewContext.msToX(span.startMs),
-      y: row.top,
-      w: viewContext.msToX(span.endMs) - viewContext.msToX(span.startMs),
-      h: row.waveformHeight
-    }),
+    bounds: (viewContext) => trackRect(viewContext, lane.top, lane.height),
     draw: (ctx, viewContext) =>
-      drawNudgeSpans(ctx, [span], row.top, row.waveformHeight, viewContext.msToX),
+      drawJogLane(ctx, viewContext.canvasW, lane.top, lane.height, curve, viewContext.xToMs),
     hitTest: (point, viewContext) => {
-      const startX = viewContext.msToX(span.startMs);
-      const endX = viewContext.msToX(span.endMs);
-      if (
-        point.x < startX ||
-        point.x > endX ||
-        point.y < row.top ||
-        point.y > row.top + row.waveformHeight
-      )
-        return null;
-      return { target: 'nudgeSpan', deck, data: span };
+      if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
+      if (point.y < lane.top || point.y > lane.top + lane.height) return null;
+      const span = nudgeSpanAt(nudgeSpans, viewContext.xToMs(point.x));
+      return span ? { target: 'nudgeSpan', deck, data: span } : null;
     }
   };
 }
@@ -307,9 +305,8 @@ export function filterRegionItem(
   };
 }
 
-// Bounds span the full track width (clipped vertically to the lane) so the
-// outline's vertical edges aren't shaved off by the engine's per-item clip,
-// matching the old withLaneClip-based highlight.
+// Bounds span the full track width, clipped vertically to the lane, or the
+// engine's per-item clip shaves off the outline's vertical edges.
 export function filterSelectionItem(
   lane: SublaneLayout,
   startMs: number,

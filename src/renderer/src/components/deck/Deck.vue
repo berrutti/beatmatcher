@@ -303,7 +303,7 @@ const artistTitle = computed(() => {
   return { artist: match[0], title: match.slice(1).join(' - ') };
 });
 
-// The slider value is negated: like a CDJ pitch fader, up = slower, down = faster.
+// Up is slower, down is faster.
 function onSliderInput(e: Event) {
   if (!props.deck.trackLoaded) return;
   const val = parseFloat((e.target as HTMLInputElement).value);

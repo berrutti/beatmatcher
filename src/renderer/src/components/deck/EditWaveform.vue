@@ -39,6 +39,8 @@
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
 import { buildWaveformImageData } from '@renderer/utils/waveformImage';
+import { beatLineStep, beatTier } from '@renderer/utils/beatGrid';
+import { loopRegionRect } from '@renderer/utils/loopRegionRect';
 
 const props = defineProps<{
   accent: string;
@@ -336,11 +338,9 @@ function drawWaveform() {
 }
 
 function drawLoopRegion(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  const region = props.loopRegion;
-  if (!region) return;
-  const startX = Math.max(0, secToPx(region.startSec));
-  const endX = Math.min(width, secToPx(region.endSec));
-  if (endX <= startX) return;
+  const rect = loopRegionRect(secToPx, props.loopRegion, width);
+  if (!rect) return;
+  const { startX, endX } = rect;
   ctx.save();
   ctx.fillStyle = props.loopActive ? '#ca8a04' : '#78716c';
   ctx.globalAlpha = 0.25;
@@ -358,19 +358,15 @@ function drawLoopRegion(ctx: CanvasRenderingContext2D, width: number, height: nu
 }
 
 const MIN_LINE_SPACING_PX = 6;
+const BEATS_PER_BAR = 4;
+const BEATS_PER_PHRASE = 16;
 
 function drawRuler(ctx: CanvasRenderingContext2D, width: number, height: number) {
   if (!props.trackBpm || props.trackBpm <= 0) return;
   const beatDurSec = 60 / props.trackBpm;
   const viewSpan = viewEndSec - viewStartSec;
   const pxPerBeat = (beatDurSec / viewSpan) * width;
-
-  // Find the coarsest subdivision that puts lines at least MIN_LINE_SPACING_PX apart.
-  // Steps: 1 beat → 4 beats (bar) → 16 beats (phrase) → 64 → ...
-  let step = 1;
-  while (pxPerBeat * step < MIN_LINE_SPACING_PX) {
-    step *= 4;
-  }
+  const step = beatLineStep(pxPerBeat, MIN_LINE_SPACING_PX, BEATS_PER_BAR);
   if (pxPerBeat * step < 1) return;
 
   const beatOffset = props.beatOffset;
@@ -383,14 +379,13 @@ function drawRuler(ctx: CanvasRenderingContext2D, width: number, height: number)
     const beatX = secToPx(beatSec);
     if (beatX < 0 || beatX > width) continue;
 
-    const isPhrase = beat % 16 === 0;
-    const isBar = beat % 4 === 0;
+    const tier = beatTier(beat, BEATS_PER_BAR, BEATS_PER_PHRASE);
 
-    if (isPhrase) {
+    if (tier === 'phrase') {
       ctx.strokeStyle = props.accent;
       ctx.globalAlpha = 0.5;
       ctx.lineWidth = 1;
-    } else if (isBar) {
+    } else if (tier === 'bar') {
       ctx.strokeStyle = props.accent;
       ctx.globalAlpha = 0.25;
       ctx.lineWidth = 1;

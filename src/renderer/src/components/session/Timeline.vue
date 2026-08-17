@@ -143,13 +143,20 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
-import type { Clip, LoadedSpan, DeckLanes, MasterLanes, NudgeSpan } from '@renderer/utils/types';
+import type {
+  Clip,
+  LoadedSpan,
+  DeckLanes,
+  MasterLanes,
+  NudgeSpan,
+  LanePoint
+} from '@renderer/utils/types';
 import {
   DECK_LANE_KEYS,
   MASTER_LANE_KEYS,
   MASTER_ROW_ID,
   isMasterLaneKey,
-  type EditableLaneKey
+  type MasterLaneKey
 } from '@renderer/utils/types';
 import {
   DECK_ORDER,
@@ -189,6 +196,7 @@ const props = defineProps<{
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  deckJog: Record<string, LanePoint[]>;
   waveforms: Map<string, TrackWaveform>;
 }>();
 
@@ -287,6 +295,7 @@ function render(): void {
     deckLanes: props.deckLanes,
     masterLanes: props.masterLanes,
     deckNudges: props.deckNudges,
+    deckJog: props.deckJog,
     waveforms: props.waveforms,
     playheadMs: props.playheadMs,
     durationMs: props.durationMs,
@@ -412,12 +421,12 @@ function onPickLaneFromMenu(lane: LaneKey): void {
   deckMenu.value = null;
 }
 
-function pickedLane(deck: string): EditableLaneKey {
+function pickedLane(deck: string): LaneKey | MasterLaneKey {
   return deck === MASTER_ROW_ID ? controller.selectedMasterLane.value : controller.laneFor(deck);
 }
 
 // One picker serves both row kinds, so the pick is routed by which row opened it.
-function onPickLane(lane: EditableLaneKey): void {
+function onPickLane(lane: LaneKey | MasterLaneKey): void {
   const picker = lanePicker.value;
   if (!picker) return;
   if (picker.deck === MASTER_ROW_ID) {
@@ -642,6 +651,7 @@ watch(
     props.deckLanes,
     props.masterLanes,
     props.deckNudges,
+    props.deckJog,
     props.waveforms,
     camera.viewStartMs.value,
     camera.viewDurationMs.value,

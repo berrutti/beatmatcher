@@ -136,12 +136,24 @@ impl AudioUnit for Fader {
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        self.current_gain += (self.target_gain - self.current_gain) * self.smooth_coeff;
+        self.current_gain = approach(self.current_gain, self.target_gain, self.smooth_coeff);
         // Mute fades over the same time constant as the fader to avoid clicks.
         let mute_target = if self.muted { 0.0 } else { 1.0 };
-        self.mute_gain += (mute_target - self.mute_gain) * self.smooth_coeff;
+        self.mute_gain = approach(self.mute_gain, mute_target, self.smooth_coeff);
         let gain = self.current_gain * self.mute_gain;
         (l * gain, r * gain)
+    }
+}
+
+/// A one-pole in f32 stops moving while still short of its target, at a point that depends
+/// on where it came from, so two mixers on the same value settle on different gains.
+#[inline]
+pub(crate) fn approach(current: f32, target: f32, coeff: f32) -> f32 {
+    let next = current + (target - current) * coeff;
+    if next == current {
+        target
+    } else {
+        next
     }
 }
 
@@ -222,7 +234,7 @@ impl AudioUnit for Isolator3Band {
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         for (gain, target) in self.gains.iter_mut().zip(self.targets) {
-            *gain += (target - *gain) * self.smooth_coeff;
+            *gain = approach(*gain, target, self.smooth_coeff);
         }
         (
             self.channels[0].process(l, &self.gains),

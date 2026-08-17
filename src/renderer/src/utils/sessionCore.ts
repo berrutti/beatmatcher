@@ -1,7 +1,3 @@
-// Thin wrapper over the session-core WASM module. The timeline derivation and
-// all clip/lane edit ops are implemented once in Rust (session-core) and reached
-// here as JSON-in/JSON-out calls, replacing the former TypeScript copies.
-//
 // `initSessionCore()` must be awaited once at app startup before any of the
 // (synchronous) functions below are called; wasm-bindgen exports are sync only
 // after the module has initialized.
@@ -82,6 +78,7 @@ export function buildTimeline(
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
   deckNudges: Record<string, NudgeSpan[]>;
+  deckJog: Record<string, LanePoint[]>;
 } {
   const raw = parse<{
     clips: RawClip[];
@@ -89,6 +86,7 @@ export function buildTimeline(
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckNudges: Record<string, NudgeSpan[]>;
+    deckJog: Record<string, LanePoint[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
     // The beat grid (bpm + offset) is a property of the track, not of the
@@ -112,7 +110,8 @@ export function buildTimeline(
     })),
     deckLanes: raw.deckLanes,
     masterLanes: raw.masterLanes,
-    deckNudges: raw.deckNudges
+    deckNudges: raw.deckNudges,
+    deckJog: raw.deckJog
   };
 }
 

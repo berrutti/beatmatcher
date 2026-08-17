@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { call } from '@renderer/tauriCommands';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { DEFAULT_KEYS, type Keybindings, type Command } from '@renderer/keybindings';
 
@@ -153,16 +153,16 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
-  watch(limiterEnabled, (v) => invoke('set_limiter_enabled', { enabled: v }), { immediate: true });
-  watch(bufferSize, (v) => invoke('set_buffer_size', { frames: v }), { immediate: true });
-  watch([bpmMin, bpmMax], ([min, max]) => invoke('set_bpm_range', { min, max }), {
+  watch(limiterEnabled, (v) => call('set_limiter_enabled', { enabled: v }), { immediate: true });
+  watch(bufferSize, (v) => call('set_buffer_size', { frames: v }), { immediate: true });
+  watch([bpmMin, bpmMax], ([min, max]) => call('set_bpm_range', { min, max }), {
     immediate: true
   });
-  watch(pitchRange, (v) => invoke('set_pitch_range', { percent: v }), { immediate: true });
-  watch(jogRotationSpeed, (v) => invoke('set_jog_rotation_speed', { speed: v }), {
+  watch(pitchRange, (v) => call('set_pitch_range', { percent: v }), { immediate: true });
+  watch(jogRotationSpeed, (v) => call('set_jog_rotation_speed', { speed: v }), {
     immediate: true
   });
-  watch(faderCurve, (v) => invoke('set_fader_curve', { curve: v }), { immediate: true });
+  watch(faderCurve, (v) => call('set_fader_curve', { curve: v }), { immediate: true });
 
   function setLimiterEnabled(enabled: boolean): void {
     limiterEnabled.value = enabled;
