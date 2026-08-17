@@ -1,6 +1,6 @@
 [package]
 name = "beatmatcher"
-version = "8.0.0"
+version = "8.1.0"
 description = "DJ software for live mixing and session editing. Play on your keyboard or MIDI controller"
 authors = ["berrutti"]
 edition = "2021"
