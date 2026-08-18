@@ -8,7 +8,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
   "startedAt": "2026-06-06T14:00:00Z",
   "mixer": { "id": "classic-3band", "hash": "a1b2c3d4e5f60718" },
   "events": [
-    { "elapsed_ms": 0,      "type": "recording_start", "buffer_size_frames": 512 },
+    { "elapsed_ms": 0,      "frame": 0, "type": "recording_start", "buffer_size_frames": 512, "sample_rate": 48000 },
     { "elapsed_ms": 0,      "type": "deck_snapshot", "deck": "A", "path": "/...", "position_sec": 12.3, "cue_point_sec": 0, "is_playing": false, "bpm": 128.0, "playback_rate": 1.0, "loop_active": false, "loop_end_sec": 0 },
     { "elapsed_ms": 1234.5, "type": "play",     "deck": "A" },
     { "elapsed_ms": 5678.0, "type": "load_track","deck": "B", "path": "/..." },
@@ -18,7 +18,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 }
 ```
 
-`elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp.
+`elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp. `frame` is output frames since the first one the recorder captured, and it counts from a different origin than `elapsed_ms`.
 
 `version` is a required integer, bumped only when the event vocabulary changes. A new event type does not bump it, because a reader that does not know a type ignores it. The number lives in `BMS_VERSION` in session-core.
 
@@ -28,25 +28,25 @@ An older version is never rejected. Reading a session rewrites its events into t
 
 ## Event types
 
-| type                                       | relevant fields                                                                                                      | meaning                                                           |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `recording_start`                          | `buffer_size_frames`                                                                                                 | first event; records audio callback size for latency compensation |
-| `deck_snapshot`                            | `deck`, `path`, `position_sec`, `cue_point_sec`, `is_playing`, `bpm`, `playback_rate`, `loop_active`, `loop_end_sec` | full deck state at record-start for tracks already loaded         |
-| `recording_stop`                           |                                                                                                                      | last event                                                        |
-| `load_track`                               | `deck`, `path`, `duration`                                                                                           | track loaded onto deck                                            |
-| `play`                                     | `deck`, `sec` (optional; written by clip edits, never by the recorder)                                               | deck started playing, optionally from an explicit position        |
-| `stop`                                     | `deck`                                                                                                               | deck stopped                                                      |
-| `seek`                                     | `deck`, `sec`                                                                                                        | playhead jumped                                                   |
-| `set_cue` / `stop_at_cue`                  | `deck`, `cue_sec`                                                                                                    | cue point set or jump-to-cue                                      |
-| `set_playback_rate`                        | `deck`, `rate`                                                                                                       | pitch/rate changed                                                |
-| `set_nudge`                                | `deck`, `percent`                                                                                                    | nudge started or released                                         |
-| `loop_in` / `loop_out` / `set_loop_region` | `deck`, `start_sec`, `end_sec`                                                                                       | loop points changed                                               |
-| `set_loop_active`                          | `deck`, `active`                                                                                                     | loop toggled                                                      |
-| `jog`                                      | `deck`, `ticks`                                                                                                      | jog wheel moved, see below                                        |
-| `set_jog_rotation_speed`                   | `speed`                                                                                                              | the rpm one jog tick stands for                                   |
-| `set_param`                                | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                    |
-| `set_xfader_assign`                        | `deck`, `assign`                                                                                                     | which crossfader bus a channel is on                              |
-| `set_fader_curve`                          | `curve`                                                                                                              | the taper every channel fader runs on                             |
+| type                     | relevant fields                                                                                                      | meaning                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `recording_start`        | `buffer_size_frames`, `sample_rate`                                                                                  | first event; audio callback size and the rate `frame` counts in |
+| `deck_snapshot`          | `deck`, `path`, `position_sec`, `cue_point_sec`, `is_playing`, `bpm`, `playback_rate`, `loop_active`, `loop_end_sec` | full deck state at record-start for tracks already loaded       |
+| `recording_stop`         |                                                                                                                      | last event                                                      |
+| `load_track`             | `deck`, `path`, `duration`                                                                                           | track loaded onto deck                                          |
+| `play`                   | `deck`, `sec` (optional; written by clip edits, never by the recorder)                                               | deck started playing, optionally from an explicit position      |
+| `stop`                   | `deck`                                                                                                               | deck stopped                                                    |
+| `seek`                   | `deck`, `sec`                                                                                                        | playhead jumped                                                 |
+| `stopped_at_cue`         | `deck`, `cue_sec`                                                                                                    | CUE pressed while playing: stops and returns to the cue point   |
+| `set_playback_rate`      | `deck`, `rate`                                                                                                       | pitch/rate changed                                              |
+| `set_nudge`              | `deck`, `percent`                                                                                                    | nudge started or released                                       |
+| `loop_in` / `loop_out`   | `deck`, `start_sec`, `end_sec`                                                                                       | loop points changed                                             |
+| `exit_loop` / `reloop`   | `deck`                                                                                                               | loop left, or re-entered from its start                         |
+| `jog`                    | `deck`, `ticks`                                                                                                      | jog wheel moved, see below                                      |
+| `set_jog_rotation_speed` | `speed`                                                                                                              | the rpm one jog tick stands for                                 |
+| `set_param`              | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                  |
+| `set_xfader_assign`      | `deck`, `assign`                                                                                                     | which crossfader bus a channel is on                            |
+| `set_fader_curve`        | `curve`                                                                                                              | the taper every channel fader runs on                           |
 
 ## Mixer parameters
 
@@ -116,9 +116,9 @@ A tick is worth `0.002 s` of audio at 33. A paused deck scrubs that distance and
 
 Nothing is compensated. `elapsed_ms` is stamped in Rust when the command arrives, so the hop from the frontend is already outside it, and the renderer applies each command exactly where the live engine did.
 
-Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. The renderer reproduces this by rounding each event up to the next `buffer_size_frames` boundary, read from the `recording_start` event (defaulting to 512, the value the recorder stamps when the buffer-size setting is "default").
+Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. A recorded event carries `frame`, read under the same lock as the mutation, and the renderer dispatches there verbatim. An event with no `frame` is one nothing performed, a synthesized edit or a session older than the stamp, and dispatches at `elapsed_ms`. `frame` counts at the recording's `sample_rate`, so a render at another rate scales it.
 
-The resulting delay is whatever reaches the boundary, between zero and one buffer, not a fixed offset: measured at 35 frames on a 128-frame buffer. Adding a fixed buffer to every event, or assuming a buffer size the recording did not use, puts every deck out.
+The delay is between zero and one buffer, not a fixed offset: measured at 35 frames on a 128-frame buffer. Adding a fixed buffer to every event puts every deck out, which is why the frame is recorded rather than inferred.
 
 ## Offline render
 

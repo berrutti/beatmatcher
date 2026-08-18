@@ -1,8 +1,3 @@
-// The session event model: the raw deserialized .bms event and its typed
-// command form. The three interpreters (scrub simulation, live playback,
-// offline render) all match exhaustively on `SessionCommand`, so adding a
-// variant forces a compile error in each until its behavior is decided.
-
 use crate::param::ParamScope;
 
 // Serializes back to the same shape the frontend writes to .bms: only the
@@ -71,6 +66,9 @@ pub struct SessionEvent {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffer_size_frames: Option<u32>,
+    /// The device rate `frame` counts in, so a render at another rate can scale it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
     /// Output frames since capture began: which buffer the command landed in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<u64>,
@@ -355,7 +353,7 @@ impl SessionEvent {
                 sec: self.sec,
             },
             "stop" => Stop { deck: deck? },
-            "stopped_at_cue" | "stop_at_cue" => StopAtCue {
+            "stopped_at_cue" => StopAtCue {
                 deck: deck?,
                 cue_point_sec: self.cue_point_sec,
             },
@@ -437,7 +435,6 @@ mod tests {
         }
     }
 
-    // The exact shapes read out of a real session recorded before manifests.
     #[test]
     fn the_v1_vocabulary_ports_onto_classic_slots() {
         let mut events = vec![
@@ -471,7 +468,11 @@ mod tests {
         assert_eq!(events[3].value, Some(1.0));
 
         for event in &events {
-            assert!(event.command().is_some(), "{:?} still does not replay", event);
+            assert!(
+                event.command().is_some(),
+                "{:?} still does not replay",
+                event
+            );
         }
     }
 
@@ -548,8 +549,6 @@ mod tests {
         assert_eq!(events[2].event_type, "set_volume");
     }
 
-    // Master gain is the one v1 event with no deck. Skipping it lost the master fader
-    // automation on load, unrecoverable once the session was saved at the current version.
     #[test]
     fn the_v1_master_gain_ports_onto_the_master_slot() {
         let mut events = vec![SessionEvent {
@@ -574,8 +573,6 @@ mod tests {
         assert_eq!(events[0].event_type, "set_volume");
     }
 
-    // A writer is free to emit the key with a null, and porting reads the scope off the
-    // deck alone, so the two spellings of "no deck" have to port the same way.
     #[test]
     fn an_explicit_null_deck_reads_as_no_deck() {
         let mut events: Vec<SessionEvent> = serde_json::from_str(
@@ -638,7 +635,6 @@ mod tests {
             "play",
             "stop",
             "stopped_at_cue",
-            "stop_at_cue",
             "seek",
             "set_playback_rate",
             "set_nudge",
@@ -676,24 +672,20 @@ mod tests {
     }
 
     #[test]
-    fn stop_at_cue_aliases_map_to_same_command() {
-        let stopped_alias = SessionEvent {
-            cue_point_sec: Some(1.5),
-            ..make_event("stopped_at_cue")
-        };
-        let stop_alias = SessionEvent {
-            cue_point_sec: Some(1.5),
-            ..make_event("stop_at_cue")
-        };
-        assert_eq!(stopped_alias.command(), stop_alias.command());
-    }
-
-    #[test]
     fn missing_required_fields_convert_to_none() {
         assert!(make_event("seek").command().is_none(), "seek without sec");
-        assert!(make_event("set_param").command().is_none(), "set_param w/o slot");
-        assert!(make_event("deck_snapshot").command().is_none(), "snapshot w/o path");
-        assert!(make_event("load_track").command().is_none(), "load_track w/o path");
+        assert!(
+            make_event("set_param").command().is_none(),
+            "set_param w/o slot"
+        );
+        assert!(
+            make_event("deck_snapshot").command().is_none(),
+            "snapshot w/o path"
+        );
+        assert!(
+            make_event("load_track").command().is_none(),
+            "load_track w/o path"
+        );
         let no_deck = SessionEvent {
             deck: None,
             ..Default::default()

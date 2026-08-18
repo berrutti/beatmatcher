@@ -8,7 +8,7 @@
   "type": "module",
   "scripts": {
     "build:wasm": "wasm-pack build session-core --target web --out-dir pkg && node scripts/check-wasm-fresh.mjs --write",
-    "check:commands": "yarn generate:commands && git diff --quiet --exit-code src/renderer/src/tauriCommands.ts || (echo \"tauriCommands.ts is stale. Run: yarn generate:commands\" && exit 1)",
+    "check:commands": "node scripts/generate-command-types.mjs --check",
     "check:wasm": "node scripts/check-wasm-fresh.mjs",
     "circular-deps": "madge --circular --extensions ts,vue --ts-config tsconfig.web.json src/renderer/src",
     "compare-session": "cargo run --manifest-path src-tauri/Cargo.toml --release --bin compare_session --",

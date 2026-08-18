@@ -1,14 +1,5 @@
-// Rust tokio-based session playback scheduler.
-// Replaces the JS setTimeout loop: one Tauri command starts a background task
-// that applies events directly to AppState via tokio::time::sleep. No IPC per event.
-//
-// State preprocessing: on session load, `preload_session` simulates the entire
-// event stream and captures full mixer+deck state every 500ms. Scrubbing to any
-// position is then an O(log n) snapshot lookup + replay of at most 500ms of events.
-
 use crate::audio;
 use crate::offline_render::SessionEvent;
-use crate::AppState;
 use session_core::event::SessionCommand;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -32,72 +23,22 @@ pub(crate) struct OpenedFile {
     content: String,
 }
 
-#[tauri::command]
-pub(crate) async fn open_session_dialog() -> Option<OpenedFile> {
-    let handle = rfd::AsyncFileDialog::new()
-        .add_filter("Beatmatcher Session", &["bms"])
-        .pick_file()
-        .await?;
-    let content = std::fs::read_to_string(handle.path()).ok()?;
-    Some(OpenedFile {
-        path: handle.path().to_string_lossy().into_owned(),
-        content,
-    })
-}
-
-#[tauri::command]
-pub(crate) async fn preload_session(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    let reporter = LoadReporter {
-        app: &app,
-        path: path.clone(),
-    };
-    reporter.phase("reading");
-
-    let json = tokio::task::spawn_blocking({
-        let p = path.clone();
-        move || std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    reporter.phase("parsing");
-    // Off the async thread: a long session's event array takes seconds to deserialize, and
-    // blocking here stalls every other command including this load's own progress events.
-    let session = tokio::task::spawn_blocking(move || {
-        crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    index_session(&state, path, session, Some(&app)).await;
-    log::info!(
-        "preload_session: ready in {}ms",
-        started.elapsed().as_millis()
-    );
-
-    Ok(())
-}
-
 // Caches track samples, builds scrub snapshots, and stores the session as the
 // in-memory source of truth for playback and offline render under this path.
 async fn index_session(
-    state: &tauri::State<'_, AppState>,
+    sessions: &SessionLibrary,
+    engine: &crate::engine::Engine,
     path: String,
     session: crate::offline_render::SessionFile,
     app: Option<&tauri::AppHandle>,
 ) {
-    let sr = state.audio.device_sample_rate;
+    let sr = engine.audio.device_sample_rate;
     let paths = session_track_paths(&session.events);
     let reporter = app.map(|app| LoadReporter {
         app,
         path: path.clone(),
     });
-    populate_track_cache(state, paths, sr, reporter.as_ref()).await;
+    populate_track_cache(sessions, paths, sr, reporter.as_ref()).await;
 
     if let Some(reporter) = &reporter {
         reporter.phase("indexing");
@@ -105,20 +46,20 @@ async fn index_session(
 
     // Build state snapshots with the now-complete cache.
     let snapshots = {
-        let cache = state
-            .session_track_cache
+        let cache = sessions
+            .track_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         build_snapshots(&session.events, sr, &cache)
     };
 
-    state
-        .session_snapshots
+    sessions
+        .snapshots
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(path.clone(), snapshots);
-    state
-        .session_files
+    sessions
+        .files
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(path.clone(), Arc::new(session));
@@ -138,322 +79,6 @@ async fn index_session(
     }
 }
 
-// Frees everything cached for a session when it is ejected: decoded track
-// samples are the bulk of it (hundreds of MB for a multi-track session).
-// Playback of a path that is no longer cached falls back to a disk read.
-#[tauri::command]
-pub(crate) fn unload_session(state: tauri::State<'_, AppState>, path: String) {
-    let removed = state
-        .session_files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&path);
-    state
-        .session_snapshots
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&path);
-    if let Some(session) = removed {
-        let track_paths = session_track_paths(&session.events);
-        let mut cache = state
-            .session_track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for track_path in track_paths {
-            cache.remove(&track_path);
-        }
-    }
-}
-
-// Replaces the in-memory event list for a loaded session with edited events
-// from the frontend. The .bms on disk is untouched; the next playback, scrub,
-// or render uses the edited events.
-#[tauri::command]
-pub(crate) async fn update_session_events(
-    state: tauri::State<'_, AppState>,
-    path: String,
-    events_json: String,
-) -> Result<(), String> {
-    let events: Vec<SessionEvent> =
-        serde_json::from_str(&events_json).map_err(|e| format!("parse error: {e}"))?;
-
-    // Editing events does not change which mixer the session was played on, so
-    // the header carries over from the file that was loaded.
-    let mixer = state
-        .session_files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&path)
-        .and_then(|session| session.mixer.clone());
-
-    index_session(
-        &state,
-        path,
-        // Current, not carried over: loading ported these events forward.
-        crate::offline_render::SessionFile {
-            version: session_core::BMS_VERSION,
-            events,
-            mixer,
-        },
-        None,
-    )
-    .await;
-
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) async fn start_session_playback(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    path: String,
-    from_ms: f64,
-) -> Result<(), String> {
-    // Prefer the in-memory session (which may hold unsaved edits); fall back to
-    // the disk file for callers that never preloaded.
-    let cached: Option<Arc<crate::offline_render::SessionFile>> = state
-        .session_files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&path)
-        .cloned();
-    let session: Arc<crate::offline_render::SessionFile> = match cached {
-        Some(cached_session) => cached_session,
-        None => {
-            let json = {
-                let p = path.clone();
-                tokio::task::spawn_blocking(move || {
-                    std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
-                })
-                .await
-                .map_err(|e| e.to_string())??
-            };
-            let parsed = crate::offline_render::SessionFile::parse(&json)
-                .map_err(|e| format!("parse error: {e}"))?;
-            let parsed = Arc::new(parsed);
-            state
-                .session_files
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(path.clone(), parsed.clone());
-            parsed
-        }
-    };
-
-    // Cancel any previous playback task AND wait for it to fully exit before we
-    // touch the engine. The async runtime is multi-threaded, so without this the
-    // old task could apply a stale event to a deck after the new task has already
-    // reset and re-placed it, corrupting one deck's position (audible desync that
-    // varies per scrub). Serializing the tasks removes that race entirely.
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut guard = state
-            .session_playback_cancel
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(old) = guard.take() {
-            old.store(true, Ordering::Release);
-        }
-        *guard = Some(cancel.clone());
-    }
-    let old_handle = state
-        .session_playback_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
-    if let Some(handle) = old_handle {
-        let _ = handle.await;
-    }
-
-    // Refused rather than replayed against the wrong scales, which would differ from
-    // the offline render. Hosting beats an id match, so pre-versioned sessions play.
-    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
-    if !state.audio.mixer().can_host(manifest) {
-        return Err(format!(
-            "this session was recorded on mixer '{}', which this build cannot play live",
-            manifest.id
-        ));
-    }
-
-    let audio = state.audio.clone();
-    let sr = audio.device_sample_rate;
-
-    // Ensure cache is populated (fast path if preload already ran).
-    let paths = session_track_paths(&session.events);
-    populate_track_cache(&state, paths, sr, None).await;
-    let cache: Arc<SampleCache> = Arc::new(
-        state
-            .session_track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone(),
-    );
-
-    // Find the nearest snapshot at or before from_ms.
-    let snapshot: Option<SessionSnapshot> = {
-        let snaps = state
-            .session_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(snaps) = snaps.get(&path) {
-            let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
-            idx.checked_sub(1).map(|i| snaps[i].clone())
-        } else {
-            None
-        }
-    };
-
-    let app_handle = app.clone();
-    let handle = tauri::async_runtime::spawn(async move {
-        reset_all(&audio);
-
-        let mut sorted_events = session.events.clone();
-        sorted_events.sort_by(event_sim_order);
-
-        // Reconstruct state at from_ms: find the nearest post-event snapshot,
-        // apply it, then replay any events that fall between the snapshot and from_ms.
-        let (sim, snapshot_ms) = match snapshot {
-            Some(ref snap) => (sim_state_from_snapshot(snap), snap.elapsed_ms),
-            None => (SimState::new(), 0.0),
-        };
-
-        apply_sim_strips_and_master(&sim, &audio);
-
-        let mut sim = sim;
-        // deck_snapshot is already folded into the base snapshot; never replay it.
-        for ev in sorted_events.iter().filter(|e| {
-            e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
-        }) {
-            if reconstructs_mixer_state(ev) {
-                apply_event_live(ev, &audio, sr, &cache, 0);
-            }
-            sim_apply_event(ev, &mut sim, &cache, sr);
-        }
-
-        let sr_f = sr.max(1) as f64;
-
-        // Place every deck at its reconstructed state, then start them together.
-        // Decks are locked in sorted-id order (matching the audio callback's lock
-        // order, so no deadlock). Pass 1 does the heavy per-deck setup under brief
-        // individual locks with is_playing left false, so nothing is audible
-        // mid-setup. Pass 2 flips is_playing for the decks that should play, under
-        // all their locks held at once (just bool writes, nanoseconds): every deck
-        // begins on the same output buffer, sample-locked, without stalling the
-        // audio callback (no priority inversion).
-        let mut ids: Vec<&String> = sim.decks.keys().collect();
-        ids.sort();
-        let mut to_start: Vec<Arc<std::sync::Mutex<audio::DeckState>>> = Vec::new();
-        for id in ids {
-            let ds = &sim.decks[id];
-            let (Some(path), Some(arc)) = (ds.path.as_ref(), audio.deck(id)) else {
-                continue;
-            };
-            let Some((samples, channels)) = cache.get(path) else {
-                continue;
-            };
-            let total_frames = samples.len() / channels;
-            {
-                let mut d = arc.lock().unwrap_or_else(|e| e.into_inner());
-                d.samples = samples.clone();
-                d.channels = *channels;
-                d.device_sample_rate = sr;
-                d.total_frames = total_frames;
-                d.duration = total_frames as f64 / sr_f;
-                d.loaded_path = Some(path.clone());
-                d.main_pos = sim_pos(ds, from_ms, sr_f).min(total_frames as f64);
-                d.cue_pos = d.main_pos;
-                d.cue_point = ds.cue_point.min(total_frames as f64);
-                d.loop_active = ds.loop_active;
-                d.loop_end = ds.loop_end.min(total_frames as f64);
-                d.playback_rate = ds.rate;
-                d.jog_hold_factor = ds.jog_hold_factor;
-                d.bpm = ds.bpm;
-                d.beat_offset_frames = ds.beat_offset_frames;
-                d.is_playing = false;
-                d.is_cueing = false;
-            }
-            if ds.is_playing {
-                to_start.push(arc);
-            }
-        }
-        {
-            let mut guards: Vec<_> = to_start
-                .iter()
-                .map(|a| a.lock().unwrap_or_else(|e| e.into_inner()))
-                .collect();
-            for d in guards.iter_mut() {
-                d.is_playing = true;
-            }
-        }
-
-        // Schedule events against the master output frame clock instead of
-        // wall-clock time. The decks advance on the soundcard's sample clock
-        // inside the audio callback, so referencing that same clock keeps event
-        // application locked to the audio output (no OS-clock-vs-soundcard drift,
-        // no tokio sleep jitter). base_frame is the clock value at loop start.
-        let base_frame = audio.monitor.output_frames();
-
-        for event in sorted_events.iter().filter(|e| e.elapsed_ms > from_ms) {
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
-
-            let target_offset = ((event.elapsed_ms - from_ms).max(0.0) / 1000.0 * sr_f).round();
-            let target_frame = base_frame.saturating_add(target_offset as u64);
-            wait_until_frame(&audio.monitor, target_frame, sr, &cancel).await;
-
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
-
-            // How far the audio clock is already past this event's target frame
-            // (the event only takes effect on the next callback). Used to
-            // sample-align a deck that starts/repositions here with decks that
-            // were already playing.
-            let overshoot = audio.monitor.output_frames().saturating_sub(target_frame);
-            apply_event_live(event, &audio, sr, &cache, overshoot);
-        }
-
-        if !cancel.load(Ordering::Acquire) {
-            for id in crate::audio::LIVE_DECK_IDS {
-                if let Some(deck_arc) = audio.deck(id) {
-                    deck_arc
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .is_playing = false;
-                }
-            }
-            app_handle.emit("session-playback-ended", ()).ok();
-        }
-    });
-
-    *state
-        .session_playback_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn stop_session_playback(state: tauri::State<'_, AppState>) {
-    let mut guard = state
-        .session_playback_cancel
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(cancel) = guard.take() {
-        cancel.store(true, Ordering::Release);
-    }
-    for id in crate::audio::LIVE_DECK_IDS {
-        if let Some(deck_arc) = state.audio.deck(id) {
-            deck_arc
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_playing = false;
-        }
-    }
-}
-
 fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
     events
         .iter()
@@ -468,6 +93,42 @@ fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
         .collect()
 }
 
+/// Everything a loaded `.bms` needs to stay loaded: the decoded audio, the scrub
+/// snapshots, the edited events and the task currently playing them.
+pub struct SessionLibrary {
+    pub playback_cancel: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    pub playback_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    pub track_cache: Arc<std::sync::Mutex<SampleCache>>,
+    pub track_loads: TrackLoads,
+    pub decode_permits: Arc<tokio::sync::Semaphore>,
+    pub snapshots: std::sync::Mutex<std::collections::HashMap<String, Vec<SessionSnapshot>>>,
+    // Holds unsaved edits pushed from the frontend, so playback and the offline render
+    // are audible before the file is written.
+    pub files: std::sync::Mutex<
+        std::collections::HashMap<String, Arc<crate::offline_render::SessionFile>>,
+    >,
+}
+
+impl SessionLibrary {
+    pub fn new() -> Self {
+        Self {
+            playback_cancel: std::sync::Mutex::new(None),
+            playback_handle: std::sync::Mutex::new(None),
+            track_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            track_loads: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            // Bounds every decode in the app: throttling only the preload made it lose
+            // the race against unbounded waveform requests.
+            decode_permits: Arc::new(tokio::sync::Semaphore::new(
+                std::thread::available_parallelism()
+                    .map(|cores| cores.get())
+                    .unwrap_or(4),
+            )),
+            snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
+            files: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
 pub(crate) type TrackEntry = (Arc<Vec<f32>>, usize);
 pub(crate) type TrackLoads = Arc<
     std::sync::Mutex<
@@ -478,7 +139,7 @@ pub(crate) type TrackLoads = Arc<
 /// The one place a track is decoded. The waveform strip and the session preload want the
 /// same samples at once, and decoding per caller made 13 tracks into 26 competing decodes.
 pub(crate) async fn load_track(
-    cache: &crate::TrackCache,
+    cache: &Arc<std::sync::Mutex<SampleCache>>,
     loads: &TrackLoads,
     permits: &Arc<tokio::sync::Semaphore>,
     path: &str,
@@ -572,14 +233,14 @@ impl LoadReporter<'_> {
 }
 
 async fn populate_track_cache(
-    state: &tauri::State<'_, AppState>,
+    sessions: &SessionLibrary,
     paths: Vec<String>,
     sr: u32,
     reporter: Option<&LoadReporter<'_>>,
 ) {
     let missing: Vec<String> = {
-        let cache = state
-            .session_track_cache
+        let cache = sessions
+            .track_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         paths
@@ -622,9 +283,9 @@ async fn populate_track_cache(
         .iter()
         .map(|(p, _)| {
             let path = p.clone();
-            let cache = state.session_track_cache.clone();
-            let loads = state.session_track_loads.clone();
-            let permits = state.decode_permits.clone();
+            let cache = sessions.track_cache.clone();
+            let loads = sessions.track_loads.clone();
+            let permits = sessions.decode_permits.clone();
             tokio::spawn(async move {
                 load_track(&cache, &loads, &permits, &path, sr)
                     .await
@@ -731,13 +392,8 @@ async fn wait_until_frame(
     }
 }
 
-// `overshoot_frames` is how many master output frames the audio clock is already
-// past this event's target frame when it gets applied (the event only takes
-// effect on the next audio callback, so it is up to one buffer "late"). For
-// events that start or reposition a *playing* deck, the deck must be advanced by
-// overshoot*rate so it lands where it belongs relative to decks that were already
-// playing, instead of a fraction of a buffer behind them. Pass 0 when timing
-// doesn't matter (e.g. reconstruction replay of past mixer events).
+// An event lands up to one buffer late, so a deck it starts or repositions is advanced by
+// `overshoot_frames * rate` to sit level with decks already playing. Pass 0 to skip that.
 fn apply_event_live(
     ev: &SessionEvent,
     audio: &audio::AppAudio,
@@ -819,19 +475,374 @@ fn apply_event_live(
     }
 }
 
-// Parity tests driving the shared sim against the REAL DeckState engine, so
+// Parity tests driving the shared sim against the REAL Deck engine, so
 // they live in the binary that owns the engine.
+
+pub(crate) async fn open_session_dialog() -> Option<crate::session_playback::OpenedFile> {
+    let handle = rfd::AsyncFileDialog::new()
+        .add_filter("Beatmatcher Session", &["bms"])
+        .pick_file()
+        .await?;
+    let content = std::fs::read_to_string(handle.path()).ok()?;
+    Some(OpenedFile {
+        path: handle.path().to_string_lossy().into_owned(),
+        content,
+    })
+}
+
+pub(crate) async fn preload_session(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+    path: String,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let reporter = LoadReporter {
+        app: &app,
+        path: path.clone(),
+    };
+    reporter.phase("reading");
+
+    let json = tokio::task::spawn_blocking({
+        let p = path.clone();
+        move || std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    reporter.phase("parsing");
+    // Off the async thread: a long session's event array takes seconds to deserialize, and
+    // blocking here stalls every other command including this load's own progress events.
+    let session = tokio::task::spawn_blocking(move || {
+        crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    index_session(&sessions, &engine, path, session, Some(&app)).await;
+    log::info!(
+        "preload_session: ready in {}ms",
+        started.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+
+// Frees everything cached for a session when it is ejected: decoded track
+// samples are the bulk of it (hundreds of MB for a multi-track session).
+// Playback of a path that is no longer cached falls back to a disk read.
+pub(crate) fn unload_session(
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+    path: String,
+) {
+    let removed = sessions
+        .files
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&path);
+    sessions
+        .snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&path);
+    if let Some(session) = removed {
+        let track_paths = session_track_paths(&session.events);
+        let mut cache = sessions
+            .track_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for track_path in track_paths {
+            cache.remove(&track_path);
+        }
+    }
+}
+
+// Replaces the in-memory event list for a loaded session with edited events
+// from the frontend. The .bms on disk is untouched; the next playback, scrub,
+// or render uses the edited events.
+pub(crate) async fn update_session_events(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+    path: String,
+    events_json: String,
+) -> Result<(), String> {
+    let events: Vec<SessionEvent> =
+        serde_json::from_str(&events_json).map_err(|e| format!("parse error: {e}"))?;
+
+    // Editing events does not change which mixer the session was played on, so
+    // the header carries over from the file that was loaded.
+    let mixer = sessions
+        .files
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&path)
+        .and_then(|session| session.mixer.clone());
+
+    index_session(
+        &sessions,
+        &engine,
+        path,
+        // Current, not carried over: loading ported these events forward.
+        crate::offline_render::SessionFile {
+            version: session_core::BMS_VERSION,
+            events,
+            mixer,
+        },
+        None,
+    )
+    .await;
+
+    Ok(())
+}
+
+pub(crate) async fn start_session_playback(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+    path: String,
+    from_ms: f64,
+) -> Result<(), String> {
+    // Prefer the in-memory session (which may hold unsaved edits); fall back to
+    // the disk file for callers that never preloaded.
+    let cached: Option<Arc<crate::offline_render::SessionFile>> = sessions
+        .files
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&path)
+        .cloned();
+    let session: Arc<crate::offline_render::SessionFile> = match cached {
+        Some(cached_session) => cached_session,
+        None => {
+            let json = {
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            };
+            let parsed = crate::offline_render::SessionFile::parse(&json)
+                .map_err(|e| format!("parse error: {e}"))?;
+            let parsed = Arc::new(parsed);
+            sessions
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(path.clone(), parsed.clone());
+            parsed
+        }
+    };
+
+    // Awaited, not just cancelled: the runtime is multi-threaded, so the old task can
+    // otherwise apply a stale event after the new one has already placed that deck.
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = sessions
+            .playback_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = guard.take() {
+            old.store(true, Ordering::Release);
+        }
+        *guard = Some(cancel.clone());
+    }
+    let old_handle = sessions
+        .playback_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(handle) = old_handle {
+        let _ = handle.await;
+    }
+
+    // Refused rather than replayed against the wrong scales, which would differ from
+    // the offline render. Hosting beats an id match, so pre-versioned sessions play.
+    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+    if !engine.audio.mixer().can_host(manifest) {
+        return Err(format!(
+            "this session was recorded on mixer '{}', which this build cannot play live",
+            manifest.id
+        ));
+    }
+
+    let audio = engine.audio.clone();
+    let sr = audio.device_sample_rate;
+
+    // Ensure cache is populated (fast path if preload already ran).
+    let paths = session_track_paths(&session.events);
+    populate_track_cache(&sessions, paths, sr, None).await;
+    let cache: Arc<SampleCache> = Arc::new(
+        sessions
+            .track_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
+    );
+
+    // Find the nearest snapshot at or before from_ms.
+    let snapshot: Option<SessionSnapshot> = {
+        let snaps = sessions.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(snaps) = snaps.get(&path) {
+            let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
+            idx.checked_sub(1).map(|i| snaps[i].clone())
+        } else {
+            None
+        }
+    };
+
+    let app_handle = app.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        reset_all(&audio);
+
+        let mut sorted_events = session.events.clone();
+        sorted_events.sort_by(event_sim_order);
+
+        // Reconstruct state at from_ms: find the nearest post-event snapshot,
+        // apply it, then replay any events that fall between the snapshot and from_ms.
+        let (sim, snapshot_ms) = match snapshot {
+            Some(ref snap) => (sim_state_from_snapshot(snap), snap.elapsed_ms),
+            None => (SimState::new(), 0.0),
+        };
+
+        apply_sim_strips_and_master(&sim, &audio);
+
+        let mut sim = sim;
+        // deck_snapshot is already folded into the base snapshot; never replay it.
+        for ev in sorted_events.iter().filter(|e| {
+            e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
+        }) {
+            if reconstructs_mixer_state(ev) {
+                apply_event_live(ev, &audio, sr, &cache, 0);
+            }
+            sim_apply_event(ev, &mut sim, &cache, sr);
+        }
+
+        let sr_f = sr.max(1) as f64;
+
+        // Two passes so every deck begins on the same output buffer: setup under brief
+        // individual locks with is_playing false, then the flags under all locks at once.
+        let mut ids: Vec<&String> = sim.decks.keys().collect();
+        ids.sort();
+        let mut to_start: Vec<Arc<std::sync::Mutex<audio::Deck>>> = Vec::new();
+        for id in ids {
+            let ds = &sim.decks[id];
+            let (Some(path), Some(arc)) = (ds.path.as_ref(), audio.deck(id)) else {
+                continue;
+            };
+            let Some((samples, channels)) = cache.get(path) else {
+                continue;
+            };
+            let total_frames = samples.len() / channels;
+            {
+                let mut d = arc.lock().unwrap_or_else(|e| e.into_inner());
+                d.samples = samples.clone();
+                d.channels = *channels;
+                d.device_sample_rate = sr;
+                d.total_frames = total_frames;
+                d.duration = total_frames as f64 / sr_f;
+                d.loaded_path = Some(path.clone());
+                d.main_pos = sim_pos(ds, from_ms, sr_f).min(total_frames as f64);
+                d.cue_pos = d.main_pos;
+                d.cue_point = ds.cue_point.min(total_frames as f64);
+                d.loop_active = ds.loop_active;
+                d.loop_end = ds.loop_end.min(total_frames as f64);
+                d.playback_rate = ds.rate;
+                d.jog_hold_factor = ds.jog_hold_factor;
+                d.bpm = ds.bpm;
+                d.beat_offset_frames = ds.beat_offset_frames;
+                d.is_playing = false;
+                d.is_cueing = false;
+            }
+            if ds.is_playing {
+                to_start.push(arc);
+            }
+        }
+        {
+            let mut guards: Vec<_> = to_start
+                .iter()
+                .map(|a| a.lock().unwrap_or_else(|e| e.into_inner()))
+                .collect();
+            for d in guards.iter_mut() {
+                d.is_playing = true;
+            }
+        }
+
+        // The OS clock and the soundcard clock are different oscillators, so waiting on
+        // wall time turns a one-time error into a permanent phase offset.
+        let base_frame = audio.monitor.output_frames();
+
+        for event in sorted_events.iter().filter(|e| e.elapsed_ms > from_ms) {
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            let target_offset = ((event.elapsed_ms - from_ms).max(0.0) / 1000.0 * sr_f).round();
+            let target_frame = base_frame.saturating_add(target_offset as u64);
+            wait_until_frame(&audio.monitor, target_frame, sr, &cancel).await;
+
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            // How far the audio clock is already past this event's target frame
+            // (the event only takes effect on the next callback). Used to
+            // sample-align a deck that starts/repositions here with decks that
+            // were already playing.
+            let overshoot = audio.monitor.output_frames().saturating_sub(target_frame);
+            apply_event_live(event, &audio, sr, &cache, overshoot);
+        }
+
+        if !cancel.load(Ordering::Acquire) {
+            for id in crate::audio::LIVE_DECK_IDS {
+                if let Some(deck_arc) = audio.deck(id) {
+                    deck_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_playing = false;
+                }
+            }
+            app_handle.emit("session-playback-ended", ()).ok();
+        }
+    });
+
+    *sessions
+        .playback_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+
+    Ok(())
+}
+
+pub(crate) fn stop_session_playback(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+) {
+    let mut guard = sessions
+        .playback_cancel
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(cancel) = guard.take() {
+        cancel.store(true, Ordering::Release);
+    }
+    for id in crate::audio::LIVE_DECK_IDS {
+        if let Some(deck_arc) = engine.audio.deck(id) {
+            deck_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_playing = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{ChannelStrip, DeckState};
+    use crate::audio::{ChannelStrip, Deck};
     use std::collections::{HashMap, HashSet};
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;
 
-    // A deck assigned to a bus at t=10s and started from t=60s used to play as
-    // `Thru`, because an assign is its own command rather than a `SetParam`.
     #[test]
     fn a_mid_session_start_rebuilds_assigns_as_well_as_params() {
         let assign = SessionEvent {
@@ -919,7 +930,7 @@ mod tests {
     // Must go through the production applier: a private reimplementation could
     // pass the parity check while production diverges.
     fn apply_deck_event(
-        d: &mut DeckState,
+        d: &mut Deck,
         s: &mut ChannelStrip,
         ev: &SessionEvent,
         cache: &SampleCache,
@@ -956,7 +967,7 @@ mod tests {
         ];
 
         let cache: SampleCache = HashMap::new();
-        let mut deck = DeckState::empty(SR);
+        let mut deck = Deck::empty(SR);
         let mut strip = ChannelStrip::new(SR_F as f32);
         let mut sim = SimState::new();
         for event in &events {
@@ -1007,7 +1018,7 @@ mod tests {
             .collect();
         sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
 
-        let mut d = DeckState::empty(SR);
+        let mut d = Deck::empty(SR);
         let mut s = ChannelStrip::new(SR_F as f32);
         let total_frames = seconds * SR as usize;
         let mut ei = 0usize;
@@ -1333,8 +1344,6 @@ mod tests {
         check_sim_vs_engine(&events, &cache, 30);
     }
 
-    // A loop engaged while the playhead is still below the loop start must play
-    // linearly to loop_end before wrapping, like the engine.
     #[test]
     fn sim_matches_engine_when_loop_engages_below_loop_start() {
         let path = "/fake/a.wav";

@@ -1,11 +1,4 @@
-// Timeline derivation: turns the event stream into the editor's visual model.
-// `build_clips` produces the per-deck playing segments (one clip per loop
-// iteration) and the loaded-track spans; `build_lanes` produces the automation
-// lanes (gain/eq/filter/rate) plus filter-active and nudge spans.
-//
-// This is a faithful port of the frontend's useSessionTimeline.ts so the editor
-// can run the SAME derivation via WASM instead of a divergent TS copy. Track
-// display names are intentionally NOT derived here: the path is returned and the
+// A clip's display name is deliberately not derived here: the path comes back and the
 // frontend maps it to a collection title.
 
 use crate::event::SessionEvent;
@@ -120,8 +113,8 @@ fn make_deck_state() -> DeckState {
 fn advance_position(deck: &mut DeckState, ms: f64) {
     let playing = deck.clip_start_ms.is_some() || deck.loop_active;
     if playing && ms > deck.pos_mark_ms {
-        let mut pos =
-            deck.track_pos_sec + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.jog_hold_factor;
+        let mut pos = deck.track_pos_sec
+            + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.jog_hold_factor;
         if deck.loop_active {
             if let (Some(ls), Some(le)) = (deck.loop_start_sec, deck.loop_end_sec) {
                 let duration = le - ls;
@@ -139,10 +132,10 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
 // clip's wall span into constant-rate wave segments. Call after any change to
 // `deck.rate` or `deck.jog_hold_factor`.
 fn record_eff_rate(deck: &mut DeckState, ms: f64) {
-    deck.eff_rate_changes.push((ms, deck.rate * deck.jog_hold_factor));
+    deck.eff_rate_changes
+        .push((ms, deck.rate * deck.jog_hold_factor));
     deck.rate_changes.push((ms, deck.rate));
 }
-
 
 // Slice [clip_start_ms, clip_end_ms] at each rate change inside it, integrating
 // the track position forward at each piece's effective rate. The piece track
@@ -190,7 +183,6 @@ fn wave_segments_for(
     }
     segs
 }
-
 
 fn start_clip(deck: &mut DeckState, ms: f64) {
     deck.clip_start_ms = Some(ms);
@@ -351,7 +343,6 @@ fn exit_loop_and_continue(
     start_clip(deck, ms);
 }
 
-
 struct JogRateCurve {
     // (wall_ms, effective_rate).
     eff_rate: Vec<(f64, f64)>,
@@ -494,9 +485,8 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
     for ev in events {
         if ev.event_type == "set_jog_rotation_speed" {
-            jog_rotation_speed = crate::JogRotationSpeed::from_str_or_33(
-                ev.speed.as_deref().unwrap_or_default(),
-            );
+            jog_rotation_speed =
+                crate::JogRotationSpeed::from_str_or_33(ev.speed.as_deref().unwrap_or_default());
             continue;
         }
         let Some(deck_id) = ev.deck.as_deref() else {
@@ -593,7 +583,7 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                 }
             }
 
-            "stop" | "stopped_at_cue" | "stop_at_cue" | "cue_set_and_stop" => {
+            "stop" | "stopped_at_cue" => {
                 // cue_set_and_stop: user pressed CUE while playing, stops and
                 // moves cue to current position.
                 finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
@@ -968,100 +958,98 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     for ev in events {
         let deck_id = ev.deck.as_deref();
         match ev.event_type.as_str() {
-            "set_param" => match (deck_id, ev.slot.as_deref(), ev.param.as_deref(), ev.value) {
-                (Some(id), Some("fader"), Some("gain"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().gain.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
+            "set_param" => {
+                match (deck_id, ev.slot.as_deref(), ev.param.as_deref(), ev.value) {
+                    (Some(id), Some("fader"), Some("gain"), Some(value)) => {
+                        ensure_deck(
+                            id,
+                            &mut deck_lanes,
+                            &mut filter_active_since_ms,
+                            &mut nudge_since,
+                            &mut deck_nudges,
+                        );
+                        deck_lanes.get_mut(id).unwrap().gain.push(LanePoint {
+                            ms: ev.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
 
-                (Some(id), Some("eq"), Some(band), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let auto = deck_lanes.get_mut(id).unwrap();
-                    let lane = match band {
-                        "low" => &mut auto.eq_low,
-                        "mid" => &mut auto.eq_mid,
-                        _ => &mut auto.eq_high,
-                    };
-                    lane.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
+                    (Some(id), Some("eq"), Some(band), Some(value)) => {
+                        ensure_deck(
+                            id,
+                            &mut deck_lanes,
+                            &mut filter_active_since_ms,
+                            &mut nudge_since,
+                            &mut deck_nudges,
+                        );
+                        let auto = deck_lanes.get_mut(id).unwrap();
+                        let lane = match band {
+                            "low" => &mut auto.eq_low,
+                            "mid" => &mut auto.eq_mid,
+                            _ => &mut auto.eq_high,
+                        };
+                        lane.push(LanePoint {
+                            ms: ev.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
 
-                (Some(id), Some("filter"), Some("value"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().filter.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
+                    (Some(id), Some("filter"), Some("value"), Some(value)) => {
+                        ensure_deck(
+                            id,
+                            &mut deck_lanes,
+                            &mut filter_active_since_ms,
+                            &mut nudge_since,
+                            &mut deck_nudges,
+                        );
+                        deck_lanes.get_mut(id).unwrap().filter.push(LanePoint {
+                            ms: ev.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
 
-                (Some(id), Some("filter"), Some("active"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let active = value != 0.0;
-                    let since = filter_active_since_ms.get_mut(id).unwrap();
-                    if active && since.is_none() {
-                        *since = Some(ev.elapsed_ms);
-                    } else if !active {
-                        if let Some(start) = *since {
-                            deck_lanes
-                                .get_mut(id)
-                                .unwrap()
-                                .filter_active
-                                .push(FilterActiveSpan {
-                                    start_ms: start,
-                                    end_ms: ev.elapsed_ms,
-                                });
-                            *since = None;
+                    (Some(id), Some("filter"), Some("active"), Some(value)) => {
+                        ensure_deck(
+                            id,
+                            &mut deck_lanes,
+                            &mut filter_active_since_ms,
+                            &mut nudge_since,
+                            &mut deck_nudges,
+                        );
+                        let active = value != 0.0;
+                        let since = filter_active_since_ms.get_mut(id).unwrap();
+                        if active && since.is_none() {
+                            *since = Some(ev.elapsed_ms);
+                        } else if !active {
+                            if let Some(start) = *since {
+                                deck_lanes.get_mut(id).unwrap().filter_active.push(
+                                    FilterActiveSpan {
+                                        start_ms: start,
+                                        end_ms: ev.elapsed_ms,
+                                    },
+                                );
+                                *since = None;
+                            }
                         }
                     }
+
+                    (None, Some("gain"), Some("gain"), Some(value)) => {
+                        master_lanes.gain.push(LanePoint {
+                            ms: ev.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
+
+                    (None, Some("xfader"), Some("position"), Some(value)) => {
+                        master_lanes.xfader.push(LanePoint {
+                            ms: ev.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
+
+                    _ => {}
                 }
-
-                (None, Some("gain"), Some("gain"), Some(value)) => {
-                    master_lanes.gain.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                (None, Some("xfader"), Some("position"), Some(value)) => {
-                    master_lanes.xfader.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                _ => {}
-            },
-
-
+            }
 
             "deck_snapshot" => {
                 if let (Some(id), Some(rate)) = (deck_id, ev.playback_rate) {
@@ -1095,7 +1083,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                 }
             }
 
-
             // A nudge interval runs from the first non-zero `percent` event to
             // the following `percent: 0` event for that deck (mirrors
             // filter-active pairing).
@@ -1124,7 +1111,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     }
                 }
             }
-
 
             _ => {}
         }
@@ -1190,8 +1176,6 @@ mod tests {
         }
     }
 
-    // The WASM boundary is JSON-in/JSON-out; the TS wrapper expects camelCase
-    // keys, including the top-level `loadedSpans` field.
     #[test]
     fn clips_build_serializes_loaded_spans_as_camel_case() {
         let json = serde_json::to_value(ClipsBuild {
@@ -1882,8 +1866,14 @@ mod tests {
     #[test]
     fn a_session_with_no_crossfader_move_reads_centre_throughout() {
         let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
-        assert_eq!(master_lanes.xfader.first().map(|point| point.value), Some(0.0));
-        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(10_000.0));
+        assert_eq!(
+            master_lanes.xfader.first().map(|point| point.value),
+            Some(0.0)
+        );
+        assert_eq!(
+            master_lanes.xfader.last().map(|point| point.ms),
+            Some(10_000.0)
+        );
     }
 
     #[test]
@@ -1896,7 +1886,10 @@ mod tests {
         assert_eq!(master_lanes.xfader[1].value, -1.0);
         assert_eq!(master_lanes.xfader[1].ms, 1500.0);
         assert_eq!(master_lanes.xfader[2].value, 1.0);
-        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(5000.0));
+        assert_eq!(
+            master_lanes.xfader.last().map(|point| point.ms),
+            Some(5000.0)
+        );
     }
 
     #[test]
@@ -1999,7 +1992,13 @@ mod tests {
 
     #[test]
     fn closes_unfinished_filter_span_at_session_end() {
-        let events = vec![SessionEvent::param(7000.0, Some("A"), "filter", "active", 1.0)];
+        let events = vec![SessionEvent::param(
+            7000.0,
+            Some("A"),
+            "filter",
+            "active",
+            1.0,
+        )];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
@@ -2210,7 +2209,10 @@ mod tests {
     fn rate_range_pct_for_matches_steps() {
         assert_eq!(rate_range_pct_for(0.0, &rate_steps_pct(&PITCH_OPTS)), 8.0);
         assert_eq!(rate_range_pct_for(9.0, &rate_steps_pct(&PITCH_OPTS)), 10.0);
-        assert_eq!(rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)), 100.0);
+        assert_eq!(
+            rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)),
+            100.0
+        );
     }
 
     fn jog(elapsed_ms: f64, deck: &str, ticks: f64) -> SessionEvent {
@@ -2289,8 +2291,6 @@ mod tests {
         assert!((clips[1].track_start_sec - 1.0).abs() < 1e-9);
     }
 
-    // Both land on one axis because the engine adds them, so a gesture on top of a
-    // held nudge has to read as the sum and not as either one alone.
     #[test]
     fn the_wheel_curve_sums_a_gesture_onto_the_nudge_under_it() {
         let events = vec![
@@ -2322,8 +2322,6 @@ mod tests {
         assert!((at(4500.0) - 0.0).abs() < 1e-9);
     }
 
-    // The lane draws the wheel's contribution to playback speed, which a stopped
-    // platter has none of: it repositions instead.
     #[test]
     fn the_wheel_curve_covers_playing_decks_only() {
         let scrubbed_then_played = vec![
@@ -2363,8 +2361,6 @@ mod tests {
         assert!((peak(&at_double_rate) - peak(&at_normal_rate)).abs() < 1e-9);
     }
 
-    // The wheel speeds the deck up, so the audio under a gesture is stretched over
-    // less wall time, exactly as a nudge stretches it.
     #[test]
     fn a_jog_compresses_the_waveform_across_its_settle() {
         let events = vec![
@@ -2377,7 +2373,8 @@ mod tests {
         let segs = &clips[0].wave_segments;
 
         let rate_of = |seg: &WaveSeg| {
-            (seg.track_end_sec - seg.track_start_sec) / ((seg.wall_end_ms - seg.wall_start_ms) / 1000.0)
+            (seg.track_end_sec - seg.track_start_sec)
+                / ((seg.wall_end_ms - seg.wall_start_ms) / 1000.0)
         };
         let during = segs
             .iter()
@@ -2392,8 +2389,6 @@ mod tests {
         assert!((rate_of(before) - 1.0).abs() < 1e-9);
     }
 
-    // Every segment starts where the previous ended: the wheel stretches the audio
-    // rather than skipping any of it.
     #[test]
     fn wave_segments_stay_contiguous_across_a_jog() {
         let events = vec![
@@ -2410,7 +2405,13 @@ mod tests {
             assert!((pair[0].wall_end_ms - pair[1].wall_start_ms).abs() < 1e-12);
         }
         let total = segs.last().unwrap().track_end_sec - segs[0].track_start_sec;
-        assert!((total - (2.0 + 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 / crate::JOG_PAUSED_MULTIPLIER)).abs() < 1e-9);
+        assert!(
+            (total
+                - (2.0
+                    + 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 / crate::JOG_PAUSED_MULTIPLIER))
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
@@ -2430,8 +2431,6 @@ mod tests {
         assert!((clips[1].track_start_sec - crate::JOG_FACTOR_MIN).abs() < 1e-9);
     }
 
-    // build_clips is the editor's position model and the sim is the engine's, so a
-    // jog that moves one and not the other silently shifts synthesized play events.
     #[test]
     fn build_clips_position_matches_the_sim_across_jogs() {
         const SAMPLE_RATE: u32 = 44100;
@@ -2463,7 +2462,10 @@ mod tests {
         let mut cache = crate::sim::SampleCache::new();
         cache.insert(
             "/t/a.mp3".to_string(),
-            (std::sync::Arc::new(vec![0.0; SAMPLE_RATE as usize * 120]), 1),
+            (
+                std::sync::Arc::new(vec![0.0; SAMPLE_RATE as usize * 120]),
+                1,
+            ),
         );
         // A stopped deck reports its last committed position for any ms, so the sim
         // has to be asked at the resume and not after the session has run out.
@@ -2471,8 +2473,8 @@ mod tests {
         for event in events.iter().filter(|e| e.elapsed_ms <= 5000.0) {
             crate::sim::sim_apply_event(event, &mut state, &cache, SAMPLE_RATE);
         }
-        let sim_sec =
-            crate::sim::sim_pos(&state.decks["A"], 5000.0, f64::from(SAMPLE_RATE)) / f64::from(SAMPLE_RATE);
+        let sim_sec = crate::sim::sim_pos(&state.decks["A"], 5000.0, f64::from(SAMPLE_RATE))
+            / f64::from(SAMPLE_RATE);
 
         let ClipsBuild { clips, .. } = build_clips(&events);
         let resumed = clips.last().unwrap();
@@ -2483,8 +2485,6 @@ mod tests {
         );
     }
 
-
-
     fn total_travel(steps: &[JogRateStep]) -> f64 {
         steps
             .iter()
@@ -2494,7 +2494,13 @@ mod tests {
 
     #[test]
     fn steps_deliver_exactly_the_impulse_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 1000.0, travel_sec: 0.031 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 1000.0,
+                travel_sec: 0.031,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         assert!((total_travel(&steps) - 0.031).abs() < 1e-12);
     }
 
@@ -2512,15 +2518,26 @@ mod tests {
 
     #[test]
     fn a_reverse_gesture_delivers_negative_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: -0.02 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: -0.02,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         assert!((total_travel(&steps) + 0.02).abs() < 1e-12);
         assert!(steps.iter().all(|step| step.rate_delta <= 0.0));
     }
 
-    // The filter is a decay, so the deck is bent hardest the instant the wheel moves.
     #[test]
     fn the_first_step_carries_the_most_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.05 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.05,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         let peak = steps
             .iter()
             .map(|step| step.rate_delta)
@@ -2532,8 +2549,14 @@ mod tests {
     fn steps_land_on_a_shared_grid_so_gestures_can_be_summed() {
         let steps = jog_rate_steps(
             &[
-                JogImpulse { ms: 102.0, travel_sec: 0.01 },
-                JogImpulse { ms: 104.0, travel_sec: 0.01 },
+                JogImpulse {
+                    ms: 102.0,
+                    travel_sec: 0.01,
+                },
+                JogImpulse {
+                    ms: 104.0,
+                    travel_sec: 0.01,
+                },
             ],
             JOG_CURVE_STEP_MS,
         );
@@ -2549,12 +2572,25 @@ mod tests {
     #[test]
     fn no_wheel_movement_is_no_steps() {
         assert!(jog_rate_steps(&[], JOG_CURVE_STEP_MS).is_empty());
-        assert!(jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.0 }], JOG_CURVE_STEP_MS).is_empty());
+        assert!(jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.0
+            }],
+            JOG_CURVE_STEP_MS
+        )
+        .is_empty());
     }
 
     #[test]
     fn the_settle_is_bounded_so_one_flick_cannot_span_a_session() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.01 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.01,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         let end = steps.last().unwrap().end_ms;
         assert!(end <= crate::JOG_FILTER_TAU_SEC * SETTLE_TAIL_TAUS * 1000.0 + JOG_CURVE_STEP_MS);
     }

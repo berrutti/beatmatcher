@@ -8,14 +8,14 @@ mod stream;
 mod unit;
 
 pub use analysis::{
-    compute_amplitude_region, compute_amplitude_waveform, compute_spectral_bands,
-    compute_spectral_waveform_region, detect_bpm, detect_silence_end,
+    compute_amplitude_region, compute_spectral_bands, compute_spectral_waveform_region, detect_bpm,
+    detect_silence_end,
 };
 #[cfg(test)]
 pub use deck::RenderTargets;
-pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, DeckState};
+pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, SpectralBands};
 pub(crate) use dsp::master_output;
-pub(crate) use dsp::LimiterState;
+pub(crate) use dsp::Limiter;
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
 pub(crate) use session_apply::apply_deck_command;
@@ -33,7 +33,7 @@ use std::sync::{
 };
 
 use analysis::{BPM_MAX, BPM_MIN};
-use recording::{flac_writer_thread, wav_writer_thread, RecordingState};
+use recording::{flac_writer_thread, wav_writer_thread, Recording};
 use stream::{
     best_output_config, build_combined_stream, build_cue_stream, build_stream, channel_pairs,
     find_output_device, MasterMonitor as Monitor, SendStream,
@@ -74,7 +74,7 @@ pub(crate) const EDIT_DECK_ID: &str = "E";
 
 pub struct AppAudio {
     pub device_sample_rate: u32,
-    decks: HashMap<String, Arc<Mutex<DeckState>>>,
+    decks: HashMap<String, Arc<Mutex<Deck>>>,
     strips: HashMap<String, Arc<Mutex<ChannelStrip>>>,
     pub ended_flags: HashMap<String, Arc<AtomicBool>>,
     default_device_id: String,
@@ -88,10 +88,10 @@ pub struct AppAudio {
     // Mirrored from the frontend, which owns it. A tempo fader arrives as a
     // position that means nothing until something knows how far the fader travels.
     pitch_range_percent: Mutex<f64>,
-    _main_stream: Mutex<Option<SendStream>>,
-    _cue_stream: Mutex<Option<SendStream>>,
+    main_stream: Mutex<Option<SendStream>>,
+    cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
-    recording: Mutex<Option<RecordingState>>,
+    recording: Mutex<Option<Recording>>,
     mixer: &'static session_core::MixerManifest,
 }
 
@@ -110,13 +110,35 @@ impl AppAudio {
         let config = device.default_output_config()?;
         let device_sample_rate = config.sample_rate().0;
 
+        let audio = Self::unrouted(device_sample_rate, default_device_id);
+        let channels = channel_pairs(&audio.decks, &audio.strips);
+        let main_stream = build_stream(
+            &device,
+            &config,
+            channels,
+            false,
+            0,
+            Some(audio.monitor.clone()),
+            0,
+        )?;
+        main_stream.play()?;
+        *audio
+            .main_stream
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(SendStream(main_stream));
+        Ok(audio)
+    }
+
+    /// Everything except the output stream, which is the only part that needs a real
+    /// device, so a test can drive the engine without one.
+    pub(crate) fn unrouted(device_sample_rate: u32, default_device_id: String) -> Self {
         let mut decks = HashMap::new();
         let mut strips = HashMap::new();
         let mut ended_flags: HashMap<String, Arc<AtomicBool>> = HashMap::new();
         for id in LIVE_DECK_IDS.into_iter().chain([EDIT_DECK_ID]) {
             let flag = Arc::new(AtomicBool::new(false));
             ended_flags.insert(id.to_string(), flag.clone());
-            let mut deck = DeckState::empty(device_sample_rate);
+            let mut deck = Deck::empty(device_sample_rate);
             deck.just_ended = flag;
             decks.insert(id.to_string(), Arc::new(Mutex::new(deck)));
             strips.insert(
@@ -128,20 +150,7 @@ impl AppAudio {
             );
         }
 
-        let monitor = Monitor::new();
-        let channels = channel_pairs(&decks, &strips);
-        let main_stream = build_stream(
-            &device,
-            &config,
-            channels,
-            false,
-            0,
-            Some(monitor.clone()),
-            0,
-        )?;
-        main_stream.play()?;
-
-        Ok(Self {
+        Self {
             device_sample_rate,
             decks,
             strips,
@@ -155,15 +164,15 @@ impl AppAudio {
             bpm_max: Arc::new(AtomicU32::new(BPM_MAX as u32)),
             pitch_range_percent: Mutex::new(DEFAULT_PITCH_RANGE_PERCENT),
             default_device_id,
-            _main_stream: Mutex::new(Some(SendStream(main_stream))),
-            _cue_stream: Mutex::new(None),
-            monitor,
+            main_stream: Mutex::new(None),
+            cue_stream: Mutex::new(None),
+            monitor: Monitor::new(),
             recording: Mutex::new(None),
             mixer: MIXER,
-        })
+        }
     }
 
-    pub fn deck(&self, id: &str) -> Option<Arc<Mutex<DeckState>>> {
+    pub fn deck(&self, id: &str) -> Option<Arc<Mutex<Deck>>> {
         self.decks.get(id).cloned()
     }
 
@@ -177,11 +186,8 @@ impl AppAudio {
 
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
         let host = cpal::default_host();
-        // Use all devices (not just output_devices()) because output_devices()
-        // filters by max_output_channels() > 0, which excludes inactive devices
-        // (e.g. Bluetooth or USB audio not currently set as system output on macOS).
-        // supported_output_configs() queries registered driver-level formats and
-        // succeeds even for inactive devices, so we use that as the output check.
+        // `output_devices()` filters on max_output_channels > 0, which drops a Bluetooth
+        // or USB device that is not the current system output on macOS.
         host.devices()
             .map(|devices| {
                 devices
@@ -302,12 +308,8 @@ impl AppAudio {
         self.rebuild_streams()
     }
 
-    // Inspect the current main/cue routing and build either a single combined
-    // stream (when both are on the same device) or two separate streams.
-    //
-    // Using one combined callback when main and cue share a device prevents the
-    // two separate CoreAudio render callbacks from interfering: a cue callback
-    // that writes zeros doesn't blank out the main output buffer.
+    // One callback when main and cue share a device: two CoreAudio callbacks interfere,
+    // and the cue one writing zeros blanks the main output.
     fn rebuild_streams(&self) -> Result<(), String> {
         let main_id = self
             .current_main_id
@@ -369,7 +371,7 @@ impl AppAudio {
 
             // Pause all old streams, sync positions, then start the new combined stream.
             if let Some(s) = self
-                ._main_stream
+                .main_stream
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
@@ -377,7 +379,7 @@ impl AppAudio {
                 s.0.pause().ok();
             }
             {
-                let mut guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = self.cue_stream.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = guard.as_ref() {
                     s.0.pause().ok();
                 }
@@ -385,7 +387,7 @@ impl AppAudio {
             }
             self.sync_cue_positions();
             {
-                let mut guard = self._main_stream.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = self.main_stream.lock().unwrap_or_else(|e| e.into_inner());
                 *guard = Some(SendStream(stream));
                 guard
                     .as_ref()
@@ -398,7 +400,7 @@ impl AppAudio {
         } else {
             // Different devices, or main is unset, or no cue configured.
             // Build all new streams before pausing anything so the gap is minimal.
-            let new_main_stream = if !main_id.is_empty() {
+            let newmain_stream = if !main_id.is_empty() {
                 let main_device = find_output_device(&main_id)?;
                 let main_cfg =
                     best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
@@ -425,7 +427,7 @@ impl AppAudio {
                 None
             };
 
-            let new_cue_stream = if !cue_id.is_empty() {
+            let newcue_stream = if !cue_id.is_empty() {
                 let cue_device = find_output_device(&cue_id)?;
                 let cue_cfg =
                     best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
@@ -452,7 +454,7 @@ impl AppAudio {
 
             // Pause all old streams, sync cue_pos to main_pos, then start new streams.
             if let Some(s) = self
-                ._main_stream
+                .main_stream
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
@@ -460,7 +462,7 @@ impl AppAudio {
                 s.0.pause().ok();
             }
             {
-                let guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
+                let guard = self.cue_stream.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = guard.as_ref() {
                     s.0.pause().ok();
                 }
@@ -468,8 +470,8 @@ impl AppAudio {
             self.sync_cue_positions();
 
             {
-                let mut guard = self._main_stream.lock().unwrap_or_else(|e| e.into_inner());
-                match new_main_stream {
+                let mut guard = self.main_stream.lock().unwrap_or_else(|e| e.into_inner());
+                match newmain_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
                         guard
@@ -483,8 +485,8 @@ impl AppAudio {
                 }
             }
             {
-                let mut guard = self._cue_stream.lock().unwrap_or_else(|e| e.into_inner());
-                match new_cue_stream {
+                let mut guard = self.cue_stream.lock().unwrap_or_else(|e| e.into_inner());
+                match newcue_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
                         guard
@@ -561,7 +563,7 @@ impl AppAudio {
         } else {
             std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, bit_depth, rx))
         };
-        *recording = Some(RecordingState { thread, temp_path });
+        *recording = Some(Recording { thread, temp_path });
         Ok(())
     }
 
@@ -584,12 +586,5 @@ impl AppAudio {
         } else {
             Err("not recording".to_string())
         }
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.recording
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
     }
 }

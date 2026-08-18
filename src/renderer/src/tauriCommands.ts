@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core';
 
 type Commands = {
   analyze_track: { args: { path: string }; returns: unknown };
-  clear_loop_region: { args: { deck: string }; returns: void };
   confirm_quit: { args: Record<string, never>; returns: void };
   discard_recording: { args: { path: string }; returns: void };
   eject_track: { args: { deck: string }; returns: void };
@@ -19,7 +18,6 @@ type Commands = {
     args: { path: string; startSec: number; endSec: number; numPoints: number };
     returns: number[];
   };
-  get_track_amplitude_waveform: { args: { path: string; numPoints: number }; returns: unknown };
   list_audio_devices: { args: Record<string, never>; returns: unknown[] };
   list_midi_devices: { args: Record<string, never>; returns: unknown[] };
   load_track: {
@@ -28,7 +26,6 @@ type Commands = {
   };
   open_session_dialog: { args: Record<string, never>; returns: unknown | null };
   pick_save_path: { args: { format: string; baseName: string }; returns: string | null };
-  play: { args: { deck: string; fromSec: number | null }; returns: void };
   preload_session: { args: { path: string }; returns: void };
   press_cue: { args: { deck: string }; returns: unknown };
   read_file: { args: { path: string }; returns: string };
@@ -51,7 +48,6 @@ type Commands = {
   set_bpm_range: { args: { min: number; max: number }; returns: void };
   set_buffer_size: { args: { frames: number }; returns: void };
   set_cue_active: { args: { deck: string; active: boolean }; returns: void };
-  set_cue_and_stop: { args: { deck: string }; returns: unknown };
   set_cue_device: { args: { deviceId: string; channelOffset: number }; returns: void };
   set_cue_mix: { args: { mix: number }; returns: void };
   set_deck_muted: { args: { deck: string; muted: boolean }; returns: void };
@@ -65,7 +61,6 @@ type Commands = {
   set_loop_active: { args: { deck: string; active: boolean }; returns: unknown };
   set_loop_in: { args: { deck: string }; returns: unknown };
   set_loop_out: { args: { deck: string }; returns: unknown | null };
-  set_loop_region: { args: { deck: string; startSec: number; endSec: number }; returns: void };
   set_main_device: { args: { deviceId: string; channelOffset: number }; returns: void };
   set_master_gain: { args: { gain: number }; returns: void };
   set_midi_device_deck: { args: { port: string; deck: string | null }; returns: void };
@@ -83,7 +78,6 @@ type Commands = {
   };
   start_session_playback: { args: { path: string; fromMs: number }; returns: void };
   stop: { args: { deck: string }; returns: void };
-  stop_at_cue: { args: { deck: string }; returns: unknown };
   stop_recording: { args: Record<string, never>; returns: string };
   stop_session_playback: { args: Record<string, never>; returns: void };
   toggle_play: { args: { deck: string }; returns: unknown };

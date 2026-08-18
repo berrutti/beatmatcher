@@ -1,5 +1,5 @@
 use crate::audio::AppAudio;
-use crate::commands::DeckSyncPayload;
+use crate::deck_sync::DeckSyncPayload;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -251,8 +251,6 @@ mod tests {
         assert_eq!(push.take().dirty.len(), 1);
     }
 
-    // What bounds the channel: a controller sweeping a knob during one flush
-    // period costs one message, not one per tick.
     #[test]
     fn repeated_writes_to_one_address_collapse() {
         let push = EnginePush::new();
@@ -266,8 +264,6 @@ mod tests {
         assert_eq!(taken.dirty.len(), 3);
     }
 
-    // The crossfader rides the same channel but at master scope, and its assign
-    // is per deck, so the two must not collapse into each other.
     #[test]
     fn the_crossfader_and_its_assigns_are_separate_addresses() {
         let push = EnginePush::new();
@@ -296,8 +292,6 @@ mod tests {
         assert!(taken.loops_cleared.is_empty());
     }
 
-    // Playing state and position are re-read at flush, but a destroyed loop region is not
-    // readable there, so it has to survive the collapse of every other press in the window.
     #[test]
     fn a_cleared_loop_region_survives_repeated_transport_marks() {
         let push = EnginePush::new();
@@ -311,8 +305,6 @@ mod tests {
         assert!(!taken.loops_cleared.contains("B"));
     }
 
-    // A flag left behind would clear a region the deck acquired after the press
-    // that destroyed the previous one.
     #[test]
     fn a_cleared_loop_region_does_not_outlive_its_batch() {
         let push = EnginePush::new();
@@ -323,8 +315,6 @@ mod tests {
         assert!(push.take().loops_cleared.is_empty());
     }
 
-    // Transport is a deck's own address, so it must not collapse into the param
-    // addresses that share its deck.
     #[test]
     fn transport_is_a_separate_address_from_a_param() {
         let push = EnginePush::new();
@@ -336,8 +326,6 @@ mod tests {
         assert_eq!(push.take().dirty.len(), 4);
     }
 
-    // What bounds a tempo fader sweep: 14 bits of travel is thousands of writes,
-    // and the UI only needs where it came to rest.
     #[test]
     fn a_tempo_sweep_collapses_to_one_rate_per_deck() {
         let push = EnginePush::new();

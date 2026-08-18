@@ -19,22 +19,79 @@ graph TD
     end
 
     subgraph Backend ["Backend (Rust)"]
-        AppState["AppState\n(audio engine handle +\nsession state)"]:::backend
+        Engine["Engine\n(engine.rs - transport and mixer verbs,\nrecorder, UI push, LED feedback)"]:::backend
+        Sessions["SessionLibrary\n(session_playback.rs - decoded audio,\nsnapshots, edited events)"]:::backend
         Audio["AppAudio\n(decks, strips, streams)"]:::backend
-        Engine["Audio Engine\n(audio/ - deck, channel strip,\nDSP, stream I/O)"]:::backend
+        Dsp["Audio Engine\n(audio/ - deck, channel strip,\nDSP, stream I/O)"]:::backend
         Scheduler["Session Scheduler\n(tokio task, session_playback.rs)"]:::backend
     end
 
     UI --> Stores
     Stores -- "invoke()" --> Commands
     Events -- "listen()" --> Stores
-    Commands --> AppState
-    AppState --> Audio
-    Audio --> Engine
-    Engine -- "emit track-ended" --> Events
+    Commands --> Engine
+    Commands --> Sessions
+    Engine --> Audio
+    Audio --> Dsp
+    Dsp -- "emit track-ended" --> Events
     Commands -- "start_session_playback" --> Scheduler
-    Scheduler -- "direct AppState access" --> Audio
+    Scheduler --> Sessions
+    Scheduler -- "direct engine access" --> Audio
 ```
+
+Tauri manages three states independently, so a command receives only what it needs rather than one
+handle to everything: `Engine` for anything that moves a deck or the mixer, `SessionLibrary` for a
+loaded `.bms`, and `SurfaceControl` for whether a control surface may drive the decks. A command that never asks for the
+session library cannot reach it.
+
+`Engine` holds the audio handle, the session recorder and the UI push, because every write to the
+mixer also records itself and mirrors back to the surface that did not move. It does not light
+buttons: `midi::refresh_led` reads deck state and derives the LED from it.
+
+## Module layering
+
+```mermaid
+graph TD
+    classDef leaf fill:#64748b,stroke:#475569,color:#fff
+    classDef mid fill:#f97316,stroke:#ea580c,color:#fff
+    classDef top fill:#06b6d4,stroke:#0891b2,color:#fff
+
+    audio["audio\n(decks, strips, DSP, streams)"]:::leaf
+    deck_sync["deck_sync\n(the payload a deck reports)"]:::mid
+    recorder["recorder\n(session log)"]:::mid
+    offline_render["offline_render"]:::mid
+    broadcast["broadcast"]:::mid
+    engine_push["engine_push\n(16 ms flush to the UI)"]:::mid
+    engine["engine\n(transport and mixer verbs)"]:::mid
+    midi["midi"]:::mid
+    session_playback["session_playback"]:::mid
+    commands["commands\n(every #[tauri::command])"]:::top
+
+    deck_sync --> audio
+    recorder --> audio
+    offline_render --> audio
+    broadcast --> audio
+    engine_push --> audio
+    engine_push --> deck_sync
+    engine --> audio
+    engine --> deck_sync
+    engine --> recorder
+    engine --> engine_push
+    midi --> engine
+    session_playback --> audio
+    session_playback --> engine
+    session_playback --> offline_render
+    commands --> engine
+    commands --> midi
+    commands --> session_playback
+```
+
+`audio` depends on nothing and `commands` sits on top. There are no cycles.
+
+Every `#[tauri::command]` lives in `commands.rs`. Where the work belongs to another module the
+command is a wrapper that calls it, so `session_playback` and `midi` keep their internals private.
+
+The engine does not push LEDs. `midi::refresh_led` reads deck state and derives the light from it.
 
 ## Audio signal chain (per deck)
 
@@ -48,19 +105,19 @@ graph LR
 
     File["Audio File\n(.mp3, .flac, .wav)"]:::io
     Decode["Decode + Resample\n(io.rs)"]:::io
-    DeckState["DeckState\n(playback position,\ncue/loop logic,\nspectral bands)"]:::deck
+    Deck["Deck\n(playback position,\ncue/loop logic,\nspectral bands)"]:::deck
     ChannelStrip["ChannelStrip\n(manifest slots in order,\nthen the crossfader)"]:::strip
     MasterMix["Master Mix\n(limiter, gain,\nmetering)"]:::master
     Outputs["Output Devices\n(main + cue)"]:::out
 
     File --> Decode
-    Decode --> DeckState
-    DeckState -- "main_tick()\ncue_tick()" --> ChannelStrip
+    Decode --> Deck
+    Deck -- "main_tick()\ncue_tick()" --> ChannelStrip
     ChannelStrip -- "process_main()\nprocess_cue()" --> MasterMix
     MasterMix --> Outputs
 ```
 
-`DeckState::render_block` is the single entry point the stream callbacks use to fill a buffer. Main and cue outputs are independently optional, so both routings below share one mixing loop.
+`Deck::render_block` is the single entry point the stream callbacks use to fill a buffer. Main and cue outputs are independently optional, so both routings below share one mixing loop.
 
 ## Mixer manifest
 
@@ -135,7 +192,7 @@ graph TD
     Wasm -- "initSessionCore()" --> Wrapper["sessionCore.ts\n(thin shims over the WASM build)"]:::wasm
 ```
 
-`session_apply.rs::apply_deck_command` is the single implementation of `SessionCommand` application against the real `DeckState`/`ChannelStrip`, used by both the live scheduler and the offline renderer (parameterized over sample loading and live-only start-latency compensation). `session-core`'s own `DeckSim`/`StripSim` (used for scrub simulation and by the WASM build) remain a separate, audio-free implementation of the same command semantics, since the crate has no audio buffer types.
+`session_apply.rs::apply_deck_command` is the single implementation of `SessionCommand` application against the real `Deck`/`ChannelStrip`, used by both the live scheduler and the offline renderer (parameterized over sample loading and live-only start-latency compensation). `session-core`'s own `DeckSim`/`StripSim` (used for scrub simulation and by the WASM build) remain a separate, audio-free implementation of the same command semantics, since the crate has no audio buffer types.
 
 ## Performer state broadcast
 
@@ -143,7 +200,9 @@ graph TD
 
 ## MIDI control
 
-`src-tauri/src/midi.rs` owns the MIDI connection on its own thread and reaches the rest of the app through a single dispatch closure installed with `set_dispatch`. Nothing else crosses that boundary, so mapped input cannot reach device or buffer configuration, which rebuild the streams and stay on the main thread.
+`src-tauri/src/midi/` owns the MIDI connection on its own thread and reaches the rest of the app through a single dispatch closure installed with `set_dispatch`. Nothing else crosses that boundary, so mapped input cannot reach device or buffer configuration, which rebuild the streams and stay on the main thread.
+
+Reading a message and reading a mapping file are separated from the connection, so neither can name `midir`, the device registry or the engine: a parse cannot reach the hardware. The addressing vocabulary they share, byte constants and `Source`/`Key`/`Resolution`/`Half`, is its own module, because putting it in either one makes the two depend on each other.
 
 A **mapping** is a JSON file in `src-tauri/mappings/`, listing bindings that each pair a **source** with an **action**:
 

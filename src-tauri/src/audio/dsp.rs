@@ -217,7 +217,7 @@ const EQ_MID_PEAK_HZ: f32 = 1000.0;
 const EQ_MID_Q: f32 = 0.4;
 const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
 
-pub(crate) struct EqState {
+pub(crate) struct Equalizer {
     sample_rate: f32,
     low_stage1: [Biquad; 2],
     low_stage2: [Biquad; 2],
@@ -226,7 +226,7 @@ pub(crate) struct EqState {
     high_stage2: [Biquad; 2],
 }
 
-impl EqState {
+impl Equalizer {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
@@ -273,15 +273,7 @@ impl EqState {
     }
 }
 
-// HPF/LPF filter
-//   v = 0:  bypass (small dead zone around center)
-//   v < 0:  LPF, cutoff sweeps from 20 kHz down to 20 Hz as v -> -1
-//   v > 0:  HPF, cutoff sweeps from 20 Hz up to 20 kHz as v -> +1
-//
-// Serial signal path.
-// Fixed Q for clean, musical filtering.
-// Current_v is smoothed per-sample; coefficients are refreshed every
-// FILTER_COEF_REFRESH samples to keep the DSP inner loop tight.
+// Negative sweeps the lowpass down from 20 kHz, positive the highpass up from 20 Hz.
 
 const FILTER_MIN_FREQ_HZ: f32 = 20.0;
 const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
@@ -316,7 +308,7 @@ fn resonant_peak(q: f32) -> f32 {
     q / (1.0 - 1.0 / (4.0 * q * q)).sqrt()
 }
 
-pub(crate) struct FilterState {
+pub(crate) struct Filter {
     sample_rate: f32,
     target_knob: f32,
     current_knob: f32,
@@ -334,7 +326,7 @@ pub(crate) struct FilterState {
     crossfade_coeff: f32,
 }
 
-impl FilterState {
+impl Filter {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let smoothing_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_SMOOTHING_TAU_SEC)).exp();
         let crossfade_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_CROSSFADE_TAU_SEC)).exp();
@@ -398,7 +390,8 @@ impl FilterState {
 
     #[inline]
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        self.current_knob += (self.target_knob - self.current_knob) * self.smoothing_coeff;
+        self.current_knob =
+            super::unit::approach(self.current_knob, self.target_knob, self.smoothing_coeff);
 
         if self.coeff_refresh_counter == 0 {
             self.update_filters();
@@ -426,7 +419,8 @@ impl FilterState {
         let l_filtered = self.filters_b[0].process(self.filters_a[0].process(l)) * gain;
         let r_filtered = self.filters_b[1].process(self.filters_a[1].process(r)) * gain;
 
-        self.crossfade += (self.crossfade_target - self.crossfade) * self.crossfade_coeff;
+        self.crossfade =
+            super::unit::approach(self.crossfade, self.crossfade_target, self.crossfade_coeff);
         let entry = ((abs_knob - FILTER_CENTER_DEAD_ZONE) / FILTER_ENTRY_WIDTH).clamp(0.0, 1.0);
         let wet = (1.0 - self.crossfade) * entry;
         (
@@ -438,7 +432,7 @@ impl FilterState {
 
 /// Every output path ends here, so the live and offline chains cannot drift apart.
 #[inline]
-pub(crate) fn master_output(limiter: Option<&mut LimiterState>, l: f32, r: f32) -> (f32, f32) {
+pub(crate) fn master_output(limiter: Option<&mut Limiter>, l: f32, r: f32) -> (f32, f32) {
     match limiter {
         Some(limiter) => limiter.process(l, r),
         None => (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)),
@@ -447,12 +441,12 @@ pub(crate) fn master_output(limiter: Option<&mut LimiterState>, l: f32, r: f32) 
 
 // True-peak brickwall: instantaneous attack (no sample exceeds THRESHOLD), ~150ms release.
 
-pub(crate) struct LimiterState {
+pub(crate) struct Limiter {
     pub(crate) gain_reduction: f32,
     release_coeff: f32,
 }
 
-impl LimiterState {
+impl Limiter {
     pub(crate) const THRESHOLD: f32 = 0.99;
     const RELEASE_TAU_SEC: f32 = 0.150;
 
@@ -477,7 +471,8 @@ impl LimiterState {
         if target_gr < self.gain_reduction {
             self.gain_reduction = target_gr;
         } else {
-            self.gain_reduction += (target_gr - self.gain_reduction) * self.release_coeff;
+            self.gain_reduction =
+                super::unit::approach(self.gain_reduction, target_gr, self.release_coeff);
         }
         (
             (l * self.gain_reduction).clamp(-1.0, 1.0),
@@ -509,8 +504,6 @@ mod tests {
             .collect()
     }
 
-    // --- Biquad ---
-
     #[test]
     fn identity_biquad_passes_impulse_through() {
         let mut bq = Biquad::identity();
@@ -541,8 +534,6 @@ mod tests {
         assert_eq!(bq.delay2, 0.25);
         assert_eq!(bq.b0, lpf.b0);
     }
-
-    // --- Biquad filter correctness ---
 
     #[test]
     fn low_pass_attenuates_above_cutoff() {
@@ -587,14 +578,9 @@ mod tests {
         );
     }
 
-    // --- FilterState (regression for the clipping bug) ---
-
-    // Before the fix, FilterState at knob=0 placed a 20 Hz HPF whose IIR delay
-    // lines accumulated state that caused per-sample outputs exceeding 1.0 on
-    // transients. Now it uses identity, which has L1 norm = 1.
     #[test]
     fn filter_center_impulse_never_clips() {
-        let mut state = FilterState::new(44100.0);
+        let mut state = Filter::new(44100.0);
         let (l, r) = state.process(1.0, 1.0);
         assert!(l <= 1.0 + 1e-5 && r <= 1.0 + 1e-5, "l={} r={}", l, r);
         for _ in 0..32 {
@@ -606,7 +592,7 @@ mod tests {
     #[test]
     fn filter_center_full_scale_sine_never_clips() {
         let sr = 44100.0f32;
-        let mut state = FilterState::new(sr);
+        let mut state = Filter::new(sr);
         for (i, &s) in sine_wave(1000.0, sr, 4096).iter().enumerate() {
             let (l, r) = state.process(s, s);
             assert!(l.abs() <= 1.0 + 1e-5, "clipped at sample {}: l={}", i, l);
@@ -618,7 +604,7 @@ mod tests {
     fn filter_center_multiple_frequencies_never_clip() {
         let sr = 44100.0f32;
         for &freq in &[40.0f32, 200.0, 1000.0, 8000.0, 15000.0] {
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             for (i, &s) in sine_wave(freq, sr, 4096).iter().enumerate() {
                 let (l, _r) = state.process(s, s);
                 assert!(
@@ -677,7 +663,7 @@ mod tests {
         for step in 0..=40 {
             let knob = -1.0 + step as f32 / 20.0;
             let hz = filter_worst_hz(knob);
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             state.set_active(true);
             state.set_knob(knob);
             let mut peak = 0.0f32;
@@ -701,7 +687,7 @@ mod tests {
         let hz = 60.0f32;
         let natural_step = (std::f32::consts::TAU * hz / sr).sin();
         let sine = |frame: usize| (std::f32::consts::TAU * hz * frame as f32 / sr).sin();
-        let mut state = FilterState::new(sr);
+        let mut state = Filter::new(sr);
         state.set_active(true);
         state.set_knob(0.2);
 
@@ -751,7 +737,7 @@ mod tests {
                 SHORTEST_GESTURE_SEC + random() * (LONGEST_GESTURE_SEC - SHORTEST_GESTURE_SEC);
             let frames = (sr * gesture_sec) as usize;
             let sine = |frame: usize| (std::f32::consts::TAU * hz * frame as f32 / sr).sin();
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             state.set_active(true);
             state.set_knob(from);
 
@@ -774,12 +760,10 @@ mod tests {
         }
     }
 
-    // --- EqState ---
-
     #[test]
     fn eq_at_zero_db_is_transparent() {
         let sr = 44100.0f32;
-        let mut eq = EqState::new(sr);
+        let mut eq = Equalizer::new(sr);
         for &s in sine_wave(1000.0, sr, 1024).iter() {
             let (l, _r) = eq.process(s, s);
             assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
@@ -798,10 +782,10 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 8000.0 * i as f32 / sr).sin())
             .collect();
 
-        let mut flat = EqState::new(sr);
+        let mut flat = Equalizer::new(sr);
         let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
 
-        let mut cut = EqState::new(sr);
+        let mut cut = Equalizer::new(sr);
         cut.set_high(-12.0);
         let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
 
@@ -822,10 +806,10 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin())
             .collect();
 
-        let mut flat = EqState::new(sr);
+        let mut flat = Equalizer::new(sr);
         let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
 
-        let mut cut = EqState::new(sr);
+        let mut cut = Equalizer::new(sr);
         cut.set_low(-12.0);
         let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
 
@@ -839,11 +823,9 @@ mod tests {
         );
     }
 
-    // --- LimiterState ---
-
     #[test]
     fn limiter_no_reduction_below_threshold() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         let (l, r) = lim.process(0.5, -0.3);
         assert!((l - 0.5).abs() < 1e-5, "l should be unchanged");
         assert!((r + 0.3).abs() < 1e-5, "r should be unchanged");
@@ -852,20 +834,20 @@ mod tests {
 
     #[test]
     fn limiter_instantaneous_attack_prevents_clipping() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         // First sample is loud. Must be limited in the same sample, not the next one.
         let (l, r) = lim.process(2.0, 1.5);
         assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
         assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");
         assert!(
-            (l - LimiterState::THRESHOLD).abs() < 1e-4,
+            (l - Limiter::THRESHOLD).abs() < 1e-4,
             "peak should be at threshold"
         );
     }
 
     #[test]
     fn limiter_brickwall_over_many_samples() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         let samples = [2.0f32, 1.5, 0.3, 1.8, -2.2, 0.8, 1.1, -1.05, 0.0, 1.6];
         for &s in &samples {
             let (l, r) = lim.process(s, -s * 0.7);
@@ -876,7 +858,7 @@ mod tests {
 
     #[test]
     fn limiter_releases_after_loud_burst() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         lim.process(3.0, 0.0);
         let gr_after_burst = lim.gain_reduction;
         assert!(
@@ -894,8 +876,50 @@ mod tests {
     }
 
     #[test]
+    fn the_filter_knob_settles_on_the_same_value_from_either_side() {
+        let settled = |start: f32| {
+            let mut filter = Filter::new(44100.0);
+            filter.set_knob(start);
+            for _ in 0..44100 {
+                filter.process(0.0, 0.0);
+            }
+            filter.set_knob(0.5);
+            for _ in 0..44100 {
+                filter.process(0.0, 0.0);
+            }
+            filter.current_knob
+        };
+        assert_eq!(settled(-1.0), settled(1.0));
+    }
+
+    #[test]
+    fn a_bypassed_filter_passes_the_dry_signal_unchanged() {
+        let mut filter = Filter::new(44100.0);
+        filter.set_knob(0.5);
+        filter.set_active(true);
+        for _ in 0..44100 {
+            filter.process(0.25, -0.25);
+        }
+        filter.set_active(false);
+        for _ in 0..(44100 * 2) {
+            filter.process(0.25, -0.25);
+        }
+        assert_eq!(filter.process(0.3, -0.4), (0.3, -0.4));
+    }
+
+    #[test]
+    fn a_released_limiter_returns_to_exactly_unity() {
+        let mut lim = Limiter::new(44100.0);
+        lim.process(3.0, 3.0);
+        for _ in 0..(44100 * 4) {
+            lim.process(0.0, 0.0);
+        }
+        assert_eq!(lim.gain_reduction, 1.0);
+    }
+
+    #[test]
     fn limiter_gain_reduction_stable_on_steady_signal() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         for _ in 0..1000 {
             lim.process(1.5, 0.0);
         }
@@ -956,7 +980,7 @@ mod identity {
     }
 
     fn eq_probes() -> Vec<f32> {
-        let mut eq = EqState::new(SAMPLE_RATE);
+        let mut eq = Equalizer::new(SAMPLE_RATE);
         eq.set_low(6.0);
         eq.set_mid(-8.0);
         eq.set_high(3.0);
@@ -966,7 +990,7 @@ mod identity {
     // Swept, not fixed: the knob smoothing, coefficient refresh and kill-gain
     // ramp only run while the knob is moving.
     fn filter_probes() -> Vec<f32> {
-        let mut filter = FilterState::new(SAMPLE_RATE);
+        let mut filter = Filter::new(SAMPLE_RATE);
         filter.set_active(true);
         let mut frame = 0usize;
         probe(|l, r| {
@@ -977,7 +1001,7 @@ mod identity {
     }
 
     fn limiter_probes() -> Vec<f32> {
-        let mut limiter = LimiterState::new(SAMPLE_RATE);
+        let mut limiter = Limiter::new(SAMPLE_RATE);
         let mut frame = 0usize;
         probe(|l, r| {
             let boost = if (FRAMES / 3..FRAMES / 2).contains(&frame) {

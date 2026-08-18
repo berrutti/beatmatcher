@@ -1,12 +1,4 @@
-// Shared per-deck application of a `SessionCommand` against the real
-// `DeckState`/`ChannelStrip`, used by both the live scheduler
-// (session_playback::apply_event_live) and the offline renderer
-// (offline_render::apply_event). Loading is the one part that differs between
-// the two (pre-decoded cache vs decode-on-demand), so it's injected via
-// `load_samples`. `overshoot_frames` drives `compensate_late_start` for live
-// playback; the offline renderer passes 0.0, which is a no-op.
-
-use super::{ChannelStrip, DeckState};
+use super::{ChannelStrip, Deck};
 use session_core::event::SessionCommand;
 use std::sync::Arc;
 
@@ -16,7 +8,7 @@ type LoadSamples<'a> = dyn FnMut(&str) -> Result<LoadedSamples, String> + 'a;
 
 pub(crate) fn apply_deck_command(
     cmd: &SessionCommand<'_>,
-    deck: &mut DeckState,
+    deck: &mut Deck,
     strip: &mut ChannelStrip,
     sample_rate: u32,
     overshoot_frames: f64,
@@ -97,11 +89,8 @@ pub(crate) fn apply_deck_command(
                 deck.cue_pos = deck.main_pos;
             }
             deck.is_playing = true;
-            // Only align a deck that actually (re)starts or is repositioned here.
-            // A bare `play` latch on a deck that is ALREADY playing (e.g. pressing
-            // PLAY to latch out of a held cue preview) must not move the playhead:
-            // compensating it forward skips ~one buffer of audio mid-playback,
-            // heard as a single click.
+            // A bare `play` latch on an already-playing deck must not be compensated:
+            // skipping a buffer mid-playback is heard as a single click.
             if sec.is_some() || !was_playing {
                 deck.compensate_late_start(overshoot_f);
             }
@@ -124,7 +113,7 @@ pub(crate) fn apply_deck_command(
             let frames = to_frames!(sec);
             deck.main_pos = frames;
             deck.cue_pos = frames;
-            if deck.loop_active && (frames < deck.cue_point || frames >= deck.loop_end) {
+            if deck.outside_loop(frames) {
                 deck.loop_active = false;
             }
             deck.compensate_late_start(overshoot_f);
@@ -233,7 +222,7 @@ pub(crate) fn apply_deck_command(
 // Shared load body for DeckSnapshot and LoadTrack: full reset, then the
 // samples from `load_samples` installed.
 fn load_into(
-    deck: &mut DeckState,
+    deck: &mut Deck,
     path: &str,
     sample_rate: u32,
     load_samples: &mut LoadSamples<'_>,

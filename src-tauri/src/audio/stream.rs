@@ -1,5 +1,5 @@
-use super::deck::{ChannelStrip, DeckState, RenderTargets};
-use super::dsp::LimiterState;
+use super::deck::{ChannelStrip, Deck, RenderTargets};
+use super::dsp::Limiter;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
 use std::sync::{atomic::Ordering, Arc, Mutex};
@@ -11,7 +11,7 @@ pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
 
-type SharedDeck = Arc<Mutex<DeckState>>;
+type SharedDeck = Arc<Mutex<Deck>>;
 type SharedStrip = Arc<Mutex<ChannelStrip>>;
 
 type ChannelPair = (SharedDeck, SharedStrip);
@@ -310,7 +310,7 @@ pub(crate) fn build_stream(
         config.sample_format(),
         config.sample_rate().0
     );
-    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    let mut limiter = Limiter::new(config.sample_rate().0 as f32);
     let mut scratch: Vec<f32> = Vec::new();
     build_float_stream(device, config, stream_config, move |data| {
         let mut ctx = MixContext {
@@ -349,7 +349,7 @@ pub(crate) fn build_cue_stream(
     let mut master_mix: Vec<f32> = Vec::new();
     let mut cue_buf: Vec<f32> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
-    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    let mut limiter = Limiter::new(config.sample_rate().0 as f32);
     build_float_stream(device, config, stream_config, move |data| match &monitor {
         Some(m) => fill_cue_with_master_tap(
             data,
@@ -382,7 +382,7 @@ struct CombinedMixContext<'a> {
     monitor: &'a MasterMonitor,
     cue_buf: &'a mut Vec<f32>,
     main_scratch: &'a mut Vec<f32>,
-    limiter: &'a mut LimiterState,
+    limiter: &'a mut Limiter,
 }
 
 pub(crate) struct CombinedStreamParams {
@@ -422,7 +422,7 @@ pub(crate) fn build_combined_stream(
     );
     let mut cue_buf: Vec<f32> = Vec::new();
     let mut main_scratch: Vec<f32> = Vec::new();
-    let mut limiter = LimiterState::new(config.sample_rate().0 as f32);
+    let mut limiter = Limiter::new(config.sample_rate().0 as f32);
     build_float_stream(device, config, stream_config, move |data| {
         let mut ctx = CombinedMixContext {
             channels: &channels,
@@ -442,7 +442,7 @@ struct MixContext<'a> {
     is_cue: bool,
     channel_offset: usize,
     monitor: Option<&'a MasterMonitor>,
-    limiter: &'a mut LimiterState,
+    limiter: &'a mut Limiter,
     // Reused across callbacks: allocating per callback would put `malloc` on the
     // audio thread, which is not real-time safe.
     scratch: &'a mut Vec<f32>,
@@ -541,7 +541,7 @@ fn fill_cue_with_master_tap(
     monitor: &MasterMonitor,
     master_mix: &mut Vec<f32>,
     cue_buf: &mut Vec<f32>,
-    limiter: &mut LimiterState,
+    limiter: &mut Limiter,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -766,15 +766,11 @@ fn tap_master_output(
 mod tests {
     use super::*;
 
-    // The callback claims the whole buffer up front but locks decks one at a time, so between
-    // the claim and the last deck's turn the master clock already names the next buffer while
-    // that deck will still consume into this one. Stamping a tick from the clock puts it a
-    // buffer late for every deck that has not rendered yet.
     #[test]
     fn the_master_clock_is_a_buffer_ahead_of_a_deck_that_has_not_rendered() {
         const FRAMES: usize = 128;
         let monitor = MasterMonitor::new();
-        let mut deck = DeckState::empty(44_100);
+        let mut deck = Deck::empty(44_100);
 
         let first = monitor.claim_output_frames(FRAMES);
         deck.set_next_render_frame(first + FRAMES as u64);
@@ -792,8 +788,6 @@ mod tests {
         assert_eq!(deck.next_render_frame, 256);
     }
 
-    // A 14-bit crossfader resolves a move on each half and quantizes onto 201 steps, so one
-    // sweep repeats every value. Without this the .bms gets thousands of inaudible events.
     #[test]
     fn setting_the_crossfader_reports_whether_it_actually_moved() {
         let monitor = MasterMonitor::new();
@@ -807,8 +801,6 @@ mod tests {
         assert!(!monitor.set_xfader_position(2.0));
         assert_eq!(monitor.xfader_position(), 1.0);
     }
-
-    // --- f32_to_i16_sample ---
 
     #[test]
     fn f32_to_i16_sample_full_scale() {
@@ -828,8 +820,6 @@ mod tests {
         let expected = (0.5 * i16::MAX as f32) as i16;
         assert_eq!(result, expected);
     }
-
-    // --- mix_frame ---
 
     #[test]
     fn mix_frame_writes_stereo() {

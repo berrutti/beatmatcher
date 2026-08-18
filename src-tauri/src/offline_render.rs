@@ -1,4 +1,4 @@
-use crate::audio::{self, ChannelStrip, DeckState, LimiterState};
+use crate::audio::{self, ChannelStrip, Deck, Limiter};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -330,11 +330,11 @@ pub struct RenderRequest {
 
 /// The decks and strips a session plays through, and the master chain they mix into.
 struct Mixer {
-    decks: HashMap<String, DeckState>,
+    decks: HashMap<String, Deck>,
     strips: HashMap<String, ChannelStrip>,
     master_gain: f32,
     xfader_position: f32,
-    limiter: Option<LimiterState>,
+    limiter: Option<Limiter>,
     sample_rate: u32,
 }
 
@@ -347,7 +347,7 @@ impl Mixer {
         Ok(Self {
             decks: crate::audio::LIVE_DECK_IDS
                 .iter()
-                .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
+                .map(|&id| (id.to_string(), Deck::empty(sample_rate)))
                 .collect(),
             strips: crate::audio::LIVE_DECK_IDS
                 .iter()
@@ -361,7 +361,7 @@ impl Mixer {
             master_gain: crate::audio::DEFAULT_MASTER_GAIN,
             xfader_position: 0.0,
             limiter: (request.limiter == MasterLimiter::On)
-                .then(|| LimiterState::new(sample_rate as f32)),
+                .then(|| Limiter::new(sample_rate as f32)),
             sample_rate,
         })
     }
@@ -397,16 +397,25 @@ impl Mixer {
     }
 }
 
-/// Every event dispatches at a frame. A recorded one carries the output frame the live
-/// engine applied it at; a synthesized one has no live moment to recover, so its
-/// timestamp is the position, converted and not rounded to anything.
+/// Absent before the rate was stamped, and those sessions all ran at the render rate.
+fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
+    session
+        .events
+        .iter()
+        .find(|ev| ev.event_type == "recording_start")
+        .and_then(|ev| ev.sample_rate)
+        .filter(|rate| *rate > 0)
+}
+
 fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &SessionEvent)> {
+    let frame_scale = recorded_sample_rate(session)
+        .map_or(1.0, |recorded| f64::from(sample_rate) / f64::from(recorded));
     let mut timeline: Vec<(usize, &SessionEvent)> = session
         .events
         .iter()
         .map(|ev| {
             let pos = match ev.frame {
-                Some(frame) => frame as usize,
+                Some(frame) => (frame as f64 * frame_scale).round() as usize,
                 None => (ev.elapsed_ms.max(0.0) * sample_rate as f64 / 1000.0).round() as usize,
             };
             (pos, ev)
@@ -478,7 +487,7 @@ fn resolve_xfader_gains(strips: &mut HashMap<String, ChannelStrip>, position: f3
 
 fn apply_event(
     cmd: SessionCommand<'_>,
-    decks: &mut HashMap<String, DeckState>,
+    decks: &mut HashMap<String, Deck>,
     strips: &mut HashMap<String, ChannelStrip>,
     master_gain: &mut f32,
     xfader_position: &mut f32,
@@ -641,117 +650,117 @@ mod golden {
 
     #[rustfmt::skip]
     const EXPECTED: &[[f32; 2]] = &[
-        [0e0, 0e0],
-        [0e0, 0e0],
-        [0e0, 0e0],
-        [-3.2688314e-1, -2.8689215e-1],
-        [-1.7820081e-1, -1.3198644e-1],
-        [-2.9432967e-1, 1.796442e-1],
-        [2.6306394e-1, -3.1698087e-1],
-        [2.7785844e-1, 2.5995547e-1],
-        [1.19956106e-1, 9.051184e-2],
-        [-3.4444642e-1, -1.9433258e-1],
-        [-1.1272958e-1, -1.5034916e-1],
-        [-4.34953e-2, 4.0885064e-1],
-        [-4.0797862e-1, 1.0387305e-1],
-        [-3.1113583e-1, 4.1604045e-1],
-        [9.453289e-2, 3.988101e-1],
-        [2.4684455e-1, -1.467382e-1],
-        [-1.2649426e-1, -4.1618858e-2],
-        [8.4187895e-2, -4.5606866e-2],
-        [4.0311837e-1, -1.5946354e-1],
-        [2.6211578e-1, 1.403633e-1],
-        [-5.1981694e-1, -3.8707575e-1],
-        [1.0013949e-1, 3.0669987e-1],
-        [-3.1847298e-1, -2.9300603e-1],
-        [6.624613e-1, -2.8951975e-2],
-        [-5.504219e-1, 3.366386e-1],
-        [2.4361841e-1, -1.8195681e-1],
-        [-2.7261797e-1, -2.1407054e-1],
-        [-2.4786117e-2, 3.9481632e-2],
-        [2.378092e-1, 4.168314e-2],
-        [-3.867634e-2, -7.499512e-2],
-        [-5.4630734e-2, 6.265101e-2],
-        [5.2529544e-2, -1.5084036e-1],
-        [-6.830194e-2, -3.1637726e-3],
-        [3.210717e-2, 3.8821388e-2],
-        [8.302816e-3, 6.4336704e-3],
-        [8.7451e-3, 4.4180702e-2],
-        [4.9616005e-3, 4.516171e-2],
-        [1.9346999e-2, -2.8697213e-2],
-        [-2.9477507e-3, 1.2615366e-3],
-        [2.565301e-2, -3.6690456e-3],
-        [5.347026e-2, 1.29902195e-2],
-        [7.1496926e-3, -3.238475e-2],
-        [4.7561888e-2, 2.7933057e-2],
-        [4.0670508e-3, 7.650873e-2],
-        [3.1063432e-2, 2.1795638e-2],
-        [5.6275995e-3, -9.213159e-3],
-        [4.4673537e-3, 1.6097106e-2],
-        [-1.9113488e-2, -8.832177e-3],
-        [2.0083334e-2, 7.1130255e-3],
-        [1.5871154e-2, 2.5810203e-2],
-        [-5.017438e-3, -3.8550207e-3],
-        [-8.932088e-2, 1.9584265e-2],
-        [-5.773527e-2, 3.852888e-3],
-        [1.2124234e-1, 4.413637e-2],
-        [-9.257765e-3, -1.9677222e-2],
-        [1.3516799e-2, 3.6217444e-2],
-        [9.1687925e-3, -2.2575619e-2],
-        [-9.23872e-3, 5.0417304e-2],
-        [1.373919e-2, 4.3017273e-3],
-        [1.1392089e-2, 8.7756e-4],
-        [2.932046e-2, -1.0795273e-2],
-        [6.4321345e-4, -1.2843515e-2],
-        [2.978315e-3, 6.5846095e-4],
-        [-1.1329926e-2, -5.4054824e-3],
-        [-2.035909e-2, -3.287505e-2],
-        [1.6288932e-2, 2.4078498e-2],
-        [-1.2516787e-2, -2.0530168e-3],
-        [7.496227e-8, 2.7248444e-8],
-        [1.6613806e-15, 3.6057335e-16],
-        [2.0601945e-23, 1.8120938e-24],
-        [1.6220977e-31, -2.627784e-32],
-        [2.61746e-40, -8.79141e-40],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [-3.268831372e-1, -2.868921459e-1],
+        [-1.782008111e-1, -1.319864392e-1],
+        [-2.943296731e-1, 1.796441972e-1],
+        [2.630639374e-1, -3.169808686e-1],
+        [2.778584361e-1, 2.599554658e-1],
+        [1.199561059e-1, 9.051184356e-2],
+        [-3.444464207e-1, -1.943325847e-1],
+        [-1.127295792e-1, -1.503491551e-1],
+        [-4.349530116e-2, 4.088506401e-1],
+        [-4.079786241e-1, 1.038730517e-1],
+        [-3.111358285e-1, 4.160404503e-1],
+        [9.453289211e-2, 3.988100886e-1],
+        [2.468445450e-1, -1.467382014e-1],
+        [-1.264942586e-1, -4.161885753e-2],
+        [8.418789506e-2, -4.560686648e-2],
+        [4.031183720e-1, -1.594635397e-1],
+        [2.621157765e-1, 1.403633058e-1],
+        [-5.198169351e-1, -3.870757520e-1],
+        [1.001394913e-1, 3.066998720e-1],
+        [-3.184729815e-1, -2.930060327e-1],
+        [6.624612808e-1, -2.895197459e-2],
+        [-5.504218936e-1, 3.366385996e-1],
+        [2.436184138e-1, -1.819568127e-1],
+        [-2.726179659e-1, -2.140705436e-1],
+        [-2.478611656e-2, 3.948163241e-2],
+        [2.378091961e-1, 4.168314114e-2],
+        [-3.867634013e-2, -7.499512285e-2],
+        [-5.463073403e-2, 6.265100837e-2],
+        [5.252954364e-2, -1.508403569e-1],
+        [-6.830193847e-2, -3.163772635e-3],
+        [3.210717067e-2, 3.882138804e-2],
+        [8.307749406e-3, 6.439069752e-3],
+        [8.738216013e-3, 4.418523982e-2],
+        [4.962136969e-3, 4.515907913e-2],
+        [1.934604906e-2, -2.869620733e-2],
+        [-2.945188433e-3, 1.262636739e-3],
+        [2.565454878e-2, -3.674425185e-3],
+        [5.347084254e-2, 1.299379207e-2],
+        [7.143662777e-3, -3.237863258e-2],
+        [4.757138714e-2, 2.793385647e-2],
+        [4.073645920e-3, 7.651006430e-2],
+        [3.106982075e-2, 2.180201933e-2],
+        [5.629328080e-3, -9.223603643e-3],
+        [4.470534157e-3, 1.610178128e-2],
+        [-1.911591738e-2, -8.834716864e-3],
+        [2.008238062e-2, 7.113815285e-3],
+        [1.588115096e-2, 2.580707334e-2],
+        [-5.014298484e-3, -3.858003067e-3],
+        [-8.931261301e-2, 1.958982833e-2],
+        [-5.772655457e-2, 3.856523661e-3],
+        [1.212451085e-1, 4.413334653e-2],
+        [-9.258460253e-3, -1.967478730e-2],
+        [1.352286339e-2, 3.621288016e-2],
+        [9.169236757e-3, -2.257556096e-2],
+        [-9.244168177e-3, 5.042254925e-2],
+        [1.374136284e-2, 4.306538031e-3],
+        [1.138945948e-2, 8.774958551e-4],
+        [2.931984700e-2, -1.079679467e-2],
+        [6.405807217e-4, -1.284266822e-2],
+        [2.974864328e-3, 6.598111358e-4],
+        [-1.133076567e-2, -5.409426056e-3],
+        [-2.035282180e-2, -3.287502006e-2],
+        [1.629017293e-2, 2.407459542e-2],
+        [-1.251578145e-2, -2.055709017e-3],
+        [7.496300469e-8, 2.724844528e-8],
+        [1.661357717e-15, 3.605697231e-16],
+        [2.060196555e-23, 1.812058464e-24],
+        [8.342852043e-31, 2.646789687e-35],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
     ];
 
     #[test]
@@ -904,10 +913,10 @@ pub(crate) mod corpus {
 
     #[rustfmt::skip]
     const DIGESTS: &[(&str, Digest)] = &[
-    ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
-    ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
-    ("mixer", Digest { frames: 154350, peak: 8.726367950e-1, rms: 1.416834742e-1, probes: [2.880797386e-1, -1.891948432e-1, 1.530065667e-2, 5.541073187e-5, -3.012379408e-1, 2.342810482e-2, 5.901104008e-18, -1.350032203e-29] }),
-    ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.672426015e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+        ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+        ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
+        ("mixer", Digest { frames: 154350, peak: 8.729274869e-1, rms: 1.416833550e-1, probes: [2.880797386e-1, -1.891948432e-1, 1.531944331e-2, 5.572944065e-5, -3.012379408e-1, 2.342964523e-2, 0.000000000e0, 0.000000000e0] }),
+        ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.672426015e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
     #[test]
@@ -999,8 +1008,6 @@ mod param_addressing {
     const XFADER_RIGHT: &str =
         r#"{"elapsed_ms":110,"type":"set_param","slot":"xfader","param":"position","value":1.0},"#;
 
-    // The renderer has to honour the crossfader, or a recorded set renders as
-    // something the DJ never played.
     #[test]
     fn a_deck_crossfaded_away_renders_silent() {
         let open = render(&format!("{PREAMBLE}{ASSIGN_A}{STOP}"));
@@ -1018,8 +1025,6 @@ mod param_addressing {
         );
     }
 
-    // Thru is the default, so a crossfader move with nothing assigned to it must
-    // leave the render bit-identical. This is what makes the v2 mixer safe.
     #[test]
     fn a_crossfader_move_with_nothing_assigned_changes_nothing() {
         let without = render(&format!("{PREAMBLE}{STOP}"));
@@ -1027,8 +1032,6 @@ mod param_addressing {
         assert_eq!(without, with_move);
     }
 
-    // The order the two arrive in must not matter: assigning after the fader has
-    // already moved has to resolve against where it currently sits.
     #[test]
     fn assigning_after_the_crossfader_moved_still_cuts() {
         let assign_late =
@@ -1040,8 +1043,6 @@ mod param_addressing {
         assert!(rms < 0.001, "a late assign did not resolve: {rms}");
     }
 
-    // An unknown param must be inert, not fatal: a session recorded against a
-    // mixer this build does not have still has to replay everything else.
     #[test]
     fn an_unknown_param_is_ignored_rather_than_failing_the_render() {
         let without = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
@@ -1072,8 +1073,6 @@ mod param_addressing {
         assert!(error.contains("isolator"), "{error}");
     }
 
-    // The renderer builds the strip from the resolved manifest, so the same events on two
-    // mixers must differ, or the header is being read and then ignored.
     #[test]
     fn the_resolved_manifest_is_the_one_the_renderer_builds() {
         let render_on = |manifest: &session_core::MixerManifest| {
@@ -1124,8 +1123,6 @@ mod param_addressing {
         );
     }
 
-    // Without this the comparison above would hold trivially on two renders
-    // where nothing the fader does is audible.
     #[test]
     fn the_fader_param_in_that_comparison_actually_moves_the_output() {
         let quiet = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
@@ -1201,7 +1198,7 @@ mod master_limiter {
         )
         .expect("render");
         assert!(
-            peak(&rendered) <= LimiterState::THRESHOLD + 1e-6,
+            peak(&rendered) <= Limiter::THRESHOLD + 1e-6,
             "peaked at {}",
             peak(&rendered)
         );
@@ -1281,8 +1278,6 @@ mod recorded_frame {
         );
     }
 
-    // The stamp records where the command landed, so nothing about it may be
-    // re-derived from the buffer the session happened to run at.
     #[test]
     fn a_stamped_frame_ignores_the_buffer_size() {
         for buffer_size_frames in [64u32, 128, 512, 1024] {
@@ -1294,7 +1289,6 @@ mod recorded_frame {
         }
     }
 
-    // Guards the two above against a stamp that happens to agree with the timestamp.
     #[test]
     fn an_unstamped_event_dispatches_at_its_timestamp() {
         let nominal = (50.0 * SAMPLE_RATE as f64 / 1000.0).round() as usize;
@@ -1446,10 +1440,10 @@ mod live_parity {
         let samples = Arc::new(samples);
         let total_frames = samples.len() / channels;
 
-        let mut channel_pairs: Vec<(&str, DeckState, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
+        let mut channel_pairs: Vec<(&str, Deck, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
             .iter()
             .map(|&id| {
-                let mut deck = DeckState::empty(SAMPLE_RATE);
+                let mut deck = Deck::empty(SAMPLE_RATE);
                 deck.samples = Arc::clone(&samples);
                 deck.channels = channels;
                 deck.device_sample_rate = SAMPLE_RATE;
@@ -1463,7 +1457,7 @@ mod live_parity {
             })
             .collect();
 
-        let mut limiter = LimiterState::new(SAMPLE_RATE as f32);
+        let mut limiter = Limiter::new(SAMPLE_RATE as f32);
         let mut out = Vec::with_capacity(TOTAL * 2);
         let mut block_buffer: Vec<f32> = Vec::new();
 
@@ -1480,7 +1474,7 @@ mod live_parity {
                 match cue {
                     Cue::Play => deck.is_playing = true,
                     Cue::Stop => deck.is_playing = false,
-                    Cue::Jog => deck.jog_pending += TICKS,
+                    Cue::Jog => deck.queue_jog(TICKS),
                 }
                 fired[next_cue] = frame;
                 next_cue += 1;
@@ -1594,5 +1588,56 @@ mod live_parity {
             (STOP_FRAME + BLOCK, "B", Cue::Jog),
             (RESUME_FRAME, "A", Cue::Stop),
         ]);
+    }
+}
+
+#[cfg(test)]
+mod recorded_sample_rate {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    fn first_audible_frame(rendered: &[f32]) -> usize {
+        rendered
+            .iter()
+            .position(|sample| *sample != 0.0)
+            .expect("render is silent")
+            / 2
+    }
+
+    fn render_recorded_at(recorded_rate: u32, play_frame: u64) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"frame":0,"type":"recording_start","buffer_size_frames":512,"sample_rate":{recorded_rate}}},
+{{"elapsed_ms":0,"frame":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
+{{"elapsed_ms":1000,"frame":{play_frame},"type":"play","deck":"A"}},
+{{"elapsed_ms":2500,"type":"stop","deck":"A"}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn a_frame_recorded_at_another_rate_lands_at_the_same_moment() {
+        // One second of audio at each device rate.
+        for recorded_rate in [44_100u32, 48_000, 88_200, 96_000] {
+            let rendered = render_recorded_at(recorded_rate, u64::from(recorded_rate));
+            let started = first_audible_frame(&rendered);
+            let drift_ms =
+                (started as f64 - f64::from(SAMPLE_RATE)) / f64::from(SAMPLE_RATE) * 1000.0;
+            assert!(
+                drift_ms.abs() < 1.0,
+                "recorded at {recorded_rate}: play landed {drift_ms:.1} ms from one second"
+            );
+        }
     }
 }

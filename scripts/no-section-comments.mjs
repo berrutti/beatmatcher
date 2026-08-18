@@ -2,7 +2,7 @@
 // tracked source file. Scans `git ls-files`, so ignored and generated files are
 // excluded automatically and only what would be committed is checked.
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 
 const BINARY_EXTENSIONS = new Set([
@@ -33,11 +33,16 @@ const BINARY_EXTENSIONS = new Set([
   '.lock'
 ]);
 
-const DIVIDER = /^\s*(\/\/|<!--|#)\s*─/;
+const DIVIDER = /^\s*(\/\/|<!--|#)\s*(─|-{3,})/;
 
-const trackedFiles = execSync('git ls-files', { encoding: 'utf8' })
+// Untracked files are included and deleted-but-unstaged ones skipped, or a new file
+// escapes the check entirely and a removed one crashes it.
+const trackedFiles = execSync('git ls-files --cached --others --exclude-standard', {
+  encoding: 'utf8'
+})
   .split('\n')
-  .filter((path) => path.length > 0 && !BINARY_EXTENSIONS.has(extname(path)));
+  .filter((path) => path.length > 0 && !BINARY_EXTENSIONS.has(extname(path)))
+  .filter((path) => existsSync(path));
 
 const offenders = trackedFiles.flatMap((path) =>
   readFileSync(path, 'utf8')

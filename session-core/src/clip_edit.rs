@@ -1,4 +1,3 @@
-
 use crate::event::SessionEvent;
 use crate::timeline::{Clip, LoopRegion};
 use std::cmp::Ordering;
@@ -15,8 +14,6 @@ const TRANSPORT_TYPES: &[&str] = &[
     "play",
     "stop",
     "stopped_at_cue",
-    "stop_at_cue",
-    "cue_set_and_stop",
     "cue_preview_start",
     "cue_preview_end",
     "cue_move",
@@ -254,7 +251,8 @@ fn audio_seconds_between(
             if event.elapsed_ms >= upper {
                 break;
             }
-            speed = crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
+            speed =
+                crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
             continue;
         }
         if event.deck.as_deref() != Some(deck) {
@@ -286,8 +284,8 @@ fn audio_seconds_between(
         // The deck is playing across this window by construction, so the wheel bends
         // rather than scrubs.
         if is_jog && event.elapsed_ms >= lower {
-            total += rate * event.ticks.unwrap() * speed.sec_per_tick()
-                / crate::JOG_PAUSED_MULTIPLIER;
+            total +=
+                rate * event.ticks.unwrap() * speed.sec_per_tick() / crate::JOG_PAUSED_MULTIPLIER;
         }
     }
     total += ((upper - cursor) / 1000.0) * rate * nudge;
@@ -700,13 +698,8 @@ fn orphaned_own_load(
     discarded
 }
 
-// Delete a transport block: drop its play/stop (and any loop) events so the deck
-// is silent across [start_ms, end_ms]. A glued predecessor gets a stop so it
-// doesn't bleed into the gap; a glued successor keeps its own start. A
-// deck_snapshot on the start boundary survives with its transport effects
-// cleared (it also loads the track). The track's load is left in place
-// (this removes the played segment, not the deck's loaded track) and automation
-// is untouched (it lives at wall time).
+// A glued predecessor gains a stop so it cannot bleed into the gap. The load stays and
+// automation is untouched, because this removes a played segment, not the track.
 pub fn delete_transport_block(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -778,13 +771,8 @@ pub fn delete_transport_block(
     stable_sort_by_ms(kept)
 }
 
-// Silence one block over [start_ms, end_ms] (clamped to the block). Covering
-// the whole block is a full delete; touching an edge is a trim; an interior
-// range splits the block in two, the right part starting exactly on the audio
-// it played before, so a deleted mid-block region never shifts what follows.
-// A remainder shorter than MIN_BLOCK_MS is absorbed into the deletion. Loop
-// blocks re-enter their loop at the exact in-loop position the deck had, so
-// the surviving iterations keep their original phase.
+// The right part starts on the audio it played before, so removing a mid-block region
+// never shifts what follows it.
 pub fn delete_block_range(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -836,14 +824,8 @@ pub fn delete_block_range(
     stable_sort_by_ms(kept)
 }
 
-// Split a block into two independent blocks at `split_ms`, with no gap: a stop
-// immediately followed by a play at the same instant, the right part resuming
-// exactly the audio it already played (same construction as delete_block_range's
-// interior branch, but with nothing removed). A loop block splits into two
-// separate glued engagements of the same loop, the second re-entering at the
-// deck's exact in-loop position, so both halves keep their original phase. A
-// split within MIN_BLOCK_MS of either edge is rejected: it would leave a
-// degenerate sliver on one side.
+// Both halves keep their original phase: the right part resumes exactly the audio it
+// already played, and a loop re-enters at the deck's in-loop position.
 pub fn split_transport_block(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -948,8 +930,8 @@ fn delete_loop_block_range(
             kept.push(event.clone());
             continue;
         }
-        let on_dropped_boundary = (left_trim && near(event.elapsed_ms, t0))
-            || (right_trim && near(event.elapsed_ms, t1));
+        let on_dropped_boundary =
+            (left_trim && near(event.elapsed_ms, t0)) || (right_trim && near(event.elapsed_ms, t1));
         if on_dropped_boundary
             && event.event_type != "load_track"
             && event.event_type != "eject_track"
@@ -1297,7 +1279,10 @@ mod tests {
             ev(6000.0, "play", "A"),
             ev(8000.0, "stop", "A"),
         ];
-        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 6000.0, 8000.0, 1, 5.0)];
+        let clips = vec![
+            clip("A", 1000.0, 3000.0, 0, 0.0),
+            clip("A", 6000.0, 8000.0, 1, 5.0),
+        ];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
         let out = delete_transport_block(&events, &clips, &block);
@@ -1711,7 +1696,6 @@ mod tests {
         assert!((deck_b[0].track_start_sec - 20.0).abs() < 1e-6);
     }
 
-    // The gesture clamp allows dragging an end edge exactly onto next.start_ms.
     #[test]
     fn trim_end_flush_against_next_block_keeps_it() {
         let events = vec![
@@ -1743,7 +1727,6 @@ mod tests {
         assert!((second.track_start_sec - 4.0).abs() < 1e-6);
     }
 
-    // Paused-scrub seeks are logged, so silent gaps contain transport events.
     #[test]
     fn trim_end_over_stray_seek_keeps_audio_continuous() {
         let events = vec![
@@ -1859,7 +1842,10 @@ mod tests {
             ev(3000.0, "play", "A"),
             ev(5000.0, "stop", "A"),
         ];
-        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 3000.0, 5000.0, 1, 2.0)];
+        let clips = vec![
+            clip("A", 1000.0, 3000.0, 0, 0.0),
+            clip("A", 3000.0, 5000.0, 1, 2.0),
+        ];
         let block = blocks_for_deck(&clips, "A")[1].clone();
 
         let out = delete_transport_block(&events, &clips, &block);
@@ -1905,7 +1891,6 @@ mod tests {
         assert_eq!(moved_ms, vec![2000.0, 3000.0]);
         assert!(find(&result.events, "play", 2000.0).is_some());
     }
-
 }
 
 // Randomised sweeps over the edit operations. Block geometry interacts with neighbours,
@@ -2062,7 +2047,8 @@ mod fuzz {
                 2 => {
                     let new_ms =
                         block.end_ms + (rng(&mut seed) % (span as u64 * 2 + 1)) as f64 - span / 2.0;
-                    let out = trim_transport_block(&events, &clips, block, Edge::End, new_ms).events;
+                    let out =
+                        trim_transport_block(&events, &clips, block, Edge::End, new_ms).events;
                     check("trim-end", &out, &mut rep, &format!("new_ms={new_ms}"));
                 }
                 3 => {
@@ -2097,7 +2083,6 @@ mod fuzz {
         );
     }
 
-    // Semantic invariants: an edit must actually do what it claims.
     #[test]
     fn fuzz_clip_edit_ops_have_declared_effect() {
         let mut seed = 0x123456789ABCDEFu64;
@@ -2108,10 +2093,14 @@ mod fuzz {
         for _ in 0..4000 {
             let events = make_session(&mut seed);
             let clips = build_clips(&events).clips;
-            if clips.is_empty() { continue; }
+            if clips.is_empty() {
+                continue;
+            }
             let deck = if rng(&mut seed) % 2 == 0 { "A" } else { "B" };
             let before = blocks_for_deck(&clips, deck);
-            if before.is_empty() { continue; }
+            if before.is_empty() {
+                continue;
+            }
             let block = before[(rng(&mut seed) as usize) % before.len()].clone();
             let span = block.end_ms - block.start_ms;
 
@@ -2125,13 +2114,20 @@ mod fuzz {
                         if examples.len() < 5 {
                             examples.push(format!(
                                 "DELETE: {} blocks -> {} (expected {}) span={span}",
-                                before.len(), after.len(), before.len() - 1));
+                                before.len(),
+                                after.len(),
+                                before.len() - 1
+                            ));
                         }
                     }
                 }
                 1 => {
-                    if span < 2.0 * MIN_BLOCK_MS + 2.0 { continue; }
-                    let split = block.start_ms + MIN_BLOCK_MS + 1.0
+                    if span < 2.0 * MIN_BLOCK_MS + 2.0 {
+                        continue;
+                    }
+                    let split = block.start_ms
+                        + MIN_BLOCK_MS
+                        + 1.0
                         + (rng(&mut seed) % (span - 2.0 * MIN_BLOCK_MS - 1.0) as u64) as f64;
                     split_n += 1;
                     let out = split_transport_block(&events, &clips, &block, split);
@@ -2141,8 +2137,12 @@ mod fuzz {
                         if examples.len() < 5 {
                             examples.push(format!(
                                 "SPLIT at {split} in [{},{}]: {} blocks -> {} (expected {})",
-                                block.start_ms, block.end_ms,
-                                before.len(), after.len(), before.len() + 1));
+                                block.start_ms,
+                                block.end_ms,
+                                before.len(),
+                                after.len(),
+                                before.len() + 1
+                            ));
                         }
                     }
                 }
@@ -2150,17 +2150,25 @@ mod fuzz {
                     let delta = (rng(&mut seed) % 4000) as f64 - 2000.0;
                     move_n += 1;
                     let res = move_transport_block(&events, &clips, &block, delta);
-                    if res.applied_delta_ms.abs() < EPS_MS { continue; }
+                    if res.applied_delta_ms.abs() < EPS_MS {
+                        continue;
+                    }
                     let target = block.start_ms + res.applied_delta_ms;
                     let after = blocks_for_deck(&build_clips(&res.events).clips, deck);
-                    if !after.iter().any(|b| (b.start_ms - target).abs() <= EPS_MS * 2.0) {
+                    if !after
+                        .iter()
+                        .any(|b| (b.start_ms - target).abs() <= EPS_MS * 2.0)
+                    {
                         move_bad += 1;
                         if examples.len() < 5 {
                             let got: Vec<String> =
                                 after.iter().map(|b| format!("{:.0}", b.start_ms)).collect();
                             examples.push(format!(
                                 "MOVE {} by applied={} -> expected start {target}, got [{}]",
-                                block.start_ms, res.applied_delta_ms, got.join(",")));
+                                block.start_ms,
+                                res.applied_delta_ms,
+                                got.join(",")
+                            ));
                         }
                     }
                 }
@@ -2168,7 +2176,9 @@ mod fuzz {
         }
 
         println!("SEMANTIC fuzz: delete {del_bad}/{del_n} | split {split_bad}/{split_n} | move {move_bad}/{move_n}");
-        for e in &examples { println!("   {e}"); }
+        for e in &examples {
+            println!("   {e}");
+        }
         assert_eq!(del_bad + split_bad + move_bad, 0);
     }
 }

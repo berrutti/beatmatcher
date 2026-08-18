@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
-import { DECKS_DISPOSITION } from './decks';
+import { DECKS_DISPOSITION, TWO_DECK_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
@@ -14,7 +14,7 @@ type ParamChange = { deck: string; slot: string; param: string; value: number };
 export type XfaderAssign = 'thru' | 'a' | 'b';
 export type XfaderSide = 'a' | 'b';
 
-const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
+const LIVE_DECKS: readonly DeckId[] = DECKS_DISPOSITION;
 
 // How `mixerParams` keys its specs, and how the store keys a deck's values, so a
 // param the manifest gained is reachable without anything here naming it.
@@ -133,7 +133,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const activeDecks = computed<DeckId[]>(() =>
-    deckCount.value === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
+    deckCount.value === 2 ? [...TWO_DECK_DISPOSITION] : [...DECKS_DISPOSITION]
   );
 
   const showWaveformStrip = ref(storageGet<boolean>(STORAGE_KEYS.showWaveformStrip, true));

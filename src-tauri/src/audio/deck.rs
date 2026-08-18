@@ -47,6 +47,7 @@ pub struct ChannelStrip {
 }
 
 impl ChannelStrip {
+    #[cfg(test)]
     pub fn new(sample_rate: f32) -> Self {
         Self::from_manifest(super::MIXER, sample_rate)
     }
@@ -175,19 +176,20 @@ impl ChannelStrip {
 
     /// Both output paths, so the cue signal tracks the main one. An address the manifest
     /// does not describe is ignored, which lets a richer mixer's session replay the rest.
-    pub fn set_param(&mut self, slot: &str, param: &str, value: f32) {
+    pub fn set_param(&mut self, slot: &str, param: &str, value: f32) -> bool {
         let Some(descriptor) = self.manifest.descriptor(ParamScope::Deck, slot, param) else {
-            return;
+            return false;
         };
         let value = descriptor.clamp(f64::from(value)) as f32;
         let Some(entry) = self.slots.iter_mut().find(|entry| entry.name == slot) else {
-            return;
+            return false;
         };
         entry.main.set_param(param, value);
         if let Some(cue) = entry.cue.as_mut() {
             cue.set_param(param, value);
         }
         self.restart_settle();
+        true
     }
 
     pub fn set_eq_band(&mut self, band: &str, db: f32) {
@@ -206,10 +208,8 @@ impl ChannelStrip {
         self.set_param(session_core::FADER_GAIN.0, session_core::FADER_GAIN.1, v);
     }
 
-    // Session-view mute (per-deck mute/solo). Independent of the fader gain so
-    // replayed fader events cannot override it, and deliberately NOT
-    // cleared by reset(): scrubbing resets strips to reconstruct session
-    // state, and the mute must survive that.
+    // Separate from the fader gain, and not cleared by reset(), because scrubbing
+    // rebuilds strips from session state and an audition mute has to survive that.
     pub fn set_muted(&mut self, muted: bool) {
         self.restart_settle();
         self.slots[self.fader_slot].main.set_muted(muted);
@@ -295,7 +295,96 @@ pub fn logged_jog_ticks(ticks: f64, shift_held: bool, is_playing: bool) -> f64 {
     }
 }
 
-pub struct DeckState {
+struct JogFilter {
+    pending: f64,
+    arrived: f64,
+    filtered: f64,
+    frames_since_step: f64,
+}
+
+impl JogFilter {
+    // A callback is whatever length the driver feels like, and stepping the filter on it
+    // let the buffer cadence change how far the wheel travelled.
+    const STEP_FRAMES: f64 = 128.0;
+
+    fn idle(&self) -> bool {
+        self.arrived == 0.0 && self.filtered == 0.0
+    }
+
+    fn deposit(&mut self, ticks: f64) {
+        self.arrived += ticks;
+    }
+
+    fn queue(&mut self, ticks: f64) {
+        self.pending += ticks;
+    }
+
+    fn drain_pending(&mut self) {
+        self.arrived += std::mem::take(&mut self.pending);
+    }
+
+    /// So the first tick after an idle spell steps the grid rather than waiting out its phase.
+    fn rearm(&mut self) {
+        self.frames_since_step = Self::STEP_FRAMES;
+    }
+
+    /// The travel in frames when this frame completed a grid step, else `None`.
+    fn advance_one_frame(&mut self, alpha: f64, frames_per_tick: f64) -> Option<f64> {
+        let travel = (self.frames_since_step >= Self::STEP_FRAMES).then(|| {
+            self.frames_since_step -= Self::STEP_FRAMES;
+            self.step(alpha, frames_per_tick)
+        });
+        self.frames_since_step += 1.0;
+        travel
+    }
+
+    fn step(&mut self, alpha: f64, frames_per_tick: f64) -> f64 {
+        let arrived = std::mem::take(&mut self.arrived);
+        self.filtered += (arrived - self.filtered) * alpha;
+        if self.filtered.abs() < f64::EPSILON {
+            self.filtered = 0.0;
+        }
+        self.filtered * frames_per_tick
+    }
+}
+
+impl Default for JogFilter {
+    fn default() -> Self {
+        Self {
+            pending: 0.0,
+            arrived: 0.0,
+            filtered: 0.0,
+            frames_since_step: Self::STEP_FRAMES,
+        }
+    }
+}
+
+/// Per-band mono buffers and the scale each is normalised by. Filled in after the track
+/// loads and read only by the waveform drawing, never by the transport.
+#[derive(Clone)]
+pub struct SpectralBands {
+    pub bass: Arc<Vec<f32>>,
+    pub mid: Arc<Vec<f32>>,
+    pub high: Arc<Vec<f32>>,
+    pub bass_scale: f32,
+    pub mid_scale: f32,
+    pub high_scale: f32,
+}
+
+impl Default for SpectralBands {
+    fn default() -> Self {
+        Self {
+            bass: Arc::new(Vec::new()),
+            mid: Arc::new(Vec::new()),
+            high: Arc::new(Vec::new()),
+            bass_scale: 1.0,
+            mid_scale: 1.0,
+            high_scale: 1.0,
+        }
+    }
+}
+
+pub struct Deck {
     pub(crate) samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub(crate) channels: usize,
     pub(crate) device_sample_rate: u32,
@@ -314,30 +403,22 @@ pub struct DeckState {
     pub(crate) beat_offset_frames: f64,
     pub(crate) playback_rate: f64,
     pub(crate) jog_hold_factor: f64, // 1 + nudge_percent/100
-    pub(crate) jog_pending: f64,
-    jog_filtered: f64,
+    jog: JogFilter,
     jog_bend: f64,
-    jog_frames_since_step: f64,
-    jog_ticks_since_step: f64,
     pub(crate) next_render_frame: u64,
     pub(crate) jog_rotation_speed: session_core::JogRotationSpeed,
     pub(crate) jog_shift: bool,
     pub(crate) quantize: bool,
 
     // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
-    pub(crate) bass_band: Arc<Vec<f32>>,
-    pub(crate) mid_band: Arc<Vec<f32>>,
-    pub(crate) high_band: Arc<Vec<f32>>,
-    pub(crate) bass_scale: f32,
-    pub(crate) mid_scale: f32,
-    pub(crate) high_scale: f32,
+    pub(crate) bands: SpectralBands,
 
     // Set to true by the audio thread when the track reaches its natural end.
     // The monitoring task in lib.rs polls this and emits a "track-ended" event.
     pub(crate) just_ended: Arc<AtomicBool>,
 }
 
-impl DeckState {
+impl Deck {
     pub fn empty(device_sample_rate: u32) -> Self {
         Self {
             samples: Arc::new(Vec::new()),
@@ -357,21 +438,13 @@ impl DeckState {
             beat_offset_frames: 0.0,
             playback_rate: 1.0,
             jog_hold_factor: 1.0,
-            jog_pending: 0.0,
-            jog_filtered: 0.0,
+            jog: JogFilter::default(),
             jog_bend: 0.0,
-            jog_frames_since_step: Self::JOG_FILTER_STEP_FRAMES,
-            jog_ticks_since_step: 0.0,
             next_render_frame: 0,
             jog_rotation_speed: session_core::JogRotationSpeed::Rpm33,
             jog_shift: false,
             quantize: true,
-            bass_band: Arc::new(Vec::new()),
-            mid_band: Arc::new(Vec::new()),
-            high_band: Arc::new(Vec::new()),
-            bass_scale: 1.0,
-            mid_scale: 1.0,
-            high_scale: 1.0,
+            bands: SpectralBands::default(),
             just_ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -396,11 +469,8 @@ impl DeckState {
         self.eject();
         self.playback_rate = 1.0;
         self.jog_hold_factor = 1.0;
-        self.jog_pending = 0.0;
-        self.jog_filtered = 0.0;
+        self.jog = JogFilter::default();
         self.jog_bend = 0.0;
-        self.jog_frames_since_step = Self::JOG_FILTER_STEP_FRAMES;
-        self.jog_ticks_since_step = 0.0;
     }
 
     /// Ticks arriving after this point are consumed by the buffer starting at `buffer_end`.
@@ -470,26 +540,6 @@ impl DeckState {
         }
     }
 
-    pub fn set_cue_and_stop(&mut self) {
-        if !self.is_playing {
-            return;
-        }
-        self.cue_point = self.main_pos;
-        self.is_playing = false;
-        self.is_cueing = false;
-        self.cue_pos = self.main_pos;
-    }
-
-    pub fn stop_at_cue(&mut self) {
-        if !self.is_playing {
-            return;
-        }
-        self.is_playing = false;
-        self.is_cueing = false;
-        self.main_pos = self.cue_point;
-        self.cue_pos = self.cue_point;
-    }
-
     pub fn position_sec(&self) -> f64 {
         if self.device_sample_rate == 0 {
             return 0.0;
@@ -520,59 +570,51 @@ impl DeckState {
         if self.device_sample_rate == 0 {
             return 1.0;
         }
-        let step_seconds = Self::JOG_FILTER_STEP_FRAMES / self.device_sample_rate as f64;
+        let step_seconds = JogFilter::STEP_FRAMES / self.device_sample_rate as f64;
         1.0 - (-step_seconds / session_core::JOG_FILTER_TAU_SEC).exp()
     }
 
-    // A callback is whatever length the driver feels like, and stepping the filter on it
-    // let the buffer cadence change how far the wheel travelled.
-    const JOG_FILTER_STEP_FRAMES: f64 = 128.0;
-
-    fn jog_idle(&self) -> bool {
-        self.jog_ticks_since_step == 0.0 && self.jog_filtered == 0.0
-    }
-
-    fn step_jog_filter(&mut self) -> f64 {
-        let arrived = std::mem::take(&mut self.jog_ticks_since_step);
-        self.jog_filtered += (arrived - self.jog_filtered) * self.jog_filter_alpha();
-        if self.jog_filtered.abs() < f64::EPSILON {
-            self.jog_filtered = 0.0;
-        }
-        self.jog_filtered * self.jog_frames_per_tick()
-    }
-
     fn advance_jog_grid_one_frame(&mut self) {
-        if self.jog_idle() && self.jog_bend == 0.0 {
+        if self.jog.idle() && self.jog_bend == 0.0 {
             return;
         }
-        if self.jog_frames_since_step >= Self::JOG_FILTER_STEP_FRAMES {
-            self.jog_frames_since_step -= Self::JOG_FILTER_STEP_FRAMES;
-            let travel = self.step_jog_filter();
-            self.jog_bend =
-                travel / (Self::JOG_FILTER_STEP_FRAMES * session_core::JOG_PAUSED_MULTIPLIER);
+        if let Some(travel) = self
+            .jog
+            .advance_one_frame(self.jog_filter_alpha(), self.jog_frames_per_tick())
+        {
+            self.jog_bend = travel / (JogFilter::STEP_FRAMES * session_core::JOG_PAUSED_MULTIPLIER);
         }
-        self.jog_frames_since_step += 1.0;
     }
 
     pub(crate) fn deposit_jog(&mut self, ticks: f64) {
-        self.jog_ticks_since_step += ticks;
+        self.jog.deposit(ticks);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn jog_filtered(&self) -> f64 {
+        self.jog.filtered
+    }
+
+    /// Only `consume_jog` moves these onto the grid, under the lock the callback takes.
+    pub(crate) fn queue_jog(&mut self, ticks: f64) {
+        self.jog.queue(ticks);
     }
 
     fn advance_paused_jog_one_frame(&mut self) {
-        if self.jog_idle() {
-            self.jog_frames_since_step = Self::JOG_FILTER_STEP_FRAMES;
+        if self.jog.idle() {
+            self.jog.rearm();
             return;
         }
-        if self.jog_frames_since_step >= Self::JOG_FILTER_STEP_FRAMES {
-            self.jog_frames_since_step -= Self::JOG_FILTER_STEP_FRAMES;
-            let travel = self.step_jog_filter();
+        if let Some(travel) = self
+            .jog
+            .advance_one_frame(self.jog_filter_alpha(), self.jog_frames_per_tick())
+        {
             self.main_pos = (self.main_pos + travel).clamp(0.0, self.total_frames as f64);
         }
-        self.jog_frames_since_step += 1.0;
     }
 
     pub(crate) fn consume_jog(&mut self, frames: usize) {
-        self.jog_ticks_since_step += std::mem::take(&mut self.jog_pending);
+        self.jog.drain_pending();
         if self.is_playing {
             return;
         }
@@ -581,9 +623,7 @@ impl DeckState {
             self.advance_paused_jog_one_frame();
         }
         self.cue_pos = self.main_pos;
-        // The same guard `Seek` applies: a playhead scrubbed out of the region would
-        // otherwise be wrapped straight back into it on the first frame of playback.
-        if self.loop_active && (self.main_pos < self.cue_point || self.main_pos >= self.loop_end) {
+        if self.outside_loop(self.main_pos) {
             self.loop_active = false;
         }
     }
@@ -725,6 +765,22 @@ impl DeckState {
         }
     }
 
+    /// A degenerate region counts as no region: wrapping to `cue_point` would re-enter
+    /// every tick, pinning the playhead so it never reaches the end of the track.
+    fn wrap_into_loop(&self, pos: f64) -> Option<f64> {
+        let length = self.loop_end - self.cue_point;
+        if !self.loop_active || length <= 0.0 || pos < self.loop_end {
+            return None;
+        }
+        Some(self.cue_point + (pos - self.loop_end) % length)
+    }
+
+    /// A playhead scrubbed or seeked out of the region would otherwise be wrapped
+    /// straight back into it on the first frame of playback.
+    pub(crate) fn outside_loop(&self, pos: f64) -> bool {
+        self.loop_active && (pos < self.cue_point || pos >= self.loop_end)
+    }
+
     fn next_pos(&mut self, pos: f64, is_main: bool) -> f64 {
         // One bend for both inputs. A held nudge is the constant case of a wheel velocity, so
         // with the wheel idle this reduces to `jog_hold_factor` and sessions replay frame for frame.
@@ -733,11 +789,8 @@ impl DeckState {
         let step = self.playback_rate * factor;
         let new_pos = pos + step;
 
-        // A degenerate loop counts as no loop. Wrapping to cue_point would re-enter this
-        // branch every tick, pinning the playhead and never reaching end of track.
-        let loop_len = self.loop_end - self.cue_point;
-        if self.loop_active && loop_len > 0.0 && new_pos >= self.loop_end {
-            return self.cue_point + (new_pos - self.loop_end) % loop_len;
+        if let Some(wrapped) = self.wrap_into_loop(new_pos) {
+            return wrapped;
         }
 
         if new_pos >= self.total_frames as f64 {
@@ -753,19 +806,14 @@ impl DeckState {
         new_pos
     }
 
-    // Advance a playing deck by `overshoot_frames` of master-output time (scaled
-    // by the effective rate), wrapping inside an active loop and clamping to the
-    // track end. Session playback uses this to keep a deck that was started or
-    // repositioned a fraction of a buffer late aligned with decks already playing.
+    /// A deck started or repositioned a fraction of a buffer late would otherwise sit
+    /// behind the decks already playing.
     pub(crate) fn compensate_late_start(&mut self, overshoot_frames: f64) {
         if !self.is_playing || overshoot_frames <= 0.0 {
             return;
         }
-        let mut pos = self.main_pos + overshoot_frames * self.playback_rate * self.jog_hold_factor;
-        if self.loop_active && self.loop_end > self.cue_point && pos >= self.loop_end {
-            let dur = self.loop_end - self.cue_point;
-            pos = self.cue_point + (pos - self.loop_end).rem_euclid(dur);
-        }
+        let raw = self.main_pos + overshoot_frames * self.playback_rate * self.jog_hold_factor;
+        let mut pos = self.wrap_into_loop(raw).unwrap_or(raw);
         if self.total_frames > 0 {
             pos = pos.min(self.total_frames as f64 - 1.0);
         }
@@ -781,8 +829,8 @@ mod tests {
     const SR: u32 = 44100;
     const BLOCK: usize = 512;
 
-    impl DeckState {
-        // Creates a DeckState loaded with a 440 Hz sine wave. No audio hardware.
+    impl Deck {
+        // Creates a Deck loaded with a 440 Hz sine wave. No audio hardware.
         pub fn loaded_for_testing(device_sample_rate: u32, duration_secs: f64) -> Self {
             let total_frames = (device_sample_rate as f64 * duration_secs) as usize;
             let freq = 440.0f64;
@@ -793,7 +841,7 @@ mod tests {
                     [s, s]
                 })
                 .collect();
-            let mut d = DeckState::empty(device_sample_rate);
+            let mut d = Deck::empty(device_sample_rate);
             d.samples = Arc::new(samples);
             d.total_frames = total_frames;
             d.duration = duration_secs;
@@ -801,11 +849,9 @@ mod tests {
         }
     }
 
-    // --- DeckState tick ---
-
     #[test]
     fn deck_stops_at_natural_end_of_track() {
-        let mut d = DeckState::loaded_for_testing(SR, 1.0);
+        let mut d = Deck::loaded_for_testing(SR, 1.0);
         d.is_playing = true;
         d.main_pos = (d.total_frames - 1) as f64;
         d.main_tick();
@@ -817,7 +863,7 @@ mod tests {
 
     #[test]
     fn deck_is_silent_when_not_playing() {
-        let mut d = DeckState::loaded_for_testing(SR, 5.0);
+        let mut d = Deck::loaded_for_testing(SR, 5.0);
         d.is_playing = false;
         let (l, r) = d.main_tick();
         assert_eq!(l, 0.0);
@@ -826,7 +872,7 @@ mod tests {
 
     #[test]
     fn deck_position_advances_while_playing() {
-        let mut d = DeckState::loaded_for_testing(SR, 5.0);
+        let mut d = Deck::loaded_for_testing(SR, 5.0);
         d.is_playing = true;
         d.main_pos = 0.0;
         for _ in 0..1000 {
@@ -839,16 +885,14 @@ mod tests {
         );
     }
 
-    // A separate cue device renders this deck from two callbacks per period, and the wheel
-    // is consumed once, so scrubbing must not depend on how many outputs are configured.
     #[test]
     fn a_scrub_moves_the_same_distance_with_a_separate_cue_device() {
         fn scrubbed(separate_cue: bool) -> f64 {
-            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut deck = Deck::loaded_for_testing(SR, 10.0);
             let mut strip = ChannelStrip::new(SR as f32);
             deck.is_playing = false;
             deck.main_pos = 44_100.0;
-            deck.jog_pending = 20.0;
+            deck.queue_jog(20.0);
             let mut main = vec![0.0f32; 512 * 2];
             let mut cue = vec![0.0f32; 512 * 2];
 
@@ -881,7 +925,7 @@ mod tests {
     #[test]
     fn the_cue_path_keeps_pace_with_the_main_path_whether_cue_is_on_or_off() {
         for cue_active in [false, true] {
-            let mut deck = DeckState::loaded_for_testing(SR, 5.0);
+            let mut deck = Deck::loaded_for_testing(SR, 5.0);
             let mut strip = ChannelStrip::new(SR as f32);
             strip.cue_active = cue_active;
             deck.is_playing = true;
@@ -902,11 +946,9 @@ mod tests {
         }
     }
 
-    // read_at used to extrapolate off the front of the buffer for a negative position, so a
-    // -44100 read produced samples ~2700x full scale.
     #[test]
     fn read_at_clamps_negative_position() {
-        let d = DeckState::loaded_for_testing(SR, 1.0);
+        let d = Deck::loaded_for_testing(SR, 1.0);
         for pos in [-1.0f64, -400.0, -44_100.0] {
             let (l, r) = d.read_at(pos);
             assert!(l.abs() <= 1.0, "pos {pos} produced l={l}");
@@ -917,7 +959,7 @@ mod tests {
 
     #[test]
     fn set_nudge_percent_floors_the_factor() {
-        let mut d = DeckState::loaded_for_testing(SR, 1.0);
+        let mut d = Deck::loaded_for_testing(SR, 1.0);
         d.set_nudge_percent(-200.0);
         assert!(
             d.jog_hold_factor >= 0.1,
@@ -930,12 +972,10 @@ mod tests {
         assert!((d.jog_hold_factor - 0.96).abs() < 1e-9);
     }
 
-    // Porting nudge onto the wheel's velocity model is only safe if a held button advances
-    // the playhead exactly as far as it used to, or sessions drift against their renders.
     #[test]
     fn a_held_nudge_advances_exactly_as_it_did_before_the_wheel_existed() {
         for (rate, percent) in [(1.0, 4.0), (1.0, -4.0), (0.94, 8.0), (1.08, -2.0)] {
-            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            let mut deck = Deck::loaded_for_testing(SR, 1.0);
             deck.playback_rate = rate;
             deck.set_nudge_percent(percent);
             deck.is_playing = true;
@@ -959,11 +999,11 @@ mod tests {
         const TOTAL: usize = 4096;
 
         let render = |sizes: &[usize]| -> Vec<f32> {
-            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut deck = Deck::loaded_for_testing(SR, 10.0);
             let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, SR as f32);
             deck.is_playing = true;
             deck.main_pos = 50_000.0;
-            deck.jog_pending += 40.0;
+            deck.queue_jog(40.0);
 
             let mut out = Vec::with_capacity(TOTAL * 2);
             let mut frame = 0;
@@ -1001,8 +1041,6 @@ mod tests {
         }
     }
 
-    // The whole basis for logging raw ticks: the one-pole has unity DC gain, so it shapes
-    // when the travel happens and never how much. Without this the sim cannot stay analytic.
     #[test]
     fn a_paused_scrubs_total_travel_is_its_tick_count_whatever_the_block_size() {
         let schedules: [(&str, fn(usize) -> usize); 6] = [
@@ -1018,12 +1056,12 @@ mod tests {
 
         for (label, block_frames) in schedules {
             for ticks in [1.0, 6.0, -13.0, 400.0] {
-                let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+                let mut deck = Deck::loaded_for_testing(SR, 10.0);
                 deck.main_pos = 100_000.0;
                 let start = deck.main_pos;
                 let expected = ticks * deck.jog_frames_per_tick();
 
-                deck.jog_pending += ticks;
+                deck.queue_jog(ticks);
                 for block in 0..4096 {
                     deck.consume_jog(block_frames(block));
                 }
@@ -1037,15 +1075,13 @@ mod tests {
         }
     }
 
-    // The playing half of the same closed form: the wheel's contribution to position is the
-    // paused travel divided by the multiplier, which is what lets the sim skip the filter.
     #[test]
     fn a_playing_bends_total_travel_is_the_paused_travel_over_the_multiplier() {
         const BLOCK_FRAMES: usize = 512;
         // Three seconds against the wheel filter's 40 ms tau, so the tail is long settled.
         const BLOCKS: usize = 256;
         for ticks in [6.0, -6.0, 40.0] {
-            let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+            let mut deck = Deck::loaded_for_testing(SR, 10.0);
             deck.is_playing = true;
             deck.playback_rate = 1.0;
             deck.main_pos = 100_000.0;
@@ -1053,7 +1089,7 @@ mod tests {
             let expected = ticks * deck.jog_frames_per_tick() / session_core::JOG_PAUSED_MULTIPLIER
                 + (BLOCKS * BLOCK_FRAMES) as f64;
 
-            deck.jog_pending += ticks;
+            deck.queue_jog(ticks);
             for _ in 0..BLOCKS {
                 deck.consume_jog(BLOCK_FRAMES);
                 for _ in 0..BLOCK_FRAMES {
@@ -1069,8 +1105,8 @@ mod tests {
         }
     }
 
-    fn looping_deck_at(pos: f64) -> DeckState {
-        let mut deck = DeckState::loaded_for_testing(SR, 600.0);
+    fn looping_deck_at(pos: f64) -> Deck {
+        let mut deck = Deck::loaded_for_testing(SR, 600.0);
         deck.cue_point = 100_000.0;
         deck.loop_end = 200_000.0;
         deck.loop_active = true;
@@ -1078,15 +1114,13 @@ mod tests {
         deck
     }
 
-    fn settle_jog(deck: &mut DeckState, ticks: f64) {
-        deck.jog_pending += ticks;
+    fn settle_jog(deck: &mut Deck, ticks: f64) {
+        deck.queue_jog(ticks);
         for _ in 0..4096 {
             deck.consume_jog(512);
         }
     }
 
-    // Seek disarms a loop it lands outside of. Without the same guard here the first frame
-    // of playback wraps the playhead back into the region the DJ just scrubbed out of.
     #[test]
     fn scrubbing_a_paused_deck_out_of_its_loop_disarms_it() {
         let mut deck = looping_deck_at(150_000.0);
@@ -1117,10 +1151,9 @@ mod tests {
         assert!(deck.loop_active);
     }
 
-    // An idle wheel must contribute nothing at all, not merely something small.
     #[test]
     fn an_untouched_wheel_leaves_a_paused_deck_where_it_was() {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.main_pos = 1000.0;
         for _ in 0..64 {
             deck.consume_jog(BLOCK);
@@ -1128,14 +1161,12 @@ mod tests {
         assert_eq!(deck.main_pos, 1000.0);
     }
 
-    // What replaces the release watchdog: the accumulator reads zero once the
-    // hand is gone, so the bend has to settle on its own.
     #[test]
     fn a_released_wheel_rings_down_to_no_bend() {
-        let mut deck = DeckState::loaded_for_testing(SR, 30.0);
+        let mut deck = Deck::loaded_for_testing(SR, 30.0);
         deck.is_playing = true;
         for _ in 0..8 {
-            deck.jog_pending += 20.0;
+            deck.queue_jog(20.0);
             deck.consume_jog(BLOCK);
             for _ in 0..BLOCK {
                 deck.main_tick();
@@ -1155,16 +1186,16 @@ mod tests {
 
     #[test]
     fn a_turned_wheel_scrubs_a_paused_deck_both_ways() {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.main_pos = 20_000.0;
 
-        deck.jog_pending += 50.0;
+        deck.queue_jog(50.0);
         deck.consume_jog(BLOCK);
         assert!(deck.main_pos > 20_000.0);
         assert_eq!(deck.cue_pos, deck.main_pos);
 
         let forward = deck.main_pos;
-        deck.jog_pending -= 200.0;
+        deck.queue_jog(-200.0);
         deck.consume_jog(BLOCK);
         assert!(deck.main_pos < forward);
     }
@@ -1175,14 +1206,14 @@ mod tests {
         const TURN_MS: f64 = 120.0;
         const SETTLE_SLACK: f64 = 0.02;
         let settled_fraction = |frames: usize| {
-            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            let mut deck = Deck::loaded_for_testing(SR, 1.0);
             deck.is_playing = true;
             let blocks = (TURN_MS / 1000.0 * f64::from(SR) / frames as f64).round() as usize;
             for _ in 0..blocks {
-                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.queue_jog(TICKS_PER_FRAME * frames as f64);
                 deck.consume_jog(frames);
             }
-            deck.jog_filtered / (TICKS_PER_FRAME * DeckState::JOG_FILTER_STEP_FRAMES)
+            deck.jog_filtered() / (TICKS_PER_FRAME * JogFilter::STEP_FRAMES)
         };
         assert!((settled_fraction(256) - settled_fraction(1024)).abs() < SETTLE_SLACK);
         assert!((settled_fraction(128) - settled_fraction(1024)).abs() < SETTLE_SLACK);
@@ -1193,9 +1224,9 @@ mod tests {
     fn a_paused_scrub_travels_the_same_at_any_block_schedule() {
         let scrub = |sizes: &[usize]| {
             const TOTAL: usize = 44_100;
-            let mut deck = DeckState::loaded_for_testing(SR, 2.0);
+            let mut deck = Deck::loaded_for_testing(SR, 2.0);
             deck.main_pos = 20_000.0;
-            deck.jog_pending += 500.0;
+            deck.queue_jog(500.0);
             let mut frame = 0usize;
             let mut index = 0usize;
             while frame < TOTAL {
@@ -1216,10 +1247,10 @@ mod tests {
     fn the_same_hand_speed_bends_the_same_at_any_buffer_size() {
         const TICKS_PER_FRAME: f64 = 0.05;
         let bend = |frames: usize| {
-            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            let mut deck = Deck::loaded_for_testing(SR, 1.0);
             deck.is_playing = true;
             for _ in 0..200 {
-                deck.jog_pending += TICKS_PER_FRAME * frames as f64;
+                deck.queue_jog(TICKS_PER_FRAME * frames as f64);
                 deck.consume_jog(frames);
             }
             deck.next_pos(0.0, false)
@@ -1230,10 +1261,10 @@ mod tests {
     #[test]
     fn one_revolution_covers_a_fixed_ratio_less_audio_at_the_faster_speed() {
         let travel = |speed| {
-            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            let mut deck = Deck::loaded_for_testing(SR, 1.0);
             deck.set_jog_rotation_speed(speed);
             deck.main_pos = 20_000.0;
-            deck.jog_pending += 50.0;
+            deck.queue_jog(50.0);
             deck.consume_jog(BLOCK);
             deck.main_pos - 20_000.0
         };
@@ -1252,20 +1283,18 @@ mod tests {
         assert_eq!(logged_jog_ticks(50.0, true, true), 50.0);
 
         let scrub = |held| {
-            let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+            let mut deck = Deck::loaded_for_testing(SR, 1.0);
             deck.main_pos = 20_000.0;
-            deck.jog_pending += logged_jog_ticks(50.0, held, false);
+            deck.queue_jog(logged_jog_ticks(50.0, held, false));
             deck.consume_jog(BLOCK);
             deck.main_pos - 20_000.0
         };
         assert!((scrub(true) / scrub(false) - 2.0).abs() < 1e-12);
     }
 
-    // The surface stops being listened to outside performance, so a button that is down
-    // when the mode changes never delivers its release and nothing else would clear it.
     #[test]
     fn releasing_held_controls_ends_a_cue_preview_and_drops_shift() {
-        let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+        let mut deck = Deck::loaded_for_testing(SR, 10.0);
         deck.set_jog_shift(true);
         deck.cue_point = 20_000.0;
         deck.main_pos = deck.cue_point;
@@ -1281,10 +1310,9 @@ mod tests {
         assert!((deck.main_pos - deck.cue_point).abs() < 1.0);
     }
 
-    // A deck playing normally holds nothing, so the same call must not stop it.
     #[test]
     fn releasing_held_controls_leaves_normal_playback_alone() {
-        let mut deck = DeckState::loaded_for_testing(SR, 10.0);
+        let mut deck = Deck::loaded_for_testing(SR, 10.0);
         deck.is_playing = true;
         deck.main_pos = 30_000.0;
 
@@ -1294,10 +1322,9 @@ mod tests {
         assert!((deck.main_pos - 30_000.0).abs() < 1.0);
     }
 
-    // The button is held on the surface, so a track change cannot release it.
     #[test]
     fn shift_survives_a_track_change() {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.set_jog_shift(true);
         deck.reset();
         assert!(deck.jog_shift);
@@ -1305,7 +1332,7 @@ mod tests {
 
     #[test]
     fn the_rotation_speed_survives_a_track_change() {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.set_jog_rotation_speed(session_core::JogRotationSpeed::Rpm45);
         deck.reset();
         assert_eq!(
@@ -1314,26 +1341,23 @@ mod tests {
         );
     }
 
-    // Scrubbing backwards past the start would read at a negative frame.
     #[test]
     fn scrubbing_cannot_leave_the_track() {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.main_pos = 10.0;
         for _ in 0..200 {
-            deck.jog_pending -= 500.0;
+            deck.queue_jog(-500.0);
             deck.consume_jog(BLOCK);
         }
         assert!(deck.main_pos >= 0.0);
 
         for _ in 0..2000 {
-            deck.jog_pending += 500.0;
+            deck.queue_jog(500.0);
             deck.consume_jog(BLOCK);
         }
         assert!(deck.main_pos <= deck.total_frames as f64);
     }
 
-    // A hand-edited .bms reaches set_param directly, and the eq unit has no clamp of its
-    // own, so +60 dB below 200 Hz used to duck the whole mix through the limiter.
     #[test]
     fn a_param_outside_the_descriptors_range_lands_on_the_range() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1353,8 +1377,6 @@ mod tests {
         strip.set_param("filter", "value", 4.0);
         assert_eq!(strip.param("filter", "value"), Some(1.0));
     }
-
-    // --- ChannelStrip gain smoothing ---
 
     #[test]
     fn channel_strip_gain_does_not_jump_on_change() {
@@ -1404,15 +1426,11 @@ mod tests {
         assert!(strip.metered().0 > 0.99, "meter read {}", strip.metered().0);
     }
 
-    // The edit deck has no channel on the mixer, so a broadcast, a recording or a crossfader
-    // resolve that walked it would be reporting a deck the audience never hears.
     #[test]
     fn the_edit_deck_is_not_a_live_deck() {
         assert!(!crate::audio::LIVE_DECK_IDS.contains(&crate::audio::EDIT_DECK_ID));
     }
 
-    // Every caller of `new` is a test, so a strip built here exercising a manifest the app
-    // never runs would leave the real one untested wherever the two differ.
     #[test]
     fn the_convenience_constructor_builds_the_manifest_the_app_runs() {
         let strip = ChannelStrip::new(48000.0);
@@ -1464,8 +1482,6 @@ mod tests {
         assert_eq!(settled_from(-1.0), settled_from(0.25));
     }
 
-    // A stopped deck's strip settles and stops processing, so a crossfader thrown while it
-    // is paused has to reopen the window or the first samples after play use the old gain.
     #[test]
     fn reset_returns_the_crossfader_to_thru_at_centre() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1511,8 +1527,6 @@ mod tests {
         assert!(settled_xfader_gain(&mut strip) < 0.001);
     }
 
-    // Assign and position are resolved by the strip, so a caller that changes only one still
-    // ends up correct. Live playback, session playback and the renderer each touch one.
     #[test]
     fn assigning_after_the_crossfader_moved_still_resolves() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1521,8 +1535,6 @@ mod tests {
         assert!(settled_xfader_gain(&mut strip) < 0.001);
     }
 
-    // A hard cut has to ramp, not step, or it clicks. Centred and assigned is
-    // 0.707 rather than unity, which is what constant power means.
     #[test]
     fn the_crossfader_does_not_step_when_thrown() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1594,24 +1606,24 @@ mod cue_state_machine {
         (60.0 / BPM) * SR as f64
     }
 
-    fn stopped(duration_secs: f64) -> DeckState {
-        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+    fn stopped(duration_secs: f64) -> Deck {
+        let mut d = Deck::loaded_for_testing(SR, duration_secs);
         d.is_playing = false;
         d.is_cueing = false;
         d.cue_point = 0.0;
         d
     }
 
-    fn playing(duration_secs: f64) -> DeckState {
-        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+    fn playing(duration_secs: f64) -> Deck {
+        let mut d = Deck::loaded_for_testing(SR, duration_secs);
         d.is_playing = true;
         d.is_cueing = false;
         d.cue_point = 0.0;
         d
     }
 
-    fn cueing(duration_secs: f64) -> DeckState {
-        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+    fn cueing(duration_secs: f64) -> Deck {
+        let mut d = Deck::loaded_for_testing(SR, duration_secs);
         d.is_playing = true;
         d.is_cueing = true;
         d.cue_point = 0.0;
@@ -1620,7 +1632,7 @@ mod cue_state_machine {
 
     #[test]
     fn toggle_play_on_empty_deck_does_nothing() {
-        let mut d = DeckState::empty(SR);
+        let mut d = Deck::empty(SR);
         d.toggle_play();
         assert!(!d.is_playing);
     }
@@ -1641,8 +1653,6 @@ mod cue_state_machine {
         assert!(!d.is_cueing);
     }
 
-    // Pressing PLAY during cue preview "latches on". Playback continues from
-    // the current position instead of returning to the cue point.
     #[test]
     fn toggle_play_during_cue_preview_latches_to_playing() {
         let mut d = cueing(10.0);
@@ -1656,7 +1666,7 @@ mod cue_state_machine {
 
     #[test]
     fn press_cue_on_empty_deck_does_nothing() {
-        let mut d = DeckState::empty(SR);
+        let mut d = Deck::empty(SR);
         let outcome = d.press_cue();
         assert_eq!(outcome, CuePressOutcome::NoTrack);
         assert!(!d.is_playing);
@@ -1679,7 +1689,7 @@ mod cue_state_machine {
     fn press_cue_stopped_within_threshold_of_cue_starts_preview() {
         let mut d = stopped(10.0);
         d.cue_point = beat_frames() * 2.0;
-        d.main_pos = d.cue_point + DeckState::CUE_THRESHOLD_FRAMES * 0.5; // inside tolerance
+        d.main_pos = d.cue_point + Deck::CUE_THRESHOLD_FRAMES * 0.5; // inside tolerance
         let outcome = d.press_cue();
         assert_eq!(outcome, CuePressOutcome::PreviewStarted);
     }
@@ -1724,8 +1734,6 @@ mod cue_state_machine {
         assert!((d.main_pos - d.cue_point).abs() < 1.0);
     }
 
-    // Pressing CUE again during preview is a no-op. You can't start another
-    // preview while one is already running.
     #[test]
     fn press_cue_during_preview_is_noop() {
         let mut d = cueing(10.0);
@@ -1751,7 +1759,6 @@ mod cue_state_machine {
         assert!((d.main_pos - d.cue_point).abs() < 1.0);
     }
 
-    // Idempotent: releasing when already stopped must not crash or change state.
     #[test]
     fn release_cue_when_stopped_is_noop() {
         let mut d = stopped(10.0);
@@ -1779,105 +1786,11 @@ mod cue_state_machine {
 
     #[test]
     fn release_cue_on_empty_deck_is_noop() {
-        let mut d = DeckState::empty(SR);
+        let mut d = Deck::empty(SR);
         d.release_cue(); // must not panic
         assert!(!d.is_playing);
     }
 
-    #[test]
-    fn set_cue_and_stop_while_playing_freezes_cue_at_playhead() {
-        let mut d = playing(10.0);
-        d.main_pos = beat_frames() * 3.5;
-        d.set_cue_and_stop();
-        assert!(!d.is_playing);
-        assert!(!d.is_cueing);
-        assert!(
-            (d.cue_point - beat_frames() * 3.5).abs() < 1.0,
-            "cue_point must be set to playhead"
-        );
-        assert!(
-            (d.main_pos - d.cue_point).abs() < 1.0,
-            "position must stay at new cue point"
-        );
-    }
-
-    // No-op when already stopped. Calling it twice must be safe.
-    #[test]
-    fn set_cue_and_stop_when_stopped_is_noop() {
-        let mut d = stopped(10.0);
-        d.cue_point = beat_frames() * 2.0;
-        d.main_pos = beat_frames() * 2.0;
-        d.set_cue_and_stop();
-        assert!(!d.is_playing);
-        assert_eq!(
-            d.cue_point,
-            beat_frames() * 2.0,
-            "cue_point must not change when stopped"
-        );
-    }
-
-    // During cueing, set_cue_and_stop ends the preview and locks cue at
-    // the current (slightly advanced) position.
-    #[test]
-    fn set_cue_and_stop_during_preview_ends_preview_and_updates_cue() {
-        let mut d = cueing(10.0);
-        d.cue_point = beat_frames() * 2.0;
-        d.main_pos = d.cue_point + 300.0;
-        let expected_cue = d.main_pos;
-        d.set_cue_and_stop();
-        assert!(!d.is_playing);
-        assert!(!d.is_cueing);
-        assert!(
-            (d.cue_point - expected_cue).abs() < 1.0,
-            "cue_point must be set to playhead at time of call"
-        );
-    }
-
-    #[test]
-    fn stop_at_cue_while_playing_stops_and_returns_to_cue() {
-        let mut d = playing(10.0);
-        d.cue_point = beat_frames() * 2.0;
-        d.main_pos = beat_frames() * 7.0;
-        let cue_before = d.cue_point;
-        d.stop_at_cue();
-        assert!(!d.is_playing);
-        assert!(!d.is_cueing);
-        assert_eq!(d.cue_point, cue_before, "cue_point must not change");
-        assert!((d.main_pos - cue_before).abs() < 1.0);
-    }
-
-    #[test]
-    fn stop_at_cue_when_already_stopped_is_noop() {
-        let mut d = stopped(10.0);
-        d.cue_point = beat_frames() * 2.0;
-        d.main_pos = beat_frames() * 4.0; // position away from cue
-        d.stop_at_cue(); // first call
-        d.stop_at_cue(); // second call. Must not change anything further
-        assert!(!d.is_playing);
-    }
-
-    #[test]
-    fn stop_at_cue_during_preview_stops_and_returns_to_cue() {
-        let mut d = cueing(10.0);
-        d.cue_point = beat_frames() * 2.0;
-        d.main_pos = d.cue_point + 400.0;
-        let cue_before = d.cue_point;
-        d.stop_at_cue();
-        assert!(!d.is_playing);
-        assert!(!d.is_cueing);
-        assert_eq!(d.cue_point, cue_before);
-        assert!((d.main_pos - cue_before).abs() < 1.0);
-    }
-
-    #[test]
-    fn stop_at_cue_on_empty_deck_is_noop() {
-        let mut d = DeckState::empty(SR);
-        d.stop_at_cue(); // must not panic
-        assert!(!d.is_playing);
-    }
-
-    // Cue point set during preview (press_cue moves it) must survive a
-    // press → release cycle and be the correct return target.
     #[test]
     fn cue_point_moved_then_preview_returns_to_new_cue() {
         let mut d = stopped(10.0);
@@ -1911,15 +1824,13 @@ mod loop_behavior {
         (60.0 / BPM) * SR as f64
     }
 
-    fn deck_with_grid(duration_secs: f64) -> DeckState {
-        let mut d = DeckState::loaded_for_testing(SR, duration_secs);
+    fn deck_with_grid(duration_secs: f64) -> Deck {
+        let mut d = Deck::loaded_for_testing(SR, duration_secs);
         d.bpm = Some(BPM);
         d.beat_offset_frames = 0.0;
         d
     }
 
-    // Loop start IS the cue point: next_pos must wrap to cue_point, not a
-    // separate loop_start variable.
     #[test]
     fn loop_wraps_to_cue_point_not_separate_variable() {
         let mut d = deck_with_grid(10.0);
@@ -1938,8 +1849,6 @@ mod loop_behavior {
         );
     }
 
-    // A loop ending at or before the cue point used to pin the playhead there forever.
-    // session-core's sim_pos has always guarded it, so the engine was the divergent side.
     #[test]
     fn zero_length_loop_does_not_freeze_playback() {
         let mut d = deck_with_grid(10.0);
@@ -1999,8 +1908,8 @@ mod render_block_equivalence {
     const SR: u32 = 44100;
     const FRAMES: usize = 512;
 
-    fn deck_and_strip(duration_secs: f64) -> (DeckState, ChannelStrip) {
-        let mut deck = DeckState::loaded_for_testing(SR, duration_secs);
+    fn deck_and_strip(duration_secs: f64) -> (Deck, ChannelStrip) {
+        let mut deck = Deck::loaded_for_testing(SR, duration_secs);
         deck.is_playing = true;
         let mut strip = ChannelStrip::new(SR as f32);
         strip.set_eq_band("low", 4.0);
@@ -2124,13 +2033,13 @@ mod silence_early_out {
     const SR: u32 = 44100;
     const FRAMES: usize = 512;
 
-    fn stopped_pair() -> (DeckState, ChannelStrip) {
-        let mut deck = DeckState::loaded_for_testing(SR, 1.0);
+    fn stopped_pair() -> (Deck, ChannelStrip) {
+        let mut deck = Deck::loaded_for_testing(SR, 1.0);
         deck.is_playing = false;
         (deck, ChannelStrip::new(SR as f32))
     }
 
-    fn render(deck: &mut DeckState, strip: &mut ChannelStrip, blocks: usize) {
+    fn render(deck: &mut Deck, strip: &mut ChannelStrip, blocks: usize) {
         let mut main = vec![0.0f32; FRAMES * 2];
         for _ in 0..blocks {
             main.fill(0.0);

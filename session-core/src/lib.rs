@@ -1,8 +1,3 @@
-// Shared session-replay core: the single source of truth for the event model
-// and the deterministic simulation that derives deck/strip state over time.
-// Consumed natively by the audio engine (src-tauri) and, once wired, compiled
-// to WASM for the frontend, so the engine and the editor can never disagree.
-
 pub mod clip_edit;
 pub mod cue;
 pub mod event;
@@ -11,27 +6,26 @@ pub mod param;
 pub mod sim;
 pub mod timeline;
 
-pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
     block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
     delete_transport_ranges, move_transport_block, split_transport_block, trim_transport_block,
     DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
+pub use cue::{build_cue_points, CuePoint};
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
-pub use param::{
-    is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, JogRotationSpeed, MixerHeader,
-    MixerManifest, ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
-    XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2,
-    jog_settled_fraction, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER,
-    MANIFESTS,
-    REQUIRED_STRIP_ROLES,
-};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
-    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span, set_rate_at,
-    set_rate_span, splice_lane_events, toggle_filter_active_range,
-    EditableLane, LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span,
+    set_rate_at, set_rate_span, splice_lane_events, toggle_filter_active_range, EditableLane,
+    LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+};
+pub use param::{
+    is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
+    FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest, ParamDescriptor, ParamScope,
+    ParamUnit, SlotDescriptor, Taper, XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN,
+    ISOLATOR_3BAND, ISOLATOR_3BAND_V2, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER,
+    JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
@@ -55,11 +49,8 @@ mod wasm {
         serde_json::from_str(events_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Derive clips, loaded spans, and automation lanes (gain/eq/filter/rate,
-    /// filter-active spans, nudge spans) in one pass so the editor crosses the
-    /// boundary (and serializes the event list) once per change. `trackName` is
-    /// not included on clips/spans; the caller fills it from the collection.
-    /// Returns `{ clips, loadedSpans, deckLanes, masterLanes, deckNudges }`.
+    /// One pass, so the editor crosses the WASM boundary and serializes the event list
+    /// once per change rather than once per lane.
     #[wasm_bindgen(js_name = buildTimeline)]
     pub fn build_timeline(
         events_json: &str,
@@ -277,7 +268,9 @@ mod wasm {
         let events = parse_events(events_json)?;
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
-        events_to_json(crate::split_transport_block(&events, &clips, &block, split_ms))
+        events_to_json(crate::split_transport_block(
+            &events, &clips, &block, split_ms,
+        ))
     }
 
     /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range

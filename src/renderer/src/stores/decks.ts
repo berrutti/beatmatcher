@@ -9,6 +9,10 @@ import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
 
+// The pair a two-deck mixer shows. C and D are the outer decks of the four-deck layout, so
+// they are the ones that go, and the remaining two keep their disposition order.
+export const TWO_DECK_DISPOSITION = ['A', 'B'] as const;
+
 type LoopRegion = {
   startSec: number;
   endSec: number;
@@ -346,14 +350,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       }
     },
 
-    moveLoopRegion(startSec: number) {
-      if (!state.loopRegion) return;
-      const dur = state.loopRegion.endSec - state.loopRegion.startSec;
-      const endSec = startSec + dur;
-      state.loopRegion = { ...state.loopRegion, startSec, endSec };
-      call('set_loop_region', { deck: id, startSec, endSec });
-    },
-
     async setLoopIn() {
       if (!state.trackLoaded) return;
       syncPosition();
@@ -423,11 +419,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
     async cueEnd() {
       const payload = await invoke<DeckSyncPayload>('release_cue', { deck: id });
-      applyDeckState(payload);
-    },
-
-    async setCueAndStop() {
-      const payload = await invoke<DeckSyncPayload>('set_cue_and_stop', { deck: id });
       applyDeckState(payload);
     },
 

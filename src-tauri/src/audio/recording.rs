@@ -1,4 +1,4 @@
-pub(crate) struct RecordingState {
+pub(crate) struct Recording {
     pub(crate) thread: std::thread::JoinHandle<Result<(), String>>,
     pub(crate) temp_path: String,
 }
