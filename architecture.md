@@ -158,7 +158,7 @@ graph TD
 
 `src-tauri/src/midi/` owns the MIDI connection on its own thread and reaches the rest of the app through a single dispatch closure installed with `set_dispatch`. Nothing else crosses that boundary, so mapped input cannot reach device or buffer configuration, which rebuild the streams and stay on the main thread.
 
-Reading a message and reading a mapping file are separated from the connection, so neither can name `midir`, the device registry or the engine: a parse cannot reach the hardware. The addressing vocabulary they share, byte constants and `Source`/`Key`/`Resolution`/`Half`, is its own module, because putting it in either one makes the two depend on each other.
+Decoding a message and reading a mapping file are separate modules, each importing only the addressing vocabulary it uses. That vocabulary, the byte constants and `Source`/`Key`/`Resolution`/`Half`, is its own module because both need it. The connection, the device registry and dispatch into the engine stay in `mod.rs`.
 
 A **mapping** is a JSON file in `src-tauri/mappings/`, listing bindings that each pair a **source** with an **action**:
 

@@ -116,7 +116,7 @@ A tick is worth `0.002 s` of audio at 33. A paused deck scrubs that distance and
 
 Nothing is compensated. `elapsed_ms` is stamped in Rust when the command arrives, so the hop from the frontend is already outside it, and the renderer applies each command exactly where the live engine did.
 
-Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. A recorded event carries `frame`, read under the same lock as the mutation, and the renderer dispatches there verbatim. An event with no `frame` is one nothing performed, a synthesized edit or a session older than the stamp, and dispatches at `elapsed_ms`. `frame` counts at the recording's `sample_rate`, so a render at another rate scales it.
+Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. A recorded event carries `frame`, read under the same lock as the mutation, and the renderer dispatches there verbatim. An event without `frame` was synthesized rather than performed, a clip edit or a session older than the stamp, and dispatches at `elapsed_ms`. `frame` counts at the recording's `sample_rate`, so a render at another rate scales it.
 
 The delay is between zero and one buffer, not a fixed offset: measured at 35 frames on a 128-frame buffer. Adding a fixed buffer to every event puts every deck out, which is why the frame is recorded rather than inferred.
 
