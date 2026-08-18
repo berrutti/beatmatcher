@@ -19,7 +19,7 @@ graph TD
     end
 
     subgraph Backend ["Backend (Rust)"]
-        Engine["Engine\n(engine.rs - transport and mixer verbs,\nrecorder, UI push, LED feedback)"]:::backend
+        Engine["Engine\n(engine.rs - transport and mixer verbs,\nrecorder, UI push)"]:::backend
         Sessions["SessionLibrary\n(session_playback.rs - decoded audio,\nsnapshots, edited events)"]:::backend
         Audio["AppAudio\n(decks, strips, streams)"]:::backend
         Dsp["Audio Engine\n(audio/ - deck, channel strip,\nDSP, stream I/O)"]:::backend
@@ -39,59 +39,15 @@ graph TD
     Scheduler -- "direct engine access" --> Audio
 ```
 
-Tauri manages three states independently, so a command receives only what it needs rather than one
-handle to everything: `Engine` for anything that moves a deck or the mixer, `SessionLibrary` for a
-loaded `.bms`, and `SurfaceControl` for whether a control surface may drive the decks. A command that never asks for the
-session library cannot reach it.
-
-`Engine` holds the audio handle, the session recorder and the UI push, because every write to the
-mixer also records itself and mirrors back to the surface that did not move. It does not light
-buttons: `midi::refresh_led` reads deck state and derives the LED from it.
-
-## Module layering
-
-```mermaid
-graph TD
-    classDef leaf fill:#64748b,stroke:#475569,color:#fff
-    classDef mid fill:#f97316,stroke:#ea580c,color:#fff
-    classDef top fill:#06b6d4,stroke:#0891b2,color:#fff
-
-    audio["audio\n(decks, strips, DSP, streams)"]:::leaf
-    deck_sync["deck_sync\n(the payload a deck reports)"]:::mid
-    recorder["recorder\n(session log)"]:::mid
-    offline_render["offline_render"]:::mid
-    broadcast["broadcast"]:::mid
-    engine_push["engine_push\n(16 ms flush to the UI)"]:::mid
-    engine["engine\n(transport and mixer verbs)"]:::mid
-    midi["midi"]:::mid
-    session_playback["session_playback"]:::mid
-    commands["commands\n(every #[tauri::command])"]:::top
-
-    deck_sync --> audio
-    recorder --> audio
-    offline_render --> audio
-    broadcast --> audio
-    engine_push --> audio
-    engine_push --> deck_sync
-    engine --> audio
-    engine --> deck_sync
-    engine --> recorder
-    engine --> engine_push
-    midi --> engine
-    session_playback --> audio
-    session_playback --> engine
-    session_playback --> offline_render
-    commands --> engine
-    commands --> midi
-    commands --> session_playback
-```
-
-`audio` depends on nothing and `commands` sits on top. There are no cycles.
+Tauri manages three states independently, so a command receives only what it needs: `Engine` for
+anything that moves a deck or the mixer, `SessionLibrary` for a loaded `.bms`, and `SurfaceControl`
+for whether a control surface may drive the decks. `Engine` carries the audio handle, the session
+recorder and the UI push together, because every write to the mixer also records itself and mirrors
+back to the surface that did not move.
 
 Every `#[tauri::command]` lives in `commands.rs`. Where the work belongs to another module the
-command is a wrapper that calls it, so `session_playback` and `midi` keep their internals private.
-
-The engine does not push LEDs. `midi::refresh_led` reads deck state and derives the light from it.
+command is a wrapper that calls into it, so `session_playback` and `midi` keep their internals
+private.
 
 ## Audio signal chain (per deck)
 
