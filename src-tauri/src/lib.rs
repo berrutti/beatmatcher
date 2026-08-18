@@ -22,8 +22,16 @@ use tauri::Manager;
 
 /// Whether a control surface may drive the decks. Only performance mode allows it: in the
 /// others the session scheduler writes the strips past the `set_deck_param` funnel.
-#[derive(Default)]
 pub struct SurfaceControl(std::sync::atomic::AtomicBool);
+
+impl Default for SurfaceControl {
+    /// The app starts in performance mode, and the frontend only pushes a mode on a change.
+    fn default() -> Self {
+        let control = Self(std::sync::atomic::AtomicBool::new(false));
+        control.allow(AppMode::Performance);
+        control
+    }
+}
 
 impl SurfaceControl {
     pub(crate) fn allow(&self, mode: AppMode) {
@@ -251,6 +259,24 @@ fn wire_midi(app: &tauri::App, midi_state: &midi::MidiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_surface_drives_the_decks_before_any_mode_is_set() {
+        assert!(SurfaceControl::default().allowed());
+    }
+
+    #[test]
+    fn only_performance_mode_lets_a_surface_drive_the_decks() {
+        let surface = SurfaceControl::default();
+        for (mode, expected) in [
+            (AppMode::Session, false),
+            (AppMode::Edit, false),
+            (AppMode::Performance, true),
+        ] {
+            surface.allow(mode);
+            assert_eq!(surface.allowed(), expected, "{mode:?}");
+        }
+    }
 
     #[test]
     fn a_centred_tempo_fader_is_exactly_unity() {
