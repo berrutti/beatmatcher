@@ -39,6 +39,9 @@ pub struct MasterMonitor {
     pub output_frames: Arc<std::sync::atomic::AtomicU64>,
     // Only the callback can know it: whether the buffer in flight reaches the file is decided there.
     capture_start: Arc<std::sync::atomic::AtomicU64>,
+    // The first frame the recording may contain. A buffer whose decks rendered before arming
+    // holds audio the session snapshot has no state for.
+    capture_from: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub(crate) const NOT_CAPTURING: u64 = u64::MAX;
@@ -58,6 +61,7 @@ impl MasterMonitor {
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             capture_start: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
+            capture_from: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
         }
     }
 
@@ -76,12 +80,9 @@ impl MasterMonitor {
         Arc::clone(&self.capture_start)
     }
 
-    pub(crate) fn arm_capture(&self) {
+    pub(crate) fn arm_capture(&self, from_frame: u64) {
         self.capture_start.store(NOT_CAPTURING, Ordering::Relaxed);
-    }
-
-    pub fn output_frames_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
-        Arc::clone(&self.output_frames)
+        self.capture_from.store(from_frame, Ordering::Relaxed);
     }
 
     pub fn get_levels(&self) -> [f32; 2] {
@@ -740,6 +741,9 @@ fn tap_master_output(
     let n = counted.max(1) as f32;
     monitor.store_levels(sum_l / n, sum_r / n);
 
+    if buffer_start < monitor.capture_from.load(Ordering::Relaxed) {
+        return;
+    }
     if let Ok(guard) = monitor.record_tx.try_lock() {
         if let Some(ref tx) = *guard {
             let mut chunk = Vec::with_capacity(frames * 2);
@@ -765,6 +769,28 @@ fn tap_master_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A buffer whose decks rendered before recording was armed holds audio the session has
+    /// no state for, so the snapshot and the capture would disagree by one buffer.
+    #[test]
+    fn the_tap_skips_buffers_that_start_before_the_armed_frame() {
+        let monitor = MasterMonitor::new();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(8);
+        *monitor.record_tx.lock().unwrap() = Some(tx);
+        monitor.arm_capture(256);
+
+        let block = vec![0.5f32; 128 * 2];
+        tap_master_output(&block, 128, 2, 0, &monitor, 128);
+        assert!(
+            rx.try_recv().is_err(),
+            "captured a buffer before the armed frame"
+        );
+        assert_eq!(monitor.capture_start.load(Ordering::Relaxed), NOT_CAPTURING);
+
+        tap_master_output(&block, 128, 2, 0, &monitor, 256);
+        assert!(rx.try_recv().is_ok(), "dropped the first armed buffer");
+        assert_eq!(monitor.capture_start.load(Ordering::Relaxed), 256);
+    }
 
     #[test]
     fn the_master_clock_is_a_buffer_ahead_of_a_deck_that_has_not_rendered() {

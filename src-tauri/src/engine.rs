@@ -542,7 +542,18 @@ impl Engine {
     /// Cue is headphone routing rather than a mixer move, so it skips `set_deck_param`.
     /// It is still logged, under its own event type.
     fn apply_cue_active(&self, origin: ParamOrigin, deck: &str, active: bool) {
-        self.recorder.log(
+        let frame = self
+            .audio
+            .strip(deck)
+            .map(|strip| {
+                strip
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .next_render_frame
+            })
+            .unwrap_or_else(|| self.master_frame());
+        self.recorder.log_at(
+            frame,
             "set_cue_active",
             serde_json::json!({ "deck": deck, "active": active }),
         );
@@ -633,7 +644,7 @@ impl Engine {
         frame
     }
 
-    fn master_frame(&self) -> u64 {
+    pub(crate) fn master_frame(&self) -> u64 {
         self.for_each_strip(|_| {})
             .unwrap_or_else(|| self.audio.monitor.output_frames())
     }
@@ -679,8 +690,8 @@ mod tests {
         let engine = Engine::for_testing(48_000);
         engine.recorder.start(
             engine.audio.mixer(),
-            engine.audio.monitor.output_frames_handle(),
             engine.audio.monitor.capture_start_handle(),
+            0,
             [],
         );
         // Stands in for the tap: frames are dropped entirely until it says a buffer landed.
@@ -693,7 +704,7 @@ mod tests {
     }
 
     fn logged_events(engine: Engine) -> Vec<serde_json::Value> {
-        engine.recorder.stop();
+        engine.recorder.stop(0);
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         parsed["events"].as_array().cloned().unwrap_or_default()
@@ -1101,8 +1112,8 @@ mod stamping {
         let engine = Engine::for_testing(48_000);
         engine.recorder.start(
             engine.audio.mixer(),
-            engine.audio.monitor.output_frames_handle(),
             engine.audio.monitor.capture_start_handle(),
+            0,
             [],
         );
         engine
@@ -1113,7 +1124,7 @@ mod stamping {
         engine
             .audio
             .monitor
-            .output_frames_handle()
+            .output_frames
             .store(8192, std::sync::atomic::Ordering::Relaxed);
         // Every deck the callback renders, the edit deck included, or the fixture leaves a
         // strip at zero and the assertion depends on unordered iteration.
@@ -1134,7 +1145,7 @@ mod stamping {
     }
 
     fn logged(engine: Engine, event_type: &str) -> serde_json::Value {
-        engine.recorder.stop();
+        engine.recorder.stop(0);
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         parsed["events"]
@@ -1210,7 +1221,7 @@ mod stamping {
             .set_deck_param(ParamOrigin::Ui, "A", "reverb", "mix", 0.5)
             .is_err());
 
-        engine.recorder.stop();
+        engine.recorder.stop(0);
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         let params: Vec<_> = parsed["events"]

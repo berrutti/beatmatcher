@@ -377,6 +377,33 @@ impl Mixer {
         )
     }
 
+    /// Rendering a mid-play start from zeroed delay lines passes every cut in full until
+    /// they fill, which clips the first milliseconds. Playing the lead-in settles them.
+    fn warm_up(&mut self, frames: usize) {
+        let mut resume: Vec<(String, f64, f64)> = Vec::new();
+        for (id, deck) in self.decks.iter_mut() {
+            if !deck.is_playing {
+                continue;
+            }
+            resume.push((id.clone(), deck.main_pos, deck.cue_pos));
+            let lead_in = frames as f64 * deck.playback_rate;
+            deck.main_pos = rewound(deck, lead_in);
+            deck.cue_pos = deck.main_pos;
+        }
+        if resume.is_empty() {
+            return;
+        }
+        for _ in 0..frames {
+            self.tick();
+        }
+        for (id, main_pos, cue_pos) in resume {
+            if let Some(deck) = self.decks.get_mut(&id) {
+                deck.main_pos = main_pos;
+                deck.cue_pos = cue_pos;
+            }
+        }
+    }
+
     fn tick(&mut self) -> (f32, f32) {
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
@@ -394,6 +421,21 @@ impl Mixer {
             mix_l * self.master_gain,
             mix_r * self.master_gain,
         )
+    }
+}
+
+/// A deck inside a loop played the end of that loop before the snapshot, not the audio
+/// before its loop-in.
+fn rewound(deck: &Deck, frames: f64) -> f64 {
+    let length = deck.loop_end - deck.cue_point;
+    if deck.loop_active
+        && length > 0.0
+        && deck.main_pos >= deck.cue_point
+        && deck.main_pos < deck.loop_end
+    {
+        deck.cue_point + (deck.main_pos - deck.cue_point - frames).rem_euclid(length)
+    } else {
+        (deck.main_pos - frames).max(0.0)
     }
 }
 
@@ -436,10 +478,12 @@ fn render_timeline(
     mixer: &mut Mixer,
     timeline: &[(usize, &SessionEvent)],
     total_frames: usize,
+    warmup_frames: usize,
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
     let mut next_event = 0;
     let mut frame = 0usize;
+    let mut warmed = false;
 
     while frame < total_frames {
         while next_event < timeline.len() && timeline[next_event].0 <= frame {
@@ -447,6 +491,10 @@ fn render_timeline(
                 mixer.apply(cmd)?;
             }
             next_event += 1;
+        }
+        if !warmed {
+            mixer.warm_up(warmup_frames);
+            warmed = true;
         }
 
         let chunk_end = timeline
@@ -466,6 +514,17 @@ fn render_timeline(
     Ok(output)
 }
 
+/// The bypass crossfade settles slowest of anything on a strip, at a 50 ms time constant.
+const WARMUP_SEC: f64 = 0.5;
+
+/// Whole refresh intervals only. The live callback advances the filter's coefficient counter
+/// one whole buffer at a time, so a lead-in of any other length renders permanently out of
+/// phase with the recording it is reconstructing.
+fn warmup_frames(sample_rate: u32) -> usize {
+    let interval = crate::audio::FILTER_COEFF_REFRESH_INTERVAL as usize;
+    (WARMUP_SEC * f64::from(sample_rate)).round() as usize / interval * interval
+}
+
 pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<Vec<f32>, String> {
     let mut mixer = Mixer::new(session, &request)?;
     let timeline = build_timeline(session, request.sample_rate);
@@ -476,7 +535,12 @@ pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<V
         .min_frames
         .max(tail_from + request.sample_rate as usize);
 
-    render_timeline(&mut mixer, &timeline, total_frames)
+    render_timeline(
+        &mut mixer,
+        &timeline,
+        total_frames,
+        warmup_frames(request.sample_rate),
+    )
 }
 
 fn resolve_xfader_gains(strips: &mut HashMap<String, ChannelStrip>, position: f32) {
@@ -659,68 +723,68 @@ mod golden {
         [2.630639374e-1, -3.169808686e-1],
         [2.778584361e-1, 2.599554658e-1],
         [1.199561059e-1, 9.051184356e-2],
-        [-3.444464207e-1, -1.943325847e-1],
-        [-1.127295792e-1, -1.503491551e-1],
-        [-4.349530116e-2, 4.088506401e-1],
-        [-4.079786241e-1, 1.038730517e-1],
-        [-3.111358285e-1, 4.160404503e-1],
-        [9.453289211e-2, 3.988100886e-1],
-        [2.468445450e-1, -1.467382014e-1],
-        [-1.264942586e-1, -4.161885753e-2],
-        [8.418789506e-2, -4.560686648e-2],
-        [4.031183720e-1, -1.594635397e-1],
-        [2.621157765e-1, 1.403633058e-1],
-        [-5.198169351e-1, -3.870757520e-1],
-        [1.001394913e-1, 3.066998720e-1],
-        [-3.184729815e-1, -2.930060327e-1],
-        [6.624612808e-1, -2.895197459e-2],
-        [-5.504218936e-1, 3.366385996e-1],
-        [2.436184138e-1, -1.819568127e-1],
-        [-2.726179659e-1, -2.140705436e-1],
-        [-2.478611656e-2, 3.948163241e-2],
-        [2.378091961e-1, 4.168314114e-2],
-        [-3.867634013e-2, -7.499512285e-2],
-        [-5.463073403e-2, 6.265100837e-2],
-        [5.252954364e-2, -1.508403569e-1],
-        [-6.830193847e-2, -3.163772635e-3],
-        [3.210717067e-2, 3.882138804e-2],
-        [8.307749406e-3, 6.439069752e-3],
-        [8.738216013e-3, 4.418523982e-2],
-        [4.962136969e-3, 4.515907913e-2],
-        [1.934604906e-2, -2.869620733e-2],
-        [-2.945188433e-3, 1.262636739e-3],
-        [2.565454878e-2, -3.674425185e-3],
-        [5.347084254e-2, 1.299379207e-2],
-        [7.143662777e-3, -3.237863258e-2],
-        [4.757138714e-2, 2.793385647e-2],
-        [4.073645920e-3, 7.651006430e-2],
-        [3.106982075e-2, 2.180201933e-2],
-        [5.629328080e-3, -9.223603643e-3],
-        [4.470534157e-3, 1.610178128e-2],
-        [-1.911591738e-2, -8.834716864e-3],
-        [2.008238062e-2, 7.113815285e-3],
-        [1.588115096e-2, 2.580707334e-2],
-        [-5.014298484e-3, -3.858003067e-3],
-        [-8.931261301e-2, 1.958982833e-2],
-        [-5.772655457e-2, 3.856523661e-3],
-        [1.212451085e-1, 4.413334653e-2],
-        [-9.258460253e-3, -1.967478730e-2],
-        [1.352286339e-2, 3.621288016e-2],
-        [9.169236757e-3, -2.257556096e-2],
-        [-9.244168177e-3, 5.042254925e-2],
-        [1.374136284e-2, 4.306538031e-3],
-        [1.138945948e-2, 8.774958551e-4],
-        [2.931984700e-2, -1.079679467e-2],
-        [6.405807217e-4, -1.284266822e-2],
-        [2.974864328e-3, 6.598111358e-4],
-        [-1.133076567e-2, -5.409426056e-3],
-        [-2.035282180e-2, -3.287502006e-2],
-        [1.629017293e-2, 2.407459542e-2],
-        [-1.251578145e-2, -2.055709017e-3],
-        [7.496300469e-8, 2.724844528e-8],
-        [1.661357717e-15, 3.605697231e-16],
-        [2.060196555e-23, 1.812058464e-24],
-        [8.342852043e-31, 2.646789687e-35],
+        [-3.443898559e-1, -1.943044811e-1],
+        [-1.127828211e-1, -1.503088772e-1],
+        [-4.344719648e-2, 4.088576138e-1],
+        [-4.079917669e-1, 1.038771123e-1],
+        [-3.111199737e-1, 4.160427749e-1],
+        [9.455651790e-2, 3.987912834e-1],
+        [2.468546331e-1, -1.467878073e-1],
+        [-1.264806837e-1, -4.153069481e-2],
+        [8.416783810e-2, -4.565962031e-2],
+        [4.031267464e-1, -1.595259905e-1],
+        [2.620945275e-1, 1.403777897e-1],
+        [-5.198279619e-1, -3.870671391e-1],
+        [1.001072153e-1, 3.066410124e-1],
+        [-3.183882236e-1, -2.930059731e-1],
+        [6.623975635e-1, -2.894968726e-2],
+        [-5.504029393e-1, 3.365418613e-1],
+        [2.436434329e-1, -1.819985211e-1],
+        [-2.725847960e-1, -2.141169906e-1],
+        [-2.475742623e-2, 3.953187168e-2],
+        [2.377877384e-1, 4.166674614e-2],
+        [-3.863685951e-2, -7.497486472e-2],
+        [-5.463410914e-2, 6.265915930e-2],
+        [5.252553150e-2, -1.508341581e-1],
+        [-6.825274229e-2, -3.163075075e-3],
+        [3.206678480e-2, 3.881632164e-2],
+        [8.297769353e-3, 6.444254890e-3],
+        [8.713616990e-3, 4.418497160e-2],
+        [4.954684991e-3, 4.516352713e-2],
+        [1.934271120e-2, -2.870081365e-2],
+        [-2.942318097e-3, 1.239946461e-3],
+        [2.563439310e-2, -3.654789645e-3],
+        [5.346446857e-2, 1.296267100e-2],
+        [7.123460528e-3, -3.236435726e-2],
+        [4.754809663e-2, 2.793099917e-2],
+        [4.079668317e-3, 7.647895068e-2],
+        [3.110685945e-2, 2.182634734e-2],
+        [5.639165640e-3, -9.200685658e-3],
+        [4.481986165e-3, 1.607966609e-2],
+        [-1.911190338e-2, -8.817257360e-3],
+        [2.006791160e-2, 7.146429736e-3],
+        [1.586014405e-2, 2.582647465e-2],
+        [-5.003605038e-3, -3.877106123e-3],
+        [-8.927010000e-2, 1.957299002e-2],
+        [-5.769169331e-2, 3.834345844e-3],
+        [1.211852729e-1, 4.413909465e-2],
+        [-9.242881089e-3, -1.964548975e-2],
+        [1.353925560e-2, 3.620143980e-2],
+        [9.161094204e-3, -2.258133329e-2],
+        [-9.212646633e-3, 5.041701719e-2],
+        [1.372825168e-2, 4.315219354e-3],
+        [1.138431206e-2, 8.961712592e-4],
+        [2.932137810e-2, -1.080615353e-2],
+        [6.521692849e-4, -1.283295825e-2],
+        [2.981103724e-3, 6.534544518e-4],
+        [-1.133259200e-2, -5.414123647e-3],
+        [-2.035196871e-2, -3.285568953e-2],
+        [1.629276201e-2, 2.407642454e-2],
+        [-1.251673978e-2, -2.065220149e-3],
+        [7.465696683e-8, 2.723108139e-8],
+        [1.661349353e-15, 3.652238515e-16],
+        [2.084038930e-23, 1.968222947e-24],
+        [1.230860793e-30, 1.818664110e-30],
         [0.000000000e0, 0.000000000e0],
         [0.000000000e0, 0.000000000e0],
         [0.000000000e0, 0.000000000e0],
@@ -915,8 +979,8 @@ pub(crate) mod corpus {
     const DIGESTS: &[(&str, Digest)] = &[
         ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
         ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
-        ("mixer", Digest { frames: 154350, peak: 8.729274869e-1, rms: 1.416833550e-1, probes: [2.880797386e-1, -1.891948432e-1, 1.531944331e-2, 5.572944065e-5, -3.012379408e-1, 2.342964523e-2, 0.000000000e0, 0.000000000e0] }),
-        ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.672426015e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+        ("mixer", Digest { frames: 154350, peak: 8.729836345e-1, rms: 1.416842341e-1, probes: [2.880807817e-1, -1.891997159e-1, 1.531948522e-2, 5.462801710e-5, -3.012417257e-1, 2.342958748e-2, 0.000000000e0, 0.000000000e0] }),
+        ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.669194251e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
     #[test]
@@ -1231,6 +1295,60 @@ mod master_limiter {
 // The recorded output-frame count is the buffer the command actually landed in.
 // Inferring it from the timestamp is out by one buffer whenever a boundary falls
 // between the engine being mutated and the event being logged.
+#[cfg(test)]
+mod warm_up {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    const WINDOW: usize = 2048;
+
+    fn rms(frames: &[f32]) -> f32 {
+        let sum: f64 = frames.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+        (sum / frames.len() as f64).sqrt() as f32
+    }
+
+    fn render_snapshot_mid_play() -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":128,"sample_rate":{SAMPLE_RATE}}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"value","value":-0.9}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"active","value":1}},
+{{"elapsed_ms":0,"type":"deck_snapshot","deck":"A","path":"__SOURCE__","position_sec":1.0,"cue_point_sec":0.0,"bpm":120.0,"playback_rate":1.0,"loop_active":false,"loop_end_sec":0.0,"is_playing":true,"gain":1.0}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: SAMPLE_RATE as usize,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn a_lead_in_is_a_whole_number_of_refresh_intervals() {
+        let interval = crate::audio::FILTER_COEFF_REFRESH_INTERVAL as usize;
+        for sample_rate in [44_100, 48_000, 88_200, 96_000, 192_000] {
+            assert_eq!(warmup_frames(sample_rate) % interval, 0, "{sample_rate} Hz");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_that_starts_mid_play_opens_at_its_settled_level() {
+        let rendered = render_snapshot_mid_play();
+        let opening = rms(&rendered[..WINDOW * 2]);
+        let settled = rms(&rendered[WINDOW * 2 * 8..WINDOW * 2 * 9]);
+        assert!(
+            opening < settled * 1.2,
+            "opening {opening} against settled {settled}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod recorded_frame {
     use super::golden::{source_wav_path, SAMPLE_RATE};

@@ -593,7 +593,7 @@ use wire::{Key, Resolution, NOTE_ON};
 
 #[cfg(test)]
 mod tests {
-    use super::decode::{parse_control_change, ControlChange};
+    use super::decode::parse_control_change;
     use super::mapping::{parse_mapping, Action, Binding, MAPPING_FILES};
     use super::wire::{
         unit_interval, Half, Source, CONTROL_CHANGE, FOURTEEN_BIT_MAX, SEVEN_BIT_MAX,

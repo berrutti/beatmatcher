@@ -67,6 +67,8 @@ pub struct DeviceInfo {
 pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
 
 /// Every deck that reaches the live mixer. The edit deck is deliberately absent.
+pub(crate) use dsp::FILTER_COEFF_REFRESH_INTERVAL;
+
 pub(crate) const LIVE_DECK_IDS: [&str; 4] = ["A", "B", "C", "D"];
 
 /// Session view only, so it never reaches the mixer, a recording or a broadcast.
@@ -528,10 +530,22 @@ impl AppAudio {
             .collect()
     }
 
-    /// Returns the output-frame count at which the tap was armed. `output_frames` is
-    /// advanced after each buffer is filled, so that count is the first frame the
-    /// recording captures, and it is the origin every event is timed against.
-    pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<(), String> {
+    /// Both the first frame the recording may contain and the stamp on its start events, so
+    /// the capture and the snapshot describe the same instant.
+    fn capture_anchor(&self) -> u64 {
+        self.strips
+            .values()
+            .map(|strip| {
+                strip
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_render_frame
+            })
+            .max()
+            .unwrap_or_else(|| self.monitor.output_frames())
+    }
+
+    pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<u64, String> {
         let mut recording = self.recording.lock().unwrap_or_else(|e| e.into_inner());
         if recording.is_some() {
             return Err("already recording".to_string());
@@ -547,13 +561,15 @@ impl AppAudio {
             .into_owned();
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
+        let anchor;
         {
             let mut slot = self
                 .monitor
                 .record_tx
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            self.monitor.arm_capture();
+            anchor = self.capture_anchor();
+            self.monitor.arm_capture(anchor);
             *slot = Some(tx);
         }
         let sr = self.device_sample_rate;
@@ -564,7 +580,7 @@ impl AppAudio {
             std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, bit_depth, rx))
         };
         *recording = Some(Recording { thread, temp_path });
-        Ok(())
+        Ok(anchor)
     }
 
     pub fn stop_recording(&self) -> Result<String, String> {

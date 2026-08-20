@@ -617,8 +617,10 @@ pub(crate) async fn load_track(
         deck, analyze, native_sr, device_sample_rate, channels, duration, bpm, silence_end, beat_offset_sec, start_pos
     );
 
+    let loaded_at_frame;
     {
         let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        loaded_at_frame = deck_state.next_render_frame;
         deck_state.samples = Arc::clone(&samples);
         deck_state.channels = channels;
         deck_state.device_sample_rate = device_sample_rate;
@@ -668,7 +670,8 @@ pub(crate) async fn load_track(
         app.emit("bands-ready", deck_id).ok();
     });
 
-    engine.recorder.log(
+    engine.recorder.log_at(
+        loaded_at_frame,
         "load_track",
         serde_json::json!({
             "deck": deck,
@@ -893,13 +896,13 @@ pub(crate) fn start_recording(
 ) -> Result<(), String> {
     // Armed before anything is logged, so every event is timed against the first
     // captured frame rather than against the JSON written on the way there.
-    engine.audio.start_recording(bit_depth, use_flac)?;
+    let anchor = engine.audio.start_recording(bit_depth, use_flac)?;
 
     if record_session {
         engine.recorder.start(
             engine.audio.mixer(),
-            engine.audio.monitor.output_frames_handle(),
             engine.audio.monitor.capture_start_handle(),
+            anchor,
             start_events(&engine.audio),
         );
     }
@@ -910,7 +913,7 @@ pub(crate) fn start_recording(
 pub(crate) async fn stop_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
 ) -> Result<String, String> {
-    engine.recorder.stop();
+    engine.recorder.stop(engine.master_frame());
     let audio = Arc::clone(&engine.audio);
     tokio::task::spawn_blocking(move || audio.stop_recording())
         .await
