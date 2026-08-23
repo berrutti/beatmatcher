@@ -23,8 +23,6 @@ pub(crate) struct OpenedFile {
     content: String,
 }
 
-// Caches track samples, builds scrub snapshots, and stores the session as the
-// in-memory source of truth for playback and offline render under this path.
 async fn index_session(
     sessions: &SessionLibrary,
     engine: &crate::engine::Engine,
@@ -44,7 +42,6 @@ async fn index_session(
         reporter.phase("indexing");
     }
 
-    // Build state snapshots with the now-complete cache.
     let snapshots = {
         let cache = sessions
             .track_cache
@@ -93,8 +90,6 @@ fn session_track_paths(events: &[SessionEvent]) -> Vec<String> {
         .collect()
 }
 
-/// Everything a loaded `.bms` needs to stay loaded: the decoded audio, the scrub
-/// snapshots, the edited events and the task currently playing them.
 pub struct SessionLibrary {
     pub playback_cancel: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
     pub playback_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -154,16 +149,21 @@ pub(crate) async fn load_track(
         return Some(hit);
     }
 
-    let cell = {
+    // Only whoever installed the cell takes it out again. A waiter removing it
+    // would drop a cell another caller had already replaced, letting a third
+    // decode start for the same path.
+    let (cell, owns_cell) = {
         let mut loads = loads.lock().unwrap_or_else(|e| e.into_inner());
-        loads
-            .entry(path.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
-            .clone()
+        match loads.get(path) {
+            Some(existing) => (existing.clone(), false),
+            None => {
+                let fresh = Arc::new(tokio::sync::OnceCell::new());
+                loads.insert(path.to_string(), fresh.clone());
+                (fresh, true)
+            }
+        }
     };
 
-    // Whoever gets here first decodes; everyone else waits on that same decode
-    // rather than starting their own.
     let entry = cell
         .get_or_init(|| async {
             let permit = permits.clone().acquire_owned().await;
@@ -191,7 +191,9 @@ pub(crate) async fn load_track(
             .unwrap_or_else(|e| e.into_inner())
             .insert(path.to_string(), entry.clone());
     }
-    loads.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+    if owns_cell {
+        loads.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+    }
     entry
 }
 
@@ -318,9 +320,9 @@ async fn populate_track_cache(
 
 /// Mixer state a mid-session start rebuilds by replaying the events before it. Transport
 /// is excluded, since deck positions come from the snapshot and `sim_pos`.
-fn reconstructs_mixer_state(ev: &SessionEvent) -> bool {
+fn reconstructs_mixer_state(event: &SessionEvent) -> bool {
     matches!(
-        ev.command(),
+        event.command(),
         Some(SessionCommand::SetParam { .. } | SessionCommand::SetXfaderAssign { .. })
     )
 }
@@ -356,10 +358,6 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     }
 }
 
-// Wait until the master output frame clock reaches `target_frame`, sleeping in
-// short steps sized to the remaining frames. Returns early on cancel, and also
-// if the clock stalls for 500ms (no audio device producing) so playback can
-// never hang waiting on a clock that isn't ticking.
 async fn wait_until_frame(
     monitor: &audio::MasterMonitor,
     target_frame: u64,
@@ -395,7 +393,7 @@ async fn wait_until_frame(
 // An event lands up to one buffer late, so a deck it starts or repositions is advanced by
 // `overshoot_frames * rate` to sit level with decks already playing. Pass 0 to skip that.
 fn apply_event_live(
-    ev: &SessionEvent,
+    event: &SessionEvent,
     audio: &audio::AppAudio,
     sr: u32,
     cache: &SampleCache,
@@ -403,7 +401,7 @@ fn apply_event_live(
 ) {
     let overshoot_f = overshoot_frames as f64;
 
-    let Some(cmd) = ev.command() else { return };
+    let Some(cmd) = event.command() else { return };
 
     let Some(id) = cmd.deck_id() else {
         match cmd {
@@ -558,7 +556,7 @@ pub(crate) fn unload_session(
 }
 
 // Replaces the in-memory event list for a loaded session with edited events
-// from the frontend. The .bms on disk is untouched; the next playback, scrub,
+// from the frontend. The .bms on disk is untouched. The next playback, scrub,
 // or render uses the edited events.
 pub(crate) async fn update_session_events(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -602,7 +600,7 @@ pub(crate) async fn start_session_playback(
     path: String,
     from_ms: f64,
 ) -> Result<(), String> {
-    // Prefer the in-memory session (which may hold unsaved edits); fall back to
+    // Prefer the in-memory session (which may hold unsaved edits). Fall back to
     // the disk file for callers that never preloaded.
     let cached: Option<Arc<crate::offline_render::SessionFile>> = sessions
         .files
@@ -707,14 +705,14 @@ pub(crate) async fn start_session_playback(
         apply_sim_strips_and_master(&sim, &audio);
 
         let mut sim = sim;
-        // deck_snapshot is already folded into the base snapshot; never replay it.
-        for ev in sorted_events.iter().filter(|e| {
+        // deck_snapshot is already folded into the base snapshot. Never replay it.
+        for event in sorted_events.iter().filter(|e| {
             e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
         }) {
-            if reconstructs_mixer_state(ev) {
-                apply_event_live(ev, &audio, sr, &cache, 0);
+            if reconstructs_mixer_state(event) {
+                apply_event_live(event, &audio, sr, &cache, 0);
             }
-            sim_apply_event(ev, &mut sim, &cache, sr);
+            sim_apply_event(event, &mut sim, &cache, sr);
         }
 
         let sr_f = sr.max(1) as f64;
@@ -921,8 +919,8 @@ mod tests {
         let mut sorted: Vec<&SessionEvent> = events.iter().collect();
         sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
         let mut state = SimState::new();
-        for ev in sorted.iter().filter(|e| e.elapsed_ms <= from_ms) {
-            sim_apply_event(ev, &mut state, cache, SR);
+        for event in sorted.iter().filter(|e| e.elapsed_ms <= from_ms) {
+            sim_apply_event(event, &mut state, cache, SR);
         }
         state.decks.get(deck).map(|d| sim_pos(d, from_ms, SR_F))
     }
@@ -932,10 +930,10 @@ mod tests {
     fn apply_deck_event(
         d: &mut Deck,
         s: &mut ChannelStrip,
-        ev: &SessionEvent,
+        event: &SessionEvent,
         cache: &SampleCache,
     ) {
-        let Some(cmd) = ev.command() else { return };
+        let Some(cmd) = event.command() else { return };
         if cmd.deck_id().is_none() {
             return;
         }
@@ -1170,7 +1168,7 @@ mod tests {
     }
 
     // Compile-time guard: a new SessionCommand variant fails here until it is
-    // classified; playhead movers must then appear in full_coverage_events.
+    // classified. Playhead movers must then appear in full_coverage_events.
     fn variant_catalog(cmd: &SessionCommand) -> (&'static str, bool) {
         match cmd {
             SessionCommand::DeckSnapshot { .. } => ("deck_snapshot", true),
@@ -1198,7 +1196,7 @@ mod tests {
         }
     }
 
-    // The `true` arms of variant_catalog; coverage_list_matches_catalog binds them.
+    // The `true` arms of variant_catalog. Coverage_list_matches_catalog binds them.
     const POSITION_AFFECTING_TAGS: [&str; 16] = [
         "jog",
         "deck_snapshot",
@@ -1318,12 +1316,12 @@ mod tests {
     fn full_coverage_events_exercise_every_position_variant() {
         let events = full_coverage_events("/fake/a.wav");
         let mut seen: HashSet<&str> = HashSet::new();
-        for ev in &events {
-            let cmd = ev
-                .command()
-                .unwrap_or_else(|| panic!("event {} did not convert to a command", ev.event_type));
+        for event in &events {
+            let cmd = event.command().unwrap_or_else(|| {
+                panic!("event {} did not convert to a command", event.event_type)
+            });
             let (tag, position_affecting) = variant_catalog(&cmd);
-            assert_eq!(tag, ev.event_type, "catalog tag mismatch for {tag}");
+            assert_eq!(tag, event.event_type, "catalog tag mismatch for {tag}");
             if position_affecting {
                 seen.insert(tag);
             }

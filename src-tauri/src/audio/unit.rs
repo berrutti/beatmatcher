@@ -5,7 +5,6 @@ const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
 pub trait AudioUnit: Send {
     fn set_param(&mut self, param: &str, value: f32);
 
-    /// The value last set, not the smoothed value the DSP is currently at.
     fn param(&self, param: &str) -> Option<f32>;
 
     fn process(&mut self, l: f32, r: f32) -> (f32, f32);

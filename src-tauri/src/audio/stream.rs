@@ -4,18 +4,15 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 
-// SAFETY: cpal::Stream is !Send (it must drop on its creating thread); sound only
+// SAFETY: cpal::Stream is !Send (it must drop on its creating thread). Sound only
 // while all stream mutation stays on the main thread via synchronous Tauri
 // commands, enforced by stream_commands_must_stay_synchronous in commands.rs.
 pub(crate) struct SendStream(pub(crate) cpal::Stream);
 unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
 
-type SharedDeck = Arc<Mutex<Deck>>;
-type SharedStrip = Arc<Mutex<ChannelStrip>>;
-
-type ChannelPair = (SharedDeck, SharedStrip);
-type ChannelPairs = Vec<ChannelPair>;
+pub(crate) type ChannelPair = (Arc<Mutex<Deck>>, Arc<Mutex<ChannelStrip>>);
+pub(crate) type ChannelPairs = Vec<ChannelPair>;
 
 pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
@@ -144,10 +141,34 @@ impl MasterMonitor {
     }
 }
 
-// Build a paired list of (deck, strip) in a consistent order for use in stream callbacks.
+/// The offline render calls this too, so there is one mixing loop, not one per path.
+pub(crate) fn mix_channels(
+    channels: &[ChannelPair],
+    frames: usize,
+    buffer_start: u64,
+    main: &mut [f32],
+    mut cue: Option<&mut [f32]>,
+) {
+    for (deck_arc, strip_arc) in channels {
+        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+        deck.set_next_render_frame(buffer_start + frames as u64);
+        strip.set_next_render_frame(buffer_start + frames as u64);
+        let (sum_l, sum_r) = deck.render_block(
+            &mut strip,
+            frames,
+            RenderTargets {
+                main: Some(main),
+                cue: cue.as_deref_mut(),
+            },
+        );
+        strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
+    }
+}
+
 pub(crate) fn channel_pairs(
-    decks: &HashMap<String, SharedDeck>,
-    strips: &HashMap<String, SharedStrip>,
+    decks: &HashMap<String, Arc<Mutex<Deck>>>,
+    strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>,
 ) -> ChannelPairs {
     let mut ids: Vec<&String> = decks.keys().collect();
     ids.sort();
@@ -173,8 +194,6 @@ pub(crate) fn find_output_device(device_id: &str) -> Result<cpal::Device, String
         .ok_or_else(|| format!("device not found: {}", device_id))
 }
 
-// Find the supported output config with the fewest channels that still satisfies
-// min_channels, preferring configs whose sample-rate range includes preferred_sr.
 pub(crate) fn best_output_config(
     device: &cpal::Device,
     min_channels: usize,
@@ -255,7 +274,7 @@ fn f32_to_i16_sample(s: f32) -> i16 {
 }
 
 // Dispatch over sample format once. The caller provides a closure that fills a
-// float buffer; the I16 branch transparently routes through an intermediate buffer.
+// float buffer. The I16 branch transparently routes through an intermediate buffer.
 fn build_float_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
@@ -552,33 +571,11 @@ fn fill_cue_with_master_tap(
     cue_buf.resize(frames * 2, 0.0);
     cue_buf.fill(0.0);
 
-    for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
-        deck.set_next_render_frame(buffer_start + frames as u64);
-        strip.set_next_render_frame(buffer_start + frames as u64);
-        let (sum_l, sum_r) = deck.render_block(
-            &mut strip,
-            frames,
-            RenderTargets {
-                main: Some(master_mix),
-                cue: Some(cue_buf),
-            },
-        );
-        strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
-    }
+    mix_channels(channels, frames, buffer_start, master_mix, Some(cue_buf));
 
     let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
     let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
-    for i in 0..frames {
-        let (l, r) = super::master_output(
-            use_limiter.then_some(&mut *limiter),
-            master_mix[i * 2] * gain,
-            master_mix[i * 2 + 1] * gain,
-        );
-        master_mix[i * 2] = l;
-        master_mix[i * 2 + 1] = r;
-    }
+    super::master_block(use_limiter.then_some(&mut *limiter), gain, master_mix);
     let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
     for i in 0..frames {
         let cl = cue_buf[i * 2].clamp(-1.0, 1.0);
@@ -770,8 +767,6 @@ fn tap_master_output(
 mod tests {
     use super::*;
 
-    /// A buffer whose decks rendered before recording was armed holds audio the session has
-    /// no state for, so the snapshot and the capture would disagree by one buffer.
     #[test]
     fn the_tap_skips_buffers_that_start_before_the_armed_frame() {
         let monitor = MasterMonitor::new();
@@ -822,7 +817,6 @@ mod tests {
         assert!(!monitor.set_xfader_position(0.5));
         assert!(monitor.set_xfader_position(-0.5));
 
-        // Both saturate to the same end, so the second one is not a move either.
         assert!(monitor.set_xfader_position(4.0));
         assert!(!monitor.set_xfader_position(2.0));
         assert_eq!(monitor.xfader_position(), 1.0);
@@ -831,7 +825,6 @@ mod tests {
     #[test]
     fn f32_to_i16_sample_full_scale() {
         assert_eq!(f32_to_i16_sample(1.0), i16::MAX);
-        // -1.0 × 32767 = -32767, which fits in i16
         assert_eq!(f32_to_i16_sample(-1.0), -i16::MAX);
     }
 

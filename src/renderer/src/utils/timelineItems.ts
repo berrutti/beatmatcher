@@ -1,9 +1,3 @@
-// SceneItem factories: the reusable "components" the timeline composes. Each
-// wraps an existing draw primitive (timelineDraw.ts) and adds a hitTest that
-// reports a semantic Hit (target + part). Drawing is bounded to the item's rect
-// by the engine, so nothing here guards its own edges. Items hold no gesture
-// state; what to do with a hit is the gesture/controller layer's job.
-
 import type { SceneItem, Rect, ViewContext, Hit } from '@renderer/utils/timelineEngine';
 import type { RowLayout, SublaneLayout } from '@renderer/utils/timelineDraw';
 import {
@@ -55,7 +49,7 @@ import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 const EDGE_GRAB_PX = 6;
 const SEPARATOR_GRAB_PX = 3;
 
-// The playhead's drawn line is 1px; its bounds are widened so the clip rect
+// The playhead's drawn line is 1px. Its bounds are widened so the clip rect
 // the engine sets never clips the line at the view edges.
 const PLAYHEAD_HIT_W = 3;
 const PLAYHEAD_HALF_W = 1;
@@ -187,12 +181,8 @@ export function clipBandItem(
   };
 }
 
-// The transport block under x, plus a trim edge when near a boundary (loop
-// blocks expose no edges, they move whole). Body hits are resolved first and
-// the edge zone shrinks with the block, so a narrow block stays selectable
-// instead of every pixel landing in an edge zone (possibly a NEIGHBOUR's,
-// which turned attempted selections of tiny regions into trims of the block
-// next door).
+// The edge zone shrinks with the block. At a fixed width every pixel of a narrow
+// block lands in an edge zone, often the neighbour's, trimming it instead.
 export function blockAtPoint(
   clips: Clip[],
   deck: string,
@@ -250,7 +240,6 @@ export function laneSurfaceItem(
   return {
     bounds: (viewContext) => trackRect(viewContext, lane.top, lane.height),
     draw: (ctx, viewContext) => {
-      // Reuse the per-lane drawers via drawDeckLanes with a single sublane.
       drawDeckLanes(
         ctx,
         viewContext.canvasW,
@@ -386,7 +375,6 @@ export function masterItem(
     },
     hitTest: (point, viewContext) => {
       if (point.y < top + 2 || point.y > top + height - 2) return null;
-      // Label column opens the dropdown, track area is the lane, as on a deck row.
       if (point.x < LABEL_W) return { target: 'laneDropdown', deck: MASTER_ROW_ID };
       if (point.x > LABEL_W + viewContext.trackW) return null;
       return {
@@ -442,7 +430,7 @@ export function frameGuttersItem(): SceneItem {
   };
 }
 
-// The engine's `Hit.data` is `unknown` so the engine stays domain-free; this is
+// The engine's `Hit.data` is `unknown` so the engine stays domain-free. This is
 // where the overview's payload regains its type, beside the item that writes it.
 export function readOverviewHit(hit: Hit): { part: OverviewHit; frac: number } | null {
   if (hit.target !== 'overview') return null;

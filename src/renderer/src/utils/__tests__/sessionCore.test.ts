@@ -1,4 +1,4 @@
-// Marshalling-layer tests for the sessionCore WASM wrappers; edit-op semantics
+// Marshalling-layer tests for the sessionCore WASM wrappers. Edit-op semantics
 // are covered by the Rust suite in session-core.
 
 import { describe, it, expect } from 'vitest';
@@ -300,8 +300,6 @@ describe('shared constants', () => {
     }
   });
 
-  // The timeline draws and clamps against these, so a session recorded on the
-  // isolator must not be drawn with the classic mixer's dB range.
   it('lane specs follow the mixer they are asked for', () => {
     for (const key of ['eqLow', 'eqMid', 'eqHigh'] as const) {
       const isolator = laneSpecFor(key, ISOLATOR);
@@ -341,8 +339,6 @@ describe('shared constants', () => {
     }
   });
 
-  // Falling back keeps a build that dropped a mixer usable, and matches what
-  // the engine loads for the same unknown id.
   it('falls back to the classic mixer for an unknown id', () => {
     expect(mixerParams('no-such-mixer')).toEqual(mixerParams('classic-3band'));
   });

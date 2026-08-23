@@ -12,17 +12,20 @@ pub use analysis::{
     detect_silence_end,
 };
 #[cfg(test)]
-pub use deck::RenderTargets;
-pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, SpectralBands};
-pub(crate) use dsp::master_output;
+pub(crate) use deck::RenderTargets;
+pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, RenderFrame, SpectralBands};
 pub(crate) use dsp::Limiter;
+pub(crate) use dsp::{master_block, master_output, FILTER_CROSSFADE_TAU_SEC};
 pub use io::TrackTags;
 pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
-pub(crate) use session_apply::apply_deck_command;
+pub(crate) use session_apply::{apply_deck_command, LoadedSamples};
 pub use stream::MasterMonitor;
 pub(crate) use stream::DEFAULT_BUFFER_FRAMES;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;
 pub(crate) use stream::NOT_CAPTURING;
+pub(crate) use stream::{channel_pairs, mix_channels, ChannelPairs};
+#[cfg(test)]
+pub(crate) use unit::approach;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
@@ -35,8 +38,8 @@ use std::sync::{
 use analysis::{BPM_MAX, BPM_MIN};
 use recording::{flac_writer_thread, wav_writer_thread, Recording};
 use stream::{
-    best_output_config, build_combined_stream, build_cue_stream, build_stream, channel_pairs,
-    find_output_device, MasterMonitor as Monitor, SendStream,
+    best_output_config, build_combined_stream, build_cue_stream, build_stream, find_output_device,
+    MasterMonitor as Monitor, SendStream,
 };
 
 /// Stands in only until the frontend mirrors its own setting down, which it does
@@ -371,7 +374,6 @@ impl AppAudio {
             )
             .map_err(|e| e.to_string())?;
 
-            // Pause all old streams, sync positions, then start the new combined stream.
             if let Some(s) = self
                 .main_stream
                 .lock()
@@ -402,7 +404,7 @@ impl AppAudio {
         } else {
             // Different devices, or main is unset, or no cue configured.
             // Build all new streams before pausing anything so the gap is minimal.
-            let newmain_stream = if !main_id.is_empty() {
+            let new_main_stream = if !main_id.is_empty() {
                 let main_device = find_output_device(&main_id)?;
                 let main_cfg =
                     best_output_config(&main_device, main_off + 2, self.device_sample_rate)?;
@@ -429,7 +431,7 @@ impl AppAudio {
                 None
             };
 
-            let newcue_stream = if !cue_id.is_empty() {
+            let new_cue_stream = if !cue_id.is_empty() {
                 let cue_device = find_output_device(&cue_id)?;
                 let cue_cfg =
                     best_output_config(&cue_device, cue_off + 2, self.device_sample_rate)?;
@@ -473,7 +475,7 @@ impl AppAudio {
 
             {
                 let mut guard = self.main_stream.lock().unwrap_or_else(|e| e.into_inner());
-                match newmain_stream {
+                match new_main_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
                         guard
@@ -488,7 +490,7 @@ impl AppAudio {
             }
             {
                 let mut guard = self.cue_stream.lock().unwrap_or_else(|e| e.into_inner());
-                match newcue_stream {
+                match new_cue_stream {
                     Some(s) => {
                         *guard = Some(SendStream(s));
                         guard

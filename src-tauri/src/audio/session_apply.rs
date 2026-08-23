@@ -3,7 +3,7 @@ use session_core::event::SessionCommand;
 use std::sync::Arc;
 
 // (samples, channels) for a decoded track, returned by the caller-provided loader.
-type LoadedSamples = (Arc<Vec<f32>>, usize);
+pub(crate) type LoadedSamples = (Arc<Vec<f32>>, usize);
 type LoadSamples<'a> = dyn FnMut(&str) -> Result<LoadedSamples, String> + 'a;
 
 pub(crate) fn apply_deck_command(
@@ -89,6 +89,9 @@ pub(crate) fn apply_deck_command(
                 deck.cue_pos = deck.main_pos;
             }
             deck.is_playing = true;
+            // Pressing play during a cue preview latches: the preview ends and the deck keeps
+            // playing from where it reached, rather than snapping back on the next release.
+            deck.is_cueing = false;
             // A bare `play` latch on an already-playing deck must not be compensated:
             // skipping a buffer mid-playback is heard as a single click.
             if sec.is_some() || !was_playing {
@@ -176,6 +179,10 @@ pub(crate) fn apply_deck_command(
                 deck.loop_end = to_frames!(end_sec);
             }
             deck.loop_active = true;
+            let length = deck.loop_end - deck.cue_point;
+            if length > 0.0 && deck.main_pos > deck.loop_end {
+                deck.main_pos = deck.cue_point + (deck.main_pos - deck.loop_end) % length;
+            }
         }
 
         SessionCommand::ExitLoop { .. } => {
@@ -237,4 +244,39 @@ fn load_into(
     deck.duration = total_frames as f64 / sample_rate as f64;
     deck.loaded_path = Some(path.to_string());
     Ok(())
+}
+
+#[cfg(test)]
+mod seconds_to_frames {
+    use super::*;
+
+    const SR: u32 = 44_100;
+    const TOTAL: usize = 100_000;
+
+    fn seeked_to(sec: f64, total_frames: usize) -> f64 {
+        let mut deck = Deck::empty(SR);
+        deck.total_frames = total_frames;
+        apply_deck_command(
+            &SessionCommand::Seek { deck: "A", sec },
+            &mut deck,
+            &mut ChannelStrip::new(SR as f32),
+            SR,
+            0.0,
+            &mut |path: &str| Err(format!("no load: {path}")),
+        )
+        .expect("seek applies");
+        deck.main_pos
+    }
+
+    #[test]
+    fn a_second_is_the_sample_rate_in_frames() {
+        assert!((seeked_to(1.0, TOTAL) - 44_100.0).abs() < 1e-9);
+        assert!((seeked_to(0.5, TOTAL) - 22_050.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_position_outside_the_track_lands_on_its_edge() {
+        assert_eq!(seeked_to(-5.0, TOTAL), 0.0);
+        assert_eq!(seeked_to(100.0, 44_100), 44_100.0);
+    }
 }

@@ -64,9 +64,12 @@
           :class="columnCellClass(field)"
         >
           <template v-if="isMetadataField(field)">
-            <span class="collection__meta-value" v-tooltip="metaCellValue(track, field)">{{
-              metaCellValue(track, field)
-            }}</span>
+            <span
+              class="collection__meta-value"
+              :class="{ 'collection__meta-value--title': field === 'title' }"
+              v-tooltip="metaCellValue(track, field)"
+              >{{ metaCellValue(track, field) }}</span
+            >
           </template>
           <template v-else-if="field === 'bpm'">
             <TrackBpmCell
@@ -159,6 +162,7 @@ import {
   columnCellClass,
   TABLE_CHROME_WIDTH
 } from '@renderer/composables/useColumnResize';
+import { startTrackDrag } from '@renderer/composables/useTrackDrag';
 import { useBpmModal } from '@renderer/composables/useBpmModal';
 import { useRowCursor } from '@renderer/composables/useRowCursor';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
@@ -262,11 +266,6 @@ const sortedTracks = computed(() => {
   });
 });
 
-// Large collections (hundreds of tracks) made every row a permanent DOM node,
-// so resizing the window forced a full flex/text-ellipsis layout pass over
-// all of them every frame, even the ones scrolled out of view. Only rows
-// within (or near) the visible scroll area are mounted; the rest are
-// represented by two spacer rows sized to the height they'd otherwise take up.
 const TRACK_ROW_HEIGHT = 32; // must match .collection__row height in <style>
 const TRACK_ROW_BUFFER = 6;
 
@@ -286,7 +285,7 @@ function onAllTracksScroll() {
 // Dragging a track over the list must not scroll it - that would move the
 // list out from under the cursor mid-drag. overflow-y stays permanently
 // 'auto' (never toggled) so the scrollbar never appears/disappears and the
-// table width never shifts; the scroll action itself is what gets blocked.
+// table width never shifts. The scroll action itself is what gets blocked.
 function onAllTracksWheel(e: WheelEvent) {
   if (store.draggingPath) e.preventDefault();
 }
@@ -350,157 +349,8 @@ function onTrackDblClick(track: CollectionEntry) {
 }
 
 // Movement below this threshold is treated as a click, not a drag start.
-const DRAG_THRESHOLD = 5;
-
-const DRAG_GHOST_SCALE = 0.6;
-
-type DragGhost = { element: HTMLElement; halfWidth: number; halfHeight: number };
-
-// Tracked at module level so a ghost orphaned by an earlier drag (e.g. the
-// pointerup was lost because the window lost focus) can never pile up: each
-// new drag removes any leftover ghost before creating its own.
-let currentDragGhost: DragGhost | null = null;
-
-function clearDragGhost() {
-  currentDragGhost?.element.remove();
-  currentDragGhost = null;
-}
-
-// A <tr> cloned on its own and appended to <body> loses the table's column
-// model (no <colgroup>/<table> ancestor), so its cells would render squished
-// instead of matching the real row. Wrapping the clone in a table that
-// carries the same <colgroup> keeps the ghost's column widths identical.
-// The colgroup must come from the still-attached original row: the clone is
-// detached, so `closest` on it can never find an ancestor table.
-function wrapRowClone(
-  row: HTMLTableRowElement,
-  originalRow: HTMLTableRowElement
-): HTMLTableElement {
-  const table = document.createElement('table');
-  table.style.borderCollapse = 'collapse';
-  table.style.tableLayout = 'fixed';
-  const colgroup = originalRow.closest('table')?.querySelector('colgroup');
-  if (colgroup) table.appendChild(colgroup.cloneNode(true));
-  const tbody = document.createElement('tbody');
-  tbody.appendChild(row);
-  table.appendChild(tbody);
-  return table;
-}
-
-// transform-origin defaults to the element's own center, so scaling never
-// shifts that center: left/top only need the unscaled half-size offset, and
-// that offset never changes again for the rest of the drag.
-function createDragGhost(source: HTMLElement, clientX: number, clientY: number): DragGhost {
-  clearDragGhost();
-  const rect = source.getBoundingClientRect();
-  const clone = source.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('button').forEach((button) => button.remove());
-  const element =
-    clone instanceof HTMLTableRowElement && source instanceof HTMLTableRowElement
-      ? wrapRowClone(clone, source)
-      : clone;
-  element.classList.add('collection__drag-ghost');
-  element.style.width = `${rect.width}px`;
-  element.style.height = `${rect.height}px`;
-  const halfWidth = rect.width / 2;
-  const halfHeight = rect.height / 2;
-  element.style.left = `${clientX - halfWidth}px`;
-  element.style.top = `${clientY - halfHeight}px`;
-  document.body.appendChild(element);
-  // Only `transform` animates here, never left/top, so the brief shrink-in
-  // never delays cursor tracking.
-  requestAnimationFrame(() => {
-    element.style.transition = 'transform 100ms ease';
-    element.style.transform = `scale(${DRAG_GHOST_SCALE})`;
-  });
-  const ghost: DragGhost = { element, halfWidth, halfHeight };
-  currentDragGhost = ghost;
-  return ghost;
-}
-
-function moveDragGhost(ghost: DragGhost, clientX: number, clientY: number) {
-  ghost.element.style.left = `${clientX - ghost.halfWidth}px`;
-  ghost.element.style.top = `${clientY - ghost.halfHeight}px`;
-}
-
-function resolveDeckIdAtPoint(clientX: number, clientY: number): string | undefined {
-  const el = document.elementFromPoint(clientX, clientY);
-  const deckEl = el?.closest('[data-deck-id]') as HTMLElement | null;
-  return deckEl?.dataset.deckId;
-}
-
 function onItemPointerDown(event: PointerEvent, track: CollectionEntry) {
-  if (event.button !== 0 || track.status !== 'ready' || !track.path) return;
-  if ((event.target as HTMLElement).closest('button')) return;
-  // Without this, a sustained mousedown-and-move is the browser's own
-  // built-in gesture for extending a text selection, and WebKit auto-scrolls
-  // whatever scroll container is under the pointer the instant it nears that
-  // container's edge - independent of any of this file's own drag logic, and
-  // not stoppable by handling wheel/scroll events since no such event is
-  // ever fired for it. Suppressing the default action on pointerdown itself
-  // (before a selection can start) is what actually stops it.
-  event.preventDefault();
-
-  const startX = event.clientX;
-  const startY = event.clientY;
-  const path = track.path;
-  const itemEl = event.currentTarget as HTMLElement;
-  let active = false;
-  let dragGhost: DragGhost | null = null;
-
-  function onMove(ev: PointerEvent) {
-    if (!active) {
-      if (
-        Math.abs(ev.clientX - startX) < DRAG_THRESHOLD &&
-        Math.abs(ev.clientY - startY) < DRAG_THRESHOLD
-      )
-        return;
-      active = true;
-      store.startDrag(path);
-      document.body.style.cursor = 'grabbing';
-      // The search input can be left focused from an earlier click; without
-      // blurring it here, keyboard shortcuts typed during/after the drag go
-      // into the search box instead of controlling decks.
-      const focused = document.activeElement;
-      if (focused instanceof HTMLInputElement) focused.blur();
-      dragGhost = createDragGhost(itemEl, ev.clientX, ev.clientY);
-      return;
-    }
-    if (dragGhost) moveDragGhost(dragGhost, ev.clientX, ev.clientY);
-  }
-
-  function finishDrag(): boolean {
-    const wasActive = active;
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onCancel);
-    window.removeEventListener('blur', onCancel);
-    clearDragGhost();
-    dragGhost = null;
-    if (wasActive) {
-      document.body.style.cursor = '';
-      store.endDrag();
-    }
-    return wasActive;
-  }
-
-  function onUp(ev: PointerEvent) {
-    if (!finishDrag()) return;
-    const deckId = resolveDeckIdAtPoint(ev.clientX, ev.clientY);
-    if (deckId) {
-      window.dispatchEvent(new CustomEvent('bm:collection-drop', { detail: { deckId, path } }));
-    }
-  }
-
-  function onCancel() {
-    finishDrag();
-  }
-
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onCancel);
-  // If the window loses focus mid-drag (alt-tab, native dialog), no further
-  // pointer events arrive at all, so this is the only way to clean up.
-  window.addEventListener('blur', onCancel);
+  if (track.status !== 'ready' || !track.path) return;
+  startTrackDrag(store, event, track.path);
 }
 </script>

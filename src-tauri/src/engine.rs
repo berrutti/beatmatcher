@@ -23,17 +23,13 @@ pub(crate) struct NudgeResult {
     pub(crate) effective_rate: f64,
 }
 
-pub(crate) fn sec_to_frame(sec: f64, sample_rate: u32, total_frames: usize) -> f64 {
-    (sec * sample_rate as f64).clamp(0.0, total_frames as f64)
-}
-
 pub(crate) fn quantize_to_beat(pos_frames: f64, bpm: f64, beat_offset_frames: f64, sr: f64) -> f64 {
     let beat_dur = (60.0 / bpm) * sr;
     let index = ((pos_frames - beat_offset_frames) / beat_dur).round();
     (beat_offset_frames + index * beat_dur).max(0.0)
 }
 
-pub(crate) fn loop_in_core(deck_state: &mut Deck) -> Result<f64, String> {
+pub(crate) fn loop_in_core(deck_state: &mut Deck, strip: &mut ChannelStrip) -> Result<f64, String> {
     let sr = deck_state.device_sample_rate as f64;
     let bpm = deck_state.bpm.ok_or("no beat grid set")?;
     let in_frames = if deck_state.quantize {
@@ -41,14 +37,28 @@ pub(crate) fn loop_in_core(deck_state: &mut Deck) -> Result<f64, String> {
     } else {
         deck_state.main_pos
     };
-    deck_state.cue_point = in_frames;
-    deck_state.loop_active = false;
-    deck_state.loop_end = 0.0;
-    Ok(in_frames / sr)
+    let cue_sec = in_frames / sr;
+    let sample_rate = deck_state.device_sample_rate;
+    audio::apply_deck_command(
+        &session_core::SessionCommand::LoopIn {
+            deck: "",
+            cue_sec: Some(cue_sec),
+        },
+        deck_state,
+        strip,
+        sample_rate,
+        0.0,
+        &mut |path: &str| Err(format!("a live command cannot load {path}")),
+    )?;
+    Ok(cue_sec)
 }
 
-pub(crate) fn loop_out_core(deck_state: &mut Deck) -> Result<Option<LoopOutResult>, String> {
+pub(crate) fn loop_out_core(
+    deck_state: &mut Deck,
+    strip: &mut ChannelStrip,
+) -> Result<Option<LoopOutResult>, String> {
     let sr = deck_state.device_sample_rate as f64;
+    let deck_state_sample_rate = deck_state.device_sample_rate;
     let bpm = deck_state.bpm.ok_or("no beat grid set")?;
     let out_frames = if deck_state.quantize {
         quantize_to_beat(deck_state.main_pos, bpm, deck_state.beat_offset_frames, sr)
@@ -59,22 +69,22 @@ pub(crate) fn loop_out_core(deck_state: &mut Deck) -> Result<Option<LoopOutResul
     if out_frames <= in_frames {
         return Ok(None);
     }
-    deck_state.loop_end = out_frames;
-    deck_state.loop_active = true;
-    // When quantized and pressed late, main_pos has already passed loop_end.
-    // Immediately seek to cue_point + overshoot so the next audio callback
-    // reads from the compensated position rather than the overshoot.
-    let seek_to_sec = if deck_state.quantize && deck_state.main_pos > out_frames {
-        let dur = out_frames - in_frames;
-        let overshoot = deck_state.main_pos - out_frames;
-        let new_pos = in_frames + overshoot % dur;
-        deck_state.main_pos = new_pos;
-        Some(new_pos / sr)
-    } else {
-        None
-    };
     let start_sec = in_frames / sr;
     let end_sec = out_frames / sr;
+    let was_past_end = deck_state.quantize && deck_state.main_pos > out_frames;
+    audio::apply_deck_command(
+        &session_core::SessionCommand::LoopOut {
+            deck: "",
+            start_sec: Some(start_sec),
+            end_sec: Some(end_sec),
+        },
+        deck_state,
+        strip,
+        deck_state_sample_rate,
+        0.0,
+        &mut |path: &str| Err(format!("a live command cannot load {path}")),
+    )?;
+    let seek_to_sec = was_past_end.then(|| deck_state.main_pos / sr);
     let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
     Ok(Some(LoopOutResult {
         start_sec,
@@ -136,7 +146,7 @@ impl Engine {
             if !strip.set_param(slot, param, value) {
                 return Err(format!("unknown param: {slot}/{param}"));
             }
-            strip.next_render_frame
+            strip.render_frame()
         };
         self.recorder
             .log_param_at(frame, Some(deck), slot, param, value);
@@ -144,57 +154,65 @@ impl Engine {
         Ok(())
     }
 
-    /// Returning the frame beside the value is what stops a caller reaching for the master
-    /// clock, which names the next buffer while this deck still renders into the current one.
-    fn with_deck<T>(
+    /// Runs a command through `apply_deck_command`, the one implementation every interpreter
+    /// uses, and logs the same command. A live gesture and its recording cannot describe
+    /// different mutations because only one of them exists.
+    fn apply_and_log(
         &self,
         deck: &str,
-        mutate: impl FnOnce(&mut Deck) -> T,
-    ) -> Result<(T, u64), String> {
+        cmd: &session_core::SessionCommand<'_>,
+    ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let value = mutate(&mut deck_state);
-        Ok((value, deck_state.next_render_frame))
+        let strip_arc = self
+            .audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {deck}"))?;
+        let (sync, frame) = {
+            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let sample_rate = deck_state.device_sample_rate;
+            // A live gesture is applied to the deck the caller is looking at, so there is
+            // nothing to catch up with and no track to load.
+            let mut refuse_load = |path: &str| -> Result<crate::audio::LoadedSamples, String> {
+                Err(format!("a live command cannot load {path}"))
+            };
+            audio::apply_deck_command(
+                cmd,
+                &mut deck_state,
+                &mut strip,
+                sample_rate,
+                0.0,
+                &mut refuse_load,
+            )?;
+            (
+                DeckSyncPayload::from_deck(&deck_state, false),
+                deck_state.render_frame(),
+            )
+        };
+        let (event_type, payload) = cmd.to_event();
+        self.recorder.log_at(frame, event_type, payload);
+        Ok(sync)
     }
 
     pub(crate) fn seek(&self, deck: &str, sec: f64) -> Result<DeckSyncPayload, String> {
-        let (payload, frame) = self.with_deck(deck, |deck_state| {
-            let pos = sec_to_frame(sec, deck_state.device_sample_rate, deck_state.total_frames);
-            deck_state.main_pos = pos;
-            deck_state.cue_pos = pos;
-            if deck_state.outside_loop(pos) {
-                deck_state.loop_active = false;
-            }
-            DeckSyncPayload::from_deck(deck_state, false)
-        })?;
-        self.recorder.log_at(
-            frame,
-            "seek",
-            serde_json::json!({ "deck": deck, "sec": sec }),
-        );
-        Ok(payload)
+        self.apply_and_log(deck, &session_core::SessionCommand::Seek { deck, sec })
     }
 
     pub(crate) fn set_nudge(&self, deck: &str, percent: f64) -> Result<NudgeResult, String> {
-        let (result, frame) = self.with_deck(deck, |deck_state| {
-            deck_state.set_nudge_percent(percent);
-            NudgeResult {
-                position_sec: deck_state.position_sec(),
-                effective_rate: deck_state.playback_rate * deck_state.jog_hold_factor,
-            }
-        })?;
-        self.recorder.log_at(
-            frame,
-            "set_nudge",
-            serde_json::json!({ "deck": deck, "percent": percent }),
-        );
-        Ok(result)
+        self.apply_and_log(
+            deck,
+            &session_core::SessionCommand::SetNudge { deck, percent },
+        )?;
+        let deck_arc = self.deck(deck)?;
+        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(NudgeResult {
+            position_sec: deck_state.position_sec(),
+            effective_rate: deck_state.playback_rate * deck_state.jog_hold_factor,
+        })
     }
 
     pub(crate) fn eject_track(&self, deck: &str) -> Result<(), String> {
-        let (_, frame) = self.with_deck(deck, Deck::eject)?;
-        self.recorder
-            .log_at(frame, "eject_track", serde_json::json!({ "deck": deck }));
+        self.apply_and_log(deck, &session_core::SessionCommand::EjectTrack { deck })?;
         Ok(())
     }
 
@@ -204,15 +222,14 @@ impl Engine {
         bpm: f64,
         beat_offset_sec: f64,
     ) -> Result<(), String> {
-        let (_, frame) = self.with_deck(deck, |deck_state| {
-            deck_state.bpm = Some(bpm);
-            deck_state.beat_offset_frames = beat_offset_sec * deck_state.device_sample_rate as f64;
-        })?;
-        self.recorder.log_at(
-            frame,
-            "set_beat_grid",
-            serde_json::json!({ "deck": deck, "bpm": bpm, "beat_offset_sec": beat_offset_sec }),
-        );
+        self.apply_and_log(
+            deck,
+            &session_core::SessionCommand::SetBeatGrid {
+                deck,
+                bpm: Some(bpm),
+                beat_offset_sec: Some(beat_offset_sec),
+            },
+        )?;
         Ok(())
     }
 
@@ -229,20 +246,18 @@ impl Engine {
         origin: ParamOrigin,
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
-        let deck_arc = self.deck(deck)?;
-        let (payload, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            deck_state.toggle_play();
-            (
-                DeckSyncPayload::from_deck(&deck_state, false),
-                deck_state.next_render_frame,
-            )
+        // Resolving which of the two commands this press means is live-only. Applying it is not.
+        let starts_playing = {
+            let deck_arc = self.deck(deck)?;
+            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            deck_state.total_frames > 0 && (deck_state.is_cueing || !deck_state.is_playing)
         };
-        self.recorder.log_at(
-            frame,
-            if payload.is_playing { "play" } else { "stop" },
-            serde_json::json!({ "deck": deck }),
-        );
+        let cmd = if starts_playing {
+            session_core::SessionCommand::Play { deck, sec: None }
+        } else {
+            session_core::SessionCommand::Stop { deck }
+        };
+        let payload = self.apply_and_log(deck, &cmd)?;
         self.engine_push
             .mark_transport(origin, deck, payload.loop_region_cleared);
         Ok(payload)
@@ -254,7 +269,9 @@ impl Engine {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (outcome, payload, frame) = {
+        // Quantising the playhead is part of resolving which press this is, so it happens
+        // before the outcome is read.
+        let (outcome, had_loop) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             if deck_state.quantize {
                 if let Some(bpm) = deck_state.bpm {
@@ -267,36 +284,57 @@ impl Engine {
                     );
                 }
             }
-            let had_loop = deck_state.loop_end > 0.0;
-            let out = deck_state.press_cue();
-            let loop_cleared = matches!(out, audio::CuePressOutcome::CueMoved { .. }) && had_loop;
-            if loop_cleared {
-                deck_state.loop_active = false;
-                deck_state.loop_end = 0.0;
-            }
-            (
-                out,
-                DeckSyncPayload::from_deck(&deck_state, loop_cleared),
-                deck_state.next_render_frame,
-            )
+            (deck_state.resolve_cue_press(), deck_state.loop_end > 0.0)
         };
-        self.engine_push
-            .mark_transport(origin, deck, payload.loop_region_cleared);
-        let (event, cue_sec) = match outcome {
-            audio::CuePressOutcome::NoTrack => return Ok(payload),
-            audio::CuePressOutcome::PreviewStarted => ("cue_preview_start", payload.cue_point_sec),
+        let cmd = match outcome {
+            audio::CuePressOutcome::NoTrack => {
+                let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                return Ok(DeckSyncPayload::from_deck(&deck_state, false));
+            }
+            audio::CuePressOutcome::PreviewStarted => {
+                let sec = {
+                    let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                    deck_state.cue_point / deck_state.device_sample_rate as f64
+                };
+                session_core::SessionCommand::CuePreviewStart {
+                    deck,
+                    cue_point_sec: Some(sec),
+                }
+            }
+            // No `SessionCommand` moves a cue point: the renderer takes it from the
+            // events that carry one, so this branch stays a direct write.
             audio::CuePressOutcome::CueMoved { new_cue_point_sec } => {
-                ("cue_move", new_cue_point_sec)
+                let (payload, frame) = {
+                    let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                    deck_state.press_cue();
+                    if had_loop {
+                        deck_state.loop_active = false;
+                        deck_state.loop_end = 0.0;
+                    }
+                    (
+                        DeckSyncPayload::from_deck(&deck_state, had_loop),
+                        deck_state.render_frame(),
+                    )
+                };
+                self.recorder.log_at(
+                    frame,
+                    "cue_move",
+                    serde_json::json!({ "deck": deck, "cue_point_sec": new_cue_point_sec }),
+                );
+                self.engine_push
+                    .mark_transport(origin, deck, payload.loop_region_cleared);
+                return Ok(payload);
             }
             audio::CuePressOutcome::StoppedAtCue { cue_point_sec } => {
-                ("stopped_at_cue", cue_point_sec)
+                session_core::SessionCommand::StopAtCue {
+                    deck,
+                    cue_point_sec: Some(cue_point_sec),
+                }
             }
         };
-        self.recorder.log_at(
-            frame,
-            event,
-            serde_json::json!({ "deck": deck, "cue_point_sec": cue_sec }),
-        );
+        let payload = self.apply_and_log(deck, &cmd)?;
+        self.engine_push
+            .mark_transport(origin, deck, payload.loop_region_cleared);
         Ok(payload)
     }
 
@@ -306,23 +344,24 @@ impl Engine {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
-        let (was_cueing, payload, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let was = deck_state.is_cueing;
-            deck_state.release_cue();
+        let (was_cueing, cue_point_sec) = {
+            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
             (
-                was,
-                DeckSyncPayload::from_deck(&deck_state, false),
-                deck_state.next_render_frame,
+                deck_state.is_cueing,
+                deck_state.cue_point / deck_state.device_sample_rate as f64,
             )
         };
-        if was_cueing {
-            self.recorder.log_at(
-                frame,
-                "cue_preview_end",
-                serde_json::json!({ "deck": deck, "cue_point_sec": payload.cue_point_sec }),
-            );
+        if !was_cueing {
+            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(DeckSyncPayload::from_deck(&deck_state, false));
         }
+        let payload = self.apply_and_log(
+            deck,
+            &session_core::SessionCommand::CuePreviewEnd {
+                deck,
+                cue_point_sec: Some(cue_point_sec),
+            },
+        )?;
         self.engine_push
             .mark_transport(origin, deck, payload.loop_region_cleared);
         Ok(payload)
@@ -334,17 +373,10 @@ impl Engine {
         deck: &str,
         rate: f64,
     ) -> Result<(), String> {
-        let frame = {
-            let deck_arc = self.deck(deck)?;
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            deck_state.playback_rate = rate.max(MIN_PLAYBACK_RATE);
-            deck_state.next_render_frame
-        };
-        self.recorder.log_at(
-            frame,
-            "set_playback_rate",
-            serde_json::json!({ "deck": deck, "rate": rate }),
-        );
+        self.apply_and_log(
+            deck,
+            &session_core::SessionCommand::SetPlaybackRate { deck, rate },
+        )?;
         self.engine_push.mark_rate(origin, deck);
         Ok(())
     }
@@ -385,7 +417,7 @@ impl Engine {
                 deck_state.is_playing,
             );
             deck_state.queue_jog(scaled);
-            (scaled, deck_state.next_render_frame)
+            (scaled, deck_state.render_frame())
         };
         self.recorder.log_at(
             frame,
@@ -412,16 +444,16 @@ impl Engine {
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
+        let strip_arc = self
+            .audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {deck}"))?;
         let (payload, cue_sec, quantize, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let sec = loop_in_core(&mut deck_state)?;
+            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let sec = loop_in_core(&mut deck_state, &mut strip)?;
             let payload = DeckSyncPayload::from_deck(&deck_state, true);
-            (
-                payload,
-                sec,
-                deck_state.quantize,
-                deck_state.next_render_frame,
-            )
+            (payload, sec, deck_state.quantize, deck_state.render_frame())
         };
         self.recorder.log_at(
             frame,
@@ -439,13 +471,18 @@ impl Engine {
         deck: &str,
     ) -> Result<Option<LoopOutResult>, String> {
         let deck_arc = self.deck(deck)?;
+        let strip_arc = self
+            .audio
+            .strip(deck)
+            .ok_or_else(|| format!("unknown deck: {deck}"))?;
         let (result, quantize, frame) = {
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
             let quantize = deck_state.quantize;
             (
-                loop_out_core(&mut deck_state)?,
+                loop_out_core(&mut deck_state, &mut strip)?,
                 quantize,
-                deck_state.next_render_frame,
+                deck_state.render_frame(),
             )
         };
         if let Some(region) = &result {
@@ -471,19 +508,14 @@ impl Engine {
         deck: &str,
         active: bool,
     ) -> Result<DeckSyncPayload, String> {
-        let deck_arc = self.deck(deck)?;
-        let (payload, frame) = {
+        let payload = if active {
+            let deck_arc = self.deck(deck)?;
             let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            deck_state.loop_active = active;
-            (
-                DeckSyncPayload::from_deck(&deck_state, false),
-                deck_state.next_render_frame,
-            )
+            deck_state.loop_active = true;
+            DeckSyncPayload::from_deck(&deck_state, false)
+        } else {
+            self.apply_and_log(deck, &session_core::SessionCommand::ExitLoop { deck })?
         };
-        if !active {
-            self.recorder
-                .log_at(frame, "exit_loop", serde_json::json!({ "deck": deck }));
-        }
         self.engine_push.mark_transport(origin, deck, false);
         Ok(payload)
     }
@@ -493,23 +525,7 @@ impl Engine {
         origin: ParamOrigin,
         deck: &str,
     ) -> Result<DeckSyncPayload, String> {
-        let deck_arc = self.deck(deck)?;
-        let (payload, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            if deck_state.loop_end > deck_state.cue_point {
-                deck_state.main_pos = deck_state.cue_point;
-                deck_state.cue_pos = deck_state.cue_point;
-                if deck_state.is_playing {
-                    deck_state.loop_active = true;
-                }
-            }
-            (
-                DeckSyncPayload::from_deck(&deck_state, false),
-                deck_state.next_render_frame,
-            )
-        };
-        self.recorder
-            .log_at(frame, "reloop", serde_json::json!({ "deck": deck }));
+        let payload = self.apply_and_log(deck, &session_core::SessionCommand::Reloop { deck })?;
         self.engine_push.mark_transport(origin, deck, false);
         Ok(payload)
     }
@@ -549,7 +565,7 @@ impl Engine {
                 strip
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .next_render_frame
+                    .render_frame()
             })
             .unwrap_or_else(|| self.master_frame());
         self.recorder.log_at(
@@ -570,7 +586,7 @@ impl Engine {
         }
         let frame = self
             .resolve_xfader_gains()
-            .unwrap_or_else(|| self.audio.monitor.output_frames());
+            .unwrap_or_else(|| self.master_frame());
         let landed = self.audio.monitor.xfader_position();
         self.recorder
             .log_param_at(frame, None, "xfader", "position", landed);
@@ -590,7 +606,7 @@ impl Engine {
                 .ok_or_else(|| format!("unknown deck: {}", deck))?;
             let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
             strip.set_xfader_assign(assign);
-            strip.next_render_frame
+            strip.render_frame()
         };
         self.recorder.log_at(
             frame,
@@ -613,7 +629,9 @@ impl Engine {
         self.audio.monitor.set_fader_curve(curve);
         let frame = self
             .for_each_strip(|strip| strip.set_fader_curve(curve))
-            .unwrap_or_else(|| self.audio.monitor.output_frames());
+            .unwrap_or_else(|| {
+                crate::audio::RenderFrame::from_master_clock(self.audio.monitor.output_frames())
+            });
         self.recorder.log_at(
             frame,
             "set_fader_curve",
@@ -621,7 +639,7 @@ impl Engine {
         );
     }
 
-    fn resolve_xfader_gains(&self) -> Option<u64> {
+    fn resolve_xfader_gains(&self) -> Option<crate::audio::RenderFrame> {
         let position = self.audio.monitor.xfader_position();
         self.for_each_strip(|strip| strip.set_xfader_position(position))
     }
@@ -629,7 +647,10 @@ impl Engine {
     /// The frame comes back from the same lock the write took, so a master-scope move is
     /// stamped where the strips render it rather than off the free-running clock. Taken as a
     /// max because `deck_ids` is unordered and "the last one locked" is arbitrary.
-    fn for_each_strip(&self, mut write: impl FnMut(&mut ChannelStrip)) -> Option<u64> {
+    fn for_each_strip(
+        &self,
+        mut write: impl FnMut(&mut ChannelStrip),
+    ) -> Option<crate::audio::RenderFrame> {
         let mut frame = None;
         for deck in self.audio.deck_ids() {
             let Some(strip) = self.audio.strip(&deck) else {
@@ -637,16 +658,23 @@ impl Engine {
             };
             let mut strip = strip.lock().unwrap_or_else(|error| error.into_inner());
             write(&mut strip);
-            frame = Some(frame.map_or(strip.next_render_frame, |seen: u64| {
-                seen.max(strip.next_render_frame)
-            }));
+            frame = Some(
+                frame.map_or(strip.render_frame(), |seen: crate::audio::RenderFrame| {
+                    if strip.render_frame().get() > seen.get() {
+                        strip.render_frame()
+                    } else {
+                        seen
+                    }
+                }),
+            );
         }
         frame
     }
 
-    pub(crate) fn master_frame(&self) -> u64 {
-        self.for_each_strip(|_| {})
-            .unwrap_or_else(|| self.audio.monitor.output_frames())
+    pub(crate) fn master_frame(&self) -> crate::audio::RenderFrame {
+        self.for_each_strip(|_| {}).unwrap_or_else(|| {
+            crate::audio::RenderFrame::from_master_clock(self.audio.monitor.output_frames())
+        })
     }
 
     pub(crate) fn set_cue_active(
@@ -691,7 +719,7 @@ mod tests {
         engine.recorder.start(
             engine.audio.mixer(),
             engine.audio.monitor.capture_start_handle(),
-            0,
+            crate::audio::RenderFrame::from_master_clock(0),
             [],
         );
         // Stands in for the tap: frames are dropped entirely until it says a buffer landed.
@@ -704,7 +732,9 @@ mod tests {
     }
 
     fn logged_events(engine: Engine) -> Vec<serde_json::Value> {
-        engine.recorder.stop(0);
+        engine
+            .recorder
+            .stop(crate::audio::RenderFrame::from_master_clock(0));
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         parsed["events"].as_array().cloned().unwrap_or_default()
@@ -834,7 +864,7 @@ mod loop_and_quantize {
         let mut deck_state = deck_with_grid(10.0);
         deck_state.quantize = false;
         deck_state.main_pos = beat_dur() * 2.7; // between beats
-        let sec = loop_in_core(&mut deck_state).unwrap();
+        let sec = loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!((sec - deck_state.main_pos / SR_F).abs() < 1e-9);
     }
 
@@ -843,7 +873,7 @@ mod loop_and_quantize {
         let mut deck_state = deck_with_grid(10.0);
         deck_state.quantize = true;
         deck_state.main_pos = beat_dur() * 2.3; // 30% into beat 2 → should snap to beat 2
-        let sec = loop_in_core(&mut deck_state).unwrap();
+        let sec = loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         let expected = 2.0 * beat_dur() / SR_F;
         assert!(
             (sec - expected).abs() < 1e-3,
@@ -859,7 +889,7 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.cue_point = 0.0;
         deck_state.main_pos = beat_dur() * 3.0;
-        loop_in_core(&mut deck_state).unwrap();
+        loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!(
             (deck_state.cue_point - beat_dur() * 3.0).abs() < 1e-9,
             "cue_point must move to playhead"
@@ -872,7 +902,7 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.is_playing = true;
         deck_state.main_pos = beat_dur() * 3.0;
-        loop_in_core(&mut deck_state).unwrap();
+        loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!(deck_state.is_playing, "loop_in must not stop playback");
     }
 
@@ -884,7 +914,7 @@ mod loop_and_quantize {
         deck_state.loop_end = beat_dur() * 3.0;
         deck_state.loop_active = true;
         deck_state.main_pos = beat_dur() * 4.0;
-        loop_in_core(&mut deck_state).unwrap();
+        loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!(!deck_state.loop_active);
         assert!(
             (deck_state.cue_point - beat_dur() * 4.0).abs() < 1e-9,
@@ -897,7 +927,7 @@ mod loop_and_quantize {
     fn loop_in_fails_without_beat_grid() {
         let mut deck_state = Deck::loaded_for_testing(SR, 10.0);
         deck_state.quantize = true;
-        let result = loop_in_core(&mut deck_state);
+        let result = loop_in_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32));
         assert!(result.is_err());
     }
 
@@ -907,7 +937,9 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.cue_point = beat_dur() * 2.0;
         deck_state.main_pos = beat_dur() * 4.0;
-        let result = loop_out_core(&mut deck_state).unwrap().unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+            .unwrap()
+            .unwrap();
         assert!((result.start_sec - beat_dur() * 2.0 / SR_F).abs() < 1e-6);
         assert!((result.end_sec - beat_dur() * 4.0 / SR_F).abs() < 1e-6);
         assert!(deck_state.loop_active);
@@ -919,7 +951,7 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.cue_point = beat_dur() * 3.0;
         deck_state.main_pos = beat_dur() * 2.0; // playhead before cue → no loop
-        let result = loop_out_core(&mut deck_state).unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!(result.is_none());
     }
 
@@ -929,7 +961,9 @@ mod loop_and_quantize {
         deck_state.quantize = true;
         deck_state.cue_point = 0.0;
         deck_state.main_pos = beat_dur() * 4.0 + beat_dur() * 0.1; // 10% past beat 4
-        let result = loop_out_core(&mut deck_state).unwrap().unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+            .unwrap()
+            .unwrap();
         let expected_end = beat_dur() * 4.0 / SR_F;
         assert!((result.end_sec - expected_end).abs() < 1e-3);
     }
@@ -942,7 +976,9 @@ mod loop_and_quantize {
         deck_state.cue_point = 0.0;
         // Position is 5% past the loop end beat → late press
         deck_state.main_pos = out_beat + beat_dur() * 0.05;
-        let result = loop_out_core(&mut deck_state).unwrap().unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+            .unwrap()
+            .unwrap();
         assert!(
             result.seek_to_sec.is_some(),
             "expected seek compensation for late press"
@@ -959,7 +995,7 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.cue_point = 0.0;
         deck_state.main_pos = 0.0; // out == cue → zero-length, rejected
-        let result = loop_out_core(&mut deck_state).unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32)).unwrap();
         assert!(result.is_none());
     }
 
@@ -972,7 +1008,9 @@ mod loop_and_quantize {
         deck_state.cue_point = cue;
         deck_state.main_pos = beat_dur() * 4.0;
         assert!(
-            loop_out_core(&mut deck_state).unwrap().is_some(),
+            loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+                .unwrap()
+                .is_some(),
             "playhead after cue: loop must arm"
         );
         assert!(deck_state.loop_active);
@@ -982,7 +1020,9 @@ mod loop_and_quantize {
         deck_state.cue_point = cue;
         deck_state.main_pos = cue;
         assert!(
-            loop_out_core(&mut deck_state).unwrap().is_none(),
+            loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+                .unwrap()
+                .is_none(),
             "playhead at cue: must not arm"
         );
         assert!(!deck_state.loop_active);
@@ -992,7 +1032,9 @@ mod loop_and_quantize {
         deck_state.cue_point = cue;
         deck_state.main_pos = beat_dur() * 1.0;
         assert!(
-            loop_out_core(&mut deck_state).unwrap().is_none(),
+            loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+                .unwrap()
+                .is_none(),
             "playhead before cue: must not arm"
         );
         assert!(!deck_state.loop_active);
@@ -1004,7 +1046,9 @@ mod loop_and_quantize {
         deck_state.quantize = false;
         deck_state.cue_point = 0.0;
         deck_state.main_pos = beat_dur() * 4.0;
-        let result = loop_out_core(&mut deck_state).unwrap().unwrap();
+        let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.beats, 4);
     }
 
@@ -1074,38 +1118,6 @@ mod loop_and_quantize {
         assert!(deck_state.loop_active);
     }
 
-    fn beat_dur() -> f64 {
-        (60.0 / BPM) * SR_F
-    }
-
-    #[test]
-    fn sec_to_frame_converts_seconds_to_samples() {
-        let result = sec_to_frame(1.0, 44100, 100_000);
-        assert!((result - 44100.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sec_to_frame_clamps_negative_to_zero() {
-        assert_eq!(sec_to_frame(-5.0, 44100, 100_000), 0.0);
-    }
-
-    #[test]
-    fn sec_to_frame_clamps_at_total_frames() {
-        let total = 44100usize;
-        assert_eq!(sec_to_frame(100.0, 44100, total), total as f64);
-    }
-
-    #[test]
-    fn sec_to_frame_fractional_seconds() {
-        let result = sec_to_frame(0.5, 44100, 100_000);
-        assert!((result - 22050.0).abs() < 1e-9);
-    }
-}
-
-#[cfg(test)]
-mod stamping {
-    use super::*;
-
     /// The callback claims its buffer at the top and stamps each deck as it reaches it, so
     /// between those two moments the master clock already names the next buffer.
     fn engine_mid_callback() -> Engine {
@@ -1113,7 +1125,7 @@ mod stamping {
         engine.recorder.start(
             engine.audio.mixer(),
             engine.audio.monitor.capture_start_handle(),
-            0,
+            crate::audio::RenderFrame::from_master_clock(0),
             [],
         );
         engine
@@ -1144,8 +1156,48 @@ mod stamping {
         engine
     }
 
+    #[test]
+    fn releasing_cue_returns_the_playhead_to_where_the_preview_began() {
+        let engine = Engine::for_testing(48_000);
+        let deck_arc = engine.deck("A").expect("deck A");
+        {
+            let mut deck = deck_arc.lock().unwrap();
+            deck.samples = std::sync::Arc::new(vec![0.0; 48_000 * 2 * 30]);
+            deck.channels = 2;
+            deck.total_frames = 48_000 * 30;
+            deck.bpm = Some(BPM);
+            deck.quantize = false;
+            deck.cue_point = beat_dur() * 4.0;
+            deck.main_pos = beat_dur() * 4.0;
+        }
+
+        engine.press_cue(ParamOrigin::Ui, "A").expect("press");
+        {
+            let mut deck = deck_arc.lock().unwrap();
+            assert!(deck.is_cueing, "the press must start a preview");
+            deck.main_pos += 5_000.0;
+        }
+
+        let payload = engine.release_cue(ParamOrigin::Ui, "A").expect("release");
+        let deck = deck_arc.lock().unwrap();
+        assert!(!deck.is_cueing);
+        assert!(!deck.is_playing);
+        assert_eq!(deck.main_pos, beat_dur() * 4.0, "playhead");
+        assert_eq!(
+            payload.position_sec,
+            beat_dur() * 4.0 / 48_000.0,
+            "the payload the UI draws from"
+        );
+    }
+
+    fn beat_dur() -> f64 {
+        (60.0 / BPM) * SR_F
+    }
+
     fn logged(engine: Engine, event_type: &str) -> serde_json::Value {
-        engine.recorder.stop(0);
+        engine
+            .recorder
+            .stop(crate::audio::RenderFrame::from_master_clock(0));
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         parsed["events"]
@@ -1221,7 +1273,9 @@ mod stamping {
             .set_deck_param(ParamOrigin::Ui, "A", "reverb", "mix", 0.5)
             .is_err());
 
-        engine.recorder.stop(0);
+        engine
+            .recorder
+            .stop(crate::audio::RenderFrame::from_master_clock(0));
         let pending = engine.recorder.take_pending().expect("a stopped recording");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         let params: Vec<_> = parsed["events"]

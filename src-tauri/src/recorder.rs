@@ -1,4 +1,4 @@
-use crate::audio;
+use crate::audio::{self, RenderFrame};
 use std::sync::{Arc, Mutex};
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
@@ -48,7 +48,7 @@ fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
     )
 }
 
-/// A widened f32 writes the noise tail of a value the mixer never had; `Display` does not.
+/// A widened f32 writes the noise tail of a value the mixer never had. `Display` does not.
 pub(crate) fn f32_json(value: f32) -> serde_json::Value {
     match format!("{value}").parse::<f64>() {
         Ok(shortest) => serde_json::json!(shortest),
@@ -150,19 +150,19 @@ impl Recorder {
         &self,
         mixer: &'static session_core::MixerManifest,
         capture_start: Arc<std::sync::atomic::AtomicU64>,
-        anchor: u64,
+        anchor: RenderFrame,
         start_events: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
     ) {
         let mut logger = SessionLogger::new(mixer, capture_start);
         for (event_type, payload) in start_events {
-            logger.log_at(anchor, event_type, payload);
+            logger.log_at(anchor.get(), event_type, payload);
         }
         *self.held() = Some(logger);
     }
 
-    pub(crate) fn stop(&self, frame: u64) {
+    pub(crate) fn stop(&self, frame: RenderFrame) {
         if let Some(logger) = self.held().as_mut() {
-            logger.log_at(frame, "recording_stop", serde_json::json!({}));
+            logger.log_at(frame.get(), "recording_stop", serde_json::json!({}));
             logger.stop();
         }
     }
@@ -171,15 +171,15 @@ impl Recorder {
         self.held().as_mut().and_then(SessionLogger::take_pending)
     }
 
-    pub(crate) fn log_at(&self, frame: u64, event_type: &str, payload: serde_json::Value) {
+    pub(crate) fn log_at(&self, frame: RenderFrame, event_type: &str, payload: serde_json::Value) {
         if let Some(logger) = self.held().as_mut() {
-            logger.log_at(frame, event_type, payload);
+            logger.log_at(frame.get(), event_type, payload);
         }
     }
 
     pub(crate) fn log_param_at(
         &self,
-        frame: u64,
+        frame: RenderFrame,
         deck: Option<&str>,
         slot: &str,
         param: &str,
@@ -233,7 +233,6 @@ mod tests {
 
     #[test]
     fn iso8601_milliseconds_preserved() {
-        // 1_000 ms = 1 second; add 123 ms
         assert_eq!(
             system_time_to_iso8601(unix_millis(1_000_123)),
             "1970-01-01T00:16:40.123Z"
@@ -242,7 +241,6 @@ mod tests {
 
     #[test]
     fn iso8601_leap_year_feb_29() {
-        // 2000-02-29T00:00:00Z = 951_782_400
         assert_eq!(
             system_time_to_iso8601(unix_secs(951_782_400)),
             "2000-02-29T00:00:00.000Z"
@@ -251,7 +249,6 @@ mod tests {
 
     #[test]
     fn iso8601_end_of_year() {
-        // 1999-12-31T23:59:59Z = 946_684_799
         assert_eq!(
             system_time_to_iso8601(unix_secs(946_684_799)),
             "1999-12-31T23:59:59.000Z"

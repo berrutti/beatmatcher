@@ -24,7 +24,7 @@ export type Playlist = {
 };
 
 // Every editable, non-BPM metadata point a track can carry. `title` and
-// `artist` are shown by default; the rest are opt-in columns the user picks
+// `artist` are shown by default. The rest are opt-in columns the user picks
 // from the header context menu.
 export const METADATA_FIELDS = [
   'title',
@@ -51,14 +51,7 @@ export type ColumnField = (typeof COLUMN_FIELDS)[number];
 
 const DEFAULT_VISIBLE_COLUMNS: ColumnField[] = ['title', 'artist', 'bpm', 'added'];
 
-// Every resizable column's width is a unitless share of the space left over
-// after the fixed/pinned columns, not a pixel value - a column's actual
-// pixel width is always its share divided by the sum of every visible
-// resizable column's share (see utils/columnShares.ts). Title gets a
-// smaller default share than the other text fields since it's usually the
-// shortest of the bunch. bpm/added aren't here: their content (a short
-// number, a short date) never needs user-adjustable width, so they're
-// rendered at a fixed pixel width instead of joining this system.
+// Title is the shortest of the text fields, so it starts smaller.
 const DEFAULT_COLUMN_SHARE: Record<MetadataField, number> = {
   title: 140,
   artist: 130,
@@ -107,7 +100,7 @@ function loadColumnsState(): ColumnsState {
   if (!stored || !Array.isArray(stored.order) || !Array.isArray(stored.visible)) return fallback;
   const validOrder = stored.order.filter(isColumnField);
   // A field added to COLUMN_FIELDS after this was saved won't be in the
-  // stored order yet; append it so it still shows up in the column picker.
+  // stored order yet. Append it so it still shows up in the column picker.
   const order = [...validOrder, ...COLUMN_FIELDS.filter((f) => !validOrder.includes(f))];
   const validVisible = stored.visible.filter(isColumnField);
   // bpm/added were permanent, non-optional columns before they joined this
@@ -393,10 +386,6 @@ export const useCollectionStore = defineStore('collection', () => {
     queueTagRead(entry.id);
   }
 
-  // Opens a folder picker and relinks every missing entry whose filename is
-  // found under it (recursively), so one pick fixes a whole moved library.
-  // Saved BPM/grid data and playlist references follow the path, so nothing
-  // has to be re-analyzed.
   async function locateMissingTracks(): Promise<void> {
     if (!tracks.some((t) => t.status === 'missing')) return;
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -502,7 +491,7 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   // A failed or low-confidence reanalysis keeps the previously saved BPM
-  // grid intact rather than discarding it; entry.silenceEnd is deliberately
+  // grid intact rather than discarding it. Entry.silenceEnd is deliberately
   // left untouched here since setBpm reads it to derive beatOffset, and a
   // detector run that wasn't trusted enough to update the BPM shouldn't be
   // trusted to shift the beat grid either.
@@ -528,14 +517,8 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  // Metadata edits are app-only: they never touch the file's own tags (Rust
-  // can only read tags today, not write them; see TODO below), so they're
-  // kept as overrides layered on top of whatever readTagsForEntry reads next.
-  //
-  // TODO: once Rust gains tag-writing support, editing metadata here should
-  // write back into the actual file tags (as other DJ software does),
-  // with this override map becoming the write queue instead of a permanent
-  // shadow copy.
+  // TODO: Rust can read tags but not write them, so an edit is an override layered
+  // over the file rather than a change to it.
   const metadataOverrides = reactive<Record<string, Partial<TrackMetadata>>>(
     storageGet(STORAGE_KEYS.metadataOverrides, {})
   );
@@ -650,7 +633,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   const loadedPlaylists = storageGet<Playlist[]>(STORAGE_KEYS.playlists, []);
   // Playlists saved before per-playlist "date added" existed have no
-  // addedAt map at all; backfill an empty one so lookups never throw. Paths
+  // addedAt map at all. Backfill an empty one so lookups never throw. Paths
   // already in the playlist at that point have no recorded moment, and
   // correctly show as unknown rather than inventing one.
   loadedPlaylists.forEach((p) => {

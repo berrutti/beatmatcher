@@ -87,7 +87,6 @@ describe('pitch and bpm under fuzzed input', () => {
       expect(Math.abs(pitchOffset), `step ${step}`).toBeLessThanOrEqual(PITCH_RANGE + 1e-9);
       expect(targetBpm, `step ${step}`).not.toBeNull();
       if (targetBpm === null) continue;
-      // No slack: the engine's rate is derived from this bpm.
       expect(targetBpm, `step ${step}`).toBeGreaterThanOrEqual(trackBpm * (1 - PITCH_RANGE / 100));
       expect(targetBpm, `step ${step}`).toBeLessThanOrEqual(trackBpm * (1 + PITCH_RANGE / 100));
     }

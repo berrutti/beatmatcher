@@ -82,7 +82,7 @@ export const useSessionStore = defineStore('session', () => {
 
   // The coarse, always-resident slice covering a track's whole used extent, so a
   // pan/zoom to an un-fetched spot still shows a low-detail texture immediately.
-  // Loaded once per extent; the detailed region is layered on top.
+  // Loaded once per extent. The detailed region is layered on top.
   async function ensureWaveformBase(
     path: string,
     startSec: number,
@@ -98,8 +98,6 @@ export const useSessionStore = defineStore('session', () => {
       const base = await fetchRegion(req, path);
       const prev = waveforms.value.get(path);
       const map = new Map(waveforms.value);
-      // Keep the detail region if we already have one; otherwise show the base
-      // as the detail too so the track renders before any zoom-in fetch.
       map.set(path, prev ? { ...prev, base } : { ...base, base });
       waveforms.value = map;
     } catch (err) {
@@ -127,7 +125,6 @@ export const useSessionStore = defineStore('session', () => {
       const region = await fetchRegion(req, path);
       const prev = waveforms.value.get(path);
       const map = new Map(waveforms.value);
-      // Replace the detail region but keep the coarse base for fallback.
       map.set(path, { ...region, base: prev?.base });
       waveforms.value = map;
     } catch (err) {
@@ -135,7 +132,6 @@ export const useSessionStore = defineStore('session', () => {
     } finally {
       pendingWaveformPaths.delete(path);
     }
-    // Chase the most recent region requested while this fetch was in flight.
     const next = waveformTarget.get(path);
     if (next) {
       waveformTarget.delete(path);

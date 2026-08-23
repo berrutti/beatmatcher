@@ -1,24 +1,42 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: compare_session <session.json> <recorded.wav> [output.wav]");
+        eprintln!(
+            "usage: compare_session <session.json> <recorded.wav> [output.wav] [--limiter on|off]"
+        );
         std::process::exit(1);
     }
 
     let session_path = &args[1];
     let recorded_path = &args[2];
-    let output_path = args.get(3).map(|arg| arg.as_str());
+    let output_path = args
+        .get(3)
+        .map(|arg| arg.as_str())
+        .filter(|arg| !arg.starts_with("--"));
 
     // The .bms does not record the limiter, so a wrong guess here diverges from
     // the reference without saying why. Print what was assumed.
-    let stored = app_lib::settings::limiter_enabled();
-    let limiter_enabled = stored.unwrap_or(true);
+    let override_flag = args
+        .iter()
+        .position(|arg| arg == "--limiter")
+        .and_then(|at| match args.get(at + 1).map(String::as_str) {
+            Some("on") => Some(true),
+            Some("off") => Some(false),
+            _ => None,
+        });
+    let stamped = std::fs::read_to_string(session_path)
+        .ok()
+        .and_then(|json| app_lib::offline_render::SessionFile::parse(&json).ok())
+        .and_then(|session| app_lib::offline_render::recorded_limiter(&session))
+        .map(|limiter| limiter == app_lib::offline_render::MasterLimiter::On);
+    let limiter_enabled = override_flag.or(stamped).unwrap_or(true);
     println!(
         "limiter          : {} ({})",
         if limiter_enabled { "on" } else { "off" },
-        match stored {
-            Some(_) => "from settings.json",
-            None => "default, no stored setting",
+        match (override_flag, stamped) {
+            (Some(_), _) => "from --limiter",
+            (None, Some(_)) => "from the session",
+            (None, None) => "default, session predates the stamp",
         }
     );
 

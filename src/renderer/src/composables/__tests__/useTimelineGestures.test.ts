@@ -50,7 +50,6 @@ describe('cursorFor', () => {
   it('shows the draw cursor when Shift is held over a clip in edit mode (nudge paint)', () => {
     expect(cursorFor({ target: 'clip', part: 'body' }, true, true)).toBe('crosshair');
     expect(cursorFor({ target: 'clip', part: 'start' }, true, true)).toBe('crosshair');
-    // Shift outside edit mode still paints nothing.
     expect(cursorFor({ target: 'clip', part: 'body' }, false, true)).toBe('');
   });
 

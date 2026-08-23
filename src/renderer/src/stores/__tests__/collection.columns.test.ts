@@ -85,12 +85,11 @@ describe('collection store: column reordering', () => {
 
   it('reorders correctly regardless of hidden columns interspersed between the two fields', () => {
     const store = useCollectionStore();
-    // title and artist are visible by default; genre/album are hidden and
+    // title and artist are visible by default. Genre/album are hidden and
     // sit between them in the default METADATA_FIELDS order.
     store.reorderColumn('artist', 'title');
     const order = store.columnOrder;
     expect(order.indexOf('artist')).toBeLessThan(order.indexOf('title'));
-    // the visible order (what the table actually renders) reflects the move
     expect(store.orderedVisibleColumns).toEqual(['artist', 'title', 'bpm', 'added']);
   });
 

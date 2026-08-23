@@ -1,6 +1,6 @@
 use super::wire::{Half, Key, Resolution, Source};
 use std::collections::HashMap;
-/// What a lit button reports. A binding is an input address; this says which of
+/// What a lit button reports. A binding is an input address. This says which of
 /// them the app also writes back to, so a control with no entry stays dark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Feedback {

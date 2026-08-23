@@ -157,7 +157,7 @@ pub(super) fn resolve_move(
                 f64::from(memory.join(index, half, message.value)),
                 FOURTEEN_BIT_MAX,
             ),
-            // A relative control returned above, so it never reaches this; the arm
+            // A relative control returned above, so it never reaches this. The arm
             // is spelled out anyway so a new resolution has to be considered here.
             Resolution::SevenBit | Resolution::CentreDelta | Resolution::SignedStep => {
                 unit_interval(f64::from(message.value), SEVEN_BIT_MAX)
@@ -218,7 +218,7 @@ pub(super) fn resolve_move(
             held: pressed,
         }),
         // Momentary on the surface, latching in the app, so only the press turns
-        // it over; the release would turn it straight back.
+        // it over. The release would turn it straight back.
         Action::QuantizeToggle { deck } => {
             pressed.then(|| Move::QuantizeToggle { deck: deck.clone() })
         }

@@ -1,12 +1,3 @@
-// The interaction layer. On pointer-down it hit-tests the scene (engine +
-// precedence table), picks the gesture for that hit + modifiers, and drives the
-// drag, emitting semantic Intents (the controller reacts). In-progress visuals
-// (draw line, clip ghost, nudge/filter previews, filter-resize box) are exposed
-// as overlay SceneItems so the renderer draws them like everything else.
-//
-// All the per-gesture behaviour ported from the old monolith lives here, but as
-// small, named pieces keyed off the hit target instead of one giant switch.
-
 import type { SceneItem, ViewContext, Hit, Point } from '@renderer/utils/timelineEngine';
 import { hitScene } from '@renderer/utils/timelineEngine';
 import { hitPriority } from '@renderer/utils/timelineHits';
@@ -56,7 +47,6 @@ const MIN_VIEW_MS = 200;
 const DRAG_THRESHOLD_PX = 3;
 const EDGE_SNAP_PX = 8;
 
-// Bounds for the draggable lane and waveform strip heights, in pixels.
 const MIN_LANE_HEIGHT_PX = 10;
 const MAX_LANE_HEIGHT_PX = 240;
 const MIN_WAVEFORM_HEIGHT_PX = 40;
@@ -84,7 +74,6 @@ export type GestureDeps = {
   setCursor: (cursor: string) => void;
 };
 
-// The drag in progress. Each variant carries just what its move/up needs.
 type ActiveGesture =
   | { kind: 'track-pan'; startView: { start: number; duration: number } }
   | { kind: 'lane-resize'; startY: number; startHeight: number; height: number }
@@ -202,7 +191,6 @@ export function useTimelineGestures(deps: GestureDeps) {
         if (!overview) return;
         const { part, frac: grabFrac } = overview;
         if (part === 'outside') {
-          // Recenter immediately, then drag as move.
           const total = deps.durationMs() || 1;
           deps.emit({
             type: 'view.set',
@@ -248,7 +236,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         });
         return;
       case 'filterRegion': {
-        // Editable while playing, like clips; the commit stops playback on drop.
+        // Editable while playing, like clips. The commit stops playback on drop.
         const span = hit.data as FilterActiveSpan;
         if (hit.part === 'start' || hit.part === 'end') {
           active = {
@@ -280,7 +268,7 @@ export function useTimelineGestures(deps: GestureDeps) {
           return;
         }
         // Cmd/Ctrl+drag draws a marquee even over clips (a plain press would
-        // grab the block); without a drag the click toggles the block instead.
+        // grab the block). Without a drag the click toggles the block instead.
         if (event.metaKey || event.ctrlKey) {
           active = { kind: 'marquee', additive: true, start: point, current: point };
           return;
@@ -328,7 +316,7 @@ export function useTimelineGestures(deps: GestureDeps) {
           armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, viewContext, point);
           return;
         }
-        // Dragging empty band space in edit mode rubber-band selects; panning
+        // Dragging empty band space in edit mode rubber-band selects. Panning
         // stays available via wheel, the overview, and outside edit mode.
         if (deps.isEditMode()) {
           active = {
@@ -342,7 +330,6 @@ export function useTimelineGestures(deps: GestureDeps) {
         break;
       }
     }
-    // Anything not handled above falls through to a view pan (drag empty space).
     active = { kind: 'track-pan', startView: deps.camera.currentView() };
   }
 
@@ -567,7 +554,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       const additive = deps.isEditMode() && (event.metaKey || event.ctrlKey);
       deps.emit({ type: 'clip.select', block, ms, additive });
       deps.emit({ type: 'filterRegion.clearSelection' });
-      // Cmd/Ctrl-click only edits the selection; moving the playhead too would
+      // Cmd/Ctrl-click only edits the selection. Moving the playhead too would
       // make assembling a multi-selection jumpy.
       if (!additive) deps.emit({ type: 'seek', ms });
       return;
@@ -582,7 +569,6 @@ export function useTimelineGestures(deps: GestureDeps) {
       return;
     }
     if (hit.target === 'laneDropdown' || hit.target === 'overview') return;
-    // lane / clipBand background: seek and clear selections.
     deps.emit({ type: 'clip.clearSelection' });
     deps.emit({ type: 'filterRegion.clearSelection' });
     deps.emit({ type: 'seek', ms });
@@ -684,7 +670,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       event.preventDefault();
       deps.camera.zoomAt(fracAtClientLocalX(point.x, viewContext), event.deltaY);
     } else if (deps.camera.maxScrollY() > 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
-      // Vertical scroll is owned by the native scroll container; don't
+      // Vertical scroll is owned by the native scroll container. Don't
       // preventDefault so the browser scrolls it and fires its scroll event.
     } else {
       event.preventDefault();

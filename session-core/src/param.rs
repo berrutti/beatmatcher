@@ -202,7 +202,6 @@ pub fn manifest_by_id(id: &str) -> Option<&'static MixerManifest> {
     MANIFESTS.iter().copied().find(|manifest| manifest.id == id)
 }
 
-/// What a `.bms` header records about the mixer a session was played on.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MixerHeader {
     pub id: String,

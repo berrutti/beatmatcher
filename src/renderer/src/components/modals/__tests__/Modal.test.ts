@@ -89,7 +89,6 @@ describe('Modal', () => {
     expect(wrapper.emitted('cancel')).toBeUndefined();
   });
 
-  // What a load gate needs: no way past it at all, buttons included.
   it('closes off every exit when not dismissable', async () => {
     const wrapper = mount(Modal, {
       global: { plugins: [i18n] },

@@ -73,7 +73,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!editMode.value) selectedLane.value = null;
   }
 
-  // Syncs are chained so rapid successive edits reach Rust in order; an older
+  // Syncs are chained so rapid successive edits reach Rust in order. An older
   // payload must never overwrite a newer one.
   function syncToRust() {
     const session = sessionStore.session;
@@ -200,10 +200,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
   }
 
-  // Right-click "Set BPM from here": insert one rate change at `ms`. The
-  // caller converts the entered BPM to rate (target / clip track bpm); the new
-  // value holds until the next existing change, splitting the clip into a new
-  // wave segment (the timeline already stretches the waveform per segment).
+  // Backs right-click "Set BPM from here".
   async function commitSetBpm(deck: string, ms: number, rate: number): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;
@@ -211,9 +208,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(setRateAt(session.events, deck, ms, rate));
   }
 
-  // Right-click "Set BPM (whole clip)": one uniform rate over [startMs, endMs],
-  // dropping any rate changes inside the clip and restoring the prior rate after,
-  // so the clip plays at one tempo without adding a new region.
+  // Backs right-click "Set BPM (whole clip)".
   async function commitSetClipBpm(
     deck: string,
     startMs: number,
@@ -277,11 +272,6 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(deleteTransportRanges(session.events, clips, ranges));
   }
 
-  // Opens a folder picker and resolves every missing track found under it
-  // (recursively, matched by filename), so one pick relinks a whole moved
-  // library. Goes through applyEdit, so the relocation is undoable, marks the
-  // session dirty, and syncs to Rust; saving afterwards persists the new
-  // paths in the .bms.
   async function locateMissingTracks(): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;

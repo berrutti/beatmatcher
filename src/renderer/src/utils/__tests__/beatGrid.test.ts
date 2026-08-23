@@ -7,12 +7,10 @@ describe('beatLineStep', () => {
   });
 
   it('escalates to the next group when beats are too close together', () => {
-    // 2px/beat, needs 6px min: step 1 -> 2 (too close), step 4 -> 8 (clears it)
     expect(beatLineStep(2, 6, 4)).toBe(4);
   });
 
   it('escalates through multiple groups when beats are very dense', () => {
-    // 0.5px/beat: step 1 -> 0.5, step 4 -> 2, step 16 -> 8 (clears 6px min)
     expect(beatLineStep(0.5, 6, 4)).toBe(16);
   });
 
@@ -25,7 +23,6 @@ describe('beatLineStep', () => {
   });
 
   it('supports a non-power-of-4 group size', () => {
-    // 1px/beat, needs 20px min: step 1 -> 1, step 3 -> 3, step 9 -> 9, step 27 -> 27
     expect(beatLineStep(1, 20, 3)).toBe(27);
   });
 });

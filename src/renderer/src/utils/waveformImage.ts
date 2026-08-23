@@ -6,7 +6,7 @@ const BACKGROUND_G = 10;
 const BACKGROUND_B = 10;
 
 // Log-compress each spectral band independently so all frequency ranges are visible.
-// Bass naturally dominates by energy, so it gets a smaller multiplier; highs get a
+// Bass naturally dominates by energy, so it gets a smaller multiplier. Highs get a
 // larger one so hi-hats and presence reach a comparable brightness.
 const LOG_MUL: [number, number, number] = [10, 25, 75];
 

@@ -27,11 +27,8 @@ describe('TableColgroup', () => {
   });
 
   it('recreates the col element (not just patches its style attribute) when its width value changes', async () => {
-    // table-layout: fixed can cache column widths from the initial layout
-    // pass in some engines, silently ignoring a later in-place style
-    // mutation on an existing <col> node. Forcing Vue to tear down and
-    // recreate the element (via a key that includes the width) sidesteps
-    // that instead of relying on the browser noticing the attribute change.
+    // Some engines cache column widths from the first layout pass and ignore a later
+    // style mutation, so the key forces Vue to recreate the <col>.
     const widths: Record<string, string> = { a: '100px' };
     const wrapper = mount(
       { template: '<table><TableColgroup :fields="fields" :get-width="getWidth" /></table>' },

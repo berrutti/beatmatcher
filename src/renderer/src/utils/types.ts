@@ -29,7 +29,7 @@ export type SessionEvent = {
   bpm?: number;
   playback_rate?: number;
   duration?: number;
-  // Output frames since capture began; absent on synthesized events.
+  // Output frames since capture began. Absent on synthesized events.
   frame?: number;
 };
 
@@ -92,9 +92,9 @@ export type WaveSegment = {
 };
 
 export type Clip = {
-  // Clips emitted together form one editable unit: loop iterations share a blockId; a regular play segment is a block of its own.
+  // Clips emitted together form one editable unit: loop iterations share a blockId. A regular play segment is a block of its own.
   blockId: number;
-  // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
+  // Recorded beat grid in effect when the clip started. Null bpm = draw no beats.
   bpm: number | null;
   // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
   waveSegments: WaveSegment[];

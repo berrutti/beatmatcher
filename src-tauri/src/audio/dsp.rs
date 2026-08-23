@@ -43,10 +43,8 @@ impl Biquad {
         y
     }
 
-    // Replace the filter coefficients while preserving the delay-line state so
-    // there is no discontinuity click on a live signal. Do NOT call this when
-    // transitioning into identity (the dead zone): identity delay lines must be
-    // zeroed, not carried over from an active filter.
+    // Carries the delay lines over, or a live signal clicks. Not for the dead zone:
+    // identity delay lines are zeroed, never carried over from an active filter.
     #[inline]
     pub(crate) fn set_coefficients(&mut self, src: Self) {
         let d1 = self.delay1;
@@ -256,7 +254,7 @@ const FILTER_ENTRY_WIDTH: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
 // Crossfade time for bypass toggle. The filter output is crossfaded with the
 // dry signal so the knob position never sweeps during a bypass transition.
-const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
+pub(crate) const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
 // Coefficients are refreshed every N samples (knob is already smoothed per-sample).
 // Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
 pub(crate) const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
@@ -285,7 +283,7 @@ pub(crate) struct Filter {
     filters_b: [Biquad; 2],
     makeup: f32,
     // Dry/wet crossfade: 0.0 = fully filtered, 1.0 = fully dry (bypassed).
-    // The filter always runs at its set position; bypass is a gain crossfade,
+    // The filter always runs at its set position. Bypass is a gain crossfade,
     // never a frequency sweep.
     crossfade: f32,
     crossfade_target: f32,
@@ -393,6 +391,25 @@ impl Filter {
             l * (1.0 - wet) + l_filtered * wet,
             r * (1.0 - wet) + r_filtered * wet,
         )
+    }
+}
+
+/// The master stage over a whole block: gain, then the limiter, in place. Both the
+/// callback and the offline render run this same pass over their mix buffer.
+pub(crate) fn master_block(limiter: Option<&mut Limiter>, gain: f32, mix: &mut [f32]) {
+    match limiter {
+        Some(limiter) => {
+            for frame in mix.chunks_exact_mut(2) {
+                let (l, r) = limiter.process(frame[0] * gain, frame[1] * gain);
+                frame[0] = l;
+                frame[1] = r;
+            }
+        }
+        None => {
+            for sample in mix.iter_mut() {
+                *sample = (*sample * gain).clamp(-1.0, 1.0);
+            }
+        }
     }
 }
 
@@ -801,7 +818,6 @@ mod tests {
     #[test]
     fn limiter_instantaneous_attack_prevents_clipping() {
         let mut lim = Limiter::new(44100.0);
-        // First sample is loud. Must be limited in the same sample, not the next one.
         let (l, r) = lim.process(2.0, 1.5);
         assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
         assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");
@@ -899,7 +915,7 @@ mod tests {
 }
 
 // Identity tests. The property tests above still pass after a change to a Q, a
-// shelf frequency, or a reordered cascade; these pin the actual output.
+// shelf frequency, or a reordered cascade. These pin the actual output.
 #[cfg(test)]
 mod identity {
     use super::*;

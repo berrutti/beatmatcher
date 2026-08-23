@@ -447,7 +447,7 @@ fn resync_leds(engine: &crate::engine::Engine, midi: &MidiState) {
     }
 }
 
-/// The engine owns the state and never pushes a light; this reads it and derives one.
+/// The engine owns the state and never pushes a light. This reads it and derives one.
 pub(crate) fn refresh_led(
     engine: &crate::engine::Engine,
     midi: &MidiState,
@@ -653,7 +653,6 @@ mod tests {
 
     #[test]
     fn anything_that_is_not_a_three_byte_control_change_is_ignored() {
-        // Note on, pitch bend, a running-status runt, and an empty buffer.
         assert!(parse_control_change(&[0x90, 60, 100]).is_none());
         assert!(parse_control_change(&[0xE0, 0, 64]).is_none());
         assert!(parse_control_change(&[0xB0, 20]).is_none());
@@ -696,7 +695,6 @@ mod tests {
                 controller: 99
             })
             .is_none());
-        // The low half exists only on the binding's own channel.
         assert!(profile
             .resolve(Key::ControlChange {
                 channel: 5,
@@ -1166,7 +1164,6 @@ mod tests {
             resolve_move(&profile, &mut halves, &note_on(9, 60, 127)),
             None
         );
-        // Clock, a running-status runt, and an empty buffer.
         assert_eq!(resolve_move(&profile, &mut halves, &[0xF8]), None);
         assert_eq!(resolve_move(&profile, &mut halves, &[0xB0, 20]), None);
         assert_eq!(resolve_move(&profile, &mut halves, &[]), None);
@@ -1259,7 +1256,7 @@ mod tests {
         assert!(!flx6.claims("XDJ-1000MK2"));
         assert!(!flx6.claims("IAC Driver Bus 1"));
 
-        // The mapping is named for the revision in hand; the substring it claims
+        // The mapping is named for the revision in hand. The substring it claims
         // by is the shorter one both revisions of the port name start with.
         let player = mapping_named("XDJ-1000MK2");
         assert!(player.claims("XDJ-1000MK2"));

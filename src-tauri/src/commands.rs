@@ -155,6 +155,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
             serde_json::json!({
                 "buffer_size_frames": recorded_buffer_frames(audio.get_buffer_frames()),
                 "sample_rate": audio.device_sample_rate,
+                "limiter_enabled": audio.monitor.limiter_enabled(),
             }),
         ),
         // A setting rather than a performed move, so nothing else in the
@@ -263,10 +264,7 @@ fn cue_sheet_text(
     sheet
 }
 
-// Writes a CUE sheet next to `audio_path` (same stem, .cue extension) listing
-// when each track entered the mix. FILE references the audio by name only, so
-// the .cue must sit beside it; name collisions go through unique_path like the
-// .bms sidecar. Track titles/artists come from the source files' tags.
+// FILE references the audio by name only, so the .cue must sit beside it.
 fn write_cue_sheet(audio_path: &str, events: &[session_core::SessionEvent]) {
     let points = session_core::build_cue_points(events);
     if points.is_empty() {
@@ -620,7 +618,7 @@ pub(crate) async fn load_track(
     let loaded_at_frame;
     {
         let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        loaded_at_frame = deck_state.next_render_frame;
+        loaded_at_frame = deck_state.render_frame();
         deck_state.samples = Arc::clone(&samples);
         deck_state.channels = channels;
         deck_state.device_sample_rate = device_sample_rate;
@@ -641,7 +639,7 @@ pub(crate) async fn load_track(
         deck_state.bands = audio::SpectralBands::default();
     }
 
-    // Compute spectral bands in background; emit "bands-ready" when done so the
+    // Compute spectral bands in background. Emit "bands-ready" when done so the
     // frontend can fetch waveform data without blocking track load.
     let deck_id = deck.clone();
     tokio::spawn(async move {
@@ -785,7 +783,7 @@ pub(crate) async fn analyze_track(
 
 // Amplitude for the track sub-range [start_sec, end_sec) at num_points, for
 // zoom-driven LOD. Reads the in-memory session cache (no re-decode) so refetching
-// at higher resolution while zooming is cheap; falls back to decode otherwise.
+// at higher resolution while zooming is cheap. Falls back to decode otherwise.
 #[tauri::command]
 pub(crate) async fn get_track_amplitude_region(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -902,7 +900,7 @@ pub(crate) fn start_recording(
         engine.recorder.start(
             engine.audio.mixer(),
             engine.audio.monitor.capture_start_handle(),
-            anchor,
+            crate::audio::RenderFrame::from_master_clock(anchor),
             start_events(&engine.audio),
         );
     }
@@ -929,7 +927,7 @@ pub(crate) fn save_recording(
     write_cue: bool,
 ) -> Result<(), String> {
     if std::fs::rename(&src, &dest).is_err() {
-        // rename fails across filesystems; fall back to copy then delete
+        // rename fails across filesystems. Fall back to copy then delete
         std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
         if let Err(e) = std::fs::remove_file(&src) {
             eprintln!("save_recording: failed to remove source file {src}: {e}");
@@ -1048,7 +1046,7 @@ pub(crate) fn save_session(path: String, content: String) -> Result<(), String> 
 }
 
 /// `base_name` comes from the caller because it is translated and carries a
-/// formatted date; the extension is the only part this knows about.
+/// formatted date. The extension is the only part this knows about.
 #[tauri::command]
 pub(crate) async fn pick_save_path(format: String, base_name: String) -> Option<String> {
     let (label, ext) = match format.as_str() {
@@ -1326,7 +1324,6 @@ mod tests {
     #[test]
     fn cue_timecode_counts_75_frames_per_second() {
         assert_eq!(cue_timecode(1000.0), "00:01:00");
-        // Two frames in: 2/75 of a second.
         assert_eq!(cue_timecode(2.0 / 75.0 * 1000.0), "00:00:02");
     }
 
@@ -1479,7 +1476,6 @@ mod tests {
 
     #[test]
     fn press_cue_starts_preview_at_nonzero_beat_offset() {
-        // Tracks with a non-zero beat offset (user-adjusted grid) must also work on first press.
         let beat_offset_sec = 0.342; // typical silence-skip value
         let mut d = load_deck_at_beat_offset(beat_offset_sec, 10.0);
         let outcome = d.press_cue();

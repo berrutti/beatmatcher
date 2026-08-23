@@ -1,7 +1,7 @@
 // The session timeline's camera: the horizontal view window (zoom/pan) plus the
 // vertical scroll of the deck rows, and the canvas-pixel projection (ViewContext)
 // every scene item draws/hit-tests against. All the view math itself lives in
-// timelineView.ts; this owns the state and exposes intent-level actions.
+// timelineView.ts. This owns the state and exposes intent-level actions.
 
 import { ref, watch } from 'vue';
 import {
@@ -65,7 +65,7 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
     { immediate: true }
   );
 
-  // The per-frame projection. `canvasW/H` are CSS pixels; points handed to
+  // The per-frame projection. `canvasW/H` are CSS pixels. Points handed to
   // hit-testing are canvas-local (clientX - rect.left, clientY - rect.top).
   function viewContext(canvasW: number, canvasH: number): ViewContext {
     const trackW = Math.max(0, canvasW - LABEL_W - PADDING);

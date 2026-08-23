@@ -106,7 +106,6 @@ impl EditableLane {
         }
     }
 
-    // Rate is transport, so it has no descriptor to carry its display metadata.
     pub fn display(&self, mixer: &'static MixerManifest) -> LaneDisplay {
         match self
             .descriptor(mixer)
@@ -144,7 +143,6 @@ fn lane_epsilon(lane: EditableLane) -> f64 {
     }
 }
 
-/// Rate is transport, not a mixer param, so it needs no manifest to resolve.
 pub fn rate_lane_spec(rate_min: Option<f64>, rate_max: Option<f64>) -> LaneSpec {
     LaneSpec {
         lane: EditableLane::Rate,
@@ -243,7 +241,7 @@ fn sort_by_ms(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
     events
 }
 
-// A drag can scrub back and forth over the same time range; the last value
+// A drag can scrub back and forth over the same time range. The last value
 // written at each timestamp is the one the user ended on.
 pub fn normalize_gesture_samples(samples: &[LanePoint]) -> Vec<LanePoint> {
     let mut by_ms: HashMap<u64, f64> = HashMap::new();
@@ -290,9 +288,6 @@ pub fn original_value_at(events: &[SessionEvent], spec: &LaneSpec, deck: &str, m
     spec.default_value
 }
 
-// Replaces this lane's events inside [range_start_ms, range_end_ms] with the
-// drawn points and restores the original value at range_end_ms, so everything
-// after the gesture sounds unchanged.
 pub fn splice_lane_events(
     events: &[SessionEvent],
     spec: &LaneSpec,
@@ -334,10 +329,7 @@ pub fn splice_lane_events(
     sort_by_ms(kept)
 }
 
-// Insert (or replace) a single set_playback_rate point for `deck` at `ms`. The
-// rate lane is a step function, so one inserted point holds until the next
-// existing change. Backs the editor's "Set BPM" (right-click a clip), which
-// converts a target BPM to rate = target_bpm / track_bpm before calling here.
+// The rate lane is a step function, so one inserted point holds until the next change.
 pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> Vec<SessionEvent> {
     let mut kept: Vec<SessionEvent> = events
         .iter()
@@ -355,11 +347,7 @@ pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> V
     sort_by_ms(kept)
 }
 
-// Set one uniform rate over the whole clip span [start_ms, end_ms]: drop the
-// deck's rate changes inside it, open with `rate` at start_ms, and restore the
-// pre-edit rate at end_ms so playback after the clip is unchanged. Backs the
-// editor's "Set BPM (whole clip)". Unlike splice_lane_events the rate is NOT
-// clamped to the lane's display range, since the user typed an explicit BPM.
+// The rate is not clamped to the lane's display range: the user typed a BPM.
 pub fn set_rate_span(
     events: &[SessionEvent],
     deck: &str,
@@ -507,7 +495,7 @@ pub fn toggle_filter_active_range(
     )
 }
 
-// Shift+drag paints a nudge over [range_start_ms, range_end_ms]; the recorded
+// Shift+drag paints a nudge over [range_start_ms, range_end_ms]. The recorded
 // value at range_end_ms is restored.
 pub fn paint_nudge_range(
     events: &[SessionEvent],
@@ -593,7 +581,7 @@ pub fn delete_filter_active_span(
 
 // Stretch one edge of a filter-active span [start_ms, end_ms] to new_ms, clamped
 // so it keeps at least MIN_GESTURE_MS and never crosses the neighbouring filter
-// event. Moving the "start" edge relocates the opener; moving "end" relocates the
+// event. Moving the "start" edge relocates the opener. Moving "end" relocates the
 // closer (or, for a span that ran to the session end, inserts one to close it).
 pub fn resize_filter_active_span(
     events: &[SessionEvent],
@@ -688,11 +676,6 @@ pub fn resize_filter_active_span(
     }
 }
 
-// Slide a whole filter-active span [start_ms, end_ms] by delta_ms, shifting its
-// opener (active=true) and closer (active=false) together. Clamped so the span
-// stays within the gap between its neighbouring filter events and inside
-// [0, duration_ms]. A span with no closer (ran to session end) only shifts its
-// opener.
 pub fn move_filter_active_span(
     events: &[SessionEvent],
     deck: &str,
@@ -823,7 +806,7 @@ mod tests {
     fn splice_restores_value_when_points_are_unordered() {
         let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
         let events = vec![spec.make_event(0.0, 0.7, "A")];
-        // Temporally last point is (500, 0.97); last in input order is (100, 0.7),
+        // Temporally last point is (500, 0.97). Last in input order is (100, 0.7),
         // which equals the value to restore.
         let points = vec![
             LanePoint {
@@ -858,12 +841,9 @@ mod tests {
         ];
         let out = set_rate_at(&events, "A", 3000.0, 0.98);
         let spec = rate_lane_spec(Some(0.92), Some(1.08));
-        // Inserted value holds from 3000 until the existing change at 8000.
         assert!((original_value_at(&out, &spec, "A", 3000.0) - 0.98).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.98).abs() < 1e-9);
-        // The later change survives (not "to clip end" semantics).
         assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.05).abs() < 1e-9);
-        // Earlier value is untouched.
         assert!((original_value_at(&out, &spec, "A", 2999.0) - 1.0).abs() < 1e-9);
     }
 
@@ -880,16 +860,12 @@ mod tests {
                 ..make_event(5000.0, "set_playback_rate", "A")
             },
         ];
-        // Clip span [2000, 8000]; set whole clip to rate 0.97.
         let out = set_rate_span(&events, "A", 2000.0, 8000.0, 0.97);
         let spec = rate_lane_spec(Some(0.92), Some(1.08));
-        // Uniform across the clip (the 1.04 mid-clip change is gone).
         assert!((original_value_at(&out, &spec, "A", 2000.0) - 0.97).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 5000.0) - 0.97).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.97).abs() < 1e-9);
-        // After the clip the pre-edit rate (1.04, in force at clip end) is restored.
         assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.04).abs() < 1e-9);
-        // Before the clip is untouched.
         assert!((original_value_at(&out, &spec, "A", 1000.0) - 1.0).abs() < 1e-9);
     }
 
@@ -914,11 +890,8 @@ mod tests {
         let events = vec![SessionEvent::param(1000.0, Some("A"), "fader", "gain", 0.8)];
         let points = vec![lane_point(5000.0, 0.4), lane_point(6000.0, 0.4)];
         let out = splice_lane_events(&events, &spec, "A", 5000.0, 8000.0, &points);
-        // before the gesture: original 0.8
         assert!((gain_at(&out, 3000.0) - 0.8).abs() < 1e-6);
-        // inside: 0.4
         assert!((gain_at(&out, 5500.0) - 0.4).abs() < 1e-6);
-        // restored to 0.8 at range_end_ms
         assert!((gain_at(&out, 9000.0) - 0.8).abs() < 1e-6);
     }
 
@@ -948,7 +921,6 @@ mod tests {
     #[test]
     fn toggle_filter_active_pairs_into_span() {
         let out = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // was off -> turns on at range_start_ms, restores to off at range_end_ms
         assert!(filter_active_at(&out, "A", 2000.0, true));
         assert!(!filter_active_at(&out, "A", 5000.0, true));
     }
@@ -1003,7 +975,6 @@ mod tests {
     #[test]
     fn move_filter_active_span_slides_both_edges() {
         let mut events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // The drawn cutoff curve (set_filter) must NOT move with the span.
         events.push(SessionEvent::param(
             2000.0,
             Some("A"),
@@ -1025,7 +996,6 @@ mod tests {
     #[test]
     fn move_filter_active_span_clamps_to_session_end() {
         let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // Dragging far right is clamped so the end never passes duration_ms.
         let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 100_000.0, 10_000.0);
         let close = out
             .iter()
@@ -1119,7 +1089,6 @@ mod tests {
             lane_point(2.0, 0.5),
         ];
         let out = decimate_steps(&points, 0.01);
-        // middle point (delta 0.005 < eps) dropped; first + last kept.
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].value, 0.0);
         assert_eq!(out[1].value, 0.5);

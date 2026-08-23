@@ -33,7 +33,7 @@ pub(super) enum Half {
     Lsb,
 }
 
-/// A high-resolution control names only its high half; the low half is implied
+/// A high-resolution control names only its high half. The low half is implied
 /// at `LSB_OFFSET` above it.
 pub(super) enum Source {
     ControlChange {

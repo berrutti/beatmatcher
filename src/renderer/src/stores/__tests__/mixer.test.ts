@@ -111,8 +111,6 @@ describe('setParam', () => {
   });
 });
 
-// The sliders bind to these, so a descriptor change has to reach the UI rather
-// than the store restating the range.
 describe('eq specs', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -207,8 +205,6 @@ describe('reset', () => {
   });
 });
 
-// A controller whose filter knob has no on/off button is unusable until the
-// filter is engaged, so this has to hold without touching the UI.
 describe('filters engaged at start', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -233,8 +229,6 @@ describe('filters engaged at start', () => {
     expect(store.paramActive('E', FILTER_ACTIVE)).toBe(false);
   });
 
-  // The switch names the launch. Turning it on mid-set used to punch every live
-  // filter in at once, which is the mixer changing under the DJ's hands.
   it('ignores the preference being switched on after launch', async () => {
     const store = useMixerStore();
 
@@ -271,8 +265,6 @@ describe('applyEngineParam', () => {
     vi.clearAllMocks();
   });
 
-  // Looped, like the setter tests: a push for a param the mixer gained has to
-  // land without this file naming it.
   it('mirrors every deck param the mixer holds', () => {
     const store = useMixerStore();
 
@@ -283,8 +275,6 @@ describe('applyEngineParam', () => {
     }
   });
 
-  // The whole point of origin tagging: a push applies locally and stops there.
-  // Invoking back would send an engine value straight back into the engine.
   it('does not invoke the backend', () => {
     const store = useMixerStore();
     store.applyEngineParam({ deck: 'A', slot: 'eq', param: 'low', value: -6 });
@@ -310,8 +300,6 @@ describe('crossfader', () => {
     vi.clearAllMocks();
   });
 
-  // Thru and centre is what makes the crossfader inert until a deck is put on a
-  // side, which is why adding it did not change how existing sessions render.
   it('starts centred with every deck through', () => {
     const store = useMixerStore();
 
@@ -340,8 +328,6 @@ describe('crossfader', () => {
     expect(mockedInvoke).toHaveBeenCalledWith('set_xfader_assign', { deck: 'B', assign: 'a' });
   });
 
-  // Master scope arrives with no deck, so it has to be read before the deck
-  // guard that rejects everything else.
   it('mirrors an engine-driven position that carries no deck', () => {
     const store = useMixerStore();
 
@@ -378,8 +364,6 @@ describe('crossfader', () => {
     });
   });
 
-  // What the UI relies on to have no off button: it lights the side that is on,
-  // so two sides on at once would be a state it cannot draw.
   it('never lights both sides, whatever the press order', () => {
     const store = useMixerStore();
     const sides: XfaderSide[] = ['a', 'b'];

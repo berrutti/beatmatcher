@@ -38,7 +38,7 @@ export type LoadableTrack = {
 
 // Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
 // typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
-// of Float32 data; for 10 minutes ~2.1 MB. Anything zoomed deeper than the
+// of Float32 data. For 10 minutes ~2.1 MB. Anything zoomed deeper than the
 // rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
 const DENSE_LOD_PTS_PER_SEC = 250;
 
@@ -56,7 +56,7 @@ type TransportPush = DeckSyncPayload & { deck: DeckId };
 
 type RatePush = { deck: DeckId; rate: number };
 
-// The deck header shows BPM with two decimals; the audible rate is computed
+// The deck header shows BPM with two decimals. The audible rate is computed
 // from the rounded value so display and playback always agree.
 function roundBpm(bpm: number): number {
   return Math.round(bpm * 100) / 100;
@@ -213,7 +213,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     // Beat math lives in the engine (session-core), not in the view: this
     // returns the continuous beat count under the playhead, or null when no
     // track is loaded. It is NOT gated on playback, so a paused deck keeps the
-    // ring frozen where the playhead sits instead of clearing it; the phase
+    // ring frozen where the playhead sits instead of clearing it. The phase
     // ring maps this to its own cycle length.
     get beat(): number | null {
       if (state.trackBpm === null || !state.trackLoaded) return null;
@@ -227,7 +227,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     },
 
     // Playback rate from the pitch fader (targetBpm/trackBpm), 1 when no grid.
-    // Nudge is not included; it is a transient offset applied in the engine.
+    // Nudge is not included. It is a transient offset applied in the engine.
     get rate(): number {
       if (state.trackBpm === null || state.targetBpm === null) return 1;
       return state.targetBpm / state.trackBpm;
@@ -289,16 +289,32 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.trackData = null;
       positionCache = 0;
 
+      // Named before the decode, which takes long enough that a glance at the
+      // deck in between reads the track that was there before. Not loaded until
+      // it returns, so a swap shows the same pending state as an empty deck.
+      state.trackName = data.name;
+      state.coverArt = null;
+      state.trackLoaded = false;
+
       onBeatOffsetChangeCb = data.onBeatOffsetChange;
 
-      const info = await invoke<TrackData>('load_track', {
-        deck: id,
-        path: data.path,
-        analyze: false,
-        beatOffsetSec: data.beatOffset
-      });
+      let info: TrackData;
+      try {
+        info = await invoke<TrackData>('load_track', {
+          deck: id,
+          path: data.path,
+          analyze: false,
+          beatOffsetSec: data.beatOffset
+        });
+      } catch (error) {
+        // A deck left mid-load refuses every command for the rest of the session,
+        // and would show the name of a track it does not hold.
+        state.loading = false;
+        state.waveformLoading = false;
+        state.trackName = '';
+        throw error;
+      }
 
-      state.trackName = data.name;
       state.trackData = info;
       state.coverArt = info.coverArt ?? null;
       state.trackLoaded = true;
@@ -335,7 +351,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
           state.waveformLoading = false;
           fetchDenseLodChunked(gen, info.duration, densePoints);
         } catch {
-          // spectral fetch failed; waveform will remain blank but deck is playable
+          // spectral fetch failed. Waveform will remain blank but deck is playable
           state.waveformLoading = false;
         }
       });
@@ -395,7 +411,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       applyDeckState(payload);
     },
 
-    // The engine owns the rate; bpm and pitch offset are this store's derived
+    // The engine owns the rate. Bpm and pitch offset are this store's derived
     // display of it, so they are recomputed here rather than invoked back.
     applyEngineRate(rate: number) {
       // Ahead of the grid check: the tempo fader is not gated on a grid, so a deck showing

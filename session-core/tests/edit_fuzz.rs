@@ -1,4 +1,4 @@
-// Deterministic randomized stress for the clip edit ops; every failure message
+// Deterministic randomized stress for the clip edit ops. Every failure message
 // carries its seed, so a failing case replays exactly.
 
 use session_core::{
@@ -194,7 +194,6 @@ fn random_edits_uphold_structural_invariants() {
     }
 }
 
-// The batch range delete relies on this to re-locate targets between deletes.
 #[test]
 fn whole_block_delete_leaves_other_blocks_identical() {
     for seed in 1..=150u64 {

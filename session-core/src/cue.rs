@@ -69,7 +69,7 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
                 state.is_playing = is_playing;
                 // The snapshot carries the strip gain at record start (gain is
                 // not part of the DeckSnapshot command, so read it from the raw
-                // event); absent in older logs, where unity is the safe default.
+                // event). Absent in older logs, where unity is the safe default.
                 if let Some(gain) = event.gain {
                     state.gain = gain;
                 }

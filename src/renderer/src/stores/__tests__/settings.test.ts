@@ -11,8 +11,6 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 import { FADER_CURVE_OPTIONS } from '../settings';
 import { faderCurveGain } from '@renderer/utils/sessionCore';
 
-// The settings screen asks for each curve by the name it stores, and the engine
-// names them independently. A mismatch silently draws a linear line.
 describe('fader curve options', () => {
   it('names a curve the engine recognises, for every option', () => {
     const shapes = FADER_CURVE_OPTIONS.map((curve) => faderCurveGain(curve, 0.5));

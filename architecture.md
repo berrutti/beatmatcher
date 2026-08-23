@@ -75,9 +75,37 @@ graph LR
 
 `Deck::render_block` is the single entry point the stream callbacks use to fill a buffer. Main and cue outputs are independently optional, so both routings below share one mixing loop.
 
+## One block, two callers
+
+A block of audio is produced in one place, whether it is heard now or rendered from a `.bms` later. `mix_channels` walks the same `(Deck, ChannelStrip)` pairs and `master_block` applies gain and the limiter over the result. The live callback adds the cue mix and the recording tap. The offline render adds neither.
+
+```mermaid
+flowchart TD
+    classDef live fill:#3b82f6,stroke:#1d4ed8,color:#fff
+    classDef shared fill:#208043,stroke:#166534,color:#fff
+    classDef offline fill:#a855f7,stroke:#7c3aed,color:#fff
+
+    Callback["stream callback
+(audio/stream.rs)"]:::live
+    Render["render_timeline
+(offline_render.rs)"]:::offline
+    Mix["mix_channels
+(deck.render_block per pair)"]:::shared
+    Master["master_block
+(gain, limiter)"]:::shared
+    Cue["cue mix + capture tap"]:::live
+
+    Callback --> Mix
+    Render --> Mix
+    Mix --> Master
+    Master --> Cue
+```
+
+The offline render works through the timeline in chunks of the buffer size the `.bms` recorded, because anything consumed once per callback rather than once per frame reads differently at another length.
+
 ## Mixer manifest
 
-A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes it as an ordered list of slots, each naming a unit id that `audio/unit.rs` builds into an `AudioUnit`, plus a `cue_tap` slot and the master slots. `MIXER` in `audio/mod.rs` is the one manifest the live engine builds; the offline renderer builds whichever the `.bms` header names.
+A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes it as an ordered list of slots, each naming a unit id that `audio/unit.rs` builds into an `AudioUnit`, plus a `cue_tap` slot and the master slots. `MIXER` in `audio/mod.rs` is the one manifest the live engine builds. The offline renderer builds whichever the `.bms` header names.
 
 - **A slot is a position, not a unit.** `eq` is the second stage of the strip whatever fills it, so `classic-3band` and `isolator-3band` share addresses while reading their values in different ranges.
 - **Every param carries its own range**, so nothing outside the manifest restates a min, max, step or default. `from_unit_interval` places a MIDI control on it and `clamp` bounds a `.bms` value.
@@ -86,9 +114,16 @@ A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes i
 
 ## Engine to UI
 
-Writes reach the UI on one channel. `engine_push.rs` collects dirty addresses and flushes them every 16 ms, reading each value at flush rather than capturing it at write time, so a push never carries a value a later write replaced.
+Turn a knob on the controller and the on-screen knob has to move with it. `engine_push.rs` does that, and it has to survive a physical fader sweep, which can produce hundreds of MIDI messages a second.
 
-`ParamOrigin` decides what travels: a `Ui` write is dropped, because sending the UI its own value back invites the control under the pointer to jump to a position it has already left. Only `Midi` writes are pushed. Repeated writes to one address collapse, which is what bounds a controller sweep to one message per flush instead of one per tick.
+It never queues values. Each change records only _which_ control moved: deck A's EQ low, the crossfader, deck B's transport. A background thread wakes every 16 ms, reads the current value of each control that moved, and emits one batch (`engine-params`, `engine-transport`, `engine-rate`).
+
+Two consequences fall out of storing addresses instead of values:
+
+- **A sweep costs one message per flush, not one per MIDI tick.** Three hundred writes to the same fader in one window are one entry in the set.
+- **A push can never carry a stale value.** The value is read at flush time, so it is whatever the engine holds right then, not whatever it held when the write happened.
+
+`ParamOrigin` decides what gets recorded at all. A `Ui` write is skipped: the UI made that change and already shows it, so echoing it back would drag the control out from under the user's pointer mid-drag. Only `Midi` writes are pushed.
 
 ## Stream routing
 
@@ -149,6 +184,23 @@ graph TD
 ```
 
 `session_apply.rs::apply_deck_command` is the single implementation of `SessionCommand` application against the real `Deck`/`ChannelStrip`, used by both the live scheduler and the offline renderer (parameterized over sample loading and live-only start-latency compensation). `session-core`'s own `DeckSim`/`StripSim` (used for scrub simulation and by the WASM build) remain a separate, audio-free implementation of the same command semantics, since the crate has no audio buffer types.
+
+## Session timeline rendering
+
+The timeline is retained-mode over a plain 2D canvas. The scene is a flat list of `SceneItem`s (`utils/timelineEngine.ts`). An item knows its own bounds, draws itself clipped to them, and hit-tests itself. No item holds gesture state.
+
+Two orderings run over that list, and they are deliberately not the same one:
+
+- **Draw order** is list order. The scene builder composes it, earlier items paint under later ones.
+- **Hit precedence** is a separate table in `utils/timelineHits.ts`, keyed by `target:part` so a clip's trim edge can outrank a nudge while its body does not. When several items claim a point, the highest-ranked claimer wins, ties broken by draw order.
+
+`composables/useTimelineGestures.ts` is the interaction layer. On pointer-down it hit-tests the scene, picks a gesture from the hit plus modifiers, and drives the drag, emitting semantic intents that the controller reacts to. Gesture visuals in progress (the draw line, a clip ghost, nudge and filter previews) are pushed back as overlay `SceneItem`s, so the renderer draws them like anything else.
+
+## Collection column widths
+
+A resizable column holds a unitless share, never a pixel width. Its rendered width is its share over the sum of the visible resizable shares, so those columns fill whatever space they are given by construction. A drag trades share between two adjacent columns and leaves every other column's share untouched. `bpm` and `added` sit outside the system at fixed pixel widths, their content never needing an adjustable one.
+
+`table-layout: fixed` updates a `<col>`'s width attribute from a `calc()` but does not re-lay-out the table, so shares are resolved to pixels in JS rather than handed to the browser as an expression.
 
 ## Performer state broadcast
 

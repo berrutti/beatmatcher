@@ -3,7 +3,7 @@ pub(crate) struct Recording {
     pub(crate) temp_path: String,
 }
 
-// Dedicated writer thread; on channel close it back-patches the RIFF/data sizes.
+// Dedicated writer thread. On channel close it back-patches the RIFF/data sizes.
 pub(crate) fn wav_writer_thread(
     path: String,
     sample_rate: u32,
@@ -80,7 +80,7 @@ pub(crate) fn wav_writer_thread(
 // Streams f32 samples from the recording channel to a temp .pcm file as i32 LE
 // (converting on the fly), then encodes that file to FLAC block-by-block via a
 // custom Source impl. Peak RAM during recording: O(one chunk). During encode:
-// O(one FLAC block, ~32 KB). 32-bit source → 24-bit FLAC; 16-bit → 16-bit FLAC.
+// O(one FLAC block, ~32 KB). 32-bit source becomes 24-bit FLAC, 16-bit stays 16-bit.
 pub(crate) fn flac_writer_thread(
     path: String,
     sample_rate: u32,

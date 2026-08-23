@@ -270,7 +270,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 }
 
 .mixer__channel--inactive {
-  /* Visibility flips only after the fade-out finishes; becoming active again
+  /* Visibility flips only after the fade-out finishes. Becoming active again
      flips it immediately (no delay declared here) so the fade-in is visible
      from the start. */
   opacity: 0;

@@ -39,7 +39,7 @@ pub use timeline::{
 
 // WASM boundary for the frontend. Pure compute only: events in as JSON, the
 // derived timeline out as JSON. No side effects (file/audio/IPC stay in Rust
-// proper). The frontend parses the returned JSON; the serde camelCase derives
+// proper). The frontend parses the returned JSON. The serde camelCase derives
 // on the result structs make it match the existing TS shapes 1:1.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -62,9 +62,7 @@ mod wasm {
         serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Continuous beat count at a playback position given the track's beat grid.
-    /// Mirrors the engine math so the phase ring (and any consumer) never
-    /// reimplements it. Primitives in/out, no JSON.
+    /// Mirrors the engine math so no consumer reimplements it.
     #[wasm_bindgen(js_name = currentBeat)]
     pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
         crate::current_beat(position_sec, beat_offset_sec, bpm)
@@ -78,8 +76,6 @@ mod wasm {
         serde_json::from_str(block_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Group a deck's clips into draggable transport blocks. Returns a JSON
-    /// array of blocks (camelCase, `loop` field) sorted by start.
     #[wasm_bindgen(js_name = blocksForDeck)]
     pub fn blocks_for_deck(clips_json: &str, deck: &str) -> Result<String, JsError> {
         let clips = parse_clips(clips_json)?;
@@ -88,7 +84,7 @@ mod wasm {
     }
 
     /// Drag-clamp range for a block: `{ minStartMs, maxEndMs, startTrimMinMs,
-    /// minBlockMs }`; `maxEndMs` null = open-ended. `startTrimMinMs` uses the
+    /// minBlockMs }`. A null `maxEndMs` means open-ended. `startTrimMinMs` uses the
     /// trim commit's own formula so preview and commit clamp identically.
     #[wasm_bindgen(js_name = blockBounds)]
     pub fn block_bounds(
@@ -122,7 +118,7 @@ mod wasm {
     }
 
     /// Every editable lane's spec for one mixer, keyed by lane key. Rate carries
-    /// its default range; a caller with a clip-specific range overrides min/max.
+    /// its default range. A caller with a clip-specific range overrides min/max.
     #[wasm_bindgen(js_name = laneSpecs)]
     pub fn lane_specs(mixer_id: &str) -> String {
         let mixer = resolve_mixer(mixer_id);
@@ -189,7 +185,6 @@ mod wasm {
         crate::FaderCurve::from_str_or_linear(curve).gain(position)
     }
 
-    /// The shared edit/mixer constants, from the one place they are defined.
     #[wasm_bindgen(js_name = editConstants)]
     pub fn edit_constants() -> String {
         serde_json::json!({
@@ -348,7 +343,7 @@ mod wasm {
         Ok(crate::original_value_at(&events, &spec, deck, ms))
     }
 
-    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points; restore at range_end_ms.
+    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points. Restore at range_end_ms.
     #[wasm_bindgen(js_name = spliceLaneEvents)]
     #[allow(clippy::too_many_arguments)]
     pub fn splice_lane_events(

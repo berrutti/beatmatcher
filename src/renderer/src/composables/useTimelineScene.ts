@@ -83,7 +83,7 @@ export function buildScene(input: SceneInput): SceneResult {
     laneHeights: input.editMode ? [{ key: input.laneFor(deckId), height: input.laneHeight }] : []
   }));
   // The master lane sits at the top, directly below the time ruler and above
-  // every deck row; the deck rows begin below it.
+  // every deck row. The deck rows begin below it.
   const masterTop = vc.laneOriginY;
   const masterHeight = MASTER_ROW_H;
   const rows = computeRowLayout(deckSpecs, masterTop + masterHeight, input.waveformHeight);

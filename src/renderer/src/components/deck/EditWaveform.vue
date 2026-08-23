@@ -81,7 +81,7 @@ const canvasEl = ref<HTMLCanvasElement | null>(null);
 let trackDuration = 0;
 
 // Visible window in seconds. Plain vars (not refs) because they're only read
-// by the rAF canvas draw loop; reactivity would add per-mousemove overhead
+// by the rAF canvas draw loop. Reactivity would add per-mousemove overhead
 // during drag for no benefit.
 let viewStartSec = 0;
 let viewEndSec = 0;
@@ -264,11 +264,8 @@ function ensureBitmap(canvasW: number, canvasH: number) {
 
   const sameSource = bitmapForPeaks === cachedPeaks;
   const sameSize = bitmapCanvasH === canvasH;
-  // The bitmap is always stretched to the current canvas size at draw time
-  // (see drawWaveform), so it can never visually desync from the live beat
-  // grid. This tolerance only controls how eagerly we recompute it at a
-  // sharper resolution; without it, continuous resizing would rebuild (and
-  // slightly re-quantize) the waveform on every frame, causing it to shimmer.
+  // Without a tolerance a continuous resize rebuilds and re-quantizes the waveform
+  // every frame, which shimmers. The bitmap is stretched to size at draw time anyway.
   const sameResolution =
     bitmapScreenPxPerSec > 0 &&
     Math.abs(bitmapScreenPxPerSec - screenPxPerSec) <= bitmapScreenPxPerSec * 0.15;

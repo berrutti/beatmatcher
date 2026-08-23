@@ -25,7 +25,7 @@ import {
 // range [startSec, endSec]. Zoom-driven LOD refetches a tighter range at higher
 // point density, so this is a region (not necessarily the whole track).
 export type WaveformRegion = { startSec: number; endSec: number; amps: Float32Array };
-// The top-level region is the high-detail (visible) slice; `base` is a coarse
+// The top-level region is the high-detail (visible) slice. `base` is a coarse
 // slice covering the track's whole used extent, kept loaded so panning/zooming
 // to an as-yet-unfetched spot still shows something until the detail arrives.
 export type TrackWaveform = WaveformRegion & { base?: WaveformRegion };
@@ -115,7 +115,7 @@ const JOG_SCALE_LABEL_COLOR = '#777';
 const JOG_SHORT_LABEL = 'JOG';
 const JOG_LANE_RULE_H = 1;
 const JOG_SCALE_LABEL_INSET_PX = 3;
-// Below this a tenth of a percent still reads; above it the decimal is noise.
+// Below this a tenth of a percent still reads. Above it the decimal is noise.
 const JOG_SCALE_LABEL_COARSE_PCT = 10;
 const NUDGE_LINE_W = 2;
 const OVERVIEW_BORDER_COLOR = '#222';
@@ -160,7 +160,6 @@ export type RowLayout = {
   deckId: DeckId;
   top: number;
   height: number;
-  // Height of the waveform strip at the top of the row (resizable, see ROW_H).
   waveformHeight: number;
   lanes: SublaneLayout[];
 };
@@ -213,10 +212,6 @@ function filterColorFor(value: number): string {
   return FILTER_NEUTRAL_COLOR;
 }
 
-// Each clip is drawn as the concatenation of its wave segments, every segment
-// mapping a track-time window to a wall-time window at its own effective rate
-// (pitch*nudge). That is what makes a region the user nudged/pitched render
-// longer or shorter, instead of the whole clip at one wrong rate.
 function clipWaveSegments(clip: Clip): WaveSegment[] {
   if (clip.waveSegments.length > 0) return clip.waveSegments;
   // Legacy fallback for clips with no segments: one piece at the nominal rate.
@@ -232,8 +227,6 @@ function clipWaveSegments(clip: Clip): WaveSegment[] {
   ];
 }
 
-// Mean amplitude over the track-time range [t0, t1] within a region, or null if
-// that range lies outside the region (so the caller can fall back to a coarser one).
 function sampleRegion(region: WaveformRegion, startSec: number, endSec: number): number | null {
   const span = region.endSec - region.startSec;
   if (span <= 0) return null;
@@ -449,7 +442,7 @@ function drawFilterLane(
 
   const { min, max, defaultValue } = specs.filter;
 
-  // Center line marks the bypass position (knob = 0); LPF sweeps below it, HPF above.
+  // Center line marks the bypass position (knob = 0). LPF sweeps below it, HPF above.
   drawLaneCenterLine(ctx, canvasWidth, laneY, laneH, min, max, defaultValue);
 
   drawLaneSteps(
@@ -650,7 +643,7 @@ export function drawDeckLanes(
         : LANE_BORDER_COLOR_SAME_GROUP;
     ctx.fillRect(LABEL_W, top, trackW, 1);
 
-    // The value curve needs deck data; the frame above does not.
+    // The value curve needs deck data. The frame above does not.
     if (!deckData) continue;
 
     // Inset the value area so the curve breathes and never touches the frame;
@@ -1046,7 +1039,7 @@ export function drawValueGesturePreview(
 ): void {
   if (points.length === 0) return;
   // The line is bounded to its lane (centered strokes would otherwise spill past
-  // the dividers at extreme values); the label is drawn after, outside the clip.
+  // the dividers at extreme values). The label is drawn after, outside the clip.
   withLaneClip(ctx, preview.top, preview.height, canvasW, () => {
     ctx.strokeStyle = GESTURE_PREVIEW_LINE_COLOR;
     ctx.lineWidth = GESTURE_PREVIEW_LINE_WIDTH;

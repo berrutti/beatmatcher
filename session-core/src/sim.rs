@@ -10,12 +10,9 @@ pub const DEFAULT_MASTER_GAIN: f32 = 0.7943;
 // assume forward motion. The engine floors to this too, or the two disagree.
 pub const JOG_FACTOR_MIN: f64 = 0.1;
 
-// Decoded track samples keyed by path. The simulation only reads each track's
-// frame count (samples / channels); the buffers themselves are the live
-// engine's, passed through unchanged.
+// The simulation only reads each track's frame count, never its samples.
 pub type SampleCache = HashMap<String, (Arc<Vec<f32>>, usize)>;
 
-// Internal simulation state. Not stored long-term.
 #[derive(Clone)]
 pub struct DeckSim {
     pub path: Option<String>,
@@ -162,9 +159,6 @@ pub struct SessionSnapshot {
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
-// Continuous beat count at a playback position, given the track's beat grid.
-// Consumers pick their own cycle length (4-beat phase ring, 16-beat phrase, ...)
-// by taking this value modulo that length. Returns 0.0 for an unknown grid.
 pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
     if bpm <= 0.0 {
         return 0.0;
@@ -596,7 +590,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
 
 // deck_snapshot (initial state) sorts first within its rounded-ms cluster, and
 // at an exactly equal timestamp (only edits synthesize those) transport enders
-// sort before starters; both rules are pinned by tests in this module.
+// sort before starters. Both rules are pinned by tests in this module.
 pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
     let bucket = |event: &SessionEvent| event.elapsed_ms.round() as i64;
     let snapshot_rank = |event: &SessionEvent| u8::from(event.event_type != "deck_snapshot");
@@ -1017,7 +1011,6 @@ mod tests {
             SAMPLE_RATE,
         );
         assert!(!state.decks["A"].is_playing);
-        // 2s × 44100 Hz = 88200 frames.
         assert_eq!(state.decks["A"].play_start_frame, 88200.0);
     }
 
@@ -1075,7 +1068,6 @@ mod tests {
         );
         assert_eq!(state.decks["A"].play_start_frame, SAMPLE_RATE_F64);
         assert_eq!(state.decks["A"].rate, 2.0);
-        // At t=2000ms: 44100 + 44100×2 = 132300.
         assert_eq!(
             sim_pos(&state.decks["A"], 2000.0, SAMPLE_RATE_F64),
             132300.0
@@ -1187,7 +1179,6 @@ mod tests {
                 snaps[i - 1].elapsed_ms,
             );
         }
-        // Correct order: stop at 1000ms, play at 2000ms → last has is_playing=true.
         assert!(snaps
             .last()
             .unwrap()
@@ -1300,7 +1291,6 @@ mod tests {
         let snaps = build_snapshots(&events, SAMPLE_RATE, &cache);
         let snap = snaps.last().unwrap();
         let sim = sim_state_from_snapshot(snap);
-        // 2s of play at rate=1 from frame 0 → 88200 (well within 441000).
         assert_eq!(sim_pos(&sim.decks["A"], 2000.0, SAMPLE_RATE_F64), 88200.0);
     }
 
@@ -1322,7 +1312,6 @@ mod tests {
 
     #[test]
     fn sim_pos_unit_nudge_unchanged() {
-        // jog_hold_factor = 1.0 must not change the result vs the non-nudge tests.
         let sim = DeckSim {
             is_playing: true,
             play_start_ms: 0.0,
@@ -1352,7 +1341,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Apply +4% nudge at t=1000ms; position at that moment = 44100.
+        // Apply +4% nudge at t=1000ms. Position at that moment = 44100.
         sim_apply_event(
             &SessionEvent {
                 event_type: "set_nudge".to_string(),
@@ -1542,7 +1531,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Release nudge at t=1000ms; position = 1000ms * 1.04 * sample_rate.
+        // Release nudge at t=1000ms. Position = 1000ms * 1.04 * sample_rate.
         sim_apply_event(
             &SessionEvent {
                 event_type: "set_nudge".to_string(),

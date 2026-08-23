@@ -26,6 +26,24 @@ struct Slot {
     cue: Option<Box<dyn AudioUnit>>,
 }
 
+/// The frame an event is stamped with. Only a locked deck or strip can mint one, so a
+/// stamp can never come from the free-running clock, which names the next buffer while
+/// the callback is still filling the current one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderFrame(u64);
+
+impl RenderFrame {
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+
+    /// The one way to make a stamp without a lock, for the two events that belong to the
+    /// recording rather than to a deck.
+    pub(crate) fn from_master_clock(frame: u64) -> Self {
+        Self(frame)
+    }
+}
+
 pub struct ChannelStrip {
     manifest: &'static MixerManifest,
     slots: Vec<Slot>,
@@ -158,6 +176,10 @@ impl ChannelStrip {
             .param(param)
     }
 
+    pub(crate) fn render_frame(&self) -> RenderFrame {
+        RenderFrame(self.next_render_frame)
+    }
+
     pub(crate) fn set_next_render_frame(&mut self, buffer_end: u64) {
         self.next_render_frame = buffer_end;
     }
@@ -228,7 +250,6 @@ impl ChannelStrip {
         self.set_fader_curve(session_core::FaderCurve::default());
     }
 
-    // The full strip, in manifest order.
     #[inline]
     /// The channel's own level, read before the crossfader. Hardware channel meters do
     /// not follow the throw, and the cue sheet's audibility test reads the fader instead.
@@ -275,8 +296,6 @@ impl ChannelStrip {
 // main_pos (master callback, source of truth) and cue_pos (cue callback) advance
 // independently from the same start, staying in sync within sub-ms drift.
 
-// Outcome returned by press_cue so the Tauri command layer can relay the
-// relevant position data back to the frontend for display sync.
 #[derive(Debug, PartialEq)]
 pub enum CuePressOutcome {
     PreviewStarted,
@@ -410,7 +429,6 @@ pub struct Deck {
     pub(crate) jog_shift: bool,
     pub(crate) quantize: bool,
 
-    // Spectral band buffers (mono, at device_sample_rate) and per-band normalization scales.
     pub(crate) bands: SpectralBands,
 
     // Set to true by the audio thread when the track reaches its natural end.
@@ -475,15 +493,22 @@ impl Deck {
 
     /// Ticks arriving after this point are consumed by the buffer starting at `buffer_end`.
     /// Called under the same lock as `consume_jog`, which is what makes the answer exact.
+    pub(crate) fn render_frame(&self) -> RenderFrame {
+        RenderFrame(self.next_render_frame)
+    }
+
     pub(crate) fn set_next_render_frame(&mut self, buffer_end: u64) {
         self.next_render_frame = buffer_end;
     }
 
     // Threshold for "position is at the cue point" used by press_cue.
-    // 50 frames at 44100 Hz ≈ 1.1 ms; matches the frontend's 0.001 s tolerance.
+    // 50 frames at 44100 Hz ≈ 1.1 ms. Matches the frontend's 0.001 s tolerance.
     const CUE_THRESHOLD_FRAMES: f64 = 50.0;
 
-    pub fn press_cue(&mut self) -> CuePressOutcome {
+    /// Reads state only. Which of the four things a press means depends on the playhead,
+    /// so it is resolved here and applied as the command it resolved to.
+    pub fn resolve_cue_press(&self) -> CuePressOutcome {
+        let sr = self.device_sample_rate as f64;
         if self.total_frames == 0 {
             return CuePressOutcome::NoTrack;
         }
@@ -491,24 +516,39 @@ impl Deck {
             return CuePressOutcome::PreviewStarted;
         }
         if self.is_playing {
-            self.is_playing = false;
-            self.main_pos = self.cue_point;
-            self.cue_pos = self.cue_point;
             return CuePressOutcome::StoppedAtCue {
-                cue_point_sec: self.cue_point / self.device_sample_rate as f64,
+                cue_point_sec: self.cue_point / sr,
             };
         }
         if (self.main_pos - self.cue_point).abs() <= Self::CUE_THRESHOLD_FRAMES {
-            self.is_playing = true;
-            self.is_cueing = true;
-            self.main_pos = self.cue_point;
-            self.cue_pos = self.cue_point;
             return CuePressOutcome::PreviewStarted;
         }
-        self.cue_point = self.main_pos;
         CuePressOutcome::CueMoved {
-            new_cue_point_sec: self.cue_point / self.device_sample_rate as f64,
+            new_cue_point_sec: self.main_pos / sr,
         }
+    }
+
+    pub fn press_cue(&mut self) -> CuePressOutcome {
+        let outcome = self.resolve_cue_press();
+        match outcome {
+            CuePressOutcome::NoTrack => {}
+            CuePressOutcome::StoppedAtCue { .. } => {
+                self.is_playing = false;
+                self.main_pos = self.cue_point;
+                self.cue_pos = self.cue_point;
+            }
+            CuePressOutcome::PreviewStarted if !self.is_cueing => {
+                self.is_playing = true;
+                self.is_cueing = true;
+                self.main_pos = self.cue_point;
+                self.cue_pos = self.cue_point;
+            }
+            CuePressOutcome::PreviewStarted => {}
+            CuePressOutcome::CueMoved { .. } => {
+                self.cue_point = self.main_pos;
+            }
+        }
+        outcome
     }
 
     pub fn release_cue(&mut self) {
@@ -526,18 +566,6 @@ impl Deck {
     pub(crate) fn release_held_controls(&mut self) {
         self.jog_shift = false;
         self.release_cue();
-    }
-
-    pub fn toggle_play(&mut self) {
-        if self.total_frames == 0 {
-            return;
-        }
-        if self.is_cueing {
-            // latch-on: release the cue and continue playing from current position
-            self.is_cueing = false;
-        } else {
-            self.is_playing = !self.is_playing;
-        }
     }
 
     pub fn position_sec(&self) -> f64 {
@@ -575,6 +603,9 @@ impl Deck {
     }
 
     fn advance_jog_grid_one_frame(&mut self) {
+        // Per frame, not per callback: a block is whatever length the driver chose, and the
+        // same wheel movement has to bend playback by the same amount at every buffer size.
+        self.jog.drain_pending();
         if self.jog.idle() && self.jog_bend == 0.0 {
             return;
         }
@@ -614,12 +645,12 @@ impl Deck {
     }
 
     pub(crate) fn consume_jog(&mut self, frames: usize) {
-        self.jog.drain_pending();
         if self.is_playing {
             return;
         }
         self.jog_bend = 0.0;
         for _ in 0..frames {
+            self.jog.drain_pending();
             self.advance_paused_jog_one_frame();
         }
         self.cue_pos = self.main_pos;
@@ -1409,8 +1440,6 @@ mod tests {
         assert!(r > 0.99, "expected r near 1.0, got {}", r);
     }
 
-    // On hardware a channel meter reads the channel, so throwing the crossfader away from a
-    // deck must not make its meter drop to nothing while the fader is still up.
     #[test]
     fn the_channel_meter_reads_the_channel_rather_than_the_crossfader() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1630,38 +1659,40 @@ mod cue_state_machine {
         d
     }
 
-    #[test]
-    fn toggle_play_on_empty_deck_does_nothing() {
-        let mut d = Deck::empty(SR);
-        d.toggle_play();
-        assert!(!d.is_playing);
+    fn play_command(deck: &mut Deck) {
+        crate::audio::apply_deck_command(
+            &session_core::SessionCommand::Play {
+                deck: "A",
+                sec: None,
+            },
+            deck,
+            &mut ChannelStrip::new(SR as f32),
+            SR,
+            0.0,
+            &mut |path: &str| Err(format!("no load: {path}")),
+        )
+        .expect("play applies");
     }
 
     #[test]
-    fn toggle_play_stopped_to_playing() {
+    fn play_on_a_stopped_deck_starts_it() {
         let mut d = stopped(10.0);
-        d.toggle_play();
+        play_command(&mut d);
         assert!(d.is_playing);
         assert!(!d.is_cueing);
     }
 
     #[test]
-    fn toggle_play_playing_to_stopped() {
-        let mut d = playing(10.0);
-        d.toggle_play();
-        assert!(!d.is_playing);
-        assert!(!d.is_cueing);
-    }
-
-    #[test]
-    fn toggle_play_during_cue_preview_latches_to_playing() {
+    fn play_during_a_cue_preview_latches_to_playing() {
         let mut d = cueing(10.0);
-        d.main_pos = beat_frames() * 2.0 + 1000.0; // slightly past cue
-        d.toggle_play();
+        d.main_pos = beat_frames() * 2.0 + 1000.0;
+        play_command(&mut d);
         assert!(d.is_playing);
         assert!(!d.is_cueing, "cueing flag must be cleared");
-        // position stays wherever playback was, not snapped back to cue
-        assert!(d.main_pos > beat_frames() * 2.0);
+        assert!(
+            d.main_pos > beat_frames() * 2.0,
+            "position stays where playback reached, not snapped back to cue"
+        );
     }
 
     #[test]
@@ -1681,7 +1712,6 @@ mod cue_state_machine {
         assert_eq!(outcome, CuePressOutcome::PreviewStarted);
         assert!(d.is_playing);
         assert!(d.is_cueing);
-        // playback must start FROM the cue point
         assert!((d.main_pos - d.cue_point).abs() < 1.0);
     }
 
@@ -1744,7 +1774,6 @@ mod cue_state_machine {
         assert_eq!(outcome, CuePressOutcome::PreviewStarted);
         assert!(d.is_playing);
         assert!(d.is_cueing);
-        // position must not jump
         assert!((d.main_pos - pos_before).abs() < 1.0);
     }
 
@@ -1804,8 +1833,6 @@ mod cue_state_machine {
         // Second press: now at the new cue → starts preview
         d.press_cue();
         assert!(d.is_cueing);
-
-        // Release: must return to the new cue point, not 0
         let pos_during_preview = d.main_pos + 500.0;
         d.main_pos = pos_during_preview;
         d.release_cue();
@@ -1894,7 +1921,6 @@ mod loop_behavior {
         d.is_playing = true;
         d.main_pos = d.loop_end - 1.0;
         d.main_tick();
-        // should advance past loop_end without wrapping
         assert!(d.main_pos >= d.loop_end);
     }
 }

@@ -59,7 +59,6 @@ describe('hitScene', () => {
       const key = h.part ? `${h.target}:${h.part}` : h.target;
       return { 'filter:edge': 10, nudge: 5, 'filter:body': 1 }[key] ?? 0;
     };
-    // edge beats the nudge; the nudge beats the body.
     expect(hitScene([body, edge, nudge], { x: 50, y: 50 }, vc, rank)?.part).toBe('edge');
     expect(hitScene([body, nudge], { x: 50, y: 50 }, vc, rank)?.target).toBe('nudge');
   });

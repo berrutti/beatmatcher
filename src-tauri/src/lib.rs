@@ -239,7 +239,7 @@ fn wire_midi(app: &tauri::App, midi_state: &midi::MidiState) {
     midi::start_monitor(app.handle().clone(), midi_state);
 
     // Both closures outlive this call, so they hold a handle and look state up when they
-    // fire; a borrowed `State<'_, T>` cannot cross onto the MIDI thread.
+    // fire. A borrowed `State<'_, T>` cannot cross onto the MIDI thread.
     let dispatch_handle = app.handle().clone();
     midi::set_dispatch(
         midi_state,
@@ -313,7 +313,6 @@ mod tests {
                 previous = rate;
             }
         }
-        // What the slider itself offers: -10.00 to +10.00 inclusive, in steps of 0.01.
         assert_eq!(distinct, 2001);
     }
 }

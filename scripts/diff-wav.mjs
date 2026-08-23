@@ -19,7 +19,7 @@ function readWav(path) {
         encoding: head.readUInt16LE(offset + 8),
         channels: head.readUInt16LE(offset + 10),
         sampleRate: head.readUInt32LE(offset + 12),
-        bits: head.readUInt16LE(offset + 22),
+        bits: head.readUInt16LE(offset + 22)
       };
     } else if (id === 'data') {
       dataOffset = offset + 8;
@@ -41,10 +41,12 @@ function readWav(path) {
     const want = Math.min(chunkSamples, total - done);
     fs.readSync(fd, buffer, 0, want * bytesPerSample, dataOffset + done * bytesPerSample);
     for (let index = 0; index < want; index++) {
-      if (format.encoding === 3 && format.bits === 32) samples[done + index] = buffer.readFloatLE(index * 4);
+      if (format.encoding === 3 && format.bits === 32)
+        samples[done + index] = buffer.readFloatLE(index * 4);
       else if (format.bits === 16) samples[done + index] = buffer.readInt16LE(index * 2) / 32768;
       else if (format.bits === 24) samples[done + index] = buffer.readIntLE(index * 3, 3) / 8388608;
-      else if (format.bits === 32) samples[done + index] = buffer.readInt32LE(index * 4) / 2147483648;
+      else if (format.bits === 32)
+        samples[done + index] = buffer.readInt32LE(index * 4) / 2147483648;
       else throw new Error(`${path}: unsupported ${format.bits}-bit encoding ${format.encoding}`);
     }
     done += want;
@@ -73,7 +75,8 @@ function writeWav(path, samples, sampleRate, channels) {
   let written = 0;
   while (written < samples.length) {
     const want = Math.min(buffer.length / 4, samples.length - written);
-    for (let index = 0; index < want; index++) buffer.writeFloatLE(samples[written + index], index * 4);
+    for (let index = 0; index < want; index++)
+      buffer.writeFloatLE(samples[written + index], index * 4);
     fs.writeSync(fd, buffer, 0, want * 4);
     written += want;
   }
@@ -88,7 +91,8 @@ if (!recorded || !rendered) {
 
 const a = readWav(recorded);
 const b = readWav(rendered);
-if (a.sampleRate !== b.sampleRate) console.warn(`sample rates differ: ${a.sampleRate} vs ${b.sampleRate}`);
+if (a.sampleRate !== b.sampleRate)
+  console.warn(`sample rates differ: ${a.sampleRate} vs ${b.sampleRate}`);
 
 const compared = Math.min(a.samples.length, b.samples.length);
 const difference = new Float32Array(compared);
@@ -129,8 +133,15 @@ if (worst === 0) {
     if (peak > 0) windows.push([start / a.sampleRate, peak]);
   }
   windows.sort((one, two) => two[1] - one[1]);
-  console.log(`seconds with any difference: ${windows.length} of ${Math.ceil(frames / windowFrames)}`);
-  console.log(`worst seconds: ${windows.slice(0, 8).map(([second, peak]) => `${second}s:${peak.toExponential(1)}`).join('  ')}`);
+  console.log(
+    `seconds with any difference: ${windows.length} of ${Math.ceil(frames / windowFrames)}`
+  );
+  console.log(
+    `worst seconds: ${windows
+      .slice(0, 8)
+      .map(([second, peak]) => `${second}s:${peak.toExponential(1)}`)
+      .join('  ')}`
+  );
   console.log('\nresult: NOT identical.');
 }
 

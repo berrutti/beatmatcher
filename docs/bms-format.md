@@ -30,18 +30,23 @@ An older version is never rejected. Reading a session rewrites its events into t
 
 | type                     | relevant fields                                                                                                      | meaning                                                         |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `recording_start`        | `buffer_size_frames`, `sample_rate`                                                                                  | first event; audio callback size and the rate `frame` counts in |
+| `recording_start`        | `buffer_size_frames`, `sample_rate`                                                                                  | first event. Audio callback size and the rate `frame` counts in |
 | `deck_snapshot`          | `deck`, `path`, `position_sec`, `cue_point_sec`, `is_playing`, `bpm`, `playback_rate`, `loop_active`, `loop_end_sec` | full deck state at record-start for tracks already loaded       |
 | `recording_stop`         |                                                                                                                      | last event                                                      |
 | `load_track`             | `deck`, `path`, `duration`                                                                                           | track loaded onto deck                                          |
-| `play`                   | `deck`, `sec` (optional; written by clip edits, never by the recorder)                                               | deck started playing, optionally from an explicit position      |
+| `play`                   | `deck`, `sec` (optional, written by clip edits, never by the recorder)                                               | deck started playing, optionally from an explicit position      |
 | `stop`                   | `deck`                                                                                                               | deck stopped                                                    |
 | `seek`                   | `deck`, `sec`                                                                                                        | playhead jumped                                                 |
-| `stopped_at_cue`         | `deck`, `cue_sec`                                                                                                    | CUE pressed while playing: stops and returns to the cue point   |
+| `stopped_at_cue`         | `deck`, `cue_point_sec`                                                                                              | CUE pressed while playing: stops and returns to the cue point   |
 | `set_playback_rate`      | `deck`, `rate`                                                                                                       | pitch/rate changed                                              |
 | `set_nudge`              | `deck`, `percent`                                                                                                    | nudge started or released                                       |
-| `loop_in` / `loop_out`   | `deck`, `start_sec`, `end_sec`                                                                                       | loop points changed                                             |
+| `loop_in`                | `deck`, `cue_sec`                                                                                                    | loop in point set, which is also the cue point                  |
+| `loop_out`               | `deck`, `start_sec`, `end_sec`                                                                                       | loop out point set, defining the region                         |
 | `exit_loop` / `reloop`   | `deck`                                                                                                               | loop left, or re-entered from its start                         |
+| `cue_preview_start`      | `deck`, `cue_point_sec`                                                                                              | CUE held on a stopped deck: plays from the cue point            |
+| `cue_preview_end`        | `deck`, `cue_point_sec`                                                                                              | CUE released: stops and returns to the cue point                |
+| `eject_track`            | `deck`                                                                                                               | deck emptied                                                    |
+| `set_beat_grid`          | `deck`, `bpm`, `beat_offset_sec`                                                                                     | grid changed, from analysis or a user adjustment                |
 | `jog`                    | `deck`, `ticks`                                                                                                      | jog wheel moved, see below                                      |
 | `set_jog_rotation_speed` | `speed`                                                                                                              | the rpm one jog tick stands for                                 |
 | `set_param`              | `deck` (omitted at master scope), `slot`, `param`, `value`                                                           | any mixer parameter, see below                                  |
@@ -122,7 +127,7 @@ The delay is between zero and one buffer, not a fixed offset: measured at 35 fra
 
 ## Offline render
 
-`render_session_to_file` (Tauri command) reads a `.bms`, feeds it through the same DSP signal chain used for live playback (`offline_render.rs`), and writes a 44100 Hz stereo output file. WAV output is 32-bit float; FLAC output is 24-bit (matching the live recording pipeline). The render is deterministic given the same audio files and event log.
+`render_session_to_file` (Tauri command) reads a `.bms`, feeds it through the same DSP signal chain used for live playback (`offline_render.rs`), and writes a 44100 Hz stereo output file. WAV output is 32-bit float and FLAC output is 24-bit, matching the live recording pipeline. The render is deterministic given the same audio files and event log.
 
 ## Recording formats
 

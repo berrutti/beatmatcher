@@ -12,7 +12,11 @@ defineProps<{
 
 <style scoped>
 .table__header-cell {
-  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface);
+  box-shadow: inset 0 -1px 0 var(--color-border);
   border-right: 1px solid var(--color-border);
   padding: 0.35em 4px;
   font-size: 0.9em;

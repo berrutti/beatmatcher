@@ -114,10 +114,6 @@ pub fn compute_spectral_waveform_region(
     result
 }
 
-// RMS amplitude over the frame sub-range [start_frame, end_frame), binned into
-// num_points. Used for zoom-driven LOD: fetch only the visible track region at
-// roughly one point per on-screen pixel, so detail scales with zoom regardless
-// of track length.
 pub fn compute_amplitude_region(
     samples: &[f32],
     channels: usize,
@@ -157,7 +153,7 @@ pub fn compute_amplitude_region(
 }
 
 // Isolate kick drum energy for onset detection. Bass drum fundamentals sit
-// between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
+// between 60-150 Hz. Cutting above 150 Hz removes mid/snare content that
 // would create false beat intervals.
 
 const BPM_LOWPASS_HZ: f32 = 150.0;
@@ -390,14 +386,11 @@ mod tests {
         // happens when zoom padding overshoots the end of the track.
         let result = compute_amplitude_region(&samples, 1, 0, 200, 10);
 
-        // Correct proportional position: 40/200 = 0.20 -> bin 2, 50/200 = 0.25 -> bin 2.
         assert!(
             result[2] > 0.5,
             "expected loud bin at index 2, got {:?}",
             result
         );
-        // Buggy (pre-fix) behavior compresses the real track into bins 4-5
-        // (40/100 -> bin 4, 50/100 -> bin 5); those must stay silent here.
         assert!(
             result[4] < 0.1,
             "index 4 should be silent, got {:?}",

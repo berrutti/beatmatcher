@@ -67,6 +67,8 @@ yarn dev
 | `yarn build:wasm`                                             | rebuild `session-core` into WASM. Needed after any change under `session-core/src`, because the frontend runs against the built artifact and not the Rust source |
 | `yarn check:wasm`                                             | fail if that artifact is older than its source. Runs as part of `yarn test`                                                                                      |
 | `yarn compare-session <session.bms> <recorded.wav> [out.wav]` | render a `.bms` offline and diff it against the WAV captured while it was played. Exits non-zero when they diverge                                               |
+| `yarn ocd`                                                    | every gate at once: wasm, generated command types, format, types, lint, cycles, both suites, clippy, dead code, duplication                                      |
+| `yarn clean`                                                  | drop the Rust build trees. Cargo keeps every configuration it has ever built, so these reach tens of GB                                                          |
 
 Built with Tauri + Vue 3 + TypeScript + Vite. See [architecture.md](architecture.md) for diagrams of the audio engine, signal chain, and IPC layer.
 

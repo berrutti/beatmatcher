@@ -1,5 +1,5 @@
 // `initSessionCore()` must be awaited once at app startup before any of the
-// (synchronous) functions below are called; wasm-bindgen exports are sync only
+// (synchronous) functions below are called. Wasm-bindgen exports are sync only
 // after the module has initialized.
 
 import init, {
@@ -89,12 +89,8 @@ export function buildTimeline(
     deckJog: Record<string, LanePoint[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
-    // The beat grid (bpm + offset) is a property of the track, not of the
-    // recording, so it is looked up by path from the track's saved grid (the
-    // same source the edit view draws from). This keeps the session beats
-    // aligned with the edit view for every clip, including older recordings
-    // whose events never captured the offset. Recorded values stay as a
-    // fallback for tracks missing from the collection.
+    // The grid belongs to the track, not the recording, so it is looked up by path.
+    // Recorded values are the fallback for a track missing from the collection.
     clips: raw.clips.map((clip) => {
       const grid = gridForPath(clip.trackPath);
       return {
@@ -138,7 +134,7 @@ export function blockBounds(
   block: TransportBlock
 ): BlockBounds | null {
   // The Rust side has no JSON form for an open-ended (Infinity) right bound, so
-  // it sends null; restore Infinity here.
+  // it sends null. Restore Infinity here.
   const raw = parse<{
     minStartMs: number;
     maxEndMs: number | null;

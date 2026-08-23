@@ -189,8 +189,7 @@ fn golden_session_derives_edits_and_reconstructs() {
         "A starts at 3000ms after the move"
     );
 
-    // Edit 2: delete [3500, 4500] out of deck B's loop run; it must re-engage
-    // at the exact in-loop position (1.5s) so surviving iterations keep phase.
+    // Edit 2: delete [3500, 4500] out of deck B's loop run.
     let events = delete_transport_ranges(
         &events,
         &clips,
@@ -239,6 +238,5 @@ fn golden_session_derives_edits_and_reconstructs() {
     let after = reconstruct(&events, 7000.0, "A").expect("deck missing");
     assert!((after.strip_gain - 0.5).abs() < 1e-6);
     assert_eq!(after.path.as_deref(), Some("/t/a.mp3"));
-    // The lane edit must not move the playhead.
     assert_position_sec(&events, 7000.0, "A", 3.0 + 1.0 * 1.5);
 }

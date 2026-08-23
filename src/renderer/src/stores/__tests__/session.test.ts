@@ -123,7 +123,7 @@ describe('missing track detection and relocation', () => {
       expect(store.missingTracks).toEqual(['/music/a.mp3', '/music/b.mp3']);
     });
 
-    // The library moved to /lib; b.mp3 sits in a subfolder.
+    // The library moved to /lib. B.mp3 sits in a subfolder.
     dialogResult = '/lib';
     fakeScan['/lib'] = ['/lib/a.mp3', '/lib/deep/b.mp3'];
     fakeFs['/lib/a.mp3'] = 100;
@@ -159,10 +159,6 @@ describe('missing track detection and relocation', () => {
     });
   });
 
-  // The file came back at its original path (folder renamed back, drive
-  // reconnected) and the user picks the folder the session already points
-  // into. Nothing in the event list changes, so the indicator must be cleared
-  // by an explicit recheck, not by reacting to an event edit.
   it('clears the indicator when the located file is at its original path', async () => {
     const store = useSessionStore();
     const editStore = useSessionEditStore();
@@ -180,7 +176,6 @@ describe('missing track detection and relocation', () => {
     await vi.waitFor(() => {
       expect(store.missingTracks).toEqual([]);
     });
-    // The events did not change, so this must not count as an edit.
     expect(editStore.dirty).toBe(false);
   });
 

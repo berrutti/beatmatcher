@@ -41,8 +41,8 @@ impl DeckSyncPayload {
     }
 }
 
-/// The loop's start is the cue point, which `loop_in` and `set_loop_region` both
-/// write, so a defined region is `loop_end` above it rather than a pair.
+/// The loop's start is the cue point, so a defined region is `loop_end` above it
+/// rather than a pair.
 fn loop_region_of(deck_state: &Deck, sr: f64) -> Option<LoopRegionPayload> {
     if sr <= 0.0 || deck_state.loop_end <= deck_state.cue_point {
         return None;

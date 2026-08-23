@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Live decks only; the edit deck E is never broadcast.
+// Live decks only. The edit deck E is never broadcast.
 
 const BROADCAST_INTERVAL_MS: u64 = 50;
 
