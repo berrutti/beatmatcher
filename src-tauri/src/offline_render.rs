@@ -394,11 +394,11 @@ impl Mixer {
 
     /// Rendering a mid-play start from zeroed delay lines passes every cut in full until
     /// they fill, which clips the first milliseconds. Playing the lead-in settles them.
-    fn warm_up(&mut self, frames: usize) {
+    fn warm_up(&mut self, frames: usize, restored: &std::collections::BTreeSet<String>) {
         let mut resume: Vec<(String, f64, f64)> = Vec::new();
         for (id, deck_arc) in self.decks.iter() {
             let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            if !deck.is_playing {
+            if !deck.is_playing || !restored.contains(id) {
                 continue;
             }
             resume.push((id.clone(), deck.main_pos, deck.cue_pos));
@@ -472,6 +472,40 @@ fn recorded_block_frames(session: &SessionFile) -> usize {
         .map_or(512, |size| size as usize)
 }
 
+const DEVICE_RATES: [f64; 5] = [96_000.0, 88_200.0, 48_000.0, 44_100.0, 32_000.0];
+
+fn measured_block_frames(session: &SessionFile) -> Option<f64> {
+    const FIT_TOLERANCE: f64 = 0.75;
+    const MIN_STAMPS: usize = 256;
+
+    let requested = f64::from(recorded_block_frames(session) as u32);
+    let rate = f64::from(recorded_sample_rate(session)?);
+
+    let mut stamps: Vec<f64> = session
+        .events
+        .iter()
+        .filter_map(|event| event.frame)
+        .filter(|frame| *frame > 0)
+        .map(|frame| frame as f64)
+        .collect();
+    stamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    stamps.dedup();
+    if stamps.len() < MIN_STAMPS {
+        return None;
+    }
+
+    let mut lengths: Vec<f64> = DEVICE_RATES
+        .iter()
+        .map(|device_rate| requested * rate / device_rate)
+        .collect();
+    lengths.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    lengths.into_iter().find(|length| {
+        stamps
+            .iter()
+            .all(|stamp| ((stamp / length).round() * length - stamp).abs() < FIT_TOLERANCE)
+    })
+}
+
 /// Absent before the rate was stamped, and those sessions all ran at the render rate.
 fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
     session
@@ -510,9 +544,11 @@ fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &Sessi
 fn render_timeline(
     mixer: &mut Mixer,
     timeline: &[(usize, &SessionEvent)],
+    restored: &std::collections::BTreeSet<String>,
     total_frames: usize,
     warmup_frames: usize,
     block_frames: usize,
+    grid: Option<f64>,
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
     let mut next_event = 0;
@@ -527,7 +563,7 @@ fn render_timeline(
             next_event += 1;
         }
         if !warmed {
-            mixer.warm_up(warmup_frames);
+            mixer.warm_up(warmup_frames, restored);
             warmed = true;
         }
 
@@ -540,7 +576,13 @@ fn render_timeline(
         // jog accumulator once per call: a gap rendered as one long block drains it once
         // where the live callback drained it many times.
         while frame < chunk_end {
-            let span = block_frames.min(chunk_end - frame);
+            let span = match grid {
+                Some(step) => {
+                    let next = (((frame as f64 / step).floor() + 1.0) * step).round() as usize;
+                    next.max(frame + 1).min(chunk_end) - frame
+                }
+                None => block_frames.min(chunk_end - frame),
+            };
             mixer.render_block(span, &mut output[frame * 2..(frame + span) * 2]);
             frame += span;
         }
@@ -574,12 +616,21 @@ pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<V
         .min_frames
         .max(tail_from + request.sample_rate as usize);
 
+    let restored: std::collections::BTreeSet<String> = session
+        .events
+        .iter()
+        .filter(|event| event.event_type == "deck_snapshot" && event.is_playing == Some(true))
+        .filter_map(|event| event.deck.clone())
+        .collect();
+
     render_timeline(
         &mut mixer,
         &timeline,
+        &restored,
         total_frames,
         warmup_frames(request.sample_rate),
         recorded_block_frames(session),
+        measured_block_frames(session),
     )
 }
 
@@ -1027,7 +1078,7 @@ pub(crate) mod corpus {
     const DIGESTS: &[(&str, Digest)] = &[
         ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
         ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
-        ("mixer", Digest { frames: 154350, peak: 8.729836345e-1, rms: 1.416842341e-1, probes: [2.880807817e-1, -1.891997159e-1, 1.531948522e-2, 5.462801710e-5, -3.012417257e-1, 2.342958748e-2, 0.000000000e0, 0.000000000e0] }),
+        ("mixer", Digest { frames: 154350, peak: 8.762779832e-1, rms: 1.416859180e-1, probes: [2.880807817e-1, -1.891997159e-1, 1.531948522e-2, 5.469006646e-5, -3.012417257e-1, 2.342958748e-2, 0.000000000e0, 0.000000000e0] }),
         ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.669194251e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
@@ -1879,7 +1930,7 @@ mod live_parity_fuzz {
     // Uniform only: a `.bms` states one buffer size, so a render can only block at
     // one. That a varying callback length changes nothing is a claim about the live
     // path alone, and `callback_length_cannot_change_what_is_heard` is where it lives.
-    const SCHEDULES: [&[usize]; 3] = [&[BLOCK], &[64], &[512]];
+    const SCHEDULES: [&[usize]; 4] = [&[BLOCK], &[64], &[512], &[117, 118, 118, 117, 118]];
 
     struct Rng(u64);
 
@@ -1911,6 +1962,7 @@ mod live_parity_fuzz {
         CueHold(u32),
         Eq(u32, u32),
         Filter(u32),
+        FilterActive(bool),
     }
 
     fn action(rng: &mut Rng) -> Action {
@@ -2177,6 +2229,11 @@ mod live_parity_fuzz {
                         strip.set_param("filter", "value", value as f32);
                         events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"filter","param":"value","value":{value}}}"#));
                     }
+                    Action::FilterActive(on) => {
+                        let value = if on { 1.0 } else { 0.0 };
+                        strip.set_param("filter", "active", value as f32);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"filter","param":"active","value":{value}}}"#));
+                    }
                     Action::Fader(pct) => {
                         let value = f64::from(pct) / 100.0;
                         strip.set_param("fader", "gain", value as f32);
@@ -2295,6 +2352,70 @@ mod live_parity_fuzz {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_recorded_filter_sweep_renders_exactly_as_it_played() {
+        const SWEEP: [(usize, u32); 25] = [
+            (0, 108),
+            (588, 113),
+            (1176, 116),
+            (1176, 117),
+            (1881, 123),
+            (1881, 122),
+            (2469, 124),
+            (3057, 125),
+            (5527, 126),
+            (6115, 128),
+            (6115, 127),
+            (6821, 129),
+            (7409, 130),
+            (7409, 131),
+            (19169, 130),
+            (19757, 127),
+            (20345, 122),
+            (20933, 117),
+            (20933, 118),
+            (21638, 113),
+            (22226, 107),
+            (22226, 106),
+            (22814, 102),
+            (23402, 101),
+            (23402, 100),
+        ];
+
+        let mut script: Vec<(usize, &'static str, Action)> = vec![
+            (
+                if std::env::var("LATE").is_ok() {
+                    2048
+                } else {
+                    0
+                },
+                "A",
+                Action::Toggle,
+            ),
+            (0, "A", Action::FilterActive(true)),
+        ];
+        let mode = std::env::var("MINIMAL").unwrap_or_default();
+        if mode == "none" {
+        } else if mode == "one" {
+            script.push((4096, "A", Action::Filter(SWEEP[0].1)));
+        } else {
+            for (offset, centi) in SWEEP {
+                script.push((4096 + offset, "A", Action::Filter(centi)));
+            }
+        }
+
+        let mut report = String::new();
+        for sizes in SCHEDULES {
+            match sample_pair(sizes, &script) {
+                Some((frame, live, offline)) => report.push_str(&format!(
+                    "  {sizes:?}: frame {frame} live {live:e} offline {offline:e}\n"
+                )),
+                None => report.push_str(&format!("  {sizes:?}: exact\n")),
+            }
+        }
+        assert!(!report.contains("frame"), "\n{report}");
     }
 
     #[test]
