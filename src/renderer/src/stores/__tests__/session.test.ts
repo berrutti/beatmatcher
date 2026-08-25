@@ -27,7 +27,13 @@ vi.mock('@renderer/stores/settings', async (importOriginal) => {
   };
 });
 
-import { useSessionStore } from '../session';
+import {
+  useSessionStore,
+  SESSION_LOAD_PHASE_KEYS,
+  sessionLoadIsMeasured,
+  type SessionLoadPhase
+} from '../session';
+import en from '@renderer/locales/en.json';
 import { useSessionEditStore } from '../sessionEdit';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -123,7 +129,7 @@ describe('missing track detection and relocation', () => {
       expect(store.missingTracks).toEqual(['/music/a.mp3', '/music/b.mp3']);
     });
 
-    // The library moved to /lib; b.mp3 sits in a subfolder.
+    // The library moved to /lib. B.mp3 sits in a subfolder.
     dialogResult = '/lib';
     fakeScan['/lib'] = ['/lib/a.mp3', '/lib/deep/b.mp3'];
     fakeFs['/lib/a.mp3'] = 100;
@@ -159,10 +165,6 @@ describe('missing track detection and relocation', () => {
     });
   });
 
-  // The file came back at its original path (folder renamed back, drive
-  // reconnected) and the user picks the folder the session already points
-  // into. Nothing in the event list changes, so the indicator must be cleared
-  // by an explicit recheck, not by reacting to an event edit.
   it('clears the indicator when the located file is at its original path', async () => {
     const store = useSessionStore();
     const editStore = useSessionEditStore();
@@ -180,7 +182,6 @@ describe('missing track detection and relocation', () => {
     await vi.waitFor(() => {
       expect(store.missingTracks).toEqual([]);
     });
-    // The events did not change, so this must not count as an edit.
     expect(editStore.dirty).toBe(false);
   });
 
@@ -365,5 +366,26 @@ describe('a preload failure against the session it was started for', () => {
     });
 
     expect(store.isLoading).toBe(false);
+  });
+});
+
+describe('session load phases', () => {
+  const PHASES: SessionLoadPhase[] = ['reading', 'parsing', 'decoding', 'indexing', 'done'];
+
+  it('names every phase with a key the locale actually defines', () => {
+    for (const phase of PHASES) {
+      const key = SESSION_LOAD_PHASE_KEYS[phase];
+      expect(key, phase).toBeDefined();
+      const leaf = key.replace('session.', '');
+      expect(en.session[leaf as keyof typeof en.session], key).toBeTruthy();
+    }
+  });
+
+  it('measures only the phases that report increments', () => {
+    expect(sessionLoadIsMeasured('decoding')).toBe(true);
+    expect(sessionLoadIsMeasured('done')).toBe(true);
+    for (const phase of ['reading', 'parsing', 'indexing'] as const) {
+      expect(sessionLoadIsMeasured(phase), phase).toBe(false);
+    }
   });
 });

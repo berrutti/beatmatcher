@@ -8,12 +8,29 @@
     @cancel="discardModalOpen = false"
   />
 
-  <SessionLoadingModal
+  <ProgressModal
     :open="session.isLoading"
-    :phase="session.loadProgress?.phase ?? 'parsing'"
+    :title="$t('session.loadingTitle')"
+    :body="$t('session.loadingBody')"
+    :label="loadLabel"
     :fraction="session.loadedFraction"
-    :loaded-tracks="session.loadProgress?.loadedTracks ?? 0"
-    :total-tracks="session.loadProgress?.totalTracks ?? 0"
+    :determinate="loadIsMeasured"
+    :counts="loadCounts"
+  />
+
+  <ProgressModal
+    :open="session.renderProgress !== null"
+    :title="$t('session.renderingTitle')"
+    :body="$t('session.renderingBody')"
+    :label="
+      session.renderProgress?.writing
+        ? $t('session.renderingPhaseWriting')
+        : $t('session.renderingPhaseRendering')
+    "
+    :fraction="session.renderProgress?.fraction ?? 0"
+    :determinate="!session.renderProgress?.writing"
+    :cancel-label="session.renderProgress?.writing ? '' : $t('modal.cancel')"
+    @cancel="onCancelRender"
   />
 
   <div class="session" v-bind="$attrs">
@@ -85,7 +102,7 @@
           :disabled="!editStore.dirty"
           @click="editStore.save()"
         >
-          {{ $t('session.save') }}
+          {{ $t('modal.save') }}
         </button>
         <button class="session__btn session__btn--render" @click="editStore.saveAs()">
           {{ $t('session.saveAs') }}
@@ -112,20 +129,23 @@
 
 <script setup lang="ts">
 defineOptions({ inheritAttrs: false });
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
-import { useSessionStore } from '@renderer/stores/session';
+import {
+  useSessionStore,
+  SESSION_LOAD_PHASE_KEYS,
+  sessionLoadIsMeasured
+} from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
-import SessionLoadingModal from '@renderer/components/modals/SessionLoadingModal.vue';
+import ProgressModal from '@renderer/components/modals/ProgressModal.vue';
 import { formatMs, dateStamp } from '@renderer/utils/time';
 import { basename } from '@renderer/utils/path';
 
@@ -133,7 +153,6 @@ const { t } = useI18n();
 const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
-const mixer = useMixerStore();
 const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
@@ -145,6 +164,20 @@ const { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog } = useS
     return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
   }
 );
+
+const loadPhase = computed(() => session.loadProgress?.phase ?? 'parsing');
+const loadIsMeasured = computed(() => sessionLoadIsMeasured(loadPhase.value));
+const loadLabel = computed(() => t(SESSION_LOAD_PHASE_KEYS[loadPhase.value]));
+const loadCounts = computed(() => {
+  const total = session.loadProgress?.totalTracks ?? 0;
+  return loadIsMeasured.value && total > 0
+    ? t('session.loadingTracks', { loaded: session.loadProgress?.loadedTracks ?? 0, total })
+    : '';
+});
+
+async function onCancelRender(): Promise<void> {
+  await session.cancelRender();
+}
 
 const isFileDragOver = ref(false);
 const isRendering = ref<boolean>(false);
@@ -229,7 +262,7 @@ async function onSeek(ms: number) {
 
 async function onRender(useFlac: boolean) {
   if (!session.session || isRendering.value) return;
-  const outputPath = await mixer.pickRenderOutputPath(
+  const outputPath = await session.pickRenderOutputPath(
     useFlac,
     t('files.defaultName', { date: dateStamp() })
   );
@@ -237,7 +270,7 @@ async function onRender(useFlac: boolean) {
   isRendering.value = true;
   try {
     await editStore.flushSync();
-    await mixer.renderSession(session.session.path, outputPath, useFlac);
+    await session.renderSession(session.session.path, outputPath, useFlac);
   } finally {
     isRendering.value = false;
   }

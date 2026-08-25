@@ -1,5 +1,5 @@
 // The semantic vocabulary the timeline emits. Items + gestures never touch the
-// stores; they produce one of these intents and the controller reacts (calls an
+// stores. They produce one of these intents and the controller reacts (calls an
 // edit op, moves the camera, updates a selection). This is the seam between "what
 // the user did" and "what the app does about it". The parent-reacts model.
 
@@ -28,7 +28,6 @@ export type Intent =
   // transport / camera
   | { type: 'seek'; ms: number }
   | { type: 'view.set'; view: ViewWindow }
-  // lane chrome
   | { type: 'lane.openDropdown'; deck: string; clientX: number; clientY: number }
   | { type: 'lane.resize'; height: number }
   | { type: 'lane.resizeReset' }
@@ -47,7 +46,6 @@ export type Intent =
     }
   | { type: 'nudge.paint'; deck: string; t0: number; t1: number; direction: 1 | -1 }
   | { type: 'filter.toggle'; deck: string; t0: number; t1: number }
-  // clip block edits
   | { type: 'clip.move'; block: TransportBlock; deltaMs: number }
   | { type: 'clip.trim'; block: TransportBlock; edge: 'start' | 'end'; newMs: number }
   // A click: the controller resolves it to a span (the BPM region under ms,
@@ -59,7 +57,6 @@ export type Intent =
   | { type: 'clip.delete'; ranges: ClipSelectionRef[] }
   | { type: 'clip.split'; block: TransportBlock; ms: number }
   | { type: 'loopBlock.toggleUnlock'; block: TransportBlock; ms: number }
-  // filter-region edits
   | { type: 'filterRegion.select'; deck: string; span: FilterActiveSpan }
   | { type: 'filterRegion.clearSelection' }
   | {
@@ -71,7 +68,6 @@ export type Intent =
     }
   | { type: 'filterRegion.delete'; deck: string; span: FilterActiveSpan }
   | { type: 'filterRegion.move'; deck: string; span: FilterActiveSpan; deltaMs: number }
-  // context menu
   | {
       type: 'menu.deck';
       deck: string;

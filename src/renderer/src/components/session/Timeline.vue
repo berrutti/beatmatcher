@@ -223,7 +223,7 @@ const controller = useTimelineController({
 });
 const { deckMenu, lanePicker, filterMenu } = controller;
 
-// The scene built on the last frame; pointer hit-testing runs against it with a
+// The scene built on the last frame. Pointer hit-testing runs against it with a
 // freshly computed ViewContext (same canvas size, so geometry stays consistent).
 // The rows ride along for the marquee's rect-to-deck mapping.
 let sceneItems: SceneItem[] = [];
@@ -470,7 +470,7 @@ function onSetBpm(bpm: number): void {
 
 // Ask the session store for a finer waveform on each visible track when the zoom
 // (or canvas width) calls for more detail than is loaded. The store no-ops when
-// it already has enough points; redraws happen when the new data lands.
+// it already has enough points. Redraws happen when the new data lands.
 function clipTrackSegments(clip: Clip) {
   return clip.waveSegments.length > 0
     ? clip.waveSegments
@@ -577,7 +577,7 @@ watch(
 );
 
 // Delete/Backspace removes whichever editable thing is selected (clip takes
-// precedence over a filter span). Edit-mode only; the commit stops playback.
+// precedence over a filter span). Edit-mode only. The commit stops playback.
 function onKeyDown(e: KeyboardEvent): void {
   if (e.key === 'Shift') {
     applyHoverCursor(true);

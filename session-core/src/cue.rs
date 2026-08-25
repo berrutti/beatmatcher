@@ -1,8 +1,3 @@
-// Derives a track-list from a recorded session: the first moment each loaded
-// track becomes audible in the mix (playing AND fader above silence), in
-// recording-elapsed time. This is the data a CUE sheet needs. Pure event
-// processing; tag lookup and CUE text formatting stay in the audio crate.
-
 use crate::event::{SessionCommand, SessionEvent};
 use crate::param::is_fader_gain;
 use std::collections::HashMap;
@@ -74,7 +69,7 @@ pub fn build_cue_points(events: &[SessionEvent]) -> Vec<CuePoint> {
                 state.is_playing = is_playing;
                 // The snapshot carries the strip gain at record start (gain is
                 // not part of the DeckSnapshot command, so read it from the raw
-                // event); absent in older logs, where unity is the safe default.
+                // event). Absent in older logs, where unity is the safe default.
                 if let Some(gain) = event.gain {
                     state.gain = gain;
                 }
@@ -199,8 +194,6 @@ mod tests {
         assert_eq!(points[0].elapsed_ms, 5000.0);
     }
 
-    // One crossfader move can open several decks at once, and the deck map is a HashMap,
-    // so an unordered walk numbered the same recording's tracks differently per run.
     #[test]
     fn decks_opened_by_one_crossfader_move_are_listed_in_a_stable_order() {
         let events = vec![
@@ -254,8 +247,6 @@ mod tests {
         }
     }
 
-    // The crossfader can silence a deck whose fader is wide open, which is the
-    // accuracy D1 consequence 1 is about.
     #[test]
     fn a_deck_crossfaded_away_is_not_audible_yet() {
         let events = vec![
@@ -273,8 +264,6 @@ mod tests {
         assert_eq!(points[0].elapsed_ms, 5000.0);
     }
 
-    // A master move names no deck, so without re-checking every deck the track
-    // would not be recorded until its own next event, which may never come.
     #[test]
     fn bringing_the_crossfader_back_records_without_a_deck_event() {
         let events = vec![
@@ -293,8 +282,6 @@ mod tests {
         assert_eq!(points[0].elapsed_ms, 4000.0);
     }
 
-    // Thru is the default, so a session that never touches the crossfader has to
-    // behave exactly as it did before it existed.
     #[test]
     fn a_thru_deck_ignores_the_crossfader() {
         let events = vec![

@@ -122,7 +122,7 @@ describe('selectionSpansFor', () => {
 });
 
 describe('bpmRegionSpanAt', () => {
-  // 128 bpm grid; segments at rate 1.0 (128.0), 1.0002 (128.0 displayed),
+  // 128 bpm grid. Segments at rate 1.0 (128.0), 1.0002 (128.0 displayed),
   // then 1.05 (134.4): the first two read as one region at 0.1 precision.
   const seg = (wallStartMs: number, wallEndMs: number, rate: number) => ({
     wallStartMs,
@@ -185,7 +185,6 @@ describe('marqueeTargets', () => {
   const blocksFor = (deck: string) => byDeck[deck] ?? [];
 
   it('clips the rect time range to each touched block on crossed decks', () => {
-    // x 45..65 = ms 4500..6500 over deck A only: block 1 whole, block 2 partial.
     expect(marqueeTargets(rows, blocksFor, { x0: 45, x1: 65, y0: 10, y1: 60 }, xToMs)).toEqual([
       { deck: 'A', startMs: 5000, endMs: 6000 },
       { deck: 'A', startMs: 6000, endMs: 6500 }

@@ -87,8 +87,6 @@ describe('mixer writes under fuzzed input', () => {
     }
   });
 
-  // Every deck-scope address, looped from the manifest, so a param the mixer
-  // gains is fuzzed without this test naming it.
   it('keeps every manifest param and the crossfader inside their ranges', () => {
     const store = useMixerStore();
     const random = makeRandom(11);

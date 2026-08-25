@@ -1,16 +1,16 @@
-pub(crate) struct RecordingState {
+pub(crate) struct Recording {
     pub(crate) thread: std::thread::JoinHandle<Result<(), String>>,
     pub(crate) temp_path: String,
 }
 
-// Dedicated writer thread; on channel close it back-patches the RIFF/data sizes.
+// Dedicated writer thread. On channel close it back-patches the RIFF/data sizes.
 pub(crate) fn wav_writer_thread(
     path: String,
     sample_rate: u32,
     bit_depth: u16,
     receiver: std::sync::mpsc::Receiver<Vec<f32>>,
 ) -> Result<(), String> {
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::Write;
 
     let file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
     let mut buf = std::io::BufWriter::new(file);
@@ -45,6 +45,7 @@ pub(crate) fn wav_writer_thread(
         .map_err(|error| error.to_string())?;
 
     let mut data_bytes = 0u32;
+    let mut synced_at = 0u32;
 
     while let Ok(chunk) = receiver.recv() {
         for &sample in &chunk {
@@ -59,28 +60,45 @@ pub(crate) fn wav_writer_thread(
                 data_bytes = data_bytes.saturating_add(4);
             }
         }
+        if data_bytes.saturating_sub(synced_at) >= SIZE_SYNC_BYTES {
+            synced_at = data_bytes;
+            write_sizes(&mut buf, data_bytes)?;
+        }
     }
 
-    buf.flush().map_err(|error| error.to_string())?;
+    write_sizes(&mut buf, data_bytes)?;
+    Ok(())
+}
 
-    let riff_size = data_bytes.saturating_add(36);
-    let mut file = buf.into_inner().map_err(|error| error.to_string())?;
+/// About three seconds of stereo float at 48 kHz. A recording killed between syncs
+/// still opens: only the samples past the last one are outside the declared size.
+const SIZE_SYNC_BYTES: u32 = 1_000_000;
+
+/// RIFF declares its lengths in the header, so a file whose sizes are only written at
+/// the end reads as empty when the process dies. Rewritten as the recording grows.
+fn write_sizes(buf: &mut std::io::BufWriter<std::fs::File>, data_bytes: u32) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    buf.flush().map_err(|error| error.to_string())?;
+    let file = buf.get_mut();
+    let end = file.stream_position().map_err(|error| error.to_string())?;
     file.seek(SeekFrom::Start(4))
         .map_err(|error| error.to_string())?;
-    file.write_all(&riff_size.to_le_bytes())
+    file.write_all(&data_bytes.saturating_add(36).to_le_bytes())
         .map_err(|error| error.to_string())?;
     file.seek(SeekFrom::Start(40))
         .map_err(|error| error.to_string())?;
     file.write_all(&data_bytes.to_le_bytes())
         .map_err(|error| error.to_string())?;
-
+    file.seek(SeekFrom::Start(end))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 // Streams f32 samples from the recording channel to a temp .pcm file as i32 LE
 // (converting on the fly), then encodes that file to FLAC block-by-block via a
 // custom Source impl. Peak RAM during recording: O(one chunk). During encode:
-// O(one FLAC block, ~32 KB). 32-bit source → 24-bit FLAC; 16-bit → 16-bit FLAC.
+// O(one FLAC block, ~32 KB). 32-bit source becomes 24-bit FLAC, 16-bit stays 16-bit.
 pub(crate) fn flac_writer_thread(
     path: String,
     sample_rate: u32,

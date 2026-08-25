@@ -20,6 +20,7 @@ export const STORAGE_KEYS = {
   sessionMasterLane: 'beatmatcher.ui.session-master-lane',
   sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height',
   browserColumns: 'beatmatcher.ui.browser-columns',
+  skipDiscardConfirm: 'beatmatcher.ui.skip-recovery-discard-confirm',
 
   // Hardware
   midiDeckAssignments: 'beatmatcher.midi.deck-assignments'

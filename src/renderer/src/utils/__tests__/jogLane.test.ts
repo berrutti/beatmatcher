@@ -22,8 +22,6 @@ describe('jogLaneColumns', () => {
     expect(jogLaneColumns(curve, COLUMNS, msAtColumn)).toEqual([0, 0, 4, 4, 4, 0, 0, 0, 0, 0]);
   });
 
-  // The reason this reduction exists: a spike far narrower than a column has to
-  // survive it, or a whole session of wheel work draws as an empty lane.
   it('keeps a spike that is narrower than one column', () => {
     const curve: LanePoint[] = [
       { ms: 0, value: 0 },

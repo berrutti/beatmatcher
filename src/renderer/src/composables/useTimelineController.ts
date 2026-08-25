@@ -1,7 +1,7 @@
 // The "parent reacts" half. Owns the timeline's interaction state (lane choice +
 // height, clip/filter selection, menus) and turns each emitted Intent into a
 // store edit, a camera move, or a selection change. The component stays a thin
-// shell that renders the scene and forwards DOM events to the gestures; nothing
+// shell that renders the scene and forwards DOM events to the gestures. Nothing
 // here or in the gestures touches the canvas.
 
 import { ref } from 'vue';
@@ -327,7 +327,7 @@ export function useTimelineController(opts: {
   }
 
   // Deletes every selected span through the intent path (which clears the
-  // selection and commits one edit); overlapping spans merge per deck.
+  // selection and commits one edit). Overlapping spans merge per deck.
   function deleteSelectedRanges(): void {
     if (clipSelection.value.length === 0) return;
     handleIntent({ type: 'clip.delete', ranges: mergeSelectionRanges(clipSelection.value) });

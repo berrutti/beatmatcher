@@ -41,7 +41,6 @@ defineProps<{
 
 <style scoped>
 .table__header-cell--meta {
-  position: relative;
   cursor: grab;
   user-select: none;
 }

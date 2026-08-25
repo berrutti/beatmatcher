@@ -1,12 +1,13 @@
 <template>
   <div class="phase-ring">
     <img v-if="coverArt" :src="coverArt" class="phase-ring__art" aria-hidden="true" />
-    <canvas ref="canvasEl" class="phase-ring__canvas" />
+    <canvas ref="canvasEl" class="phase-ring__canvas" :[DROP_LANDING_ATTRIBUTE]="''" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import { DROP_LANDING_ATTRIBUTE } from '@renderer/utils/dropLanding';
 
 const props = defineProps<{
   accent: string;
@@ -22,6 +23,7 @@ const LINE_WIDTH_RATIO = 0.065;
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
 let phase4 = 0;
+let following = false;
 
 function draw() {
   const canvas = canvasEl.value;
@@ -47,8 +49,10 @@ function draw() {
   ctx.stroke();
 
   // Held where it stopped, because scrubbing a paused deck moves the playhead at
-  // hand speed and whips the ring round. A held CUE is audible, so it advances.
-  if (props.playing || props.cueing) {
+  // hand speed and whips the ring round.
+  const wasFollowing = following;
+  following = props.playing || props.cueing;
+  if (following || wasFollowing) {
     const beat = props.getBeat();
     if (beat !== null) {
       phase4 = (((beat % 4) + 4) % 4) / 4;

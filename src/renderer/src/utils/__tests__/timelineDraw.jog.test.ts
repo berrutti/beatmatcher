@@ -11,7 +11,7 @@ const CENTER_Y = LANE_Y + LANE_H / 2;
 const TRACK_W = CANVAS_W - LABEL_W - 12;
 const VIEW_MS = 2000;
 
-// The frame and the centre line span the whole track; plotted data is one column wide.
+// The frame and the centre line span the whole track. Plotted data is one column wide.
 function valueBars(bars: Bar[]): Bar[] {
   return bars.filter((bar) => bar.w === 1);
 }

@@ -1,4 +1,4 @@
-// Marshalling-layer tests for the sessionCore WASM wrappers; edit-op semantics
+// Marshalling-layer tests for the sessionCore WASM wrappers. Edit-op semantics
 // are covered by the Rust suite in session-core.
 
 import { describe, it, expect } from 'vitest';
@@ -279,17 +279,11 @@ describe('shared constants', () => {
     }
   });
 
-  it('carries the display metadata the timeline draws lanes from', () => {
+  it('names a unit for every lane, which is what the value means', () => {
     const specs = laneSpecs(CLASSIC);
     for (const key of ALL_LANE_KEYS) {
-      expect(specs[key].shortLabel, `no short label for ${key}`).toBeTruthy();
-      expect(specs[key].laneGroup).toBeGreaterThanOrEqual(0);
+      expect(specs[key].unit, `no unit for ${key}`).toBeTruthy();
     }
-    expect(new Set(ALL_LANE_KEYS.map((key) => specs[key].shortLabel)).size).toBe(
-      ALL_LANE_KEYS.length
-    );
-    expect(specs.eqLow.laneGroup).toBe(specs.eqHigh.laneGroup);
-    expect(specs.gain.laneGroup).not.toBe(specs.filter.laneGroup);
   });
 
   it('the eq lane range is the same one the mixer constants publish', () => {
@@ -300,8 +294,6 @@ describe('shared constants', () => {
     }
   });
 
-  // The timeline draws and clamps against these, so a session recorded on the
-  // isolator must not be drawn with the classic mixer's dB range.
   it('lane specs follow the mixer they are asked for', () => {
     for (const key of ['eqLow', 'eqMid', 'eqHigh'] as const) {
       const isolator = laneSpecFor(key, ISOLATOR);
@@ -341,8 +333,6 @@ describe('shared constants', () => {
     }
   });
 
-  // Falling back keeps a build that dropped a mixer usable, and matches what
-  // the engine loads for the same unknown id.
   it('falls back to the classic mixer for an unknown id', () => {
     expect(mixerParams('no-such-mixer')).toEqual(mixerParams('classic-3band'));
   });

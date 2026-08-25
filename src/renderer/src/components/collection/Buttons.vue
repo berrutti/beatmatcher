@@ -14,7 +14,7 @@
               ? unavailableTooltip
               : $t('browser.sendToEdit')
         "
-        @click.stop="load('E')"
+        @click.stop="loadToDeck(path, 'E')"
       >
         {{ decksStore.decks['E'].name }}
       </button>
@@ -35,7 +35,7 @@
               ? unavailableTooltip
               : $t('browser.sendToDeck', { deckId })
         "
-        @click.stop="load(deckId)"
+        @click.stop="loadToDeck(path, deckId)"
       >
         {{ decksStore.decks[deckId].name }}
       </button>
@@ -47,6 +47,7 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { loadToDeck } from '@renderer/utils/deckDrop';
 import type { DeckId } from '@renderer/utils/types';
 import { useAppModeStore } from '@renderer/stores/appMode';
 
@@ -65,12 +66,6 @@ const appModeStore = useAppModeStore();
 
 function deckLoaded(deckId: DeckId): boolean {
   return decksStore.decks[deckId].loadedPath === props.path;
-}
-
-function load(deckId: string) {
-  window.dispatchEvent(
-    new CustomEvent('bm:collection-drop', { detail: { deckId, path: props.path } })
-  );
 }
 </script>
 

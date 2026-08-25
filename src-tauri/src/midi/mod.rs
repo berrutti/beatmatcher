@@ -1,3 +1,4 @@
+use crate::lock::LockIgnoringPoison;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -35,10 +36,7 @@ impl Monitor {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let mut buffer = self
-            .buffer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut buffer = self.buffer.locked();
         if buffer.len() == MONITOR_CAPACITY {
             buffer.pop_front();
         }
@@ -46,10 +44,7 @@ impl Monitor {
     }
 
     fn drain(&self) -> Vec<MidiMessage> {
-        let mut buffer = self
-            .buffer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut buffer = self.buffer.locked();
         buffer.drain(..).collect()
     }
 }
@@ -101,12 +96,7 @@ impl MidiState {
     }
 
     pub(crate) fn clear_control_memory(&self) {
-        for device in self
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .values_mut()
-        {
+        for device in self.devices.locked().values_mut() {
             device.memory.clear();
         }
     }
@@ -120,10 +110,7 @@ impl MidiState {
     /// A port that is still present is left untouched, so a rescan never disturbs
     /// the deck assignment of a device someone is playing.
     fn sync_devices(&self, ports: &[String]) {
-        let mut devices = self
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = self.devices.locked();
         devices.retain(|port, _| ports.contains(port));
         for port in ports {
             if devices.contains_key(port) {
@@ -150,10 +137,7 @@ impl MidiState {
     }
 
     fn send(&self, request: Request) {
-        let sender = self
-            .requests
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let sender = self.requests.locked();
         let _ = sender.send(request);
     }
 }
@@ -238,10 +222,7 @@ fn connect(
                 });
                 // Cloned out so the slot is not held while the handler takes
                 // engine locks.
-                let handler = dispatch
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .clone();
+                let handler = dispatch.locked().clone();
                 if let Some(handler) = handler {
                     handler(&source, data);
                 }
@@ -254,278 +235,7 @@ fn connect(
 /// The only path from the MIDI thread into the app, so mapped input cannot reach device
 /// or buffer configuration, which rebuild the streams and stay on the main thread.
 pub fn set_dispatch(state: &MidiState, dispatch: Dispatch) {
-    *state
-        .dispatch
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(dispatch);
-}
-
-const CONTROL_CHANGE: u8 = 0xB0;
-const NOTE_ON: u8 = 0x90;
-// High-resolution control change puts the low half on the controller 32 above
-// the high half's.
-const LSB_OFFSET: u8 = 32;
-const MAX_CONTROLLER: u8 = 127;
-const SEVEN_BIT_MAX: f64 = 127.0;
-const FOURTEEN_BIT_MAX: f64 = 16383.0;
-const RELATIVE_CENTRE: i32 = 64;
-const SEVEN_BIT_WRAP: i32 = 128;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Resolution {
-    SevenBit,
-    FourteenBit,
-    // Read off the platter: a steady turn holds one value just off
-    // `RELATIVE_CENTRE` and a faster one sits further off, so it reports speed.
-    CentreDelta,
-    // The browse encoder: 1 or 127, one detent either way.
-    SignedStep,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Half {
-    Msb,
-    Lsb,
-}
-
-/// What a lit button reports. A binding is an input address; this says which of
-/// them the app also writes back to, so a control with no entry stays dark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Feedback {
-    Cue,
-    Quantize,
-}
-
-/// Distinct from `Source` because a high-resolution control declares one source
-/// but arrives on two addresses, and dispatch has to find it by either.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Key {
-    ControlChange { channel: u8, controller: u8 },
-    Note { channel: u8, note: u8 },
-}
-
-/// A high-resolution control names only its high half; the low half is implied
-/// at `LSB_OFFSET` above it.
-enum Source {
-    ControlChange {
-        channel: u8,
-        controller: u8,
-        resolution: Resolution,
-    },
-    Note {
-        channel: u8,
-        note: u8,
-    },
-}
-
-impl Source {
-    fn keys(&self) -> Result<Vec<(Key, Half)>, String> {
-        match *self {
-            Source::Note { channel, note } => Ok(vec![(Key::Note { channel, note }, Half::Msb)]),
-            Source::ControlChange {
-                channel,
-                controller,
-                resolution,
-            } => {
-                let high = (
-                    Key::ControlChange {
-                        channel,
-                        controller,
-                    },
-                    Half::Msb,
-                );
-                if resolution != Resolution::FourteenBit {
-                    return Ok(vec![high]);
-                }
-                let low = controller
-                    .checked_add(LSB_OFFSET)
-                    .filter(|low| *low <= MAX_CONTROLLER)
-                    .ok_or_else(|| {
-                        format!("cc {controller} is too high to carry a low half at +{LSB_OFFSET}")
-                    })?;
-                Ok(vec![
-                    high,
-                    (
-                        Key::ControlChange {
-                            channel,
-                            controller: low,
-                        },
-                        Half::Lsb,
-                    ),
-                ])
-            }
-        }
-    }
-
-    fn resolution(&self) -> Resolution {
-        match *self {
-            Source::ControlChange { resolution, .. } => resolution,
-            Source::Note { .. } => Resolution::SevenBit,
-        }
-    }
-}
-
-enum Action {
-    DeckParam {
-        deck: String,
-        slot: String,
-        param: String,
-    },
-    CueToggle {
-        deck: String,
-    },
-    PlayToggle {
-        deck: String,
-    },
-    TransportCue {
-        deck: String,
-    },
-    LoopIn {
-        deck: String,
-    },
-    LoopOut {
-        deck: String,
-    },
-    LoopExitOrReloop {
-        deck: String,
-    },
-    TempoFader {
-        deck: String,
-    },
-    Jog {
-        deck: String,
-    },
-    // Held, not latched: the surface sends both edges and the deck it names is
-    // the one whose wheel it modifies.
-    Shift {
-        deck: String,
-    },
-    QuantizeToggle {
-        deck: String,
-    },
-    Eject {
-        deck: String,
-    },
-    // `steps` is how far one press moves the cursor, for a surface that browses with buttons.
-    // An encoder carries its own delta and leaves this unset.
-    Browse {
-        steps: Option<i32>,
-    },
-    Load {
-        deck: String,
-    },
-    Enter,
-    Back,
-    ToggleView,
-    // Master scope, so it names no deck and takes its range from the master
-    // descriptor rather than a strip's.
-    XfaderPosition,
-}
-
-struct Binding {
-    source: Source,
-    action: Action,
-}
-
-pub struct Profile {
-    bindings: Vec<Binding>,
-    by_key: HashMap<Key, (usize, Half)>,
-    led_keys: HashMap<(Feedback, String), Key>,
-}
-
-impl Profile {
-    /// Refuses a colliding profile rather than letting the last binding win, because the
-    /// symptom is the wrong deck's control moving, which reads as broken hardware.
-    fn new(bindings: Vec<Binding>) -> Result<Self, String> {
-        let mut by_key = HashMap::new();
-        let mut led_keys = HashMap::new();
-        for (index, binding) in bindings.iter().enumerate() {
-            let keys = binding.source.keys()?;
-            let lit = match &binding.action {
-                Action::CueToggle { deck } => Some((Feedback::Cue, deck)),
-                Action::QuantizeToggle { deck } => Some((Feedback::Quantize, deck)),
-                _ => None,
-            };
-            if let Some((feedback, deck)) = lit {
-                if let Some((key, _)) = keys.first() {
-                    led_keys.insert((feedback, deck.clone()), *key);
-                }
-            }
-            for (key, half) in keys {
-                if by_key.insert(key, (index, half)).is_some() {
-                    return Err(format!("two bindings share {key:?}"));
-                }
-            }
-        }
-        Ok(Self {
-            bindings,
-            by_key,
-            led_keys,
-        })
-    }
-
-    fn resolve(&self, key: Key) -> Option<(usize, &Binding, Half)> {
-        let &(index, half) = self.by_key.get(&key)?;
-        Some((index, &self.bindings[index], half))
-    }
-}
-
-/// A control cannot send its own midpoint (63.5 of 7 bits), so a plain `value / max` puts
-/// a detent past half. On a 7-bit tempo fader at 10% that showed 141 bpm as 141.11.
-fn unit_interval(value: f64, max: f64) -> f64 {
-    let centre = (max + 1.0) / 2.0;
-    if value <= centre {
-        value / (centre * 2.0)
-    } else {
-        0.5 + (value - centre) / (max - centre) / 2.0
-    }
-}
-
-/// `None` for anything that reports a position, which has to be read through the
-/// binding's range instead.
-fn relative_delta(resolution: Resolution, value: u8) -> Option<i32> {
-    let value = i32::from(value);
-    match resolution {
-        Resolution::CentreDelta => Some(value - RELATIVE_CENTRE),
-        Resolution::SignedStep => Some(if value >= RELATIVE_CENTRE {
-            value - SEVEN_BIT_WRAP
-        } else {
-            value
-        }),
-        Resolution::SevenBit | Resolution::FourteenBit => None,
-    }
-}
-
-/// Bumped only when the vocabulary changes. A file declaring a newer version is
-/// refused rather than half-read.
-const MAPPING_VERSION: u32 = 2;
-
-/// The version that introduced the deck template. A file using it is refused below this,
-/// because an older build finds no `bindings` at all and presents a dead controller.
-const DECK_TEMPLATE_VERSION: u32 = 2;
-
-const MAPPING_FILES: [&str; 2] = [
-    include_str!("../mappings/ddj-flx6.json"),
-    include_str!("../mappings/xdj-1000mk2.json"),
-];
-
-#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum DeckScope {
-    Fixed,
-    Assigned,
-}
-
-#[derive(serde::Deserialize, Clone, Copy)]
-enum ResolutionSpec {
-    #[serde(rename = "7bit")]
-    SevenBit,
-    #[serde(rename = "14bit")]
-    FourteenBit,
-    #[serde(rename = "centre_delta")]
-    CentreDelta,
-    #[serde(rename = "signed_step")]
-    SignedStep,
+    *state.dispatch.locked() = Some(dispatch);
 }
 
 impl From<ResolutionSpec> for Resolution {
@@ -539,497 +249,20 @@ impl From<ResolutionSpec> for Resolution {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct BindingSpec {
-    channel: u8,
-    action: String,
-    #[serde(default)]
-    note: Option<u8>,
-    #[serde(default)]
-    cc: Option<u8>,
-    #[serde(default)]
-    resolution: Option<ResolutionSpec>,
-    #[serde(default)]
-    deck: Option<String>,
-    #[serde(default)]
-    slot: Option<String>,
-    #[serde(default)]
-    param: Option<String>,
-    #[serde(default)]
-    steps: Option<i32>,
-}
-
-/// One deck's channel on a surface that lays the same controls out per deck.
-#[derive(serde::Deserialize)]
-struct DeckChannel {
-    deck: String,
-    channel: u8,
-}
-
-/// Written once and expanded across `per_deck`, so the deck and the channel come from the
-/// template rather than being retyped per copy where a slip is a valid other-deck address.
-#[derive(serde::Deserialize)]
-struct DeckBindingSpec {
-    action: String,
-    #[serde(default)]
-    note: Option<u8>,
-    #[serde(default)]
-    cc: Option<u8>,
-    #[serde(default)]
-    resolution: Option<ResolutionSpec>,
-    #[serde(default)]
-    slot: Option<String>,
-    #[serde(default)]
-    param: Option<String>,
-    #[serde(default)]
-    steps: Option<i32>,
-}
-
-impl DeckBindingSpec {
-    fn expand(&self, over: &DeckChannel) -> BindingSpec {
-        BindingSpec {
-            channel: over.channel,
-            action: self.action.clone(),
-            note: self.note,
-            cc: self.cc,
-            resolution: self.resolution,
-            deck: Some(over.deck.clone()),
-            slot: self.slot.clone(),
-            param: self.param.clone(),
-            steps: self.steps,
-        }
-    }
-}
-
-struct Mapping {
-    name: String,
-    matches: Vec<String>,
-    decks: DeckScope,
-    bindings: Vec<BindingSpec>,
-}
-
-#[derive(serde::Deserialize)]
-struct MappingFile {
-    version: u32,
-    name: String,
-    #[serde(rename = "match")]
-    matches: Vec<String>,
-    decks: DeckScope,
-    #[serde(default)]
-    per_deck: Vec<DeckChannel>,
-    #[serde(default)]
-    deck_bindings: Vec<DeckBindingSpec>,
-    #[serde(default)]
-    bindings: Vec<BindingSpec>,
-}
-
-impl BindingSpec {
-    /// `assigned` is the deck the user gave the device, and is what an `assigned` mapping's
-    /// bindings are built against. A `fixed` mapping names its own decks and ignores it.
-    fn deck(&self, scope: DeckScope, assigned: Option<&str>) -> Result<String, String> {
-        match scope {
-            DeckScope::Fixed => self
-                .deck
-                .clone()
-                .ok_or_else(|| format!("'{}' needs a deck", self.action)),
-            DeckScope::Assigned => assigned
-                .map(str::to_string)
-                .ok_or_else(|| "the device has no deck".to_string()),
-        }
-    }
-
-    fn source(&self) -> Result<Source, String> {
-        // The file counts channels the way the hardware's documentation and the
-        // console monitor do, from one.
-        let channel = self
-            .channel
-            .checked_sub(1)
-            .ok_or_else(|| "channel is counted from 1".to_string())?;
-        match (self.note, self.cc) {
-            (Some(note), None) => Ok(Source::Note { channel, note }),
-            (None, Some(controller)) => Ok(Source::ControlChange {
-                channel,
-                controller,
-                resolution: self
-                    .resolution
-                    .map_or(Resolution::SevenBit, Resolution::from),
-            }),
-            _ => Err("a binding needs exactly one of 'note' or 'cc'".to_string()),
-        }
-    }
-
-    fn build(&self, scope: DeckScope, assigned: Option<&str>) -> Result<Binding, String> {
-        let action = match self.action.as_str() {
-            "deck_param" => Action::DeckParam {
-                deck: self.deck(scope, assigned)?,
-                slot: self
-                    .slot
-                    .clone()
-                    .ok_or_else(|| "'deck_param' needs a slot".to_string())?,
-                param: self
-                    .param
-                    .clone()
-                    .ok_or_else(|| "'deck_param' needs a param".to_string())?,
-            },
-            "cue_toggle" => Action::CueToggle {
-                deck: self.deck(scope, assigned)?,
-            },
-            "play_toggle" => Action::PlayToggle {
-                deck: self.deck(scope, assigned)?,
-            },
-            "transport_cue" => Action::TransportCue {
-                deck: self.deck(scope, assigned)?,
-            },
-            "loop_in" => Action::LoopIn {
-                deck: self.deck(scope, assigned)?,
-            },
-            "loop_out" => Action::LoopOut {
-                deck: self.deck(scope, assigned)?,
-            },
-            "loop_exit_or_reloop" => Action::LoopExitOrReloop {
-                deck: self.deck(scope, assigned)?,
-            },
-            "tempo_fader" => Action::TempoFader {
-                deck: self.deck(scope, assigned)?,
-            },
-            "jog" => Action::Jog {
-                deck: self.deck(scope, assigned)?,
-            },
-            "shift" => Action::Shift {
-                deck: self.deck(scope, assigned)?,
-            },
-            "quantize_toggle" => Action::QuantizeToggle {
-                deck: self.deck(scope, assigned)?,
-            },
-            "eject" => Action::Eject {
-                deck: self.deck(scope, assigned)?,
-            },
-            "load" => Action::Load {
-                deck: self.deck(scope, assigned)?,
-            },
-            "browse" => Action::Browse { steps: self.steps },
-            "enter" => Action::Enter,
-            "back" => Action::Back,
-            "toggle_view" => Action::ToggleView,
-            "xfader_position" => Action::XfaderPosition,
-            other => return Err(format!("unknown action '{other}'")),
-        };
-        Ok(Binding {
-            source: self.source()?,
-            action,
-        })
-    }
-}
-
-impl Mapping {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn claims(&self, port: &str) -> bool {
-        self.matches.iter().any(|needle| port.contains(needle))
-    }
-
-    fn needs_deck(&self) -> bool {
-        self.decks == DeckScope::Assigned
-    }
-
-    fn profile(&self, assigned: Option<&str>) -> Result<Profile, String> {
-        let bindings = self
-            .bindings
-            .iter()
-            .map(|spec| spec.build(self.decks, assigned))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("{}: {error}", self.name))?;
-        Profile::new(bindings).map_err(|error| format!("{}: {error}", self.name))
-    }
-}
-
-fn parse_mapping(source: &str) -> Result<Mapping, String> {
-    let file: MappingFile = serde_json::from_str(source).map_err(|error| error.to_string())?;
-    if file.version > MAPPING_VERSION {
-        return Err(format!(
-            "{} declares version {}, newer than {MAPPING_VERSION}",
-            file.name, file.version
-        ));
-    }
-    let templated = !file.per_deck.is_empty() || !file.deck_bindings.is_empty();
-    if templated && file.version < DECK_TEMPLATE_VERSION {
-        return Err(format!(
-            "{} uses a deck template but declares version {}, older than {DECK_TEMPLATE_VERSION}",
-            file.name, file.version
-        ));
-    }
-    if !file.deck_bindings.is_empty() && file.per_deck.is_empty() {
-        return Err(format!("{}: 'deck_bindings' needs 'per_deck'", file.name));
-    }
-    let mut bindings = file.bindings;
-    for over in &file.per_deck {
-        bindings.extend(file.deck_bindings.iter().map(|spec| spec.expand(over)));
-    }
-    Ok(Mapping {
-        name: file.name,
-        matches: file.matches,
-        decks: file.decks,
-        bindings,
-    })
-}
-
-fn built_in_mappings() -> Vec<Mapping> {
-    MAPPING_FILES
-        .iter()
-        .map(|source| parse_mapping(source).expect("a built-in mapping file"))
-        .collect()
-}
-
-#[derive(Default)]
-struct ControlMemory {
-    halves: HashMap<usize, (u8, u8)>,
-}
-
-impl ControlMemory {
-    /// Acts on both halves rather than waiting for a pair, or a controller sending only
-    /// the changed half stalls. A lone high half lands within one low-half step.
-    fn join(&mut self, binding: usize, half: Half, value: u8) -> u16 {
-        let halves = self.halves.entry(binding).or_insert((0, 0));
-        match half {
-            Half::Msb => halves.0 = value,
-            Half::Lsb => halves.1 = value,
-        }
-        (u16::from(halves.0) << 7) | u16::from(halves.1)
-    }
-
-    /// A half left over from before a reconnect would join with the first
-    /// message after it and produce one value the knob was never at.
-    fn clear(&mut self) {
-        self.halves.clear();
-    }
-}
-
-struct ControlChange {
-    channel: u8,
-    controller: u8,
-    value: u8,
-}
-
-fn parse_control_change(data: &[u8]) -> Option<ControlChange> {
-    let &[status, controller, value] = data else {
-        return None;
-    };
-    if status & 0xF0 != CONTROL_CHANGE {
-        return None;
-    }
-    Some(ControlChange {
-        channel: status & 0x0F,
-        controller,
-        value: value & 0x7F,
-    })
-}
-
-struct NoteOn {
-    channel: u8,
-    note: u8,
-    velocity: u8,
-}
-
-fn parse_note_on(data: &[u8]) -> Option<NoteOn> {
-    let &[status, note, velocity] = data else {
-        return None;
-    };
-    if status & 0xF0 != NOTE_ON {
-        return None;
-    }
-    Some(NoteOn {
-        channel: status & 0x0F,
-        note,
-        velocity: velocity & 0x7F,
-    })
-}
-
-/// Separated from applying it so the mapping path is testable without an
-/// `AppState`, which cannot be built outside a running app.
-#[derive(Debug, PartialEq)]
-enum Move {
-    Param {
-        deck: String,
-        slot: String,
-        param: String,
-        position: f64,
-    },
-    Cue {
-        deck: String,
-    },
-    Play {
-        deck: String,
-    },
-    CuePress {
-        deck: String,
-    },
-    CueRelease {
-        deck: String,
-    },
-    LoopIn {
-        deck: String,
-    },
-    LoopOut {
-        deck: String,
-    },
-    LoopExitOrReloop {
-        deck: String,
-    },
-    Tempo {
-        deck: String,
-        position: f64,
-    },
-    Jog {
-        deck: String,
-        ticks: i32,
-    },
-    Shift {
-        deck: String,
-        held: bool,
-    },
-    QuantizeToggle {
-        deck: String,
-    },
-    Eject {
-        deck: String,
-    },
-    Browse {
-        steps: i32,
-    },
-    Load {
-        deck: String,
-    },
-    Enter,
-    Back,
-    ToggleView,
-    Xfader {
-        position: f64,
-    },
-}
-
-fn resolve_move(profile: &Profile, memory: &mut ControlMemory, data: &[u8]) -> Option<Move> {
-    if let Some(message) = parse_control_change(data) {
-        let (index, binding, half) = profile.resolve(Key::ControlChange {
-            channel: message.channel,
-            controller: message.controller,
-        })?;
-        // Ahead of the position maths, and ahead of `join`, so a relative control
-        // never leaves a half behind for a real pair to collide with.
-        if let Some(delta) = relative_delta(binding.source.resolution(), message.value) {
-            return match &binding.action {
-                Action::Jog { deck } => (delta != 0).then(|| Move::Jog {
-                    deck: deck.clone(),
-                    ticks: delta,
-                }),
-                Action::Browse { .. } => (delta != 0).then_some(Move::Browse { steps: delta }),
-                _ => None,
-            };
-        }
-        let position = match binding.source.resolution() {
-            Resolution::FourteenBit => unit_interval(
-                f64::from(memory.join(index, half, message.value)),
-                FOURTEEN_BIT_MAX,
-            ),
-            // A relative control returned above, so it never reaches this; the arm
-            // is spelled out anyway so a new resolution has to be considered here.
-            Resolution::SevenBit | Resolution::CentreDelta | Resolution::SignedStep => {
-                unit_interval(f64::from(message.value), SEVEN_BIT_MAX)
-            }
-        };
-        return match &binding.action {
-            Action::DeckParam { deck, slot, param } => Some(Move::Param {
-                deck: deck.clone(),
-                slot: slot.clone(),
-                param: param.clone(),
-                position,
-            }),
-            Action::XfaderPosition => Some(Move::Xfader { position }),
-            Action::TempoFader { deck } => Some(Move::Tempo {
-                deck: deck.clone(),
-                position,
-            }),
-            Action::CueToggle { .. }
-            | Action::PlayToggle { .. }
-            | Action::TransportCue { .. }
-            | Action::LoopIn { .. }
-            | Action::LoopOut { .. }
-            | Action::LoopExitOrReloop { .. }
-            | Action::Jog { .. }
-            | Action::Shift { .. }
-            | Action::QuantizeToggle { .. }
-            | Action::Eject { .. }
-            | Action::Browse { .. }
-            | Action::Load { .. }
-            | Action::Enter
-            | Action::Back
-            | Action::ToggleView => None,
-        };
-    }
-
-    let message = parse_note_on(data)?;
-    let (_, binding, _) = profile.resolve(Key::Note {
-        channel: message.channel,
-        note: message.note,
-    })?;
-    let pressed = message.velocity > 0;
-    match &binding.action {
-        // Toggles in the app, momentary buttons on the controller.
-        Action::CueToggle { deck } => pressed.then(|| Move::Cue { deck: deck.clone() }),
-        Action::PlayToggle { deck } => pressed.then(|| Move::Play { deck: deck.clone() }),
-        Action::TransportCue { deck } => Some(if pressed {
-            Move::CuePress { deck: deck.clone() }
-        } else {
-            Move::CueRelease { deck: deck.clone() }
-        }),
-        Action::LoopIn { deck } => pressed.then(|| Move::LoopIn { deck: deck.clone() }),
-        Action::LoopOut { deck } => pressed.then(|| Move::LoopOut { deck: deck.clone() }),
-        Action::LoopExitOrReloop { deck } => {
-            pressed.then(|| Move::LoopExitOrReloop { deck: deck.clone() })
-        }
-        Action::Shift { deck } => Some(Move::Shift {
-            deck: deck.clone(),
-            held: pressed,
-        }),
-        // Momentary on the surface, latching in the app, so only the press turns
-        // it over; the release would turn it straight back.
-        Action::QuantizeToggle { deck } => {
-            pressed.then(|| Move::QuantizeToggle { deck: deck.clone() })
-        }
-        Action::Eject { deck } => pressed.then(|| Move::Eject { deck: deck.clone() }),
-        Action::Load { deck } => pressed.then(|| Move::Load { deck: deck.clone() }),
-        Action::Enter => pressed.then_some(Move::Enter),
-        Action::Back => pressed.then_some(Move::Back),
-        Action::ToggleView => pressed.then_some(Move::ToggleView),
-        Action::Browse { steps } => steps
-            .filter(|_| pressed)
-            .map(|steps| Move::Browse { steps }),
-        Action::DeckParam { .. }
-        | Action::XfaderPosition
-        | Action::TempoFader { .. }
-        | Action::Jog { .. } => None,
-    }
-}
-
 pub(crate) fn apply(
-    state: &crate::AppState,
+    engine: &crate::engine::Engine,
+    surface: &crate::SurfaceControl,
     midi: &MidiState,
     app: &tauri::AppHandle,
     port: &str,
     data: &[u8],
 ) {
-    // The same gate the keyboard has in `useKeyboard.ts`. Outside performance the session
-    // scheduler owns the strips and writes them past the `set_deck_param` funnel.
-    if state.app_mode() != crate::AppMode::Performance {
+    if !surface.allowed() {
         return;
     }
     // Scoped so the device lock is released before the engine locks are taken.
     let moved = {
-        let mut devices = midi
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = midi.devices.locked();
         let Some(device) = devices.get_mut(port) else {
             return;
         };
@@ -1044,33 +277,48 @@ pub(crate) fn apply(
     match moved {
         None => {}
         Some(Move::Cue { deck }) => {
-            state
+            engine
                 .toggle_cue_active(crate::ParamOrigin::Midi, &deck)
-                .ok();
+                .or_log("cue");
+            refresh_led(engine, midi, Feedback::Cue, &deck);
         }
         Some(Move::Play { deck }) => {
-            state.toggle_play(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .toggle_play(crate::ParamOrigin::Midi, &deck)
+                .or_log("play");
         }
         Some(Move::CuePress { deck }) => {
-            state.press_cue(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .press_cue(crate::ParamOrigin::Midi, &deck)
+                .or_log("cue press");
         }
         Some(Move::CueRelease { deck }) => {
-            state.release_cue(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .release_cue(crate::ParamOrigin::Midi, &deck)
+                .or_log("cue release");
         }
         Some(Move::LoopIn { deck }) => {
-            state.loop_in(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .loop_in(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop in");
         }
         Some(Move::LoopOut { deck }) => {
-            state.loop_out(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .loop_out(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop out");
         }
         Some(Move::LoopExitOrReloop { deck }) => {
-            state.exit_or_reloop(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .exit_or_reloop(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop exit");
         }
         Some(Move::Jog { deck, ticks }) => {
-            state.jog(crate::ParamOrigin::Midi, &deck, ticks).ok();
+            engine
+                .jog(crate::ParamOrigin::Midi, &deck, ticks)
+                .or_log("jog");
         }
         Some(Move::Shift { deck, held }) => {
-            state.set_jog_shift(&deck, held).ok();
+            engine.set_jog_shift(&deck, held).or_log("jog shift");
         }
         // Forwarded rather than acted on: the frontend owns the flag and writes
         // it back through `set_quantize`, which is also what lights the button.
@@ -1098,12 +346,12 @@ pub(crate) fn apply(
             app.emit("midi-eject", deck).ok();
         }
         Some(Move::Tempo { deck, position }) => {
-            state
+            engine
                 .set_playback_rate_from_fader(crate::ParamOrigin::Midi, &deck, position)
-                .ok();
+                .or_log("tempo");
         }
         Some(Move::Xfader { position }) => {
-            let Some(descriptor) = state.audio.mixer().descriptor(
+            let Some(descriptor) = engine.audio.mixer().descriptor(
                 session_core::ParamScope::Master,
                 "xfader",
                 "position",
@@ -1111,7 +359,7 @@ pub(crate) fn apply(
                 return;
             };
             let value = descriptor.from_unit_interval(position);
-            state.set_xfader_position(crate::ParamOrigin::Midi, value as f32);
+            engine.set_xfader_position(crate::ParamOrigin::Midi, value as f32);
         }
         Some(Move::Param {
             deck,
@@ -1120,7 +368,7 @@ pub(crate) fn apply(
             position,
         }) => {
             let Some(descriptor) =
-                state
+                engine
                     .audio
                     .mixer()
                     .descriptor(session_core::ParamScope::Deck, &slot, &param)
@@ -1128,9 +376,9 @@ pub(crate) fn apply(
                 return;
             };
             let value = descriptor.from_unit_interval(position);
-            state
+            engine
                 .set_deck_param(crate::ParamOrigin::Midi, &deck, &slot, &param, value as f32)
-                .ok();
+                .or_log("param");
         }
     }
 }
@@ -1139,10 +387,7 @@ pub(crate) fn apply(
 /// button too.
 pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
     let writes: Vec<(String, u8, u8)> = {
-        let devices = state
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let devices = state.devices.locked();
         devices
             .iter()
             .filter_map(|(port, device)| {
@@ -1168,12 +413,9 @@ pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
 
 /// Nothing else pushes state when a port opens, so a button the app already has
 /// on would stay dark until the next toggle.
-fn resync_leds(state: &crate::AppState, midi: &MidiState) {
+fn resync_leds(engine: &crate::engine::Engine, midi: &MidiState) {
     let lit: Vec<(Feedback, String)> = {
-        let devices = midi
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let devices = midi.devices.locked();
         let mut lit: Vec<(Feedback, String)> = devices
             .values()
             .filter_map(|device| device.profile.as_ref())
@@ -1184,23 +426,29 @@ fn resync_leds(state: &crate::AppState, midi: &MidiState) {
         lit
     };
     for (kind, deck) in lit {
-        let on = match kind {
-            Feedback::Cue => state.audio.strip(&deck).map(|strip| {
-                strip
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .cue_active
-            }),
-            Feedback::Quantize => state.deck(&deck).ok().map(|deck_state| {
-                deck_state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .quantize
-            }),
-        };
-        if let Some(on) = on {
-            send_led(midi, kind, &deck, on);
-        }
+        refresh_led(engine, midi, kind, &deck);
+    }
+}
+
+/// The engine owns the state and never pushes a light. This reads it and derives one.
+pub(crate) fn refresh_led(
+    engine: &crate::engine::Engine,
+    midi: &MidiState,
+    kind: Feedback,
+    deck: &str,
+) {
+    let on = match kind {
+        Feedback::Cue => engine
+            .audio
+            .strip(deck)
+            .map(|strip| strip.locked().cue_active),
+        Feedback::Quantize => engine
+            .deck(deck)
+            .ok()
+            .map(|deck_state| deck_state.locked().quantize),
+    };
+    if let Some(on) = on {
+        send_led(midi, kind, deck, on);
     }
 }
 
@@ -1234,10 +482,7 @@ fn port_names() -> Result<Vec<String>, String> {
 }
 
 fn device_list(state: &MidiState) -> Vec<MidiDevice> {
-    let devices = state
-        .devices
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let devices = state.devices.locked();
     let mut list: Vec<MidiDevice> = devices
         .iter()
         .map(|(port, device)| MidiDevice {
@@ -1256,10 +501,9 @@ fn device_list(state: &MidiState) -> Vec<MidiDevice> {
 }
 
 /// Every connected port comes online at once, each through its own mapping.
-#[tauri::command]
 pub fn list_midi_devices(
-    state: tauri::State<'_, MidiState>,
-    app_state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::midi::MidiState>,
+    app_state: tauri::State<'_, crate::engine::Engine>,
 ) -> Result<Vec<MidiDevice>, String> {
     let ports = port_names()?;
     state.sync_devices(&ports);
@@ -1275,18 +519,14 @@ pub fn list_midi_devices(
 
 /// A device whose mapping names no decks of its own plays one deck, and this is
 /// the only thing that says which.
-#[tauri::command]
 pub fn set_midi_device_deck(
-    state: tauri::State<'_, MidiState>,
-    app_state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::midi::MidiState>,
+    app_state: tauri::State<'_, crate::engine::Engine>,
     port: String,
     deck: Option<String>,
 ) -> Result<(), String> {
     {
-        let mut devices = state
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = state.devices.locked();
         let Some(device) = devices.get_mut(&port) else {
             return Err(format!("no MIDI device on '{port}'"));
         };
@@ -1309,16 +549,41 @@ pub fn set_midi_device_deck(
     Ok(())
 }
 
-#[tauri::command]
-pub fn set_midi_monitor(state: tauri::State<'_, MidiState>, enabled: bool) {
+pub fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, enabled: bool) {
     state.monitor.enabled.store(enabled, Ordering::Relaxed);
     if !enabled {
         state.monitor.drain();
     }
 }
 
+mod decode;
+mod mapping;
+mod wire;
+use decode::{resolve_move, ControlMemory, Move};
+pub(crate) use mapping::Feedback;
+use mapping::{built_in_mappings, Mapping, Profile, ResolutionSpec};
+use wire::{Key, Resolution, NOTE_ON};
+
+/// A mapped control that fails without saying so reads as broken hardware.
+trait OrLog {
+    fn or_log(self, control: &str);
+}
+
+impl<T> OrLog for Result<T, String> {
+    fn or_log(self, control: &str) {
+        if let Err(error) = self {
+            log::warn!("midi {control}: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::decode::parse_control_change;
+    use super::mapping::{parse_mapping, Action, Binding, MAPPING_FILES};
+    use super::wire::{
+        unit_interval, Half, Source, CONTROL_CHANGE, FOURTEEN_BIT_MAX, SEVEN_BIT_MAX,
+    };
     use super::*;
 
     fn message(byte: u8) -> MidiMessage {
@@ -1374,7 +639,6 @@ mod tests {
 
     #[test]
     fn anything_that_is_not_a_three_byte_control_change_is_ignored() {
-        // Note on, pitch bend, a running-status runt, and an empty buffer.
         assert!(parse_control_change(&[0x90, 60, 100]).is_none());
         assert!(parse_control_change(&[0xE0, 0, 64]).is_none());
         assert!(parse_control_change(&[0xB0, 20]).is_none());
@@ -1417,7 +681,6 @@ mod tests {
                 controller: 99
             })
             .is_none());
-        // The low half exists only on the binding's own channel.
         assert!(profile
             .resolve(Key::ControlChange {
                 channel: 5,
@@ -1460,7 +723,6 @@ mod tests {
         assert!((position - expected).abs() < 1e-12);
     }
 
-    // Its low half is cc 63, which must not land on the filters' 55-58 block.
     #[test]
     fn the_crossfader_does_not_collide_with_the_filters() {
         let profile = ddj_flx6();
@@ -1490,8 +752,6 @@ mod tests {
         assert_eq!(deck, "C");
     }
 
-    // Each deck owns a channel and each control a CC, so a crossed pair would
-    // silently move the wrong deck's knob.
     #[test]
     fn a_profile_whose_sources_collide_is_refused() {
         let collision = Profile::new(vec![
@@ -1501,8 +761,6 @@ mod tests {
         assert!(collision.is_err());
     }
 
-    // The collision a table of declared addresses cannot see: cc 7's implied low
-    // half is cc 39, so binding cc 39 as well silently steals it.
     #[test]
     fn an_implied_low_half_colliding_with_another_high_half_is_refused() {
         let collision = Profile::new(vec![
@@ -1518,8 +776,6 @@ mod tests {
         assert!(Profile::new(vec![deck_param(0, 95, "A", "eq", "high")]).is_ok());
     }
 
-    // The exact stream from the screenshot, high half first, ending at the 8192
-    // centre of the 14-bit range.
     #[test]
     fn the_two_halves_of_a_high_resolution_control_join() {
         let mut halves = ControlMemory::default();
@@ -1531,8 +787,6 @@ mod tests {
         assert_eq!(halves.join(0, Half::Lsb, 0), 8192);
     }
 
-    // Acting on a lone high half is what stops a controller that sends only the
-    // half that moved from stalling, and it has to land within one low-half step.
     #[test]
     fn a_high_half_on_its_own_lands_within_one_low_half_step() {
         let mut halves = ControlMemory::default();
@@ -1550,8 +804,6 @@ mod tests {
         assert_eq!(halves.join(1, Half::Lsb, 3), 3);
     }
 
-    // A half surviving a reconnect would join with the first message after it
-    // and place the knob somewhere it has never been.
     #[test]
     fn clearing_forgets_a_half() {
         let mut halves = ControlMemory::default();
@@ -1604,8 +856,6 @@ mod tests {
         );
     }
 
-    // Dropping the release would leave the deck previewing from the cue point
-    // forever, with the button already back up.
     #[test]
     fn a_transport_cue_press_and_release_are_both_moves() {
         let profile = ddj_flx6();
@@ -1624,8 +874,6 @@ mod tests {
         );
     }
 
-    // The transport cue and the headphone cue are different buttons on different
-    // halves of the surface, and only the latter has an LED the app drives.
     #[test]
     fn transport_cue_is_not_the_headphone_cue() {
         let profile = ddj_flx6();
@@ -1651,8 +899,6 @@ mod tests {
         );
     }
 
-    // Deck select re-channels a deck half, so a transport press on the C layer
-    // has to reach deck C without the profile knowing layers exist.
     #[test]
     fn transport_reaches_all_four_decks_by_channel() {
         let profile = ddj_flx6();
@@ -1769,8 +1015,6 @@ mod tests {
         );
     }
 
-    // The other relative encoding on this surface: one detent either way, which
-    // reads as 1 and 127 rather than as an angle.
     #[test]
     fn the_browse_encoder_reports_a_signed_step() {
         let profile = ddj_flx6();
@@ -1785,8 +1029,6 @@ mod tests {
         );
     }
 
-    // Read off both halves: while note 63 is down the wheel sends CC 38, not
-    // CC 33.
     #[test]
     fn the_wheels_shifted_address_drives_the_same_deck() {
         let profile = ddj_flx6();
@@ -1879,8 +1121,6 @@ mod tests {
         );
     }
 
-    // A relative control declares no low half, so binding one must not reserve
-    // the cc 32 above it and steal a real address.
     #[test]
     fn a_relative_control_claims_no_low_half() {
         let profile = ddj_flx6();
@@ -1910,7 +1150,6 @@ mod tests {
             resolve_move(&profile, &mut halves, &note_on(9, 60, 127)),
             None
         );
-        // Clock, a running-status runt, and an empty buffer.
         assert_eq!(resolve_move(&profile, &mut halves, &[0xF8]), None);
         assert_eq!(resolve_move(&profile, &mut halves, &[0xB0, 20]), None);
         assert_eq!(resolve_move(&profile, &mut halves, &[]), None);
@@ -1952,8 +1191,6 @@ mod tests {
             .is_some());
     }
 
-    // Read off a real failure: the FLX6's output port was held by another client when the
-    // input opened, and skipping the retry left every LED dark for the rest of the session.
     #[test]
     fn an_output_that_failed_to_open_is_retried_while_its_input_stays_alone() {
         let wanted = vec!["DDJ-FLX6".to_string(), "XDJ-1000MK2".to_string()];
@@ -1967,8 +1204,6 @@ mod tests {
         assert_eq!(outputs, wanted);
     }
 
-    // Every shipped file has to build, or the app ships with a controller that
-    // silently does nothing.
     #[test]
     fn every_built_in_mapping_parses_and_builds_a_profile() {
         let mappings = built_in_mappings();
@@ -1983,8 +1218,6 @@ mod tests {
         }
     }
 
-    // The file counts from 1 so it can be read next to a capture; the wire counts
-    // from 0.
     #[test]
     fn a_files_channel_is_one_higher_than_the_wires() {
         let profile = ddj_flx6();
@@ -2009,15 +1242,13 @@ mod tests {
         assert!(!flx6.claims("XDJ-1000MK2"));
         assert!(!flx6.claims("IAC Driver Bus 1"));
 
-        // The mapping is named for the revision in hand; the substring it claims
+        // The mapping is named for the revision in hand. The substring it claims
         // by is the shorter one both revisions of the port name start with.
         let player = mapping_named("XDJ-1000MK2");
         assert!(player.claims("XDJ-1000MK2"));
         assert!(player.claims("XDJ-1000"));
     }
 
-    // A player is one deck, and which deck is not in the file: it is the user's
-    // choice, baked into the profile when they make it.
     #[test]
     fn an_assigned_mapping_names_the_deck_it_was_built_for() {
         let player = mapping_named("XDJ-1000MK2");
@@ -2032,8 +1263,6 @@ mod tests {
         );
     }
 
-    // The bug this fixes: a detented fader that reads a hair above centre moves a
-    // 141 bpm track to 141.11 at 10% range, and only a 7-bit control shows it.
     #[test]
     fn a_detented_centre_reads_exactly_half_at_both_resolutions() {
         assert_eq!(unit_interval(64.0, SEVEN_BIT_MAX), 0.5);
@@ -2063,8 +1292,6 @@ mod tests {
         );
     }
 
-    // The platter and the bend ring are two controls, and only the ring belongs
-    // to the jog: the platter is the vinyl gesture and waits for a scratch engine.
     #[test]
     fn the_players_bend_ring_drives_the_jog_and_its_platter_does_not() {
         let profile = mapping_named("XDJ-1000MK2")
@@ -2089,8 +1316,6 @@ mod tests {
         assert!(mapping_named("XDJ-1000MK2").profile(None).is_err());
     }
 
-    // Track search is the browse cursor, not transport: the file gives the step
-    // because a button carries no delta of its own.
     #[test]
     fn a_note_can_browse_by_a_fixed_step() {
         let profile = mapping_named("XDJ-1000MK2")
@@ -2108,8 +1333,6 @@ mod tests {
         assert_eq!(resolve_move(&profile, &mut halves, &note_on(0, 4, 0)), None);
     }
 
-    // The per-deck block is the same controls on one channel each, and writing it out per
-    // deck made a typo a valid address on the wrong deck, which no collision check can see.
     #[test]
     fn a_deck_template_expands_one_binding_per_deck() {
         let source = r#"{ "version": 2, "name": "Template", "match": [], "decks": "fixed",
@@ -2131,8 +1354,6 @@ mod tests {
         }
     }
 
-    // A build predating the template parses the file, finds no `bindings`, and presents a
-    // dead controller. Declaring the older version has to be refused rather than half-read.
     #[test]
     fn a_deck_template_in_a_file_that_predates_it_is_refused() {
         let source = r#"{ "version": 1, "name": "Old", "match": [], "decks": "fixed",
@@ -2171,8 +1392,6 @@ mod tests {
         assert!(mapping.profile(None).is_err());
     }
 
-    // The LED path is a reverse lookup, so a cue binding the profile can dispatch
-    // but not light would leave the button dark whatever the app did.
     #[test]
     fn every_cue_binding_has_a_key_to_light() {
         let profile = ddj_flx6();
@@ -2186,7 +1405,6 @@ mod tests {
         }
     }
 
-    // Cue is note 84 and quantize note 48 on the same deck.
     #[test]
     fn each_kind_of_feedback_keeps_its_own_key() {
         let profile = Profile::new(vec![
@@ -2226,8 +1444,6 @@ mod tests {
         );
     }
 
-    // Momentary on the surface, latching in the app: acting on the release too
-    // would turn quantize straight back off under the finger.
     #[test]
     fn quantize_turns_over_on_the_press_only() {
         let profile = mapping_named("XDJ-1000MK2")
@@ -2268,7 +1484,6 @@ mod tests {
         );
     }
 
-    // Read off the unit: the rotary sends 127 one way and 1 the other.
     #[test]
     fn the_players_browse_encoder_steps_both_ways() {
         let profile = mapping_named("XDJ-1000MK2")

@@ -132,7 +132,6 @@ describe('undo and redo under fuzzed edit sequences', () => {
       while (editStore.canUndo && guard++ < MAX_UNDO * 2) editStore.undo();
 
       expect(store.session?.events, `seed ${seed}`).toBe(loaded);
-      // Reference-identical to the baseline, so nothing is left to save.
       expect(editStore.dirty, `seed ${seed}`).toBe(false);
     }
   });
@@ -168,7 +167,6 @@ describe('undo and redo under fuzzed edit sequences', () => {
       expect(depth).toBeLessThanOrEqual(MAX_UNDO);
     }
     expect(depth).toBe(MAX_UNDO);
-    // Past the cap the loaded array is gone, so the session cannot come back clean.
     expect(store.session?.events).not.toBe(null);
     expect(editStore.dirty).toBe(true);
   });

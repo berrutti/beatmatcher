@@ -21,6 +21,7 @@ path = "src/bin/compare_session.rs"
 tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 session-core = { path = "../session-core" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

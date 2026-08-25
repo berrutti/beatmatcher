@@ -19,7 +19,7 @@ import {
 import type { ViewContext } from '@renderer/utils/timelineEngine';
 import { MASTER_ROW_ID, type Clip } from '@renderer/utils/types';
 
-// ms -> x as identity-ish; pt.x in these tests is given directly in ms units.
+// ms -> x as identity-ish. Pt.x in these tests is given directly in ms units.
 const vc = { msToX: (ms: number) => ms, trackW: 10_000 } as ViewContext;
 
 function clipAt(deck: string, startMs: number, endMs: number, loop = false): Clip {
@@ -56,13 +56,10 @@ describe('filterSelectionItem', () => {
     const pad = laneValuePad(lane.height);
     expect(r.y).toBe(lane.top + pad);
     expect(r.h).toBe(lane.height - 2 * pad);
-    // The divider is drawn at the lane bottom; the border must stay above it.
     expect(r.y + r.h).toBeLessThan(lane.top + lane.height);
   });
 });
 
-// The gesture takes the value rect straight from the hit, so an item that reports
-// its frame instead puts drawn points where they are not rendered.
 describe('lane hit-test', () => {
   it('reports the deck lane value area, not its frame', () => {
     const lane: SublaneLayout = { key: 'filter', top: 100, height: 80 };

@@ -1,11 +1,10 @@
-use super::dsp::{Biquad, EqState, FilterState};
+use super::dsp::{Biquad, Equalizer, Filter};
 
 const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
 
 pub trait AudioUnit: Send {
     fn set_param(&mut self, param: &str, value: f32);
 
-    /// The value last set, not the smoothed value the DSP is currently at.
     fn param(&self, param: &str) -> Option<f32>;
 
     fn process(&mut self, l: f32, r: f32) -> (f32, f32);
@@ -20,7 +19,7 @@ pub trait AudioUnit: Send {
 }
 
 struct Eq3Band {
-    eq: EqState,
+    eq: Equalizer,
     low: f32,
     mid: f32,
     high: f32,
@@ -61,7 +60,7 @@ impl AudioUnit for Eq3Band {
 }
 
 struct SweepFilter {
-    filter: FilterState,
+    filter: Filter,
     knob: f32,
     active: bool,
 }
@@ -246,13 +245,13 @@ impl AudioUnit for Isolator3Band {
 pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> {
     match unit_id {
         "eq3band" => Some(Box::new(Eq3Band {
-            eq: EqState::new(sample_rate),
+            eq: Equalizer::new(sample_rate),
             low: 0.0,
             mid: 0.0,
             high: 0.0,
         })),
         "sweep_filter" => Some(Box::new(SweepFilter {
-            filter: FilterState::new(sample_rate),
+            filter: Filter::new(sample_rate),
             knob: 0.0,
             active: false,
         })),
@@ -320,8 +319,6 @@ mod tests {
         make_unit(descriptor.unit_id, SAMPLE_RATE).expect("unit")
     }
 
-    // Every other gain in the mixer smooths, and this one is automatable, so a drawn kill
-    // lane would step a band to silence between two samples and click.
     #[test]
     fn an_isolator_band_reaches_its_new_gain_over_a_ramp_rather_than_at_once() {
         let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("the isolator");
@@ -345,8 +342,6 @@ mod tests {
         );
     }
 
-    // A param the manifest advertises but the unit ignores would be silently
-    // inert: the editor would draw a lane that does nothing.
     #[test]
     fn every_eq_band_reaches_the_unit() {
         for band in ["low", "mid", "high"] {
@@ -422,8 +417,6 @@ mod tests {
             .is_some());
     }
 
-    // A strip is used straight after construction, so a unit constructing itself away from
-    // its descriptor default would start the session on a value the editor never shows.
     #[test]
     fn constructed_units_match_the_manifest_defaults() {
         for manifest in session_core::MANIFESTS {
@@ -443,8 +436,6 @@ mod tests {
         }
     }
 
-    // A mixer that colours the signal while doing nothing is a defect. The bands sum to an
-    // allpass, so this checks magnitude: the phase shift is inaudible, a crossover notch is not.
     #[test]
     fn the_isolator_is_level_flat_at_unity() {
         for hz in [60.0, 300.0, 1000.0, 3000.0, 10_000.0] {

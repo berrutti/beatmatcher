@@ -371,6 +371,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { focusableWithin, trapTabWithin } from '@renderer/utils/focusTrap';
+import { markModalClosed, markModalOpen } from '@renderer/utils/modalStack';
 import { useI18n } from 'vue-i18n';
 import { storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import {
@@ -563,11 +565,7 @@ function onGridKeydown(e: KeyboardEvent) {
 const IGNORED_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Enter']);
 
 function focusableElements(): HTMLElement[] {
-  return Array.from(
-    modalEl.value?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled])'
-    ) ?? []
-  );
+  return focusableWithin(modalEl.value);
 }
 
 function onWindowKeydown(e: KeyboardEvent) {
@@ -578,17 +576,7 @@ function onWindowKeydown(e: KeyboardEvent) {
       return;
     }
     if (e.key === 'Tab') {
-      const els = focusableElements();
-      if (els.length === 0) return;
-      const first = els[0];
-      const last = els[els.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
+      trapTabWithin(e, modalEl.value);
     }
     return;
   }
@@ -628,17 +616,45 @@ function onWindowKeydown(e: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  markModalOpen();
   window.addEventListener('keydown', onWindowKeydown, { capture: true });
   focusableElements()[0]?.focus();
   await midi.refresh();
 });
 onUnmounted(() => {
+  markModalClosed();
   window.removeEventListener('keydown', onWindowKeydown, { capture: true });
   if (conflictTimer) clearTimeout(conflictTimer);
 });
 </script>
 
 <style scoped>
+/* The overlay's own fade is global (App.vue applies it); the panel's motion stays here. */
+.settings-overlay.modal-fade-enter-active .settings-modal,
+.settings-overlay.modal-fade-leave-active .settings-modal {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.settings-overlay.modal-fade-enter-from .settings-modal,
+.settings-overlay.modal-fade-leave-to .settings-modal {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-overlay.modal-fade-enter-active .settings-modal,
+  .settings-overlay.modal-fade-leave-active .settings-modal {
+    transition-duration: 0.01ms;
+  }
+
+  .settings-overlay.modal-fade-enter-from .settings-modal,
+  .settings-overlay.modal-fade-leave-to .settings-modal {
+    transform: none;
+  }
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -913,9 +929,10 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.settings-number:focus {
-  outline: none;
-  border-color: var(--color-text);
+:root[data-keyboard-nav] .settings-number:focus,
+:root[data-keyboard-nav] .settings-color-input:focus {
+  outline: 2px solid var(--color-text);
+  outline-offset: 2px;
 }
 
 .settings-decks {
@@ -1103,24 +1120,24 @@ onUnmounted(() => {
   border-radius: 2px;
 }
 
-.settings-close:focus-visible,
-.settings-reset-btn:focus-visible,
-.settings-chip:focus-visible {
+:root[data-keyboard-nav] .settings-close:focus,
+:root[data-keyboard-nav] .settings-reset-btn:focus,
+:root[data-keyboard-nav] .settings-chip:focus {
   outline: 2px solid var(--color-text);
   outline-offset: 2px;
 }
 
-.settings-btn:focus-visible {
+:root[data-keyboard-nav] .settings-btn:focus {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.settings-toggle input:focus-visible + .settings-toggle-track {
+:root[data-keyboard-nav] .settings-toggle input:focus + .settings-toggle-track {
   outline: 2px solid var(--color-text);
   outline-offset: 2px;
 }
 
-.settings-slider:focus-visible {
+:root[data-keyboard-nav] .settings-slider:focus {
   outline: 2px solid var(--color-text);
   outline-offset: 3px;
 }

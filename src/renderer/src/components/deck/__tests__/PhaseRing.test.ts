@@ -53,7 +53,7 @@ function flushFrame() {
   if (callback) callback(performance.now());
 }
 
-// The progress arc is the second of the three arcs drawn per frame; its end angle
+// The progress arc is the second of the three arcs drawn per frame. Its end angle
 // carries the phase.
 function lastPhaseAngle(): number {
   const progress = arcs[arcs.length - 2];
@@ -126,6 +126,55 @@ describe('PhaseRing', () => {
     flushFrame();
 
     expect(lastPhaseAngle()).not.toBe(before);
+    wrapper.unmount();
+  });
+
+  it('follows the playhead one last time when playback stops', async () => {
+    let beat = 2.5;
+    const wrapper = ring({ playing: true, cueing: false, beat: () => beat });
+    flushFrame();
+    const whilePlaying = lastPhaseAngle();
+
+    // Stopping returns the playhead to the cue point in the same update.
+    await wrapper.setProps({ playing: false });
+    beat = 0;
+    flushFrame();
+
+    expect(lastPhaseAngle()).not.toBe(whilePlaying);
+    expect(lastPhaseAngle()).toBe(-Math.PI / 2);
+    wrapper.unmount();
+  });
+
+  it('follows the playhead one last time when a cue preview ends', async () => {
+    let beat = 1.75;
+    const wrapper = ring({ playing: false, cueing: true, beat: () => beat });
+    flushFrame();
+    const whileCueing = lastPhaseAngle();
+
+    await wrapper.setProps({ cueing: false });
+    beat = 0;
+    flushFrame();
+
+    expect(lastPhaseAngle()).not.toBe(whileCueing);
+    expect(lastPhaseAngle()).toBe(-Math.PI / 2);
+    wrapper.unmount();
+  });
+
+  it('holds from the frame after it stopped, so a scrub cannot whip it round', async () => {
+    let beat = 2.5;
+    const wrapper = ring({ playing: true, cueing: false, beat: () => beat });
+    flushFrame();
+
+    await wrapper.setProps({ playing: false });
+    beat = 0;
+    flushFrame();
+    const settled = lastPhaseAngle();
+
+    for (const scrubbed of [1, 2, 3]) {
+      beat = scrubbed;
+      flushFrame();
+      expect(lastPhaseAngle()).toBe(settled);
+    }
     wrapper.unmount();
   });
 });

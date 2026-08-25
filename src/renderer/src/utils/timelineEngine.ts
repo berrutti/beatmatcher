@@ -1,19 +1,3 @@
-// A tiny retained-mode rendering engine over the 2D canvas. The session timeline
-// is described as a flat list of `SceneItem`s; each item knows its bounds, draws
-// itself (clipped to those bounds by the engine, so a stroke can never spill past
-// where the item lives), and hit-tests itself. All interaction is reported up as
-// semantic `Hit`s; items hold no gesture state.
-//
-// Two orderings, kept separate and explicit so neither is an accident of the
-// other:
-//   - DRAW order is the list order (the scene builder composes it deliberately,
-//     earlier items painted under later ones).
-//   - HIT precedence is NOT the draw order. When several items claim the same
-//     point (a nudge under a filter region, an edge handle over a body, ...),
-//     `hitScene` picks the highest-priority claimer per a caller-supplied
-//     `priorityOf(hit)` table, ties broken by draw order (top-most). The
-//     priority table lives in the timeline domain, not here.
-
 import type { ViewWindow } from '@renderer/utils/timelineView';
 
 export type Point = { x: number; y: number };
@@ -30,7 +14,7 @@ export type Hit = {
 };
 
 // The per-frame projection every item draws and hit-tests against: the camera.
-// Built by useTimelineView; passed to every item so they never read view state
+// Built by useTimelineView. Passed to every item so they never read view state
 // directly.
 export type ViewContext = {
   view: ViewWindow;
@@ -50,7 +34,7 @@ export type ViewContext = {
 
 export interface SceneItem {
   // The rectangle the item occupies in canvas pixels. The engine clips drawing
-  // to it; hit-tests use the item's own hitTest (which may be tighter).
+  // to it. Hit-tests use the item's own hitTest (which may be tighter).
   bounds(vc: ViewContext): Rect;
   draw(ctx: CanvasRenderingContext2D, vc: ViewContext): void;
   hitTest(pt: Point, vc: ViewContext): Hit | null;
@@ -78,12 +62,7 @@ export function renderScene(
   }
 }
 
-// The highest-priority item that claims the point. Every in-bounds item is
-// hit-tested; among the claimers, the one whose `Hit` ranks highest under
-// `priorityOf` wins, with draw order (later = on top) breaking ties. `priorityOf`
-// is supplied by the caller and typically keys on `target` AND `part`, so the
-// precedence can differ per region of an element (e.g. an edge handle outranks
-// a body). Default: no priority, so ties fall back to top-most drawn.
+// Ties fall back to the top-most drawn item.
 export function hitScene(
   items: SceneItem[],
   pt: Point,

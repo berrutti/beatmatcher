@@ -18,7 +18,7 @@ export function laneSpecFor(
 
 // Replaces this lane's events inside [t0, t1] with the drawn points and restores
 // the original value at t1, so everything after the gesture sounds unchanged.
-// Returns a new array; the input and its event objects are never mutated.
+// Returns a new array. The input and its event objects are never mutated.
 export function spliceLaneEvents(
   events: SessionEvent[],
   spec: LaneSpec,

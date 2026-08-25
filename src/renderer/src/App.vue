@@ -2,7 +2,10 @@
   <div class="app">
     <AppBar />
     <TopStrip />
-    <SettingsModal v-if="settingsStore.isOpen" />
+    <Transition name="modal-fade">
+      <SettingsModal v-if="settingsStore.isOpen" />
+    </Transition>
+    <RecoveryModal />
     <ConfirmModal
       :open="quitModalOpen"
       :title="t('quitModal.title')"
@@ -30,6 +33,8 @@ import { useMidiStore } from '@renderer/stores/midi';
 import { useBrowseStore } from '@renderer/stores/browse';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useRecoveryStore } from '@renderer/stores/recovery';
+import { installKeyboardNav } from '@renderer/utils/keyboardNav';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import AppBar from '@renderer/components/AppBar.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
@@ -38,6 +43,7 @@ import Performance from '@renderer/components/performance/Performance.vue';
 import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import RecoveryModal from '@renderer/components/modals/RecoveryModal.vue';
 import Tooltip from '@renderer/components/Tooltip.vue';
 
 const { t } = useI18n();
@@ -91,11 +97,16 @@ function handleQuitRequested(): void {
   quitModalOpen.value = true;
 }
 
+let stopKeyboardNav: (() => void) | null = null;
 let unlistenClose: (() => void) | null = null;
 let unlistenQuit: (() => void) | null = null;
 
 onMounted(async () => {
+  stopKeyboardNav = installKeyboardNav();
   settingsStore.init();
+  // Anything the last run left unfinished is offered back before the user can do
+  // anything else, or it is silently lost the next time a recording starts.
+  await useRecoveryStore().refresh();
   // Closing the window must quit the app, same as Cmd+Q. Letting the default
   // close happen would leave the app running without a window on macOS.
   unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
@@ -106,6 +117,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopKeyboardNav?.();
   decksStore.destroy();
   unlistenClose?.();
   unlistenQuit?.();

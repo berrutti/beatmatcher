@@ -271,7 +271,7 @@ function cancelRename() {
 const AUDIO_EXT = /\.(mp3|wav|flac|aac|ogg|m4a|aiff?)$/i;
 
 // OS file/folder drops come through Tauri's native drag-drop (HTML5 DnD can't see
-// absolute paths in Tauri v2). Dropped audio files are added directly; dropped
+// absolute paths in Tauri v2). Dropped audio files are added directly. Dropped
 // folders are scanned, same as the file/folder dialogs. Internal track drags
 // (store.draggingPath) are pointer-based and never fire this event.
 async function onFilesDropped(paths: string[]) {
@@ -460,6 +460,7 @@ async function openFolderDialog() {
   margin-left: auto;
   min-width: 0;
   width: 14em;
+  text-align: right;
   background: transparent;
   border: 1px solid #555;
   color: var(--color-text);
@@ -579,6 +580,10 @@ async function openFolderDialog() {
 
 .collection__item--analyzing .collection__item-name {
   opacity: 0.5;
+}
+
+.collection__item--played {
+  color: var(--color-muted);
 }
 
 .collection__item--played .collection__item-name {
@@ -705,6 +710,16 @@ async function openFolderDialog() {
   color: var(--color-muted);
 }
 
+/* The title is what a DJ reads down the list. The rest of the metadata is
+   there to be scanned, so only this column carries full contrast. */
+.collection__meta-value--title {
+  color: var(--color-text);
+}
+
+.collection__item--played .collection__meta-value--title {
+  color: var(--color-muted);
+}
+
 .collection__item-actions {
   display: flex;
   align-items: center;
@@ -718,6 +733,15 @@ async function openFolderDialog() {
 
 .collection__playlist-track {
   cursor: grab;
+  transition: opacity 90ms ease;
+}
+.collection__table--reordering .collection__playlist-track {
+  transition: transform 120ms ease;
+}
+
+.collection__table--reordering,
+.collection__table--reordering * {
+  cursor: grabbing !important;
 }
 
 .collection__playlist-track:active {
@@ -725,7 +749,7 @@ async function openFolderDialog() {
 }
 
 .collection__playlist-track--dragging {
-  opacity: 0.35;
+  opacity: 0.25;
 }
 
 .collection__playlist-num {
@@ -736,6 +760,11 @@ async function openFolderDialog() {
   min-width: 1.6em;
   text-align: right;
   user-select: none;
+}
+
+.collection__playlist-handle {
+  cursor: grab;
+  text-align: center;
 }
 
 .collection__playlist-grip {

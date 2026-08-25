@@ -1,10 +1,5 @@
 <template>
-  <Modal
-    :open="open"
-    :title="$t('session.loadingTitle')"
-    :body="$t('session.loadingBody')"
-    :dismissable="false"
-  >
+  <Modal :open="open" :title="title" :body="body" :dismissable="false">
     <div
       v-if="determinate"
       class="loading-modal__track"
@@ -19,51 +14,47 @@
       <div class="loading-modal__fill loading-modal__fill--indeterminate" />
     </div>
     <div class="loading-modal__stats" aria-live="polite">
-      <span class="loading-modal__phase">{{ phaseLabel }}</span>
+      <span class="loading-modal__phase">{{ label }}</span>
       <span v-if="determinate" class="loading-modal__percent">{{ percent }}%</span>
     </div>
     <div v-if="counts" class="loading-modal__counts">{{ counts }}</div>
+    <div v-if="cancelLabel" class="loading-modal__actions">
+      <Button class="loading-modal__cancel" @click="emit('cancel')">{{ cancelLabel }}</Button>
+    </div>
   </Modal>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useI18n } from 'vue-i18n';
 import Modal from '@renderer/components/modals/Modal.vue';
-import type { SessionLoadPhase } from '@renderer/stores/session';
+import Button from '@renderer/components/Button.vue';
 
-const { open, phase, fraction, loadedTracks, totalTracks } = defineProps<{
+const {
+  open,
+  title,
+  body,
+  label,
+  fraction,
+  determinate = true,
+  counts = '',
+  cancelLabel = ''
+} = defineProps<{
   open: boolean;
-  phase: SessionLoadPhase;
+  title: string;
+  body: string;
+  label: string;
   fraction: number;
-  loadedTracks: number;
-  totalTracks: number;
+  determinate?: boolean;
+  counts?: string;
+  // Given only by work the user is allowed to abandon. The backdrop and escape stay
+  // inert either way, so this button is the single exit rather than one of three.
+  cancelLabel?: string;
 }>();
 
-const { t } = useI18n();
+const emit = defineEmits<{ cancel: [] }>();
 
-// Only the decode reports increments. Reading, parsing and indexing each take
-// one long step, so a percentage there would sit at 0 and read as a hang.
-const determinate = computed(() => phase === 'decoding' || phase === 'done');
-
-// Floored, so the bar never reads 100% while a track is still decoding.
+// Floored, so the bar never reads 100% while work is still outstanding.
 const percent = computed(() => Math.floor(Math.min(1, Math.max(0, fraction)) * 100));
-
-const PHASE_LABELS: Record<SessionLoadPhase, string> = {
-  reading: 'session.loadingPhaseReading',
-  parsing: 'session.loadingPhaseParsing',
-  decoding: 'session.loadingPhaseDecoding',
-  indexing: 'session.loadingPhaseIndexing',
-  done: 'session.loadingPhaseIndexing'
-};
-
-const phaseLabel = computed(() => t(PHASE_LABELS[phase] ?? PHASE_LABELS.decoding));
-
-const counts = computed(() =>
-  determinate.value && totalTracks > 0
-    ? t('session.loadingTracks', { loaded: loadedTracks, total: totalTracks })
-    : ''
-);
 </script>
 
 <style scoped>
@@ -109,6 +100,11 @@ const counts = computed(() =>
 .loading-modal__stats {
   display: flex;
   justify-content: space-between;
+}
+
+.loading-modal__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .loading-modal__percent {

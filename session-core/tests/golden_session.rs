@@ -100,7 +100,11 @@ fn reconstruct(events: &[SessionEvent], from_ms: f64, deck: &str) -> Option<Reco
     }) {
         sim_apply_event(event, &mut sim, &cache, SAMPLE_RATE);
     }
-    let strip_gain = sim.strips.get(deck).map(|strip| strip.gain).unwrap_or(1.0);
+    let strip_gain = sim
+        .strips
+        .get(deck)
+        .and_then(|strip| strip.param("fader", "gain"))
+        .unwrap_or(1.0);
     sim.decks.get(deck).map(|deck_sim| Reconstructed {
         is_playing: deck_sim.is_playing,
         path: deck_sim.path.clone(),
@@ -149,13 +153,21 @@ fn golden_session_derives_edits_and_reconstructs() {
     assert_eq!(deck_a.len(), 1);
     assert_span(deck_a[0], 2000.0, 10_000.0, 0.0);
     let segments = &deck_a[0].wave_segments;
-    assert_eq!(segments.len(), 2, "rate change must split the wave segments");
+    assert_eq!(
+        segments.len(),
+        2,
+        "rate change must split the wave segments"
+    );
     assert!((segments[0].track_end_sec - 4.0).abs() < 1e-6);
     assert!((segments[1].track_end_sec - 10.0).abs() < 1e-6);
     assert_eq!(deck_a[0].bpm, Some(120.0));
 
     let deck_b: Vec<&Clip> = clips.iter().filter(|clip| clip.deck == "B").collect();
-    assert_eq!(deck_b.len(), 4, "pre-loop + 2 iterations + tail: {deck_b:?}");
+    assert_eq!(
+        deck_b.len(),
+        4,
+        "pre-loop + 2 iterations + tail: {deck_b:?}"
+    );
     assert_span(deck_b[0], 1000.0, 3000.0, 0.0);
     assert_span(deck_b[1], 3000.0, 4000.0, 1.0);
     assert_span(deck_b[2], 4000.0, 5000.0, 1.0);
@@ -176,10 +188,12 @@ fn golden_session_derives_edits_and_reconstructs() {
     assert_span(moved[0], 3000.0, 11_000.0, 0.0);
     assert_position_sec(&events, 7000.0, "A", 3.0 + 1.0 * 1.5);
     let before_start = reconstruct(&events, 2500.0, "A").expect("deck missing");
-    assert!(!before_start.is_playing, "A starts at 3000ms after the move");
+    assert!(
+        !before_start.is_playing,
+        "A starts at 3000ms after the move"
+    );
 
-    // Edit 2: delete [3500, 4500] out of deck B's loop run; it must re-engage
-    // at the exact in-loop position (1.5s) so surviving iterations keep phase.
+    // Edit 2: delete [3500, 4500] out of deck B's loop run.
     let events = delete_transport_ranges(
         &events,
         &clips,
@@ -228,6 +242,5 @@ fn golden_session_derives_edits_and_reconstructs() {
     let after = reconstruct(&events, 7000.0, "A").expect("deck missing");
     assert!((after.strip_gain - 0.5).abs() < 1e-6);
     assert_eq!(after.path.as_deref(), Some("/t/a.mp3"));
-    // The lane edit must not move the playhead.
     assert_position_sec(&events, 7000.0, "A", 3.0 + 1.0 * 1.5);
 }

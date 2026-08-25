@@ -1,11 +1,12 @@
 use crate::audio::AppAudio;
+use crate::lock::LockIgnoringPoison;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Live decks only; the edit deck E is never broadcast.
+// Live decks only. The edit deck E is never broadcast.
 
 const BROADCAST_INTERVAL_MS: u64 = 50;
 
@@ -46,7 +47,7 @@ fn deck_broadcast(audio: &AppAudio, id: &str) -> DeckBroadcast {
             current_beat: None,
         };
     };
-    let deck = deck_arc.lock().unwrap_or_else(|error| error.into_inner());
+    let deck = deck_arc.locked();
     let sample_rate = deck.device_sample_rate as f64;
     let position_sec = if sample_rate > 0.0 {
         deck.main_pos / sample_rate
@@ -126,10 +127,7 @@ impl Sinks {
     fn publish_socket(&self, json: &str) {
         use std::io::{ErrorKind, Write};
         let frame = format!("{json}\n");
-        let mut clients = self
-            .clients
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut clients = self.clients.locked();
         clients.retain_mut(|stream| match stream.write_all(frame.as_bytes()) {
             Ok(()) => true,
             // A slow reader's buffer is full: keep the client, drop this frame only.
@@ -154,10 +152,7 @@ fn spawn_socket_listener(
             match stream {
                 Ok(stream) => {
                     let _ = stream.set_nonblocking(true);
-                    accepted
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .push(stream);
+                    accepted.locked().push(stream);
                 }
                 Err(_) => break,
             }

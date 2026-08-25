@@ -274,6 +274,8 @@ import { useSettingsStore } from '@renderer/stores/settings';
 import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/deck/PhaseRing.vue';
+import { DROP_LANDING_MS } from '@renderer/utils/dragGhostLanding';
+import type { DeckDropDetail } from '@renderer/utils/deckDrop';
 import TrackWaveform from '@renderer/components/deck/TrackWaveform.vue';
 import DeckBpmHeader from '@renderer/components/deck/DeckBpmHeader.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
@@ -346,6 +348,7 @@ function onTogglePlay() {
 }
 
 const pendingLoad = ref<LoadableTrack | null>(null);
+let scheduledLoad = 0;
 
 const collectionStore = useCollectionStore();
 const { isDragOver: isDragOverCollection } = useCollectionDragOver(
@@ -353,21 +356,45 @@ const { isDragOver: isDragOverCollection } = useCollectionDragOver(
   () => props.deck.loadedPath
 );
 
-function onCollectionDrop(e: Event) {
-  const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
-  if (deckId !== props.deck.id) return;
-  if (props.deck.loadedPath === path) return;
-  const loadable = collectionStore.getLoadableTrack(path);
+function onCollectionDrop(event: Event) {
+  if (!(event instanceof CustomEvent)) return;
+  const detail: DeckDropDetail = event.detail;
+  if (detail.deckId !== props.deck.id) return;
+  if (props.deck.loadedPath === detail.path) return;
+  const loadable = collectionStore.getLoadableTrack(detail.path);
   if (!loadable) return;
+  detail.accept();
   if (props.deck.loopPlaying) {
     pendingLoad.value = loadable;
     return;
   }
-  props.deck.loadTrack(loadable);
+  scheduleLoad(loadable);
+}
+
+// Held for the length of the drop animation, so the deck takes the name as the
+// ghost reaches it rather than the instant the pointer came up.
+function scheduleLoad(loadable: LoadableTrack) {
+  clearScheduledLoad();
+  scheduledLoad = window.setTimeout(async () => {
+    scheduledLoad = 0;
+    try {
+      await props.deck.loadTrack(loadable);
+    } catch (error) {
+      console.error('deck load failed', error);
+    }
+  }, DROP_LANDING_MS);
+}
+
+function clearScheduledLoad() {
+  if (scheduledLoad !== 0) window.clearTimeout(scheduledLoad);
+  scheduledLoad = 0;
 }
 
 onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionDrop));
+onUnmounted(() => {
+  window.removeEventListener('bm:collection-drop', onCollectionDrop);
+  clearScheduledLoad();
+});
 
 function onConfirmLoad() {
   const loadable = pendingLoad.value;

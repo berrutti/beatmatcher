@@ -1,20 +1,9 @@
-// The timeline's hit vocabulary and the single, explicit precedence table.
-//
-// Items report a `Hit` with a `target` (which element) and optional `part`
-// (which region of it). When several items claim the same point, the engine
-// picks the one ranked highest here. Precedence is intentionally per-`target:part`
-// so behaviour can differ by region: e.g. a clip's trim EDGE beats a nudge, while
-// its BODY does not. Edit this ONE list to change precedence; do not rely on draw
-// order.
-//
-// Listed front (top) to back. Earlier = higher priority = wins.
+// Listed front to back: earlier wins when several items claim the same point.
 
 import type { Hit } from '@renderer/utils/timelineEngine';
 
 const HIT_PRECEDENCE: readonly string[] = [
-  // Always-on-top chrome.
   'overview',
-  // Label-column control.
   'laneDropdown',
   // Resize/trim edges beat the body of their OWN element.
   'filterRegion:start',
@@ -34,12 +23,8 @@ const HIT_PRECEDENCE: readonly string[] = [
   // The lane separator sits over the (often empty) lane bottom, so it can sink
   // below the elements: move off an element to grab it.
   'laneSeparator',
-  // The automation lane drawing surface (draw value / shift-paint), on a deck
-  // row and on the master row alike.
   'lane',
-  // The deck's clip band (seek / shift-nudge).
   'clipBand',
-  // Background ruler.
   'tickRow'
 ];
 

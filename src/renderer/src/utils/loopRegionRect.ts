@@ -16,7 +16,7 @@ export function loopRegionRect(
 
 const LOOP_ACTIVE_COLOR = '#ca8a04';
 const LOOP_ARMED_COLOR = '#78716c';
-// Active is a strong overlay (it's live audio right now); armed is a dim hint
+// Active is a strong overlay (it's live audio right now). Armed is a dim hint
 // of what reloop would jump into.
 const LOOP_ACTIVE_FILL_ALPHA = 0.42;
 const LOOP_ARMED_FILL_ALPHA = 0.2;

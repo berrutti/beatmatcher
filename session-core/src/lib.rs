@@ -1,8 +1,3 @@
-// Shared session-replay core: the single source of truth for the event model
-// and the deterministic simulation that derives deck/strip state over time.
-// Consumed natively by the audio engine (src-tauri) and, once wired, compiled
-// to WASM for the frontend, so the engine and the editor can never disagree.
-
 pub mod clip_edit;
 pub mod cue;
 pub mod event;
@@ -11,32 +6,31 @@ pub mod param;
 pub mod sim;
 pub mod timeline;
 
-pub use cue::{build_cue_points, CuePoint};
 pub use clip_edit::{
     block_bounds, blocks_for_deck, delete_block_range, delete_transport_block,
     delete_transport_ranges, move_transport_block, split_transport_block, trim_transport_block,
     DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
+pub use cue::{build_cue_points, CuePoint};
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
-pub use param::{
-    is_fader_gain, manifest_by_id, resolve_manifest, FaderCurve, JogRotationSpeed, MixerHeader,
-    MixerManifest, ParamDescriptor, xfader_gains, ParamScope, ParamUnit, SlotDescriptor, Taper,
-    XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN, ISOLATOR_3BAND, ISOLATOR_3BAND_V2,
-    jog_settled_fraction, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER,
-    MANIFESTS,
-    REQUIRED_STRIP_ROLES,
-};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
     move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
-    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span, set_rate_at,
-    set_rate_span, splice_lane_events, toggle_filter_active_range,
-    EditableLane, LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span,
+    set_rate_at, set_rate_span, splice_lane_events, toggle_filter_active_range, EditableLane,
+    LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+};
+pub use param::{
+    is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
+    FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest, ParamDescriptor, ParamScope,
+    ParamUnit, SlotDescriptor, Taper, XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN,
+    ISOLATOR_3BAND, ISOLATOR_3BAND_V2, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER,
+    JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
     sim_state_from_snapshot, DeckSim, DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim,
-    StripSnap, DEFAULT_MASTER_GAIN, JOG_FACTOR_MIN,
+    DEFAULT_MASTER_GAIN, JOG_FACTOR_MIN,
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
@@ -45,7 +39,7 @@ pub use timeline::{
 
 // WASM boundary for the frontend. Pure compute only: events in as JSON, the
 // derived timeline out as JSON. No side effects (file/audio/IPC stay in Rust
-// proper). The frontend parses the returned JSON; the serde camelCase derives
+// proper). The frontend parses the returned JSON. The serde camelCase derives
 // on the result structs make it match the existing TS shapes 1:1.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -55,11 +49,8 @@ mod wasm {
         serde_json::from_str(events_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Derive clips, loaded spans, and automation lanes (gain/eq/filter/rate,
-    /// filter-active spans, nudge spans) in one pass so the editor crosses the
-    /// boundary (and serializes the event list) once per change. `trackName` is
-    /// not included on clips/spans; the caller fills it from the collection.
-    /// Returns `{ clips, loadedSpans, deckLanes, masterLanes, deckNudges }`.
+    /// One pass, so the editor crosses the WASM boundary and serializes the event list
+    /// once per change rather than once per lane.
     #[wasm_bindgen(js_name = buildTimeline)]
     pub fn build_timeline(
         events_json: &str,
@@ -71,9 +62,7 @@ mod wasm {
         serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Continuous beat count at a playback position given the track's beat grid.
-    /// Mirrors the engine math so the phase ring (and any consumer) never
-    /// reimplements it. Primitives in/out, no JSON.
+    /// Mirrors the engine math so no consumer reimplements it.
     #[wasm_bindgen(js_name = currentBeat)]
     pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
         crate::current_beat(position_sec, beat_offset_sec, bpm)
@@ -87,8 +76,6 @@ mod wasm {
         serde_json::from_str(block_json).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Group a deck's clips into draggable transport blocks. Returns a JSON
-    /// array of blocks (camelCase, `loop` field) sorted by start.
     #[wasm_bindgen(js_name = blocksForDeck)]
     pub fn blocks_for_deck(clips_json: &str, deck: &str) -> Result<String, JsError> {
         let clips = parse_clips(clips_json)?;
@@ -97,7 +84,7 @@ mod wasm {
     }
 
     /// Drag-clamp range for a block: `{ minStartMs, maxEndMs, startTrimMinMs,
-    /// minBlockMs }`; `maxEndMs` null = open-ended. `startTrimMinMs` uses the
+    /// minBlockMs }`. A null `maxEndMs` means open-ended. `startTrimMinMs` uses the
     /// trim commit's own formula so preview and commit clamp identically.
     #[wasm_bindgen(js_name = blockBounds)]
     pub fn block_bounds(
@@ -131,7 +118,7 @@ mod wasm {
     }
 
     /// Every editable lane's spec for one mixer, keyed by lane key. Rate carries
-    /// its default range; a caller with a clip-specific range overrides min/max.
+    /// its default range. A caller with a clip-specific range overrides min/max.
     #[wasm_bindgen(js_name = laneSpecs)]
     pub fn lane_specs(mixer_id: &str) -> String {
         let mixer = resolve_mixer(mixer_id);
@@ -148,8 +135,6 @@ mod wasm {
                         "max": spec.max,
                         "defaultValue": spec.default_value,
                         "epsilon": spec.epsilon,
-                        "shortLabel": display.short_label,
-                        "laneGroup": display.lane_group,
                         "unit": display.unit,
                     }),
                 )
@@ -173,8 +158,6 @@ mod wasm {
                     serde_json::json!({
                         "slot": slot,
                         "param": param.id,
-                        "label": param.label,
-                        "shortLabel": param.short_label,
                         "min": param.min,
                         "max": param.max,
                         "defaultValue": param.default,
@@ -198,7 +181,6 @@ mod wasm {
         crate::FaderCurve::from_str_or_linear(curve).gain(position)
     }
 
-    /// The shared edit/mixer constants, from the one place they are defined.
     #[wasm_bindgen(js_name = editConstants)]
     pub fn edit_constants() -> String {
         serde_json::json!({
@@ -277,7 +259,9 @@ mod wasm {
         let events = parse_events(events_json)?;
         let clips = parse_clips(clips_json)?;
         let block = parse_block(block_json)?;
-        events_to_json(crate::split_transport_block(&events, &clips, &block, split_ms))
+        events_to_json(crate::split_transport_block(
+            &events, &clips, &block, split_ms,
+        ))
     }
 
     /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range
@@ -355,7 +339,7 @@ mod wasm {
         Ok(crate::original_value_at(&events, &spec, deck, ms))
     }
 
-    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points; restore at range_end_ms.
+    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points. Restore at range_end_ms.
     #[wasm_bindgen(js_name = spliceLaneEvents)]
     #[allow(clippy::too_many_arguments)]
     pub fn splice_lane_events(

@@ -46,7 +46,7 @@ vi.mock('@renderer/stores/mixer', () => ({
   useMixerStore: () => ({ reset: vi.fn() })
 }));
 
-import { useDecksStore } from '../decks';
+import { useDecksStore, type LoadableTrack } from '../decks';
 import { useAppModeStore } from '../appMode';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -97,8 +97,6 @@ describe('switchTo edit', () => {
   });
 });
 
-// Rust gates MIDI input on its mirror of the mode, so a switch that does not
-// reach it leaves a controller live over the session scheduler.
 describe('switchTo mirrors the mode to Rust', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -133,8 +131,6 @@ describe('switchTo mirrors the mode to Rust', () => {
   });
 });
 
-// The push channel is the only way an engine-originated transport move reaches
-// the UI, because a MIDI press never returns through an invoke.
 describe('applyEngineTransport', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -177,8 +173,6 @@ describe('applyEngineTransport', () => {
     expect(decks.deckB.loopRegion).toBeNull();
   });
 
-  // Before the push carried the region, `setLoopOut` read it out of the invoke's
-  // return value, which a controller press never produces.
   it('draws the region a controller press defined', () => {
     const decks = useDecksStore();
 
@@ -195,8 +189,6 @@ describe('applyEngineTransport', () => {
     expect(decks.deckA.loopRegion).toEqual({ startSec: 10, endSec: 14, beats: 8 });
   });
 
-  // The guard against a regression: a payload without a region must leave the cached one
-  // exactly as it was, which is what every transport push did before this field existed.
   it('leaves a cached region alone when the payload carries none', () => {
     const decks = useDecksStore();
     const region = { startSec: 1, endSec: 2, beats: 4 };
@@ -242,8 +234,6 @@ describe('an engine rate move on a deck with no beat grid', () => {
     vi.clearAllMocks();
   });
 
-  // Rust does not gate the tempo fader on a grid, so a controller can change the rate of a
-  // deck showing --.-. The interpolated playhead has to follow it or it drifts unboundedly.
   it('still slows the interpolated playhead', () => {
     const clock = vi.spyOn(performance, 'now');
     clock.mockReturnValue(0);
@@ -267,5 +257,195 @@ describe('an engine rate move on a deck with no beat grid', () => {
     expect(deck.trackBpm).toBeNull();
     expect(deck.trackPosition).toBeCloseTo(1.5, 6);
     clock.mockRestore();
+  });
+});
+
+describe('a dropped track names itself before it has loaded', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('shows the new name while the decode is still running', async () => {
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await Promise.resolve();
+
+    expect(decks.deckA.trackName).toBe('Next Track');
+    expect(decks.deckA.loading).toBe(true);
+
+    releaseLoad();
+    await loading;
+    expect(decks.deckA.trackName).toBe('Next Track');
+  });
+
+  it('clears what the previous track left behind', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack({ ...track, name: 'First' });
+    expect(decks.deckA.trackName).toBe('First');
+
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+    const loading = decks.deckA.loadTrack({ ...track, name: 'Second' });
+    await Promise.resolve();
+
+    expect(decks.deckA.trackName).toBe('Second');
+    expect(decks.deckA.coverArt, 'the old art must not sit under the new name').toBe(null);
+
+    releaseLoad();
+    await loading;
+  });
+});
+
+describe('a deck that is still loading says so', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('is not loaded until the decode returns, even though it is named', async () => {
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await Promise.resolve();
+
+    // The name is there so a glance reads the right track, but the deck holds
+    // nothing yet, which is what the UI dims until the decode lands.
+    expect(decks.deckA.trackName).toBe('Next Track');
+    expect(decks.deckA.trackLoaded).toBe(false);
+    expect(decks.deckA.loading).toBe(true);
+
+    releaseLoad();
+    await loading;
+    expect(decks.deckA.trackLoaded).toBe(true);
+    expect(decks.deckA.loading).toBe(false);
+  });
+});
+
+describe('swapping a track shows the loading state too', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('reports nothing loaded while a deck that held a track decodes the next one', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack({ ...track, name: 'First' });
+    expect(decks.deckA.trackLoaded).toBe(true);
+
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+    const loading = decks.deckA.loadTrack({ ...track, name: 'Second' });
+    await Promise.resolve();
+
+    expect(decks.deckA.trackLoaded).toBe(false);
+    expect(decks.deckA.trackName).toBe('Second');
+
+    releaseLoad();
+    await loading;
+    expect(decks.deckA.trackLoaded).toBe(true);
+  });
+});
+
+describe('a decode that fails leaves the deck usable', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/missing.mp3',
+    name: 'Missing Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('clears the loading gate when load_track rejects', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'load_track') throw new Error('no such file');
+      return {};
+    });
+
+    const decks = useDecksStore();
+    await expect(decks.deckA.loadTrack(track)).rejects.toThrow('no such file');
+
+    // Otherwise `loading` stays true and `acceptsCommands` refuses every press
+    // for the rest of the session.
+    expect(decks.deckA.loading).toBe(false);
+    expect(decks.deckA.acceptsCommands).toBe(true);
+  });
+
+  it('does not leave the name of a track it never loaded', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack({ ...track, name: 'First', path: '/music/first.mp3' });
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'load_track') throw new Error('no such file');
+      return {};
+    });
+    await expect(decks.deckA.loadTrack(track)).rejects.toThrow();
+
+    expect(decks.deckA.trackName).toBe('');
   });
 });

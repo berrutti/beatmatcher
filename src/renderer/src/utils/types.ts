@@ -29,7 +29,7 @@ export type SessionEvent = {
   bpm?: number;
   playback_rate?: number;
   duration?: number;
-  // Output frames since capture began; absent on synthesized events.
+  // Output frames since capture began. Absent on synthesized events.
   frame?: number;
 };
 
@@ -70,6 +70,21 @@ export function isMasterLaneKey(key: string): key is MasterLaneKey {
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
+// How a lane is drawn. The engine answers what a lane's value does; the label it
+// carries and the row it shares are the timeline's own decisions.
+export const LANE_DISPLAY: Record<EditableLaneKey | 'jog', { shortLabel: string; group: number }> =
+  {
+    gain: { shortLabel: 'G', group: 0 },
+    filter: { shortLabel: 'F', group: 1 },
+    rate: { shortLabel: 'RT', group: 2 },
+    eqLow: { shortLabel: 'LO', group: 3 },
+    eqMid: { shortLabel: 'MD', group: 3 },
+    eqHigh: { shortLabel: 'HI', group: 3 },
+    masterGain: { shortLabel: 'M', group: 0 },
+    xfader: { shortLabel: 'X', group: 0 },
+    jog: { shortLabel: 'JOG', group: 4 }
+  };
+
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips
 // output, so every field reflects what the listener actually heard.
@@ -92,9 +107,9 @@ export type WaveSegment = {
 };
 
 export type Clip = {
-  // Clips emitted together form one editable unit: loop iterations share a blockId; a regular play segment is a block of its own.
+  // Clips emitted together form one editable unit: loop iterations share a blockId. A regular play segment is a block of its own.
   blockId: number;
-  // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
+  // Recorded beat grid in effect when the clip started. Null bpm = draw no beats.
   bpm: number | null;
   // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
   waveSegments: WaveSegment[];
@@ -139,4 +154,14 @@ export type MasterLanes = {
   gain: LanePoint[];
   // Empty for a session recorded on a mixer with no crossfader.
   xfader: LanePoint[];
+};
+
+export type Recoverable = {
+  id: string;
+  kind: 'recording' | 'render';
+  startedAt: number;
+  suggestedName: string;
+  audioPath: string | null;
+  audioBytes: number;
+  logPath: string | null;
 };

@@ -128,8 +128,6 @@ describe('resizeShareDelta', () => {
     const afterPx = after.a * availableWidth;
 
     expect(afterPx - beforePx).toBeCloseTo(37, 5);
-    // The uninvolved column's displayed width is untouched by construction:
-    // the pair's combined share (and therefore the total) never changes.
     expect(after.c * availableWidth).toBeCloseTo(before.c * availableWidth, 5);
   });
 

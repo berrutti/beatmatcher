@@ -186,7 +186,7 @@ fn fill_tags_from_slice(tags: &[symphonia::core::meta::Tag], out: &mut TrackTags
             Some(StandardTagKey::TrackNumber) if out.track_number.is_none() => {
                 out.track_number = Some(value())
             }
-            // Prefer the plain release date/year; fall back to the original
+            // Prefer the plain release date/year. Fall back to the original
             // release date if that's all the file has.
             Some(StandardTagKey::Date) if out.year.is_none() => out.year = Some(value()),
             Some(StandardTagKey::ReleaseDate) if out.year.is_none() => out.year = Some(value()),

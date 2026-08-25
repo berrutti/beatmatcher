@@ -1,219 +1,10 @@
-use crate::audio::{self, ChannelStrip, DeckState, LimiterState};
+use crate::audio::{self, ChannelStrip, Deck, Limiter};
+use crate::audio_file::{read_wav_f32, write_wav_f32};
+use crate::lock::LockIgnoringPoison;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-pub fn read_wav_f32(path: &str) -> Result<(Vec<f32>, u32, u16), String> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut b4 = [0u8; 4];
-
-    macro_rules! r4 {
-        () => {{
-            f.read_exact(&mut b4).map_err(|e| e.to_string())?;
-            b4
-        }};
-    }
-    macro_rules! ru32 {
-        () => {
-            u32::from_le_bytes(r4!())
-        };
-    }
-    macro_rules! ru16 {
-        () => {{
-            let mut b = [0u8; 2];
-            f.read_exact(&mut b).map_err(|e| e.to_string())?;
-            u16::from_le_bytes(b)
-        }};
-    }
-
-    if &r4!() != b"RIFF" {
-        return Err(format!("{path}: not a RIFF file"));
-    }
-    let _ = ru32!(); // file size
-    if &r4!() != b"WAVE" {
-        return Err(format!("{path}: not a WAVE file"));
-    }
-
-    let mut sample_rate = 0u32;
-    let mut bit_depth = 0u16;
-    let mut channels = 0u16;
-    let mut data_offset = 0u64;
-    let mut data_bytes = 0u32;
-
-    loop {
-        let mut id = [0u8; 4];
-        if f.read_exact(&mut id).is_err() {
-            break;
-        }
-        let chunk_size = ru32!();
-        match &id {
-            b"fmt " => {
-                let _audio_fmt = ru16!();
-                channels = ru16!();
-                sample_rate = ru32!();
-                let _ = ru32!(); // byte rate
-                let _ = ru16!(); // block align
-                bit_depth = ru16!();
-                let extra = chunk_size.saturating_sub(16);
-                if extra > 0 {
-                    f.seek(SeekFrom::Current(extra as i64)).ok();
-                }
-            }
-            b"data" => {
-                data_bytes = chunk_size;
-                data_offset = f.stream_position().map_err(|e| e.to_string())?;
-                break;
-            }
-            _ => {
-                f.seek(SeekFrom::Current(chunk_size as i64)).ok();
-            }
-        }
-    }
-
-    if data_offset == 0 {
-        return Err(format!("{path}: no data chunk"));
-    }
-
-    let mut raw = vec![0u8; data_bytes as usize];
-    f.seek(SeekFrom::Start(data_offset))
-        .map_err(|e| e.to_string())?;
-    f.read_exact(&mut raw).map_err(|e| e.to_string())?;
-
-    let samples: Vec<f32> = match bit_depth {
-        16 => raw
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
-            .collect(),
-        24 => raw
-            .chunks_exact(3)
-            .map(|b| {
-                let v =
-                    i32::from_le_bytes([b[0], b[1], b[2], if b[2] & 0x80 != 0 { 0xff } else { 0 }]);
-                v as f32 / 8_388_608.0
-            })
-            .collect(),
-        32 => raw
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect(),
-        _ => return Err(format!("{path}: unsupported bit depth {bit_depth}")),
-    };
-
-    Ok((samples, sample_rate, channels))
-}
-
-pub fn write_wav_f32(
-    path: &str,
-    samples: &[f32],
-    sample_rate: u32,
-    channels: u16,
-) -> Result<(), String> {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    let byte_count = (samples.len() * 4) as u32;
-    f.write_all(b"RIFF").map_err(|e| e.to_string())?;
-    f.write_all(&(36 + byte_count).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(b"WAVE").map_err(|e| e.to_string())?;
-    f.write_all(b"fmt ").map_err(|e| e.to_string())?;
-    f.write_all(&16u32.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&3u16.to_le_bytes())
-        .map_err(|e| e.to_string())?; // IEEE float
-    f.write_all(&channels.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&sample_rate.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&(sample_rate * channels as u32 * 4).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&(channels * 4).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&32u16.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(b"data").map_err(|e| e.to_string())?;
-    f.write_all(&byte_count.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    for &s in samples {
-        f.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-pub fn write_flac_f32(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
-    use flacenc::bitsink::ByteSink;
-    use flacenc::component::BitRepr;
-    use flacenc::error::Verify;
-    use std::io::Write;
-
-    const MAX_24BIT: f32 = 8_388_607.0;
-    let source = SliceSource {
-        samples: samples
-            .iter()
-            .map(|&s| (s.clamp(-1.0, 1.0) * MAX_24BIT) as i32)
-            .collect(),
-        channels: 2,
-        bits_per_sample: 24,
-        sample_rate: sample_rate as usize,
-        pos: 0,
-    };
-
-    let config = flacenc::config::Encoder::default()
-        .into_verified()
-        .map_err(|e| format!("FLAC config error: {e:?}"))?;
-    let block_size = config.block_size;
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
-        .map_err(|e| format!("FLAC encode error: {e:?}"))?;
-
-    let mut sink = ByteSink::with_capacity(stream.count_bits());
-    stream
-        .write(&mut sink)
-        .map_err(|e| format!("FLAC write error: {e:?}"))?;
-
-    std::fs::File::create(path)
-        .and_then(|mut f| f.write_all(sink.as_slice()))
-        .map_err(|e| format!("{path}: {e}"))
-}
-
-struct SliceSource {
-    samples: Vec<i32>,
-    channels: usize,
-    bits_per_sample: usize,
-    sample_rate: usize,
-    pos: usize,
-}
-
-impl flacenc::source::Source for SliceSource {
-    fn channels(&self) -> usize {
-        self.channels
-    }
-    fn bits_per_sample(&self) -> usize {
-        self.bits_per_sample
-    }
-    fn sample_rate(&self) -> usize {
-        self.sample_rate
-    }
-    fn len_hint(&self) -> Option<usize> {
-        Some(self.samples.len() / self.channels)
-    }
-
-    fn read_samples<F: flacenc::source::Fill>(
-        &mut self,
-        block_size: usize,
-        dest: &mut F,
-    ) -> Result<usize, flacenc::error::SourceError> {
-        let n = (block_size * self.channels).min(self.samples.len() - self.pos);
-        if n == 0 {
-            return Ok(0);
-        }
-        dest.fill_interleaved(&self.samples[self.pos..self.pos + n])?;
-        self.pos += n;
-        Ok(n / self.channels)
-    }
-}
-
-use session_core::event::SessionCommand;
-pub use session_core::event::{SessionEvent, SessionFile};
+use session_core::event::{SessionCommand, SessionEvent, SessionFile};
 
 pub struct CompareResult {
     pub total_frames: usize,
@@ -229,6 +20,7 @@ pub fn render_and_compare(
     reference_path: &str,
     output_path: Option<&str>,
     limiter: MasterLimiter,
+    progress: &mut dyn FnMut(f64) -> bool,
 ) -> Result<CompareResult, String> {
     let (reference, sample_rate, ref_channels) = read_wav_f32(reference_path)?;
     if ref_channels != 2 {
@@ -240,13 +32,14 @@ pub fn render_and_compare(
     let json = std::fs::read_to_string(session_path).map_err(|e| format!("{session_path}: {e}"))?;
     let session = SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))?;
 
-    let rendered = render_session(
+    let rendered = render_session_with_progress(
         &session,
         RenderRequest {
             sample_rate,
             min_frames: reference.len() / 2,
             limiter,
         },
+        progress,
     )?;
 
     if let Some(out) = output_path {
@@ -328,14 +121,16 @@ pub struct RenderRequest {
     pub limiter: MasterLimiter,
 }
 
-/// The decks and strips a session plays through, and the master chain they mix into.
 struct Mixer {
-    decks: HashMap<String, DeckState>,
-    strips: HashMap<String, ChannelStrip>,
+    decks: HashMap<String, Arc<Mutex<Deck>>>,
+    strips: HashMap<String, Arc<Mutex<ChannelStrip>>>,
+    // The same paired list the audio callback renders, so both drive one mixing loop.
+    channels: crate::audio::ChannelPairs,
     master_gain: f32,
     xfader_position: f32,
-    limiter: Option<LimiterState>,
+    limiter: Option<Limiter>,
     sample_rate: u32,
+    block: Vec<f32>,
 }
 
 impl Mixer {
@@ -344,81 +139,164 @@ impl Mixer {
         // reproduce would diverge from the recording without saying so.
         let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
         let sample_rate = request.sample_rate;
+        let decks: HashMap<String, Arc<Mutex<Deck>>> = crate::audio::LIVE_DECK_IDS
+            .iter()
+            .map(|&id| {
+                (
+                    id.to_string(),
+                    Arc::new(Mutex::new(Deck::empty(sample_rate))),
+                )
+            })
+            .collect();
+        let strips: HashMap<String, Arc<Mutex<ChannelStrip>>> = crate::audio::LIVE_DECK_IDS
+            .iter()
+            .map(|&id| {
+                (
+                    id.to_string(),
+                    Arc::new(Mutex::new(ChannelStrip::from_manifest(
+                        manifest,
+                        sample_rate as f32,
+                    ))),
+                )
+            })
+            .collect();
+        let channels = crate::audio::channel_pairs(&decks, &strips);
         Ok(Self {
-            decks: crate::audio::LIVE_DECK_IDS
-                .iter()
-                .map(|&id| (id.to_string(), DeckState::empty(sample_rate)))
-                .collect(),
-            strips: crate::audio::LIVE_DECK_IDS
-                .iter()
-                .map(|&id| {
-                    (
-                        id.to_string(),
-                        ChannelStrip::from_manifest(manifest, sample_rate as f32),
-                    )
-                })
-                .collect(),
+            decks,
+            strips,
+            channels,
             master_gain: crate::audio::DEFAULT_MASTER_GAIN,
             xfader_position: 0.0,
             limiter: (request.limiter == MasterLimiter::On)
-                .then(|| LimiterState::new(sample_rate as f32)),
+                .then(|| Limiter::new(sample_rate as f32)),
             sample_rate,
+            block: Vec::new(),
         })
     }
 
     fn apply(&mut self, cmd: SessionCommand<'_>) -> Result<(), String> {
         apply_event(
             cmd,
-            &mut self.decks,
-            &mut self.strips,
+            &self.decks,
+            &self.strips,
             &mut self.master_gain,
             &mut self.xfader_position,
             self.sample_rate,
         )
     }
 
-    fn tick(&mut self) -> (f32, f32) {
-        let mut mix_l = 0.0f32;
-        let mut mix_r = 0.0f32;
-        for id in crate::audio::LIVE_DECK_IDS {
-            if let (Some(deck), Some(strip)) = (self.decks.get_mut(id), self.strips.get_mut(id)) {
-                deck.consume_jog(1);
-                let (deck_l, deck_r) = deck.main_tick();
-                let (strip_l, strip_r) = strip.process_main(deck_l, deck_r);
-                mix_l += strip_l;
-                mix_r += strip_r;
+    /// Rendering a mid-play start from zeroed delay lines passes every cut in full until
+    /// they fill, which clips the first milliseconds. Playing the lead-in settles them.
+    fn warm_up(&mut self, frames: usize, restored: &std::collections::BTreeSet<String>) {
+        let mut resume: Vec<(String, f64, f64)> = Vec::new();
+        for (id, deck_arc) in self.decks.iter() {
+            let mut deck = deck_arc.locked();
+            if !deck.is_playing || !restored.contains(id) {
+                continue;
+            }
+            resume.push((id.clone(), deck.main_pos, deck.cue_pos));
+            let lead_in = frames as f64 * deck.playback_rate;
+            let rewound_to = rewound(&deck, lead_in);
+            deck.seek_both(rewound_to);
+        }
+        if resume.is_empty() {
+            return;
+        }
+        let mut discarded = vec![0.0f32; frames * 2];
+        self.render_block(frames, &mut discarded);
+        for (id, main_pos, cue_pos) in resume {
+            if let Some(deck_arc) = self.decks.get(&id) {
+                let mut deck = deck_arc.locked();
+                deck.seek_both(main_pos);
+                deck.cue_pos = cue_pos;
             }
         }
-        crate::audio::master_output(
-            self.limiter.as_mut(),
-            mix_l * self.master_gain,
-            mix_r * self.master_gain,
-        )
+    }
+
+    fn render_block(&mut self, frames: usize, out: &mut [f32]) {
+        self.block.clear();
+        self.block.resize(frames * 2, 0.0);
+        crate::audio::mix_channels(&self.channels, frames, 0, &mut self.block, None);
+        crate::audio::master_block(self.limiter.as_mut(), self.master_gain, &mut self.block);
+        out[..frames * 2].copy_from_slice(&self.block[..frames * 2]);
     }
 }
 
-/// Every event dispatches at a frame. A recorded one carries the output frame the live
-/// engine applied it at; a synthesized one has no live moment to recover, so its
-/// timestamp is the position, converted and not rounded to anything.
+/// A deck inside a loop played the end of that loop before the snapshot, not the audio
+/// before its loop-in.
+fn rewound(deck: &Deck, frames: f64) -> f64 {
+    let length = deck.loop_end - deck.cue_point;
+    if deck.loop_active
+        && length > 0.0
+        && deck.main_pos >= deck.cue_point
+        && deck.main_pos < deck.loop_end
+    {
+        deck.cue_point + (deck.main_pos - deck.cue_point - frames).rem_euclid(length)
+    } else {
+        (deck.main_pos - frames).max(0.0)
+    }
+}
+
+fn recording_start(session: &SessionFile) -> Option<&SessionEvent> {
+    session
+        .events
+        .iter()
+        .find(|event| event.event_type == "recording_start")
+}
+
+pub fn recorded_limiter(session: &SessionFile) -> Option<MasterLimiter> {
+    let on = recording_start(session)?.limiter_enabled?;
+    Some(if on {
+        MasterLimiter::On
+    } else {
+        MasterLimiter::Off
+    })
+}
+
+/// The driver's period, fractional when the device was clocked at another rate, so the
+/// boundaries are `round(n * period)`.
+fn recorded_block_frames(session: &SessionFile) -> f64 {
+    recording_start(session)
+        .and_then(|event| event.buffer_size_frames)
+        .filter(|frames| *frames > 0.0)
+        .unwrap_or(512.0)
+}
+
+pub fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
+    recording_start(session)
+        .and_then(|event| event.sample_rate)
+        .filter(|rate| *rate > 0)
+}
+
 fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &SessionEvent)> {
+    let frame_scale = recorded_sample_rate(session)
+        .map_or(1.0, |recorded| f64::from(sample_rate) / f64::from(recorded));
     let mut timeline: Vec<(usize, &SessionEvent)> = session
         .events
         .iter()
-        .map(|ev| {
-            let pos = match ev.frame {
-                Some(frame) => frame as usize,
-                None => (ev.elapsed_ms.max(0.0) * sample_rate as f64 / 1000.0).round() as usize,
+        .map(|event| {
+            let pos = match event.frame {
+                Some(frame) => (frame as f64 * frame_scale).round() as usize,
+                None => (event.elapsed_ms.max(0.0) * sample_rate as f64 / 1000.0).round() as usize,
             };
-            (pos, ev)
+            (pos, event)
         })
         .collect();
-    // A deck_snapshot is initial state; at a shared frame it must apply before
-    // any other event, or it resets a deck a same-frame play already started.
+    // Position first, then the tiebreaks `event_sim_order` applies, so the render and
+    // the editor resolve a shared instant the same way.
     timeline.sort_by(|a, b| {
-        a.0.cmp(&b.0).then_with(|| {
-            u8::from(a.1.event_type != "deck_snapshot")
-                .cmp(&u8::from(b.1.event_type != "deck_snapshot"))
-        })
+        let snapshot_rank = |event: &SessionEvent| u8::from(event.event_type != "deck_snapshot");
+        a.0.cmp(&b.0)
+            .then_with(|| snapshot_rank(a.1).cmp(&snapshot_rank(b.1)))
+            .then_with(|| {
+                a.1.elapsed_ms
+                    .partial_cmp(&b.1.elapsed_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                session_core::sim::transport_phase(a.1)
+                    .cmp(&session_core::sim::transport_phase(b.1))
+            })
     });
     timeline
 }
@@ -426,11 +304,18 @@ fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &Sessi
 fn render_timeline(
     mixer: &mut Mixer,
     timeline: &[(usize, &SessionEvent)],
+    restored: &std::collections::BTreeSet<String>,
     total_frames: usize,
+    warmup_frames: usize,
+    block_frames: f64,
+    progress: &mut dyn FnMut(f64) -> bool,
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
     let mut next_event = 0;
     let mut frame = 0usize;
+    let mut warmed = false;
+    let report_every = (total_frames / PROGRESS_STEPS).max(1);
+    let mut report_at = report_every;
 
     while frame < total_frames {
         while next_event < timeline.len() && timeline[next_event].0 <= frame {
@@ -439,25 +324,68 @@ fn render_timeline(
             }
             next_event += 1;
         }
+        if !warmed {
+            mixer.warm_up(warmup_frames, restored);
+            warmed = true;
+        }
 
         let chunk_end = timeline
             .get(next_event)
             .map_or(total_frames, |(pos, _)| *pos)
             .min(total_frames);
 
-        for output_frame in frame..chunk_end {
-            let (l, r) = mixer.tick();
-            output[output_frame * 2] = l;
-            output[output_frame * 2 + 1] = r;
+        // Blocks of the size the recording was made at, because `render_block` consumes the
+        // jog accumulator once per call: a gap rendered as one long block drains it once
+        // where the live callback drained it many times.
+        while frame < chunk_end {
+            let span = (block_frames.round() as usize).min(chunk_end - frame);
+            mixer.render_block(span, &mut output[frame * 2..(frame + span) * 2]);
+            frame += span;
+            if frame >= report_at {
+                if !progress(frame as f64 / total_frames as f64) {
+                    return Err(RENDER_CANCELLED.to_string());
+                }
+                report_at = frame + report_every;
+            }
         }
-
-        frame = chunk_end;
     }
 
+    progress(1.0);
     Ok(output)
 }
 
+/// Returned when the progress sink asks to stop, so a caller can tell a cancellation
+/// apart from a render that actually failed.
+pub const RENDER_CANCELLED: &str = "render cancelled";
+
+/// Coarse enough that a twenty-minute render reports a couple of hundred times rather
+/// than once per block, which would flood the event channel it is emitted on.
+const PROGRESS_STEPS: usize = 200;
+
+/// The bypass crossfade settles slowest of anything on a strip, at a 50 ms time constant.
+/// `approach` snaps once its step rounds to nothing, which takes about ten time
+/// constants. Doubled, because the lead-in has to outlast the slowest smoother on
+/// the strip rather than land near it.
+const WARMUP_TIME_CONSTANTS: f64 = 20.0;
+
+/// Whole refresh intervals only. The live callback advances the filter's coefficient counter
+/// one whole buffer at a time, so a lead-in of any other length renders permanently out of
+/// phase with the recording it is reconstructing.
+fn warmup_frames(sample_rate: u32) -> usize {
+    let interval = crate::audio::FILTER_COEFF_REFRESH_INTERVAL as usize;
+    let seconds = f64::from(crate::audio::FILTER_CROSSFADE_TAU_SEC) * WARMUP_TIME_CONSTANTS;
+    (seconds * f64::from(sample_rate)).round() as usize / interval * interval
+}
+
 pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<Vec<f32>, String> {
+    render_session_with_progress(session, request, &mut |_| true)
+}
+
+pub fn render_session_with_progress(
+    session: &SessionFile,
+    request: RenderRequest,
+    progress: &mut dyn FnMut(f64) -> bool,
+) -> Result<Vec<f32>, String> {
     let mut mixer = Mixer::new(session, &request)?;
     let timeline = build_timeline(session, request.sample_rate);
 
@@ -467,19 +395,34 @@ pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<V
         .min_frames
         .max(tail_from + request.sample_rate as usize);
 
-    render_timeline(&mut mixer, &timeline, total_frames)
+    let restored: std::collections::BTreeSet<String> = session
+        .events
+        .iter()
+        .filter(|event| event.event_type == "deck_snapshot" && event.is_playing == Some(true))
+        .filter_map(|event| event.deck.clone())
+        .collect();
+
+    render_timeline(
+        &mut mixer,
+        &timeline,
+        &restored,
+        total_frames,
+        warmup_frames(request.sample_rate),
+        recorded_block_frames(session),
+        progress,
+    )
 }
 
-fn resolve_xfader_gains(strips: &mut HashMap<String, ChannelStrip>, position: f32) {
-    for strip in strips.values_mut() {
-        strip.set_xfader_position(position);
+fn resolve_xfader_gains(strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>, position: f32) {
+    for strip in strips.values() {
+        strip.locked().set_xfader_position(position);
     }
 }
 
 fn apply_event(
     cmd: SessionCommand<'_>,
-    decks: &mut HashMap<String, DeckState>,
-    strips: &mut HashMap<String, ChannelStrip>,
+    decks: &HashMap<String, Arc<Mutex<Deck>>>,
+    strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>,
     master_gain: &mut f32,
     xfader_position: &mut f32,
     sr: u32,
@@ -503,15 +446,15 @@ fn apply_event(
     }
 
     if let SessionCommand::SetFaderCurve { curve } = cmd {
-        for strip in strips.values_mut() {
-            strip.set_fader_curve(curve);
+        for strip in strips.values() {
+            strip.locked().set_fader_curve(curve);
         }
         return Ok(());
     }
 
     if let SessionCommand::SetJogRotationSpeed { speed } = cmd {
-        for deck in decks.values_mut() {
-            deck.set_jog_rotation_speed(speed);
+        for deck in decks.values() {
+            deck.locked().set_jog_rotation_speed(speed);
         }
         return Ok(());
     }
@@ -519,12 +462,12 @@ fn apply_event(
     let id = cmd
         .deck_id()
         .expect("master-scope commands are handled above; the rest target a deck");
-    let d = decks
-        .get_mut(id)
+    let deck_arc = decks.get(id).ok_or_else(|| format!("unknown deck: {id}"))?;
+    let strip_arc = strips
+        .get(id)
         .ok_or_else(|| format!("unknown deck: {id}"))?;
-    let s = strips
-        .get_mut(id)
-        .ok_or_else(|| format!("unknown deck: {id}"))?;
+    let mut deck = deck_arc.locked();
+    let mut strip = strip_arc.locked();
 
     let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
         let (raw, channels, native_sr) =
@@ -539,7 +482,7 @@ fn apply_event(
 
     // The offline renderer never compensates for buffer-aligned overshoot
     // (no live audio thread to catch up with), so overshoot is always 0.
-    audio::apply_deck_command(&cmd, d, s, sr, 0.0, &mut load_samples)
+    audio::apply_deck_command(&cmd, &mut deck, &mut strip, sr, 0.0, &mut load_samples)
 }
 
 // The DSP tests elsewhere are property tests, so they still pass after a change
@@ -641,117 +584,117 @@ mod golden {
 
     #[rustfmt::skip]
     const EXPECTED: &[[f32; 2]] = &[
-        [0e0, 0e0],
-        [0e0, 0e0],
-        [0e0, 0e0],
-        [-3.2688314e-1, -2.8689215e-1],
-        [-1.7820081e-1, -1.3198644e-1],
-        [-2.9432967e-1, 1.796442e-1],
-        [2.6306394e-1, -3.1698087e-1],
-        [2.7785844e-1, 2.5995547e-1],
-        [1.19956106e-1, 9.051184e-2],
-        [-3.4444642e-1, -1.9433258e-1],
-        [-1.1272958e-1, -1.5034916e-1],
-        [-4.34953e-2, 4.0885064e-1],
-        [-4.0797862e-1, 1.0387305e-1],
-        [-3.1113583e-1, 4.1604045e-1],
-        [9.453289e-2, 3.988101e-1],
-        [2.4684455e-1, -1.467382e-1],
-        [-1.2649426e-1, -4.1618858e-2],
-        [8.4187895e-2, -4.5606866e-2],
-        [4.0311837e-1, -1.5946354e-1],
-        [2.6211578e-1, 1.403633e-1],
-        [-5.1981694e-1, -3.8707575e-1],
-        [1.0013949e-1, 3.0669987e-1],
-        [-3.1847298e-1, -2.9300603e-1],
-        [6.624613e-1, -2.8951975e-2],
-        [-5.504219e-1, 3.366386e-1],
-        [2.4361841e-1, -1.8195681e-1],
-        [-2.7261797e-1, -2.1407054e-1],
-        [-2.4786117e-2, 3.9481632e-2],
-        [2.378092e-1, 4.168314e-2],
-        [-3.867634e-2, -7.499512e-2],
-        [-5.4630734e-2, 6.265101e-2],
-        [5.2529544e-2, -1.5084036e-1],
-        [-6.830194e-2, -3.1637726e-3],
-        [3.210717e-2, 3.8821388e-2],
-        [8.302816e-3, 6.4336704e-3],
-        [8.7451e-3, 4.4180702e-2],
-        [4.9616005e-3, 4.516171e-2],
-        [1.9346999e-2, -2.8697213e-2],
-        [-2.9477507e-3, 1.2615366e-3],
-        [2.565301e-2, -3.6690456e-3],
-        [5.347026e-2, 1.29902195e-2],
-        [7.1496926e-3, -3.238475e-2],
-        [4.7561888e-2, 2.7933057e-2],
-        [4.0670508e-3, 7.650873e-2],
-        [3.1063432e-2, 2.1795638e-2],
-        [5.6275995e-3, -9.213159e-3],
-        [4.4673537e-3, 1.6097106e-2],
-        [-1.9113488e-2, -8.832177e-3],
-        [2.0083334e-2, 7.1130255e-3],
-        [1.5871154e-2, 2.5810203e-2],
-        [-5.017438e-3, -3.8550207e-3],
-        [-8.932088e-2, 1.9584265e-2],
-        [-5.773527e-2, 3.852888e-3],
-        [1.2124234e-1, 4.413637e-2],
-        [-9.257765e-3, -1.9677222e-2],
-        [1.3516799e-2, 3.6217444e-2],
-        [9.1687925e-3, -2.2575619e-2],
-        [-9.23872e-3, 5.0417304e-2],
-        [1.373919e-2, 4.3017273e-3],
-        [1.1392089e-2, 8.7756e-4],
-        [2.932046e-2, -1.0795273e-2],
-        [6.4321345e-4, -1.2843515e-2],
-        [2.978315e-3, 6.5846095e-4],
-        [-1.1329926e-2, -5.4054824e-3],
-        [-2.035909e-2, -3.287505e-2],
-        [1.6288932e-2, 2.4078498e-2],
-        [-1.2516787e-2, -2.0530168e-3],
-        [7.496227e-8, 2.7248444e-8],
-        [1.6613806e-15, 3.6057335e-16],
-        [2.0601945e-23, 1.8120938e-24],
-        [1.6220977e-31, -2.627784e-32],
-        [2.61746e-40, -8.79141e-40],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
-        [4.26e-43, -4.04e-43],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [-3.268831372e-1, -2.868921459e-1],
+        [-1.782008111e-1, -1.319864392e-1],
+        [-2.943296731e-1, 1.796441972e-1],
+        [2.630639374e-1, -3.169808686e-1],
+        [2.778584361e-1, 2.599554658e-1],
+        [1.199561059e-1, 9.051184356e-2],
+        [-3.443898559e-1, -1.943044811e-1],
+        [-1.127828211e-1, -1.503088772e-1],
+        [-4.344719648e-2, 4.088576138e-1],
+        [-4.079917669e-1, 1.038771123e-1],
+        [-3.111199737e-1, 4.160427749e-1],
+        [9.455651790e-2, 3.987912834e-1],
+        [2.468546331e-1, -1.467878073e-1],
+        [-1.264806837e-1, -4.153069481e-2],
+        [8.416783810e-2, -4.565962031e-2],
+        [4.031267464e-1, -1.595259905e-1],
+        [2.620945275e-1, 1.403777897e-1],
+        [-5.198279619e-1, -3.870671391e-1],
+        [1.001072153e-1, 3.066410124e-1],
+        [-3.183882236e-1, -2.930059731e-1],
+        [6.623975635e-1, -2.894968726e-2],
+        [-5.504029393e-1, 3.365418613e-1],
+        [2.436434329e-1, -1.819985211e-1],
+        [-2.725847960e-1, -2.141169906e-1],
+        [-2.475742623e-2, 3.953187168e-2],
+        [2.377877384e-1, 4.166674614e-2],
+        [-3.863685951e-2, -7.497486472e-2],
+        [-5.463410914e-2, 6.265915930e-2],
+        [5.252553150e-2, -1.508341581e-1],
+        [-6.825274229e-2, -3.163075075e-3],
+        [3.206678480e-2, 3.881632164e-2],
+        [8.297769353e-3, 6.444254890e-3],
+        [8.713616990e-3, 4.418497160e-2],
+        [4.954684991e-3, 4.516352713e-2],
+        [1.934271120e-2, -2.870081365e-2],
+        [-2.942318097e-3, 1.239946461e-3],
+        [2.563439310e-2, -3.654789645e-3],
+        [5.346446857e-2, 1.296267100e-2],
+        [7.123460528e-3, -3.236435726e-2],
+        [4.754809663e-2, 2.793099917e-2],
+        [4.079668317e-3, 7.647895068e-2],
+        [3.110685945e-2, 2.182634734e-2],
+        [5.639165640e-3, -9.200685658e-3],
+        [4.481986165e-3, 1.607966609e-2],
+        [-1.911190338e-2, -8.817257360e-3],
+        [2.006791160e-2, 7.146429736e-3],
+        [1.586014405e-2, 2.582647465e-2],
+        [-5.003605038e-3, -3.877106123e-3],
+        [-8.927010000e-2, 1.957299002e-2],
+        [-5.769169331e-2, 3.834345844e-3],
+        [1.211852729e-1, 4.413909465e-2],
+        [-9.242881089e-3, -1.964548975e-2],
+        [1.353925560e-2, 3.620143980e-2],
+        [9.161094204e-3, -2.258133329e-2],
+        [-9.212646633e-3, 5.041701719e-2],
+        [1.372825168e-2, 4.315219354e-3],
+        [1.138431206e-2, 8.961712592e-4],
+        [2.932137810e-2, -1.080615353e-2],
+        [6.521692849e-4, -1.283295825e-2],
+        [2.981103724e-3, 6.534544518e-4],
+        [-1.133259200e-2, -5.414123647e-3],
+        [-2.035196871e-2, -3.285568953e-2],
+        [1.629276201e-2, 2.407642454e-2],
+        [-1.251673978e-2, -2.065220149e-3],
+        [7.465696683e-8, 2.723108139e-8],
+        [1.661349353e-15, 3.652238515e-16],
+        [2.084038930e-23, 1.968222947e-24],
+        [1.230860793e-30, 1.818664110e-30],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
+        [0.000000000e0, 0.000000000e0],
     ];
 
     #[test]
@@ -809,7 +752,38 @@ mod golden {
     }
 }
 
-// Each fixture carries `__SOURCE__` where a track path goes; the test
+#[cfg(test)]
+mod ordering {
+    use super::*;
+
+    fn timeline_types(json: &str) -> Vec<String> {
+        let session: SessionFile = serde_json::from_str(json).expect("parse");
+        build_timeline(&session, 44_100)
+            .into_iter()
+            .map(|(_, event)| event.event_type.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_stop_and_a_play_on_one_frame_order_the_way_the_editor_orders_them() {
+        let json = r#"{"version":2,"events":[
+            {"elapsed_ms":1000.0,"frame":44100,"type":"play","deck":"A"},
+            {"elapsed_ms":1000.0,"frame":44100,"type":"stop","deck":"A"}
+        ]}"#;
+        assert_eq!(timeline_types(json), vec!["stop", "play"]);
+    }
+
+    #[test]
+    fn a_snapshot_still_leads_its_frame() {
+        let json = r#"{"version":2,"events":[
+            {"elapsed_ms":0.0,"frame":0,"type":"play","deck":"A"},
+            {"elapsed_ms":0.0,"frame":0,"type":"deck_snapshot","deck":"A","path":"x"}
+        ]}"#;
+        assert_eq!(timeline_types(json), vec!["deck_snapshot", "play"]);
+    }
+}
+
+// Each fixture carries `__SOURCE__` where a track path goes. The test
 // substitutes a synthesized WAV so the corpus stays self-contained.
 #[cfg(test)]
 pub(crate) mod corpus {
@@ -904,10 +878,10 @@ pub(crate) mod corpus {
 
     #[rustfmt::skip]
     const DIGESTS: &[(&str, Digest)] = &[
-    ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
-    ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
-    ("mixer", Digest { frames: 154350, peak: 8.726367950e-1, rms: 1.416834742e-1, probes: [2.880797386e-1, -1.891948432e-1, 1.530065667e-2, 5.541073187e-5, -3.012379408e-1, 2.342810482e-2, 5.901104008e-18, -1.350032203e-29] }),
-    ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.672426015e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+        ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
+        ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
+        ("mixer", Digest { frames: 154350, peak: 8.762779832e-1, rms: 1.416859180e-1, probes: [2.880807817e-1, -1.891997159e-1, 1.531948522e-2, 5.469006646e-5, -3.012417257e-1, 2.342958748e-2, 0.000000000e0, 0.000000000e0] }),
+        ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.669194251e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
     #[test]
@@ -999,8 +973,6 @@ mod param_addressing {
     const XFADER_RIGHT: &str =
         r#"{"elapsed_ms":110,"type":"set_param","slot":"xfader","param":"position","value":1.0},"#;
 
-    // The renderer has to honour the crossfader, or a recorded set renders as
-    // something the DJ never played.
     #[test]
     fn a_deck_crossfaded_away_renders_silent() {
         let open = render(&format!("{PREAMBLE}{ASSIGN_A}{STOP}"));
@@ -1018,8 +990,6 @@ mod param_addressing {
         );
     }
 
-    // Thru is the default, so a crossfader move with nothing assigned to it must
-    // leave the render bit-identical. This is what makes the v2 mixer safe.
     #[test]
     fn a_crossfader_move_with_nothing_assigned_changes_nothing() {
         let without = render(&format!("{PREAMBLE}{STOP}"));
@@ -1027,8 +997,6 @@ mod param_addressing {
         assert_eq!(without, with_move);
     }
 
-    // The order the two arrive in must not matter: assigning after the fader has
-    // already moved has to resolve against where it currently sits.
     #[test]
     fn assigning_after_the_crossfader_moved_still_cuts() {
         let assign_late =
@@ -1040,8 +1008,6 @@ mod param_addressing {
         assert!(rms < 0.001, "a late assign did not resolve: {rms}");
     }
 
-    // An unknown param must be inert, not fatal: a session recorded against a
-    // mixer this build does not have still has to replay everything else.
     #[test]
     fn an_unknown_param_is_ignored_rather_than_failing_the_render() {
         let without = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
@@ -1072,8 +1038,6 @@ mod param_addressing {
         assert!(error.contains("isolator"), "{error}");
     }
 
-    // The renderer builds the strip from the resolved manifest, so the same events on two
-    // mixers must differ, or the header is being read and then ignored.
     #[test]
     fn the_resolved_manifest_is_the_one_the_renderer_builds() {
         let render_on = |manifest: &session_core::MixerManifest| {
@@ -1124,8 +1088,6 @@ mod param_addressing {
         );
     }
 
-    // Without this the comparison above would hold trivially on two renders
-    // where nothing the fader does is audible.
     #[test]
     fn the_fader_param_in_that_comparison_actually_moves_the_output() {
         let quiet = render(&format!("{PREAMBLE}{FADER_DOWN}{STOP}"));
@@ -1147,7 +1109,7 @@ mod param_addressing {
 }
 
 // The .bms records no limiter setting, so the renderer takes it from the caller.
-// It diverged from the live path once by always limiting; these pin both branches.
+// It diverged from the live path once by always limiting. These pin both branches.
 #[cfg(test)]
 mod master_limiter {
     use super::golden::{source_wav_path, SAMPLE_RATE};
@@ -1201,7 +1163,7 @@ mod master_limiter {
         )
         .expect("render");
         assert!(
-            peak(&rendered) <= LimiterState::THRESHOLD + 1e-6,
+            peak(&rendered) <= Limiter::THRESHOLD + 1e-6,
             "peaked at {}",
             peak(&rendered)
         );
@@ -1234,6 +1196,116 @@ mod master_limiter {
 // The recorded output-frame count is the buffer the command actually landed in.
 // Inferring it from the timestamp is out by one buffer whenever a boundary falls
 // between the engine being mutated and the event being logged.
+#[cfg(test)]
+mod recorded_limiter {
+    use super::*;
+
+    fn session_with(stamp: &str) -> SessionFile {
+        let json = format!(
+            r#"{{"version":2,"events":[{{"elapsed_ms":0,"type":"recording_start"{stamp}}}]}}"#
+        );
+        serde_json::from_str(&json).expect("parse session")
+    }
+
+    #[test]
+    fn a_stamped_session_names_the_chain_it_played_through() {
+        assert_eq!(
+            recorded_limiter(&session_with(r#","limiter_enabled":true"#)),
+            Some(MasterLimiter::On)
+        );
+        assert_eq!(
+            recorded_limiter(&session_with(r#","limiter_enabled":false"#)),
+            Some(MasterLimiter::Off)
+        );
+    }
+
+    #[test]
+    fn a_session_predating_the_stamp_names_nothing() {
+        assert_eq!(recorded_limiter(&session_with("")), None);
+    }
+}
+
+#[cfg(test)]
+mod warm_up {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    const WINDOW: usize = 2048;
+
+    fn rms(frames: &[f32]) -> f32 {
+        let sum: f64 = frames.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+        (sum / frames.len() as f64).sqrt() as f32
+    }
+
+    fn render_snapshot_mid_play() -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":128,"sample_rate":{SAMPLE_RATE}}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"value","value":-0.9}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"active","value":1}},
+{{"elapsed_ms":0,"type":"deck_snapshot","deck":"A","path":"__SOURCE__","position_sec":1.0,"cue_point_sec":0.0,"bpm":120.0,"playback_rate":1.0,"loop_active":false,"loop_end_sec":0.0,"is_playing":true,"gain":1.0}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: SAMPLE_RATE as usize,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("render")
+    }
+
+    /// A one-pole run through `approach` until it stops moving, which is what the
+    /// lead-in has to outlast for the strip to be settled at output frame zero.
+    fn samples_until_settled(tau_sec: f32, sample_rate: u32) -> usize {
+        let coeff = 1.0 - (-1.0 / (sample_rate as f32 * tau_sec)).exp();
+        let mut current = 0.0f32;
+        for frame in 0..sample_rate as usize * 5 {
+            let next = crate::audio::approach(current, 1.0, coeff);
+            if next == current {
+                return frame;
+            }
+            current = next;
+        }
+        usize::MAX
+    }
+
+    #[test]
+    fn the_lead_in_outlasts_the_slowest_smoother_on_the_strip() {
+        for sample_rate in [44_100, 48_000, 88_200, 96_000] {
+            let needed = samples_until_settled(crate::audio::FILTER_CROSSFADE_TAU_SEC, sample_rate);
+            let lead_in = warmup_frames(sample_rate);
+            assert!(
+                lead_in > needed,
+                "{sample_rate} Hz: lead-in {lead_in} frames, crossfade needs {needed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lead_in_is_a_whole_number_of_refresh_intervals() {
+        let interval = crate::audio::FILTER_COEFF_REFRESH_INTERVAL as usize;
+        for sample_rate in [44_100, 48_000, 88_200, 96_000, 192_000] {
+            assert_eq!(warmup_frames(sample_rate) % interval, 0, "{sample_rate} Hz");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_that_starts_mid_play_opens_at_its_settled_level() {
+        let rendered = render_snapshot_mid_play();
+        let opening = rms(&rendered[..WINDOW * 2]);
+        let settled = rms(&rendered[WINDOW * 2 * 8..WINDOW * 2 * 9]);
+        assert!(
+            opening < settled * 1.2,
+            "opening {opening} against settled {settled}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod recorded_frame {
     use super::golden::{source_wav_path, SAMPLE_RATE};
@@ -1281,8 +1353,6 @@ mod recorded_frame {
         );
     }
 
-    // The stamp records where the command landed, so nothing about it may be
-    // re-derived from the buffer the session happened to run at.
     #[test]
     fn a_stamped_frame_ignores_the_buffer_size() {
         for buffer_size_frames in [64u32, 128, 512, 1024] {
@@ -1294,7 +1364,6 @@ mod recorded_frame {
         }
     }
 
-    // Guards the two above against a stamp that happens to agree with the timestamp.
     #[test]
     fn an_unstamped_event_dispatches_at_its_timestamp() {
         let nominal = (50.0 * SAMPLE_RATE as f64 / 1000.0).round() as usize;
@@ -1418,7 +1487,7 @@ mod live_parity {
 
     const SCHEDULES: [&[usize]; 5] = [
         &[BLOCK],
-        &[117, 118, 118, 117, 118],
+        &[118, 117, 118, 117, 118],
         &[64],
         &[512],
         &[61, 512, 128, 7, 1024, 199],
@@ -1446,10 +1515,10 @@ mod live_parity {
         let samples = Arc::new(samples);
         let total_frames = samples.len() / channels;
 
-        let mut channel_pairs: Vec<(&str, DeckState, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
+        let mut channel_pairs: Vec<(&str, Deck, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
             .iter()
             .map(|&id| {
-                let mut deck = DeckState::empty(SAMPLE_RATE);
+                let mut deck = Deck::empty(SAMPLE_RATE);
                 deck.samples = Arc::clone(&samples);
                 deck.channels = channels;
                 deck.device_sample_rate = SAMPLE_RATE;
@@ -1463,7 +1532,7 @@ mod live_parity {
             })
             .collect();
 
-        let mut limiter = LimiterState::new(SAMPLE_RATE as f32);
+        let mut limiter = Limiter::new(SAMPLE_RATE as f32);
         let mut out = Vec::with_capacity(TOTAL * 2);
         let mut block_buffer: Vec<f32> = Vec::new();
 
@@ -1480,7 +1549,7 @@ mod live_parity {
                 match cue {
                     Cue::Play => deck.is_playing = true,
                     Cue::Stop => deck.is_playing = false,
-                    Cue::Jog => deck.jog_pending += TICKS,
+                    Cue::Jog => deck.queue_jog(TICKS),
                 }
                 fired[next_cue] = frame;
                 next_cue += 1;
@@ -1594,5 +1663,581 @@ mod live_parity {
             (STOP_FRAME + BLOCK, "B", Cue::Jog),
             (RESUME_FRAME, "A", Cue::Stop),
         ]);
+    }
+}
+
+#[cfg(test)]
+mod recorded_sample_rate {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+
+    fn first_audible_frame(rendered: &[f32]) -> usize {
+        rendered
+            .iter()
+            .position(|sample| *sample != 0.0)
+            .expect("render is silent")
+            / 2
+    }
+
+    fn render_recorded_at(recorded_rate: u32, play_frame: u64) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"events":[
+{{"elapsed_ms":0,"frame":0,"type":"recording_start","buffer_size_frames":512,"sample_rate":{recorded_rate}}},
+{{"elapsed_ms":0,"frame":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
+{{"elapsed_ms":1000,"frame":{play_frame},"type":"play","deck":"A"}},
+{{"elapsed_ms":2500,"type":"stop","deck":"A"}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn a_frame_recorded_at_another_rate_lands_at_the_same_moment() {
+        // One second of audio at each device rate.
+        for recorded_rate in [44_100u32, 48_000, 88_200, 96_000] {
+            let rendered = render_recorded_at(recorded_rate, u64::from(recorded_rate));
+            let started = first_audible_frame(&rendered);
+            let drift_ms =
+                (started as f64 - f64::from(SAMPLE_RATE)) / f64::from(SAMPLE_RATE) * 1000.0;
+            assert!(
+                drift_ms.abs() < 1.0,
+                "recorded at {recorded_rate}: play landed {drift_ms:.1} ms from one second"
+            );
+        }
+    }
+}
+
+// A random session is played through the live block path, which records the events an
+// engine would, and the recording is rendered offline. The two apply every command through
+// separately written code, so only a differential test holds them together.
+#[cfg(test)]
+mod live_parity_fuzz {
+    use super::golden::{source_wav_path, SAMPLE_RATE};
+    use super::*;
+    use crate::audio::RenderTargets;
+
+    const BLOCK: usize = 128;
+    const TOTAL: usize = BLOCK * 700;
+    const BPM: f64 = 128.0;
+    // Uniform only: a `.bms` states one buffer size, so a render can only block at
+    // one. That a varying callback length changes nothing is a claim about the live
+    // path alone, and `callback_length_cannot_change_what_is_heard` is where it lives.
+    const SCHEDULES: [&[usize]; 3] = [&[BLOCK], &[64], &[512]];
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 11
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Action {
+        Toggle,
+        Jog(i64),
+        LoopIn,
+        LoopOut,
+        ExitLoop,
+        Reloop,
+        Seek(u32),
+        Rate(u32),
+        Fader(u32),
+        CueHold(u32),
+        Eq(u32, u32),
+        Filter(u32),
+        FilterActive(bool),
+    }
+
+    fn action(rng: &mut Rng) -> Action {
+        match rng.below(13) {
+            0 | 1 => Action::Toggle,
+            2 => Action::Jog(rng.below(2001) as i64 - 1000),
+            3 => Action::LoopIn,
+            4 => Action::LoopOut,
+            5 => Action::ExitLoop,
+            6 => Action::Reloop,
+            7 => Action::Seek(rng.below(20_000) as u32),
+            8 => Action::Rate(rng.below(2001) as u32),
+            9 => Action::CueHold(rng.below(6000) as u32 + 200),
+            10 => Action::Eq(rng.below(3) as u32, rng.below(101) as u32),
+            11 => Action::Filter(rng.below(201) as u32),
+            _ => Action::Fader(rng.below(101) as u32),
+        }
+    }
+
+    fn script(seed: u64, count: usize) -> Vec<(usize, &'static str, Action)> {
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut out: Vec<(usize, &'static str, Action)> = (0..count)
+            .map(|_| {
+                let frame = rng.below((TOTAL - BLOCK * 2) as u64) as usize;
+                let deck = crate::audio::LIVE_DECK_IDS[rng.below(2) as usize];
+                (frame, deck, action(&mut rng))
+            })
+            .collect();
+        out.sort_by_key(|(frame, _, _)| *frame);
+        out
+    }
+
+    fn deck_with_track() -> (Deck, ChannelStrip) {
+        let path = source_wav_path();
+        let (raw, channels, native_rate) = crate::audio::decode_audio(&path).expect("decode");
+        let samples = if native_rate == SAMPLE_RATE {
+            raw
+        } else {
+            crate::audio::resample_linear(&raw, channels, native_rate, SAMPLE_RATE)
+        };
+        let total_frames = samples.len() / channels;
+        let mut deck = Deck::empty(SAMPLE_RATE);
+        deck.samples = Arc::new(samples);
+        deck.channels = channels;
+        deck.device_sample_rate = SAMPLE_RATE;
+        deck.total_frames = total_frames;
+        deck.duration = total_frames as f64 / SAMPLE_RATE as f64;
+        deck.bpm = Some(BPM);
+        deck.quantize = true;
+        let strip =
+            ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, SAMPLE_RATE as f32);
+        (deck, strip)
+    }
+
+    /// The live side is the recorder: it applies each action through the same core the engine
+    /// calls, and writes the event that engine would have logged.
+    fn live_render(sizes: &[usize], script: &[(usize, &str, Action)]) -> (Vec<f32>, Vec<String>) {
+        let mut channels: Vec<(&str, Deck, ChannelStrip)> = crate::audio::LIVE_DECK_IDS
+            .iter()
+            .map(|&id| {
+                let (deck, strip) = deck_with_track();
+                (id, deck, strip)
+            })
+            .collect();
+
+        // The size the run actually used, not a constant: a recording states one
+        // buffer size and the render blocks at it.
+        let recorded_block = sizes[0];
+        let mut events: Vec<String> = vec![format!(
+            r#"{{"elapsed_ms":0,"frame":0,"type":"recording_start","buffer_size_frames":{recorded_block},"sample_rate":{SAMPLE_RATE}}}"#
+        )];
+        for id in crate::audio::LIVE_DECK_IDS {
+            events.push(format!(
+                r#"{{"elapsed_ms":0,"frame":0,"type":"load_track","deck":"{id}","path":"__SOURCE__"}}"#
+            ));
+            events.push(format!(
+                r#"{{"elapsed_ms":0,"frame":0,"type":"set_beat_grid","deck":"{id}","bpm":{BPM},"beat_offset_sec":0.0}}"#
+            ));
+        }
+
+        let mut limiter = Limiter::new(SAMPLE_RATE as f32);
+        let mut out = Vec::with_capacity(TOTAL * 2);
+        let mut block_buffer: Vec<f32> = Vec::new();
+        let mut next = 0usize;
+        let mut frame = 0usize;
+        let mut index = 0usize;
+        let mut pending_release: Vec<(usize, &str)> = Vec::new();
+
+        while frame < TOTAL {
+            let mut size = sizes[index % sizes.len()].min(TOTAL - frame);
+            // Split the block at the next event, so a command lands on its own frame rather
+            // than on whichever boundary this schedule happens to provide.
+            for (at, _, _) in script.iter().skip(next) {
+                if *at > frame && *at < frame + size {
+                    size = at - frame;
+                }
+                if *at >= frame + size {
+                    break;
+                }
+            }
+            if let Some((at, _)) = pending_release.iter().min_by_key(|entry| entry.0) {
+                if *at > frame && *at < frame + size {
+                    size = at - frame;
+                }
+            }
+            let mut due: Vec<(usize, &str)> = Vec::new();
+            pending_release.retain(|entry| {
+                if entry.0 <= frame {
+                    due.push(*entry);
+                    false
+                } else {
+                    true
+                }
+            });
+            for (_, id) in due {
+                let (_, deck, _) = channels
+                    .iter_mut()
+                    .find(|(pair, _, _)| *pair == id)
+                    .expect("released deck");
+                // Mirrors `Engine::release_cue`: a press that latched the preview to
+                // playing already ended it, so the release logs nothing.
+                let was_cueing = deck.is_cueing;
+                deck.release_cue();
+                if was_cueing {
+                    events.push(format!(
+                        r#"{{"elapsed_ms":1,"frame":{frame},"type":"cue_preview_end","deck":"{id}","cue_point_sec":{c}}}"#,
+                        c = deck.cue_point / f64::from(SAMPLE_RATE)
+                    ));
+                }
+            }
+            while next < script.len() && frame >= script[next].0 {
+                let (_, id, act) = script[next];
+                let (_, deck, strip) = channels
+                    .iter_mut()
+                    .find(|(pair, _, _)| *pair == id)
+                    .expect("scripted deck");
+                let at = frame;
+                match act {
+                    Action::Toggle => {
+                        // Mirrors `Engine::toggle_play`: resolve which command the press means,
+                        // then apply it through the one implementation.
+                        let starts = deck.total_frames > 0 && (deck.is_cueing || !deck.is_playing);
+                        let cmd = if starts {
+                            session_core::SessionCommand::Play {
+                                deck: id,
+                                sec: None,
+                            }
+                        } else {
+                            session_core::SessionCommand::Stop { deck: id }
+                        };
+                        let mut refuse =
+                            |path: &str| -> Result<crate::audio::LoadedSamples, String> {
+                                Err(format!("no load in a live gesture: {path}"))
+                            };
+                        crate::audio::apply_deck_command(
+                            &cmd,
+                            deck,
+                            strip,
+                            SAMPLE_RATE,
+                            0.0,
+                            &mut refuse,
+                        )
+                        .expect("toggle applies");
+                        let kind = if starts { "play" } else { "stop" };
+                        events.push(format!(
+                            r#"{{"elapsed_ms":1,"frame":{at},"type":"{kind}","deck":"{id}"}}"#
+                        ));
+                    }
+                    Action::Jog(ticks) => {
+                        // A paused scrub is a known live/offline divergence, tracked separately;
+                        // jogging only a playing deck keeps this covering everything else.
+                        if !deck.is_playing {
+                            next += 1;
+                            continue;
+                        }
+                        deck.queue_jog(ticks as f64);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"jog","deck":"{id}","ticks":{ticks}.0}}"#));
+                    }
+                    Action::LoopIn => {
+                        if let Ok(cue_sec) = crate::engine::loop_in_core(deck, strip) {
+                            events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"loop_in","deck":"{id}","cue_sec":{cue_sec},"quantized":true}}"#));
+                        }
+                    }
+                    Action::LoopOut => {
+                        if let Ok(Some(region)) = crate::engine::loop_out_core(deck, strip) {
+                            events.push(format!(
+                                r#"{{"elapsed_ms":1,"frame":{at},"type":"loop_out","deck":"{id}","start_sec":{s},"end_sec":{e},"beats":{b},"quantized":true}}"#,
+                                s = region.start_sec, e = region.end_sec, b = region.beats
+                            ));
+                        }
+                    }
+                    Action::ExitLoop => {
+                        deck.loop_active = false;
+                        events.push(format!(
+                            r#"{{"elapsed_ms":1,"frame":{at},"type":"exit_loop","deck":"{id}"}}"#
+                        ));
+                    }
+                    Action::Reloop => {
+                        if deck.loop_end > deck.cue_point {
+                            deck.main_pos = deck.cue_point;
+                            deck.cue_pos = deck.cue_point;
+                            if deck.is_playing {
+                                deck.loop_active = true;
+                            }
+                        }
+                        events.push(format!(
+                            r#"{{"elapsed_ms":1,"frame":{at},"type":"reloop","deck":"{id}"}}"#
+                        ));
+                    }
+                    Action::Seek(milli) => {
+                        let sec = f64::from(milli) / 1000.0;
+                        let mut refuse =
+                            |path: &str| -> Result<crate::audio::LoadedSamples, String> {
+                                Err(format!("no load in a live gesture: {path}"))
+                            };
+                        crate::audio::apply_deck_command(
+                            &session_core::SessionCommand::Seek { deck: id, sec },
+                            deck,
+                            strip,
+                            SAMPLE_RATE,
+                            0.0,
+                            &mut refuse,
+                        )
+                        .expect("seek applies");
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"seek","deck":"{id}","sec":{sec}}}"#));
+                    }
+                    Action::Rate(milli) => {
+                        let rate = (f64::from(milli) / 1000.0 + 0.5).max(0.1);
+                        deck.playback_rate = rate;
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_playback_rate","deck":"{id}","rate":{rate}}}"#));
+                    }
+                    Action::CueHold(hold) => {
+                        // Mirrors `Engine::press_cue`: the outcome picks which event is logged.
+                        // A press is a hold, so the release is scheduled with it. An unreleased
+                        // press is a gesture the engine cannot produce.
+                        let outcome = deck.press_cue();
+                        if matches!(outcome, crate::audio::CuePressOutcome::PreviewStarted) {
+                            pending_release.push((at + hold as usize, id));
+                        }
+                        match outcome {
+                            crate::audio::CuePressOutcome::NoTrack => {}
+                            crate::audio::CuePressOutcome::PreviewStarted => events.push(format!(
+                                r#"{{"elapsed_ms":1,"frame":{at},"type":"cue_preview_start","deck":"{id}","cue_point_sec":{c}}}"#,
+                                c = deck.cue_point / f64::from(SAMPLE_RATE)
+                            )),
+                            crate::audio::CuePressOutcome::CueMoved { new_cue_point_sec } => events
+                                .push(format!(
+                                    r#"{{"elapsed_ms":1,"frame":{at},"type":"cue_move","deck":"{id}","cue_point_sec":{new_cue_point_sec}}}"#
+                                )),
+                            crate::audio::CuePressOutcome::StoppedAtCue { cue_point_sec } => events
+                                .push(format!(
+                                    r#"{{"elapsed_ms":1,"frame":{at},"type":"stopped_at_cue","deck":"{id}","cue_point_sec":{cue_point_sec}}}"#
+                                )),
+                        }
+                    }
+                    Action::Eq(band, pct) => {
+                        let name = ["low", "mid", "high"][band as usize];
+                        let db = f64::from(pct) * 0.32 - 26.0;
+                        strip.set_param("eq", name, db as f32);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"eq","param":"{name}","value":{db}}}"#));
+                    }
+                    Action::Filter(centi) => {
+                        let value = f64::from(centi) / 100.0 - 1.0;
+                        strip.set_param("filter", "value", value as f32);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"filter","param":"value","value":{value}}}"#));
+                    }
+                    Action::FilterActive(on) => {
+                        let value = if on { 1.0 } else { 0.0 };
+                        strip.set_param("filter", "active", value as f32);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"filter","param":"active","value":{value}}}"#));
+                    }
+                    Action::Fader(pct) => {
+                        let value = f64::from(pct) / 100.0;
+                        strip.set_param("fader", "gain", value as f32);
+                        events.push(format!(r#"{{"elapsed_ms":1,"frame":{at},"type":"set_param","deck":"{id}","slot":"fader","param":"gain","value":{value}}}"#));
+                    }
+                }
+                next += 1;
+            }
+            block_buffer.clear();
+            block_buffer.resize(size * 2, 0.0);
+            for (_, deck, strip) in channels.iter_mut() {
+                deck.set_next_render_frame((frame + size) as u64);
+                strip.set_next_render_frame((frame + size) as u64);
+                deck.render_block(
+                    strip,
+                    size,
+                    RenderTargets {
+                        main: Some(&mut block_buffer),
+                        cue: None,
+                    },
+                );
+            }
+            for i in 0..size {
+                let (l, r) = crate::audio::master_output(
+                    Some(&mut limiter),
+                    block_buffer[i * 2] * crate::audio::DEFAULT_MASTER_GAIN,
+                    block_buffer[i * 2 + 1] * crate::audio::DEFAULT_MASTER_GAIN,
+                );
+                out.push(l);
+                out.push(r);
+            }
+            frame += size;
+            index += 1;
+        }
+        (out, events)
+    }
+
+    fn offline_render_of(events: &[String]) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"mixer":{header},"events":[{body}]}}"#,
+            header =
+                serde_json::to_string(&session_core::CLASSIC_3BAND_V2.header()).expect("header"),
+            body = events.join(",\n")
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: TOTAL,
+                limiter: MasterLimiter::On,
+            },
+        )
+        .expect("render")
+    }
+
+    fn first_divergence(live: &[f32], offline: &[f32]) -> Option<usize> {
+        live.iter().zip(offline).position(|(a, b)| a != b)
+    }
+
+    fn diverges(sizes: &[usize], script: &[(usize, &'static str, Action)]) -> Option<usize> {
+        let (live, events) = live_render(sizes, script);
+        let offline = offline_render_of(&events);
+        first_divergence(&live, &offline[..live.len()]).map(|at| at / 2)
+    }
+
+    fn sample_pair(
+        sizes: &[usize],
+        script: &[(usize, &'static str, Action)],
+    ) -> Option<(usize, f32, f32)> {
+        let (live, events) = live_render(sizes, script);
+        let offline = offline_render_of(&events);
+        first_divergence(&live, &offline[..live.len()]).map(|at| (at / 2, live[at], offline[at]))
+    }
+
+    /// Greedily drops whatever the divergence does not need, so a failure names a handful of
+    /// events instead of the whole script.
+    fn shrink(
+        sizes: &'static [usize],
+        script: &[(usize, &'static str, Action)],
+    ) -> Vec<(usize, &'static str, Action)> {
+        let mut best = script.to_vec();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut index = 0;
+            while index < best.len() {
+                let mut candidate = best.clone();
+                candidate.remove(index);
+                if diverges(sizes, &candidate).is_some() {
+                    best = candidate;
+                    changed = true;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn callback_length_cannot_change_what_is_heard() {
+        for seed in 0..12u64 {
+            let script = script(seed, 10);
+            let (reference, _) = live_render(&[128], &script);
+            for sizes in [&[64usize][..], &[512][..], &[61, 512, 128, 7, 199][..]] {
+                let (other, _) = live_render(sizes, &script);
+                if let Some(at) = first_divergence(&reference, &other) {
+                    panic!(
+                        "seed {seed}: 128 vs {sizes:?} diverges at frame {} ({} vs {})\n{script:?}",
+                        at / 2,
+                        reference[at],
+                        other[at]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_recorded_filter_sweep_renders_exactly_as_it_played() {
+        const SWEEP: [(usize, u32); 25] = [
+            (0, 108),
+            (588, 113),
+            (1176, 116),
+            (1176, 117),
+            (1881, 123),
+            (1881, 122),
+            (2469, 124),
+            (3057, 125),
+            (5527, 126),
+            (6115, 128),
+            (6115, 127),
+            (6821, 129),
+            (7409, 130),
+            (7409, 131),
+            (19169, 130),
+            (19757, 127),
+            (20345, 122),
+            (20933, 117),
+            (20933, 118),
+            (21638, 113),
+            (22226, 107),
+            (22226, 106),
+            (22814, 102),
+            (23402, 101),
+            (23402, 100),
+        ];
+
+        let mut script: Vec<(usize, &'static str, Action)> = vec![
+            (
+                if std::env::var("LATE").is_ok() {
+                    2048
+                } else {
+                    0
+                },
+                "A",
+                Action::Toggle,
+            ),
+            (0, "A", Action::FilterActive(true)),
+        ];
+        let mode = std::env::var("MINIMAL").unwrap_or_default();
+        if mode == "none" {
+        } else if mode == "one" {
+            script.push((4096, "A", Action::Filter(SWEEP[0].1)));
+        } else {
+            for (offset, centi) in SWEEP {
+                script.push((4096 + offset, "A", Action::Filter(centi)));
+            }
+        }
+
+        let mut report = String::new();
+        for sizes in SCHEDULES {
+            match sample_pair(sizes, &script) {
+                Some((frame, live, offline)) => report.push_str(&format!(
+                    "  {sizes:?}: frame {frame} live {live:e} offline {offline:e}\n"
+                )),
+                None => report.push_str(&format!("  {sizes:?}: exact\n")),
+            }
+        }
+        assert!(!report.contains("frame"), "\n{report}");
+    }
+
+    #[test]
+    fn a_random_session_renders_exactly_as_it_played() {
+        for seed in 0..24u64 {
+            let script = script(seed, 14);
+            for sizes in SCHEDULES {
+                if let Some(at) = diverges(sizes, &script) {
+                    let minimal = shrink(sizes, &script);
+                    let (minimal_at, live_sample, offline_sample) =
+                        sample_pair(sizes, &minimal).unwrap_or((at, 0.0, 0.0));
+                    panic!(
+                        "seed {seed} schedule {sizes:?}: diverges at frame {at} of {TOTAL}\n\
+                         minimal ({} of {} events) diverges at frame {minimal_at}: \
+                         live {live_sample:e} vs offline {offline_sample:e}\n{minimal:?}",
+                        minimal.len(),
+                        script.len()
+                    );
+                }
+            }
+        }
     }
 }

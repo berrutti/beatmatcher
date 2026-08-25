@@ -98,8 +98,7 @@ describe('arrow keys in performance mode', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  // A range input steps itself on the arrow cluster, and every fader in performance mode
-  // is one, so swallowing the key makes a focused fader stop responding.
+  // A range input steps itself on the arrow cluster.
   it('leaves the key to a focused range input', () => {
     const browse = useBrowseStore();
     const before = browse.cursorIndex;
@@ -110,7 +109,6 @@ describe('arrow keys in performance mode', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  // Arrows are capturable in Settings, so a user who binds one has to get it back.
   it('runs a deck command bound to an arrow instead of browsing', () => {
     const settings = useSettingsStore();
     settings.keybindings.A.PLAY = 'arrowleft';

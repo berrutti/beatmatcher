@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
-import { DECKS_DISPOSITION } from './decks';
+import { DECKS_DISPOSITION, TWO_DECK_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
@@ -14,7 +14,7 @@ type ParamChange = { deck: string; slot: string; param: string; value: number };
 export type XfaderAssign = 'thru' | 'a' | 'b';
 export type XfaderSide = 'a' | 'b';
 
-const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
+const LIVE_DECKS: readonly DeckId[] = DECKS_DISPOSITION;
 
 // How `mixerParams` keys its specs, and how the store keys a deck's values, so a
 // param the manifest gained is reachable without anything here naming it.
@@ -133,7 +133,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const activeDecks = computed<DeckId[]>(() =>
-    deckCount.value === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
+    deckCount.value === 2 ? [...TWO_DECK_DISPOSITION] : [...DECKS_DISPOSITION]
   );
 
   const showWaveformStrip = ref(storageGet<boolean>(STORAGE_KEYS.showWaveformStrip, true));
@@ -250,14 +250,6 @@ export const useMixerStore = defineStore('mixer', () => {
     return Object.prototype.hasOwnProperty.call(params, id);
   }
 
-  // Engine-originated only, and deliberately does not invoke back: Rust never pushes a
-  // value the UI wrote, so anything arriving here is a move the store has not made.
-  function assignFromValue(value: number): XfaderAssign {
-    if (value === 1) return 'a';
-    if (value === 2) return 'b';
-    return 'thru';
-  }
-
   function applyEngineParam(change: ParamChange): void {
     // Master scope, so it arrives with no deck and has to be read before the
     // guard below rejects it.
@@ -266,12 +258,7 @@ export const useMixerStore = defineStore('mixer', () => {
       return;
     }
     if (!isDeckId(change.deck)) return;
-    // Neither of these is a manifest param: the assign is categorical and cue is
-    // engine-only routing, so they are the two addresses `params` cannot hold.
-    if (change.slot === 'xfader' && change.param === 'assign') {
-      xfaderAssign[change.deck] = assignFromValue(change.value);
-      return;
-    }
+    // Engine-only routing, so it is the one address `params` cannot hold.
     if (change.slot === 'cue' && change.param === 'active') {
       cueActive[change.deck] = change.value !== 0;
       return;
@@ -282,6 +269,14 @@ export const useMixerStore = defineStore('mixer', () => {
 
   listen<ParamChange[]>('engine-params', (event) => {
     event.payload.forEach(applyEngineParam);
+  });
+
+  function applyEngineAssign(change: { deck: string; assign: XfaderAssign }): void {
+    if (isDeckId(change.deck)) xfaderAssign[change.deck] = change.assign;
+  }
+
+  listen<{ deck: string; assign: XfaderAssign }[]>('engine-assign', (event) => {
+    event.payload.forEach(applyEngineAssign);
   });
 
   function reset(): void {
@@ -428,26 +423,6 @@ export const useMixerStore = defineStore('mixer', () => {
     await call('discard_recording', { path });
   }
 
-  async function renderSession(
-    sessionPath: string,
-    outputPath: string,
-    useFlac: boolean
-  ): Promise<void> {
-    await call('render_session_to_file', {
-      sessionPath,
-      outputPath,
-      useFlac,
-      writeCue: useSettingsStore().recordCue
-    });
-  }
-
-  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
-    return call('pick_save_path', {
-      format: useFlac ? 'flac' : 'wav',
-      baseName
-    });
-  }
-
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
     deviceError.value = '';
     const newCueOffset = channelOffset ?? cueChannelOffset.value;
@@ -519,13 +494,12 @@ export const useMixerStore = defineStore('mixer', () => {
     playedPaths,
     markPlayed,
     applyEngineParam,
+    applyEngineAssign,
     discardRecording,
     getDeckLevels,
     getMasterLevel,
     loadOutputDevices,
-    pickRenderOutputPath,
     pickSavePath,
-    renderSession,
     reset,
     saveRecording,
     setCueActive,

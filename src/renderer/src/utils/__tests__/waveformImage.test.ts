@@ -70,13 +70,8 @@ describe('buildWaveformImageData', () => {
   });
 
   it('color is the amplitude-weighted average of source points in the window', () => {
-    // 2 source points map to 1 output column:
-    // point 0: r=1, g=0, b=0, amp=0.5 (red)
-    // point 1: r=0, g=1, b=0, amp=0.5 (green)
-    // avgBass=0.5, avgMid=0.5, avgHigh=0 -> spectralColor applies log compression:
-    //   r = (log1p(0.5*10) / log1p(10)) * 255 | 0 = 190
-    //   g = (log1p(0.5*25) / log1p(25)) * 255 | 0 = 203
-    //   b = 0
+    // Two source points averaged into one column, then spectralColor's log
+    // compression: r = log1p(0.5*10)/log1p(10)*255 = 190, g = log1p(0.5*25)/log1p(25)*255 = 203.
     const peaks = new Float32Array([1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5]);
     const img = buildWaveformImageData(1, 10, peaks, 1.0);
     // Find a colored row (middle)

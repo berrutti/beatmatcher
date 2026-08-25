@@ -139,12 +139,8 @@ describe('TableHeaderCells', () => {
   });
 
   it('keeps the resizer as a direct child of the th, not nested inside the truncated content wrapper', () => {
-    // The content wrapper has overflow: hidden for text truncation. The
-    // resizer intentionally sits half outside the th's box (via its own
-    // transform) to straddle the column border - if it were nested inside
-    // the truncated wrapper instead of being a sibling of it, that half
-    // would be clipped and non-interactive, exactly what this test guards
-    // against structurally (clipping itself can't be observed in happy-dom).
+    // happy-dom cannot observe clipping, so the guard is structural: the resizer
+    // straddles the border and must not nest inside the truncating wrapper.
     const wrapper = mount(
       { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
       {
