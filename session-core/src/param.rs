@@ -26,8 +26,6 @@ pub enum Taper {
 
 pub struct ParamDescriptor {
     pub id: &'static str,
-    pub label: &'static str,
-    pub short_label: &'static str,
     pub min: f64,
     pub max: f64,
     pub default: f64,
@@ -36,7 +34,6 @@ pub struct ParamDescriptor {
     pub taper: Taper,
     pub dead_zone: Option<f64>,
     pub automatable: bool,
-    pub lane_group: u8,
 }
 
 impl ParamDescriptor {
@@ -287,11 +284,7 @@ const CLASSIC_STRIP: &[SlotDescriptor] = &[
     SlotDescriptor {
         slot: "eq",
         unit_id: "eq3band",
-        params: &[
-            eq_param("low", "Low", "LO"),
-            eq_param("mid", "Mid", "MD"),
-            eq_param("high", "High", "HI"),
-        ],
+        params: &[eq_param("low"), eq_param("mid"), eq_param("high")],
     },
     SWEEP_FILTER_SLOT,
     FADER_SLOT,
@@ -303,8 +296,6 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
     params: &[
         ParamDescriptor {
             id: "value",
-            label: "Filter",
-            short_label: "F",
             min: -1.0,
             max: 1.0,
             default: 0.0,
@@ -313,12 +304,9 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
             taper: Taper::Bipolar { center: 0.0 },
             dead_zone: Some(crate::FILTER_DEAD_ZONE),
             automatable: true,
-            lane_group: 1,
         },
         ParamDescriptor {
             id: "active",
-            label: "Filter on",
-            short_label: "FA",
             min: 0.0,
             max: 1.0,
             default: 0.0,
@@ -327,7 +315,6 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
             taper: Taper::Linear,
             dead_zone: None,
             automatable: false,
-            lane_group: 1,
         },
     ],
 };
@@ -337,8 +324,6 @@ const FADER_SLOT: SlotDescriptor = SlotDescriptor {
     unit_id: "fader",
     params: &[ParamDescriptor {
         id: "gain",
-        label: "Volume",
-        short_label: "G",
         min: 0.0,
         max: 1.0,
         default: 1.0,
@@ -347,7 +332,6 @@ const FADER_SLOT: SlotDescriptor = SlotDescriptor {
         taper: Taper::Linear,
         dead_zone: None,
         automatable: true,
-        lane_group: 0,
     }],
 };
 
@@ -356,8 +340,6 @@ const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
     unit_id: "master_gain",
     params: &[ParamDescriptor {
         id: "gain",
-        label: "Master",
-        short_label: "M",
         min: 0.0,
         max: 1.0,
         default: crate::DEFAULT_MASTER_GAIN as f64,
@@ -366,7 +348,6 @@ const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
         taper: Taper::Linear,
         dead_zone: None,
         automatable: true,
-        lane_group: 0,
     }],
 };
 
@@ -377,8 +358,6 @@ const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
     unit_id: "xfader",
     params: &[ParamDescriptor {
         id: "position",
-        label: "Crossfader",
-        short_label: "X",
         min: -1.0,
         max: 1.0,
         default: 0.0,
@@ -387,7 +366,6 @@ const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
         taper: Taper::Linear,
         dead_zone: None,
         automatable: true,
-        lane_group: 0,
     }],
 };
 
@@ -583,9 +561,9 @@ const ISOLATOR_STRIP: &[SlotDescriptor] = &[
         slot: "eq",
         unit_id: "isolator3band",
         params: &[
-            isolator_param("low", "Low", "LO"),
-            isolator_param("mid", "Mid", "MD"),
-            isolator_param("high", "High", "HI"),
+            isolator_param("low"),
+            isolator_param("mid"),
+            isolator_param("high"),
         ],
     },
     SWEEP_FILTER_SLOT,
@@ -608,15 +586,9 @@ pub static ISOLATOR_3BAND_V2: MixerManifest = MixerManifest {
     master: MASTER_SLOTS_V2,
 };
 
-const fn isolator_param(
-    id: &'static str,
-    label: &'static str,
-    short_label: &'static str,
-) -> ParamDescriptor {
+const fn isolator_param(id: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id,
-        label,
-        short_label,
         min: 0.0,
         max: 1.0,
         default: 1.0,
@@ -625,19 +597,12 @@ const fn isolator_param(
         taper: Taper::Linear,
         dead_zone: None,
         automatable: true,
-        lane_group: 3,
     }
 }
 
-const fn eq_param(
-    id: &'static str,
-    label: &'static str,
-    short_label: &'static str,
-) -> ParamDescriptor {
+const fn eq_param(id: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id,
-        label,
-        short_label,
         min: crate::EQ_MIN_DB,
         max: crate::EQ_MAX_DB,
         default: 0.0,
@@ -648,7 +613,6 @@ const fn eq_param(
         taper: Taper::Bipolar { center: 0.0 },
         dead_zone: None,
         automatable: true,
-        lane_group: 3,
     }
 }
 
@@ -657,15 +621,9 @@ mod tests {
     use super::*;
     use crate::lane_edit::{lane_spec_for, EditableLane};
 
-    const fn fader_gain_param(
-        label: &'static str,
-        short_label: &'static str,
-        max: f64,
-    ) -> ParamDescriptor {
+    const fn fader_gain_param(max: f64) -> ParamDescriptor {
         ParamDescriptor {
             id: "gain",
-            label,
-            short_label,
             min: 0.0,
             max,
             default: 1.0,
@@ -674,7 +632,6 @@ mod tests {
             taper: Taper::Linear,
             dead_zone: None,
             automatable: true,
-            lane_group: 0,
         }
     }
 
@@ -825,7 +782,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "eq",
                 unit_id: "eq3band",
-                params: &[eq_param("low", "Low", "LO")],
+                params: &[eq_param("low")],
             }],
             master: &[],
         };
@@ -842,8 +799,6 @@ mod tests {
                 unit_id: "fader",
                 params: &[ParamDescriptor {
                     id: "gain",
-                    label: "Volume",
-                    short_label: "G",
                     min: 0.0,
                     max: 1.0,
                     default: 1.0,
@@ -852,7 +807,6 @@ mod tests {
                     taper: Taper::Linear,
                     dead_zone: None,
                     automatable: true,
-                    lane_group: 0,
                 }],
             }],
             master: &[],
@@ -884,11 +838,7 @@ mod tests {
             SlotDescriptor {
                 slot: "eq",
                 unit_id: "eq3band",
-                params: &[
-                    eq_param("low", "Low", "LO"),
-                    eq_param("mid", "Mid", "MD"),
-                    eq_param("high", "High", "HI"),
-                ],
+                params: &[eq_param("low"), eq_param("mid"), eq_param("high")],
             },
             FADER_SLOT,
         ];
@@ -945,12 +895,6 @@ mod tests {
             let spec = lane_spec_for(EditableLane::Xfader, manifest, None, None);
             assert_eq!((spec.min, spec.max), (-1.0, 1.0), "{}", manifest.id);
             assert_eq!(spec.default_value, 0.0, "{}", manifest.id);
-            assert_eq!(
-                EditableLane::Xfader.display(manifest).short_label,
-                "X",
-                "{}",
-                manifest.id
-            );
         }
     }
 
@@ -1046,7 +990,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
-                params: &[fader_gain_param("Level", "LV", 1.0)],
+                params: &[fader_gain_param(1.0)],
             }],
             master: &[],
         };
@@ -1056,7 +1000,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
-                params: &[fader_gain_param("Volume", "G", 0.8)],
+                params: &[fader_gain_param(0.8)],
             }],
             master: &[],
         };
@@ -1066,7 +1010,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
-                params: &[fader_gain_param("Volume", "G", 1.0)],
+                params: &[fader_gain_param(1.0)],
             }],
             master: &[],
         };
@@ -1091,12 +1035,6 @@ mod tests {
         for manifest in MANIFESTS {
             for lane in EditableLane::ALL {
                 let display = lane.display(manifest);
-                assert!(
-                    !display.short_label.is_empty(),
-                    "{} on {}",
-                    lane.key(),
-                    manifest.id
-                );
                 assert!(
                     !display.unit.is_empty(),
                     "{} on {}",

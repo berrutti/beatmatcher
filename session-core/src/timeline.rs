@@ -911,6 +911,26 @@ pub fn build_timeline(
     }
 }
 
+/// Everything `build_lanes` accumulates for one deck. Four parallel maps kept the same
+/// keys in step by hand, and a deck present in one but not another was an unwrap away.
+struct DeckAccum {
+    lanes: DeckLanes,
+    filter_active_since_ms: Option<f64>,
+    nudge_since: Option<(f64, f64)>,
+    nudges: Vec<NudgeSpan>,
+}
+
+impl DeckAccum {
+    fn new() -> Self {
+        Self {
+            lanes: make_deck_lanes(),
+            filter_active_since_ms: None,
+            nudge_since: None,
+            nudges: Vec::new(),
+        }
+    }
+}
+
 fn make_deck_lanes() -> DeckLanes {
     DeckLanes {
         gain: vec![LanePoint {
@@ -957,10 +977,7 @@ fn extend_to_end(points: &mut Vec<LanePoint>, duration_ms: f64) {
 }
 
 pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f64]) -> LanesBuild {
-    let mut deck_lanes: BTreeMap<String, DeckLanes> = BTreeMap::new();
-    let mut filter_active_since_ms: BTreeMap<String, Option<f64>> = BTreeMap::new();
-    let mut nudge_since: BTreeMap<String, Option<(f64, f64)>> = BTreeMap::new();
-    let mut deck_nudges: BTreeMap<String, Vec<NudgeSpan>> = BTreeMap::new();
+    let mut decks: BTreeMap<String, DeckAccum> = BTreeMap::new();
     let mut master_lanes = MasterLanes {
         gain: vec![LanePoint {
             ms: 0.0,
@@ -973,21 +990,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     };
 
     // Seed a deck's lanes (and span trackers) the first time any event names it.
-    fn ensure_deck(
-        id: &str,
-        deck_lanes: &mut BTreeMap<String, DeckLanes>,
-        filter_active_since_ms: &mut BTreeMap<String, Option<f64>>,
-        nudge_since: &mut BTreeMap<String, Option<(f64, f64)>>,
-        deck_nudges: &mut BTreeMap<String, Vec<NudgeSpan>>,
-    ) {
-        if !deck_lanes.contains_key(id) {
-            deck_lanes.insert(id.to_string(), make_deck_lanes());
-            filter_active_since_ms.insert(id.to_string(), None);
-            nudge_since.insert(id.to_string(), None);
-            deck_nudges.insert(id.to_string(), Vec::new());
-        }
-    }
-
     for event in events {
         let deck_id = event.deck.as_deref();
         match event.event_type.as_str() {
@@ -999,73 +1001,50 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     event.value,
                 ) {
                     (Some(id), Some("fader"), Some("gain"), Some(value)) => {
-                        ensure_deck(
-                            id,
-                            &mut deck_lanes,
-                            &mut filter_active_since_ms,
-                            &mut nudge_since,
-                            &mut deck_nudges,
-                        );
-                        deck_lanes.get_mut(id).unwrap().gain.push(LanePoint {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        deck.lanes.gain.push(LanePoint {
                             ms: event.elapsed_ms,
                             value: value as f64,
                         });
                     }
 
                     (Some(id), Some("eq"), Some(band), Some(value)) => {
-                        ensure_deck(
-                            id,
-                            &mut deck_lanes,
-                            &mut filter_active_since_ms,
-                            &mut nudge_since,
-                            &mut deck_nudges,
-                        );
-                        let auto = deck_lanes.get_mut(id).unwrap();
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let auto = &mut deck.lanes;
                         let lane = match band {
-                            "low" => &mut auto.eq_low,
-                            "mid" => &mut auto.eq_mid,
-                            _ => &mut auto.eq_high,
+                            "low" => Some(&mut auto.eq_low),
+                            "mid" => Some(&mut auto.eq_mid),
+                            "high" => Some(&mut auto.eq_high),
+                            _ => None,
                         };
-                        lane.push(LanePoint {
-                            ms: event.elapsed_ms,
-                            value: value as f64,
-                        });
+                        if let Some(lane) = lane {
+                            lane.push(LanePoint {
+                                ms: event.elapsed_ms,
+                                value: value as f64,
+                            });
+                        }
                     }
 
                     (Some(id), Some("filter"), Some("value"), Some(value)) => {
-                        ensure_deck(
-                            id,
-                            &mut deck_lanes,
-                            &mut filter_active_since_ms,
-                            &mut nudge_since,
-                            &mut deck_nudges,
-                        );
-                        deck_lanes.get_mut(id).unwrap().filter.push(LanePoint {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        deck.lanes.filter.push(LanePoint {
                             ms: event.elapsed_ms,
                             value: value as f64,
                         });
                     }
 
                     (Some(id), Some("filter"), Some("active"), Some(value)) => {
-                        ensure_deck(
-                            id,
-                            &mut deck_lanes,
-                            &mut filter_active_since_ms,
-                            &mut nudge_since,
-                            &mut deck_nudges,
-                        );
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
                         let active = value != 0.0;
-                        let since = filter_active_since_ms.get_mut(id).unwrap();
+                        let since = &mut deck.filter_active_since_ms;
                         if active && since.is_none() {
                             *since = Some(event.elapsed_ms);
                         } else if !active {
                             if let Some(start) = *since {
-                                deck_lanes.get_mut(id).unwrap().filter_active.push(
-                                    FilterActiveSpan {
-                                        start_ms: start,
-                                        end_ms: event.elapsed_ms,
-                                    },
-                                );
+                                deck.lanes.filter_active.push(FilterActiveSpan {
+                                    start_ms: start,
+                                    end_ms: event.elapsed_ms,
+                                });
                                 *since = None;
                             }
                         }
@@ -1091,14 +1070,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
 
             "deck_snapshot" => {
                 if let (Some(id), Some(rate)) = (deck_id, event.playback_rate) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().rate.push(LanePoint {
+                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    deck.lanes.rate.push(LanePoint {
                         ms: event.elapsed_ms,
                         value: rate,
                     });
@@ -1107,14 +1080,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
 
             "set_playback_rate" => {
                 if let (Some(id), Some(rate)) = (deck_id, event.rate) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().rate.push(LanePoint {
+                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    deck.lanes.rate.push(LanePoint {
                         ms: event.elapsed_ms,
                         value: rate,
                     });
@@ -1126,21 +1093,15 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
             // filter-active pairing).
             "set_nudge" => {
                 if let (Some(id), Some(percent)) = (deck_id, event.percent) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let since = nudge_since.get_mut(id).unwrap();
+                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    let since = &mut deck.nudge_since;
                     if percent != 0.0 {
                         match since {
                             None => *since = Some((event.elapsed_ms, percent)),
                             Some((_start, p)) => *p = percent,
                         }
                     } else if let Some((start, p)) = *since {
-                        deck_nudges.get_mut(id).unwrap().push(NudgeSpan {
+                        deck.nudges.push(NudgeSpan {
                             start_ms: start,
                             end_ms: event.elapsed_ms,
                             percent: p,
@@ -1154,20 +1115,21 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
         }
     }
 
-    for (deck_id, auto) in deck_lanes.iter_mut() {
-        if let Some(Some(since)) = filter_active_since_ms.get(deck_id) {
-            auto.filter_active.push(FilterActiveSpan {
-                start_ms: *since,
+    for deck in decks.values_mut() {
+        if let Some(since) = deck.filter_active_since_ms {
+            deck.lanes.filter_active.push(FilterActiveSpan {
+                start_ms: since,
                 end_ms: duration_ms,
             });
         }
-        if let Some(Some((start, percent))) = nudge_since.get(deck_id) {
-            deck_nudges.get_mut(deck_id).unwrap().push(NudgeSpan {
-                start_ms: *start,
+        if let Some((start, percent)) = deck.nudge_since {
+            deck.nudges.push(NudgeSpan {
+                start_ms: start,
                 end_ms: duration_ms,
-                percent: *percent,
+                percent,
             });
         }
+        let auto = &mut deck.lanes;
         extend_to_end(&mut auto.gain, duration_ms);
         extend_to_end(&mut auto.eq_low, duration_ms);
         extend_to_end(&mut auto.eq_mid, duration_ms);
@@ -1179,15 +1141,23 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     extend_to_end(&mut master_lanes.xfader, duration_ms);
 
     let mut max_rate_deviation_pct = 0.0f64;
-    for auto in deck_lanes.values() {
-        for p in &auto.rate {
+    for deck in decks.values() {
+        for p in &deck.lanes.rate {
             max_rate_deviation_pct = max_rate_deviation_pct.max((p.value - 1.0).abs() * 100.0);
         }
     }
     let range_pct = rate_range_pct_for(max_rate_deviation_pct, &rate_steps_pct(pitch_options));
-    for auto in deck_lanes.values_mut() {
+    for deck in decks.values_mut() {
+        let auto = &mut deck.lanes;
         auto.rate_min = 1.0 - range_pct / 100.0;
         auto.rate_max = 1.0 + range_pct / 100.0;
+    }
+
+    let mut deck_lanes = BTreeMap::new();
+    let mut deck_nudges = BTreeMap::new();
+    for (id, deck) in decks {
+        deck_lanes.insert(id.clone(), deck.lanes);
+        deck_nudges.insert(id, deck.nudges);
     }
 
     LanesBuild {

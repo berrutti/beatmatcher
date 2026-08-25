@@ -1,6 +1,7 @@
 use crate::audio;
-use crate::offline_render::SessionEvent;
+use crate::lock::LockIgnoringPoison;
 use session_core::event::SessionCommand;
+use session_core::event::SessionEvent;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -27,7 +28,7 @@ async fn index_session(
     sessions: &SessionLibrary,
     engine: &crate::engine::Engine,
     path: String,
-    session: crate::offline_render::SessionFile,
+    session: session_core::event::SessionFile,
     app: Option<&tauri::AppHandle>,
 ) {
     let sr = engine.audio.device_sample_rate;
@@ -43,22 +44,14 @@ async fn index_session(
     }
 
     let snapshots = {
-        let cache = sessions
-            .track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let cache = sessions.track_cache.locked();
         build_snapshots(&session.events, sr, &cache)
     };
 
-    sessions
-        .snapshots
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(path.clone(), snapshots);
+    sessions.snapshots.locked().insert(path.clone(), snapshots);
     sessions
         .files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .locked()
         .insert(path.clone(), Arc::new(session));
 
     // Only here: scrubbing and playback both need the snapshots, so a `done`
@@ -99,9 +92,8 @@ pub struct SessionLibrary {
     pub snapshots: std::sync::Mutex<std::collections::HashMap<String, Vec<SessionSnapshot>>>,
     // Holds unsaved edits pushed from the frontend, so playback and the offline render
     // are audible before the file is written.
-    pub files: std::sync::Mutex<
-        std::collections::HashMap<String, Arc<crate::offline_render::SessionFile>>,
-    >,
+    pub files:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<session_core::event::SessionFile>>>,
 }
 
 impl SessionLibrary {
@@ -140,12 +132,7 @@ pub(crate) async fn load_track(
     path: &str,
     sr: u32,
 ) -> Option<TrackEntry> {
-    if let Some(hit) = cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(path)
-        .cloned()
-    {
+    if let Some(hit) = cache.locked().get(path).cloned() {
         return Some(hit);
     }
 
@@ -153,7 +140,7 @@ pub(crate) async fn load_track(
     // would drop a cell another caller had already replaced, letting a third
     // decode start for the same path.
     let (cell, owns_cell) = {
-        let mut loads = loads.lock().unwrap_or_else(|e| e.into_inner());
+        let mut loads = loads.locked();
         match loads.get(path) {
             Some(existing) => (existing.clone(), false),
             None => {
@@ -186,13 +173,10 @@ pub(crate) async fn load_track(
         .clone();
 
     if let Some(entry) = &entry {
-        cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(path.to_string(), entry.clone());
+        cache.locked().insert(path.to_string(), entry.clone());
     }
     if owns_cell {
-        loads.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+        loads.locked().remove(path);
     }
     entry
 }
@@ -241,10 +225,7 @@ async fn populate_track_cache(
     reporter: Option<&LoadReporter<'_>>,
 ) {
     let missing: Vec<String> = {
-        let cache = sessions
-            .track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let cache = sessions.track_cache.locked();
         paths
             .into_iter()
             .filter(|p| !cache.contains_key(p))
@@ -323,17 +304,21 @@ async fn populate_track_cache(
 fn reconstructs_mixer_state(event: &SessionEvent) -> bool {
     matches!(
         event.command(),
-        Some(SessionCommand::SetParam { .. } | SessionCommand::SetXfaderAssign { .. })
+        Some(
+            SessionCommand::SetParam { .. }
+                | SessionCommand::SetXfaderAssign { .. }
+                | SessionCommand::SetJogRotationSpeed { .. }
+        )
     )
 }
 
 fn reset_all(audio: &audio::AppAudio) {
     for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = audio.deck(id) {
-            deck_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
+            deck_arc.locked().reset();
         }
         if let Some(strip_arc) = audio.strip(id) {
-            strip_arc.lock().unwrap_or_else(|e| e.into_inner()).reset();
+            strip_arc.locked().reset();
         }
     }
     audio.monitor.set_master_gain(DEFAULT_MASTER_GAIN);
@@ -344,16 +329,20 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     for id in crate::audio::LIVE_DECK_IDS {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
-            let mut s = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
-            s.set_gain(snap.gain);
-            s.set_eq_band("low", snap.eq_low);
-            s.set_eq_band("mid", snap.eq_mid);
-            s.set_eq_band("high", snap.eq_high);
-            s.set_filter(snap.filter_value);
-            s.set_filter_active(snap.filter_active);
+            let mut s = strip_arc.locked();
+            for (address, value) in &snap.params {
+                if let Some((slot, param)) = address.split_once('/') {
+                    s.set_param(slot, param, *value);
+                }
+            }
             s.set_xfader_assign(snap.xfader_assign);
             s.set_xfader_position(sim.xfader_position);
             s.set_fader_curve(sim.fader_curve);
+        }
+        if let Some(deck_arc) = audio.deck(id) {
+            deck_arc
+                .locked()
+                .set_jog_rotation_speed(sim.jog_rotation_speed);
         }
     }
 }
@@ -421,30 +410,21 @@ fn apply_event_live(
             } => {
                 for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(strip_arc) = audio.strip(id) {
-                        strip_arc
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_xfader_position(value as f32);
+                        strip_arc.locked().set_xfader_position(value as f32);
                     }
                 }
             }
             SessionCommand::SetFaderCurve { curve } => {
                 for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(strip_arc) = audio.strip(id) {
-                        strip_arc
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_fader_curve(curve);
+                        strip_arc.locked().set_fader_curve(curve);
                     }
                 }
             }
             SessionCommand::SetJogRotationSpeed { speed } => {
                 for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(deck_arc) = audio.deck(id) {
-                        deck_arc
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_jog_rotation_speed(speed);
+                        deck_arc.locked().set_jog_rotation_speed(speed);
                     }
                 }
             }
@@ -456,8 +436,8 @@ fn apply_event_live(
     let (Some(deck_a), Some(strip_a)) = (audio.deck(id), audio.strip(id)) else {
         return;
     };
-    let mut d = deck_a.lock().unwrap_or_else(|e| e.into_inner());
-    let mut s = strip_a.lock().unwrap_or_else(|e| e.into_inner());
+    let mut d = deck_a.locked();
+    let mut s = strip_a.locked();
 
     let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
         cache
@@ -472,9 +452,6 @@ fn apply_event_live(
         eprintln!("session_playback: {e}");
     }
 }
-
-// Parity tests driving the shared sim against the REAL Deck engine, so
-// they live in the binary that owns the engine.
 
 pub(crate) async fn open_session_dialog() -> Option<crate::session_playback::OpenedFile> {
     let handle = rfd::AsyncFileDialog::new()
@@ -512,7 +489,7 @@ pub(crate) async fn preload_session(
     // Off the async thread: a long session's event array takes seconds to deserialize, and
     // blocking here stalls every other command including this load's own progress events.
     let session = tokio::task::spawn_blocking(move || {
-        crate::offline_render::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
+        session_core::event::SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -533,22 +510,11 @@ pub(crate) fn unload_session(
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
     path: String,
 ) {
-    let removed = sessions
-        .files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&path);
-    sessions
-        .snapshots
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&path);
+    let removed = sessions.files.locked().remove(&path);
+    sessions.snapshots.locked().remove(&path);
     if let Some(session) = removed {
         let track_paths = session_track_paths(&session.events);
-        let mut cache = sessions
-            .track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut cache = sessions.track_cache.locked();
         for track_path in track_paths {
             cache.remove(&track_path);
         }
@@ -571,8 +537,7 @@ pub(crate) async fn update_session_events(
     // the header carries over from the file that was loaded.
     let mixer = sessions
         .files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .locked()
         .get(&path)
         .and_then(|session| session.mixer.clone());
 
@@ -581,7 +546,7 @@ pub(crate) async fn update_session_events(
         &engine,
         path,
         // Current, not carried over: loading ported these events forward.
-        crate::offline_render::SessionFile {
+        session_core::event::SessionFile {
             version: session_core::BMS_VERSION,
             events,
             mixer,
@@ -602,13 +567,9 @@ pub(crate) async fn start_session_playback(
 ) -> Result<(), String> {
     // Prefer the in-memory session (which may hold unsaved edits). Fall back to
     // the disk file for callers that never preloaded.
-    let cached: Option<Arc<crate::offline_render::SessionFile>> = sessions
-        .files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&path)
-        .cloned();
-    let session: Arc<crate::offline_render::SessionFile> = match cached {
+    let cached: Option<Arc<session_core::event::SessionFile>> =
+        sessions.files.locked().get(&path).cloned();
+    let session: Arc<session_core::event::SessionFile> = match cached {
         Some(cached_session) => cached_session,
         None => {
             let json = {
@@ -619,14 +580,10 @@ pub(crate) async fn start_session_playback(
                 .await
                 .map_err(|e| e.to_string())??
             };
-            let parsed = crate::offline_render::SessionFile::parse(&json)
+            let parsed = session_core::event::SessionFile::parse(&json)
                 .map_err(|e| format!("parse error: {e}"))?;
             let parsed = Arc::new(parsed);
-            sessions
-                .files
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(path.clone(), parsed.clone());
+            sessions.files.locked().insert(path.clone(), parsed.clone());
             parsed
         }
     };
@@ -635,20 +592,13 @@ pub(crate) async fn start_session_playback(
     // otherwise apply a stale event after the new one has already placed that deck.
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut guard = sessions
-            .playback_cancel
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = sessions.playback_cancel.locked();
         if let Some(old) = guard.take() {
             old.store(true, Ordering::Release);
         }
         *guard = Some(cancel.clone());
     }
-    let old_handle = sessions
-        .playback_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
+    let old_handle = sessions.playback_handle.locked().take();
     if let Some(handle) = old_handle {
         let _ = handle.await;
     }
@@ -669,17 +619,11 @@ pub(crate) async fn start_session_playback(
     // Ensure cache is populated (fast path if preload already ran).
     let paths = session_track_paths(&session.events);
     populate_track_cache(&sessions, paths, sr, None).await;
-    let cache: Arc<SampleCache> = Arc::new(
-        sessions
-            .track_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone(),
-    );
+    let cache: Arc<SampleCache> = Arc::new(sessions.track_cache.locked().clone());
 
     // Find the nearest snapshot at or before from_ms.
     let snapshot: Option<SessionSnapshot> = {
-        let snaps = sessions.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+        let snaps = sessions.snapshots.locked();
         if let Some(snaps) = snaps.get(&path) {
             let idx = snaps.partition_point(|s| s.elapsed_ms <= from_ms);
             idx.checked_sub(1).map(|i| snaps[i].clone())
@@ -730,36 +674,26 @@ pub(crate) async fn start_session_playback(
             let Some((samples, channels)) = cache.get(path) else {
                 continue;
             };
-            let total_frames = samples.len() / channels;
             {
-                let mut d = arc.lock().unwrap_or_else(|e| e.into_inner());
-                d.samples = samples.clone();
-                d.channels = *channels;
-                d.device_sample_rate = sr;
-                d.total_frames = total_frames;
-                d.duration = total_frames as f64 / sr_f;
-                d.loaded_path = Some(path.clone());
-                d.main_pos = sim_pos(ds, from_ms, sr_f).min(total_frames as f64);
-                d.cue_pos = d.main_pos;
-                d.cue_point = ds.cue_point.min(total_frames as f64);
-                d.loop_active = ds.loop_active;
-                d.loop_end = ds.loop_end.min(total_frames as f64);
-                d.playback_rate = ds.rate;
-                d.jog_hold_factor = ds.jog_hold_factor;
-                d.bpm = ds.bpm;
-                d.beat_offset_frames = ds.beat_offset_frames;
-                d.is_playing = false;
-                d.is_cueing = false;
+                let mut d = arc.locked();
+                d.load(path, samples.clone(), *channels, sr);
+                d.restore(audio::DeckRestore {
+                    position: sim_pos(ds, from_ms, sr_f),
+                    cue_point: ds.cue_point,
+                    loop_active: ds.loop_active,
+                    loop_end: ds.loop_end,
+                    playback_rate: ds.rate,
+                    jog_hold_factor: ds.jog_hold_factor,
+                    bpm: ds.bpm,
+                    beat_offset_frames: ds.beat_offset_frames,
+                });
             }
             if ds.is_playing {
                 to_start.push(arc);
             }
         }
         {
-            let mut guards: Vec<_> = to_start
-                .iter()
-                .map(|a| a.lock().unwrap_or_else(|e| e.into_inner()))
-                .collect();
+            let mut guards: Vec<_> = to_start.iter().map(|a| a.locked()).collect();
             for d in guards.iter_mut() {
                 d.is_playing = true;
             }
@@ -793,20 +727,14 @@ pub(crate) async fn start_session_playback(
         if !cancel.load(Ordering::Acquire) {
             for id in crate::audio::LIVE_DECK_IDS {
                 if let Some(deck_arc) = audio.deck(id) {
-                    deck_arc
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .is_playing = false;
+                    deck_arc.locked().stop();
                 }
             }
             app_handle.emit("session-playback-ended", ()).ok();
         }
     });
 
-    *sessions
-        .playback_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    *sessions.playback_handle.locked() = Some(handle);
 
     Ok(())
 }
@@ -815,19 +743,13 @@ pub(crate) fn stop_session_playback(
     engine: tauri::State<'_, crate::engine::Engine>,
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
 ) {
-    let mut guard = sessions
-        .playback_cancel
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = sessions.playback_cancel.locked();
     if let Some(cancel) = guard.take() {
         cancel.store(true, Ordering::Release);
     }
     for id in crate::audio::LIVE_DECK_IDS {
         if let Some(deck_arc) = engine.audio.deck(id) {
-            deck_arc
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_playing = false;
+            deck_arc.locked().stop();
         }
     }
 }
@@ -979,9 +901,9 @@ mod tests {
             strip.target_gain()
         );
         assert!(
-            (sim.strips["A"].gain - 0.25).abs() < 1e-6,
+            (sim.strips["A"].param("fader", "gain").unwrap_or(1.0) - 0.25).abs() < 1e-6,
             "sim stopped at the unknown params, gain is {}",
-            sim.strips["A"].gain
+            sim.strips["A"].param("fader", "gain").unwrap_or(1.0)
         );
     }
 

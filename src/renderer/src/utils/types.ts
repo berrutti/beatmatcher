@@ -70,6 +70,21 @@ export function isMasterLaneKey(key: string): key is MasterLaneKey {
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
+// How a lane is drawn. The engine answers what a lane's value does; the label it
+// carries and the row it shares are the timeline's own decisions.
+export const LANE_DISPLAY: Record<EditableLaneKey | 'jog', { shortLabel: string; group: number }> =
+  {
+    gain: { shortLabel: 'G', group: 0 },
+    filter: { shortLabel: 'F', group: 1 },
+    rate: { shortLabel: 'RT', group: 2 },
+    eqLow: { shortLabel: 'LO', group: 3 },
+    eqMid: { shortLabel: 'MD', group: 3 },
+    eqHigh: { shortLabel: 'HI', group: 3 },
+    masterGain: { shortLabel: 'M', group: 0 },
+    xfader: { shortLabel: 'X', group: 0 },
+    jog: { shortLabel: 'JOG', group: 4 }
+  };
+
 // A user-draggable unit on the timeline: one regular play segment, or one run
 // of loop iterations (which always moves as a whole). Derived from buildClips
 // output, so every field reflects what the listener actually heard.

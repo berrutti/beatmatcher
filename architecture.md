@@ -116,7 +116,7 @@ A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes i
 
 Turn a knob on the controller and the on-screen knob has to move with it. `engine_push.rs` does that, and it has to survive a physical fader sweep, which can produce hundreds of MIDI messages a second.
 
-It never queues values. Each change records only _which_ control moved: deck A's EQ low, the crossfader, deck B's transport. A background thread wakes every 16 ms, reads the current value of each control that moved, and emits one batch (`engine-params`, `engine-transport`, `engine-rate`).
+It never queues values. Each change records only _which_ control moved: deck A's EQ low, the crossfader, deck B's transport. A background thread wakes every 16 ms, reads the current value of each control that moved, and emits one batch (`engine-params`, `engine-transport`, `engine-rate`, `engine-assign`).
 
 Two consequences fall out of storing addresses instead of values:
 

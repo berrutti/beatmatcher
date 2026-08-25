@@ -1,9 +1,11 @@
 mod audio;
+mod audio_file;
 mod broadcast;
 mod commands;
 mod deck_sync;
 pub(crate) mod engine;
 mod engine_push;
+mod lock;
 mod midi;
 pub mod offline_render;
 mod recorder;
@@ -77,15 +79,11 @@ pub fn run() {
     };
 
     let audio = AppAudio::new().expect("failed to initialize audio engine");
-    let ended_flags: Vec<(String, Arc<std::sync::atomic::AtomicBool>)> = audio
-        .ended_flags
-        .iter()
-        .map(|(deck_id, flag)| (deck_id.clone(), flag.clone()))
-        .collect();
+    let ended_flags = audio.ended_flags();
     let engine = engine::Engine::new(Arc::new(audio));
 
     // Cloned before `.manage()` consumes app_state, so the broadcaster thread
-    // can read every deck's live state (same reason ended_flags is cloned above).
+    // can read every deck's live state.
     let audio_for_broadcast = Arc::clone(&engine.audio);
     let audio_for_push = Arc::clone(&engine.audio);
     let engine_push = Arc::clone(&engine.engine_push);

@@ -1,5 +1,5 @@
 use crate::event::{SessionCommand, SessionEvent};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 // -2 dBFS: gives the master bus headroom before the hardware clipping point.
@@ -21,7 +21,6 @@ pub struct DeckSim {
     pub rate: f64,
     pub jog_hold_factor: f64,
     pub loop_active: bool,
-    pub loop_start: f64,
     pub loop_end: f64,
     pub cue_point: f64,
     pub bpm: Option<f64>,
@@ -43,7 +42,6 @@ impl Default for DeckSim {
             rate: 1.0,
             jog_hold_factor: 1.0,
             loop_active: false,
-            loop_start: 0.0,
             loop_end: 0.0,
             cue_point: 0.0,
             bpm: None,
@@ -56,32 +54,21 @@ impl Default for DeckSim {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct StripSim {
-    pub gain: f32,
-    pub eq_low: f32,
-    pub eq_mid: f32,
-    pub eq_high: f32,
-    pub filter_value: f32,
-    pub filter_active: bool,
+    /// Keyed `"slot/param"`, holding only what the session actually set. A strip starts at
+    /// its manifest defaults, so an absent key means "left alone".
+    pub params: BTreeMap<String, f32>,
     pub xfader_assign: crate::XfaderAssign,
 }
 
-impl Default for StripSim {
-    fn default() -> Self {
-        Self {
-            gain: 1.0,
-            eq_low: 0.0,
-            eq_mid: 0.0,
-            eq_high: 0.0,
-            filter_value: 0.0,
-            filter_active: false,
-            xfader_assign: crate::XfaderAssign::Thru,
-        }
+impl StripSim {
+    /// What the session set this address to, or `None` when it never touched it.
+    pub fn param(&self, slot: &str, param: &str) -> Option<f32> {
+        self.params.get(&format!("{slot}/{param}")).copied()
     }
 }
 
-#[derive(Default)]
 pub struct SimState {
     pub decks: HashMap<String, DeckSim>,
     pub strips: HashMap<String, StripSim>,
@@ -91,8 +78,8 @@ pub struct SimState {
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
-impl SimState {
-    pub fn new() -> Self {
+impl Default for SimState {
+    fn default() -> Self {
         Self {
             decks: HashMap::new(),
             strips: HashMap::new(),
@@ -104,6 +91,12 @@ impl SimState {
     }
 }
 
+impl SimState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct DeckSnap {
     pub path: Option<String>,
@@ -112,7 +105,6 @@ pub struct DeckSnap {
     pub rate: f64,
     pub jog_hold_factor: f64,
     pub loop_active: bool,
-    pub loop_start: f64,
     pub loop_end: f64,
     pub cue_point: f64,
     pub bpm: Option<f64>,
@@ -124,35 +116,10 @@ pub struct DeckSnap {
 }
 
 #[derive(Clone)]
-pub struct StripSnap {
-    pub gain: f32,
-    pub eq_low: f32,
-    pub eq_mid: f32,
-    pub eq_high: f32,
-    pub filter_value: f32,
-    pub filter_active: bool,
-    pub xfader_assign: crate::XfaderAssign,
-}
-
-impl Default for StripSnap {
-    fn default() -> Self {
-        Self {
-            gain: 1.0,
-            eq_low: 0.0,
-            eq_mid: 0.0,
-            eq_high: 0.0,
-            filter_value: 0.0,
-            filter_active: false,
-            xfader_assign: crate::XfaderAssign::Thru,
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct SessionSnapshot {
     pub elapsed_ms: f64,
     pub decks: HashMap<String, DeckSnap>,
-    pub strips: HashMap<String, StripSnap>,
+    pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
     pub xfader_position: f32,
     pub fader_curve: crate::FaderCurve,
@@ -199,9 +166,9 @@ pub fn sim_pos(sim: &DeckSim, ms: f64, sample_rate_f64: f64) -> f64 {
     let elapsed = (ms - sim.play_start_ms).max(0.0) / 1000.0 * sample_rate_f64 * effective_rate;
     let raw = sim.play_start_frame + elapsed + jog_settled(sim, ms);
     // Engine parity: play linearly until loop_end, only then wrap (deck.rs next_pos).
-    if sim.loop_active && sim.loop_end > sim.loop_start && raw >= sim.loop_end {
-        let len = sim.loop_end - sim.loop_start;
-        let wrapped = sim.loop_start + (raw - sim.loop_end).rem_euclid(len);
+    if sim.loop_active && sim.loop_end > sim.cue_point && raw >= sim.loop_end {
+        let len = sim.loop_end - sim.cue_point;
+        let wrapped = sim.cue_point + (raw - sim.loop_end).rem_euclid(len);
         wrapped.clamp(0.0, sim.total_frames)
     } else {
         raw.clamp(0.0, sim.total_frames)
@@ -222,7 +189,6 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
                     rate: d.rate,
                     jog_hold_factor: d.jog_hold_factor,
                     loop_active: d.loop_active,
-                    loop_start: d.loop_start,
                     loop_end: d.loop_end,
                     cue_point: d.cue_point,
                     bpm: d.bpm,
@@ -236,24 +202,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         })
         .collect();
 
-    let strips = snap
-        .strips
-        .iter()
-        .map(|(id, s)| {
-            (
-                id.clone(),
-                StripSim {
-                    gain: s.gain,
-                    eq_low: s.eq_low,
-                    eq_mid: s.eq_mid,
-                    eq_high: s.eq_high,
-                    filter_value: s.filter_value,
-                    filter_active: s.filter_active,
-                    xfader_assign: s.xfader_assign,
-                },
-            )
-        })
-        .collect();
+    let strips = snap.strips.clone();
 
     SimState {
         decks,
@@ -299,8 +248,7 @@ pub fn sim_apply_event(
             sim.play_start_ms = 0.0;
             sim.is_playing = is_playing;
             sim.loop_active = loop_active.unwrap_or(false);
-            sim.loop_start = cue_point_sec.map_or(0.0, |sec| sec * sample_rate_f64);
-            sim.cue_point = sim.loop_start;
+            sim.cue_point = cue_point_sec.map_or(0.0, |sec| sec * sample_rate_f64);
             sim.loop_end = loop_end_sec.map_or(0.0, |sec| sec * sample_rate_f64);
             sim.bpm = bpm;
         }
@@ -324,7 +272,6 @@ pub fn sim_apply_event(
             sim.loop_active = false;
             // The live engine fully resets the deck on load: no loop region
             // or nudge survives into the new track.
-            sim.loop_start = pos;
             sim.loop_end = 0.0;
             sim.jog_hold_factor = 1.0;
             sim.cue_point = pos;
@@ -360,7 +307,7 @@ pub fn sim_apply_event(
             commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.play_start_frame = sec * sample_rate_f64;
             sim.loop_active = sim.loop_active
-                && (sec * sample_rate_f64 >= sim.loop_start)
+                && (sec * sample_rate_f64 >= sim.cue_point)
                 && (sec * sample_rate_f64 < sim.loop_end);
         }
         SessionCommand::SetPlaybackRate { deck, rate } => {
@@ -407,7 +354,6 @@ pub fn sim_apply_event(
             // anchor and jump to where the deck would be had it never looped.
             commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             if let Some(cue_sec) = cue_sec {
-                sim.loop_start = cue_sec * sample_rate_f64;
                 sim.cue_point = cue_sec * sample_rate_f64;
             }
             sim.loop_end = 0.0;
@@ -420,7 +366,6 @@ pub fn sim_apply_event(
         } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
             if let Some(start_sec) = start_sec {
-                sim.loop_start = start_sec * sample_rate_f64;
                 sim.cue_point = start_sec * sample_rate_f64;
             }
             if let Some(end_sec) = end_sec {
@@ -438,8 +383,8 @@ pub fn sim_apply_event(
         }
         SessionCommand::Reloop { deck } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            if sim.loop_end > sim.loop_start {
-                sim.play_start_frame = sim.loop_start;
+            if sim.loop_end > sim.cue_point {
+                sim.play_start_frame = sim.cue_point;
                 sim.play_start_ms = event.elapsed_ms;
                 if sim.is_playing {
                     sim.loop_active = true;
@@ -456,39 +401,17 @@ pub fn sim_apply_event(
             value,
             ..
         } => match (deck, slot, param) {
-            (Some(deck), "fader", "gain") => {
-                state.strips.entry(deck.to_string()).or_default().gain = value as f32;
-            }
-            (Some(deck), "eq", band) => {
-                let strip = state.strips.entry(deck.to_string()).or_default();
-                match band {
-                    "low" => strip.eq_low = value as f32,
-                    "mid" => strip.eq_mid = value as f32,
-                    "high" => strip.eq_high = value as f32,
-                    _ => {}
-                }
-            }
-            (Some(deck), "filter", "value") => {
+            (Some(deck), _, _) => {
                 state
                     .strips
                     .entry(deck.to_string())
                     .or_default()
-                    .filter_value = value as f32;
+                    .params
+                    .insert(format!("{slot}/{param}"), value as f32);
             }
-            (Some(deck), "filter", "active") => {
-                state
-                    .strips
-                    .entry(deck.to_string())
-                    .or_default()
-                    .filter_active = value != 0.0;
-            }
-            (None, "gain", "gain") => {
-                state.master_gain = value as f32;
-            }
-            (None, "xfader", "position") => {
-                state.xfader_position = value as f32;
-            }
-            _ => {}
+            (None, "gain", "gain") => state.master_gain = value as f32,
+            (None, "xfader", "position") => state.xfader_position = value as f32,
+            (None, _, _) => {}
         },
         SessionCommand::SetBeatGrid {
             deck,
@@ -545,7 +468,6 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
                     rate: sim.rate,
                     jog_hold_factor: sim.jog_hold_factor,
                     loop_active: sim.loop_active,
-                    loop_start: sim.loop_start,
                     loop_end: sim.loop_end,
                     cue_point: sim.cue_point,
                     bpm: sim.bpm,
@@ -558,24 +480,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         })
         .collect();
 
-    let strips = state
-        .strips
-        .iter()
-        .map(|(id, s)| {
-            (
-                id.clone(),
-                StripSnap {
-                    gain: s.gain,
-                    eq_low: s.eq_low,
-                    eq_mid: s.eq_mid,
-                    eq_high: s.eq_high,
-                    filter_value: s.filter_value,
-                    filter_active: s.filter_active,
-                    xfader_assign: s.xfader_assign,
-                },
-            )
-        })
-        .collect();
+    let strips = state.strips.clone();
 
     SessionSnapshot {
         elapsed_ms: ms,
@@ -591,6 +496,11 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
 // deck_snapshot (initial state) sorts first within its rounded-ms cluster, and
 // at an exactly equal timestamp (only edits synthesize those) transport enders
 // sort before starters. Both rules are pinned by tests in this module.
+pub fn sorted_by_sim_order(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    events.sort_by(event_sim_order);
+    events
+}
+
 pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
     let bucket = |event: &SessionEvent| event.elapsed_ms.round() as i64;
     let snapshot_rank = |event: &SessionEvent| u8::from(event.event_type != "deck_snapshot");
@@ -605,7 +515,9 @@ pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering
         .then_with(|| transport_phase(a).cmp(&transport_phase(b)))
 }
 
-fn transport_phase(event: &SessionEvent) -> u8 {
+/// Enders before starters, so a stop and a play sharing an instant leave the deck
+/// stopped rather than started.
+pub fn transport_phase(event: &SessionEvent) -> u8 {
     match event.event_type.as_str() {
         "stop" | "stopped_at_cue" | "exit_loop" | "cue_preview_end" => 0,
         "play" | "loop_out" | "cue_preview_start" | "reloop" => 2,
@@ -960,7 +872,6 @@ mod tests {
             play_start_frame: 0.0,
             rate: 1.0,
             loop_active: true,
-            loop_start: 0.0,
             loop_end: SAMPLE_RATE_F64,
             total_frames: 1_000_000.0,
             ..Default::default()
@@ -1083,7 +994,7 @@ mod tests {
             &HashMap::new(),
             SAMPLE_RATE,
         );
-        assert_eq!(state.strips["A"].gain, 0.5);
+        assert_eq!(state.strips["A"].param("fader", "gain").unwrap_or(1.0), 0.5);
     }
 
     #[test]
@@ -1097,9 +1008,9 @@ mod tests {
                 SAMPLE_RATE,
             );
         }
-        assert_eq!(state.strips["A"].eq_low, -3.0);
-        assert_eq!(state.strips["A"].eq_mid, -6.0);
-        assert_eq!(state.strips["A"].eq_high, -9.0);
+        assert_eq!(state.strips["A"].param("eq", "low").unwrap_or(0.0), -3.0);
+        assert_eq!(state.strips["A"].param("eq", "mid").unwrap_or(0.0), -6.0);
+        assert_eq!(state.strips["A"].param("eq", "high").unwrap_or(0.0), -9.0);
     }
 
     #[test]
@@ -1193,7 +1104,11 @@ mod tests {
         let events = vec![SessionEvent::param(3000.0, Some("A"), "eq", "low", -6.0)];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         assert_eq!(
-            snaps[0].strips.get("A").map(|s| s.eq_low).unwrap_or(0.0),
+            snaps[0]
+                .strips
+                .get("A")
+                .and_then(|s| s.param("eq", "low"))
+                .unwrap_or(0.0),
             0.0
         );
         assert_eq!(
@@ -1202,7 +1117,7 @@ mod tests {
                 .unwrap()
                 .strips
                 .get("A")
-                .map(|s| s.eq_low)
+                .and_then(|s| s.param("eq", "low"))
                 .unwrap_or(0.0),
             -6.0
         );
@@ -1239,7 +1154,13 @@ mod tests {
         let snap = &snaps[idx - 1];
         assert_eq!(snap.elapsed_ms, 1000.0);
         assert!(snap.decks.get("A").map(|d| d.is_playing).unwrap_or(false));
-        assert_eq!(snap.strips.get("A").map(|s| s.eq_low).unwrap_or(0.0), 0.0);
+        assert_eq!(
+            snap.strips
+                .get("A")
+                .and_then(|s| s.param("eq", "low"))
+                .unwrap_or(0.0),
+            0.0
+        );
     }
 
     #[test]
@@ -1617,7 +1538,10 @@ mod tests {
         {
             sim_apply_event(event, &mut sim, cache, SAMPLE_RATE);
         }
-        sim.strips.get("A").map(|strip| strip.gain).unwrap_or(1.0)
+        sim.strips
+            .get("A")
+            .and_then(|strip| strip.param("fader", "gain"))
+            .unwrap_or(1.0)
     }
 
     #[test]
@@ -1811,8 +1735,8 @@ mod tests {
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
-        assert_eq!(strip.filter_value, -0.5);
-        assert!(strip.filter_active);
+        assert_eq!(strip.param("filter", "value").unwrap_or(0.0), -0.5);
+        assert_eq!(strip.param("filter", "active"), Some(1.0));
     }
 
     #[test]
@@ -1830,8 +1754,8 @@ mod tests {
         )];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
-        assert_eq!(strip.filter_value, 0.0);
-        assert!(strip.filter_active);
+        assert_eq!(strip.param("filter", "value").unwrap_or(0.0), 0.0);
+        assert_eq!(strip.param("filter", "active"), Some(1.0));
     }
 
     #[test]

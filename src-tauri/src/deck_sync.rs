@@ -14,6 +14,10 @@ pub(crate) struct DeckSyncPayload {
     pub(crate) loop_region: Option<LoopRegionPayload>,
 }
 
+pub(crate) fn beats_between(start_sec: f64, end_sec: f64, bpm: f64) -> i64 {
+    ((end_sec - start_sec) * bpm / 60.0).round() as i64
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoopRegionPayload {
@@ -52,9 +56,8 @@ fn loop_region_of(deck_state: &Deck, sr: f64) -> Option<LoopRegionPayload> {
     Some(LoopRegionPayload {
         start_sec,
         end_sec,
-        beats: match deck_state.bpm {
-            Some(bpm) => ((end_sec - start_sec) * bpm / 60.0).round() as i64,
-            None => 0,
-        },
+        beats: deck_state
+            .bpm
+            .map_or(0, |bpm| beats_between(start_sec, end_sec, bpm)),
     })
 }

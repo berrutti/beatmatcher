@@ -1,6 +1,7 @@
 use crate::audio::{self, AppAudio, ChannelStrip, Deck};
 use crate::deck_sync::DeckSyncPayload;
 use crate::engine_push::{EnginePush, ParamOrigin};
+use crate::lock::LockIgnoringPoison;
 use crate::rate_from_fader;
 use crate::recorder::Recorder;
 use crate::MIN_PLAYBACK_RATE;
@@ -85,7 +86,7 @@ pub(crate) fn loop_out_core(
         &mut |path: &str| Err(format!("a live command cannot load {path}")),
     )?;
     let seek_to_sec = was_past_end.then(|| deck_state.main_pos / sr);
-    let beats = ((end_sec - start_sec) * bpm / 60.0).round() as i64;
+    let beats = crate::deck_sync::beats_between(start_sec, end_sec, bpm);
     Ok(Some(LoopOutResult {
         start_sec,
         end_sec,
@@ -136,7 +137,7 @@ impl Engine {
         // Read under the strip lock, which the audio callback also takes, so the count
         // cannot advance between the mixer changing and the frame being noted.
         let frame = {
-            let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let mut strip = strip_arc.locked();
             // A 14-bit control resolves a move on each half, so the same value arrives twice per
             // physical move. Logging both would write an event nothing can hear.
             if strip.param(slot, param) == Some(value) {
@@ -168,8 +169,8 @@ impl Engine {
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {deck}"))?;
         let (sync, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
+            let mut strip = strip_arc.locked();
             let sample_rate = deck_state.device_sample_rate;
             // A live gesture is applied to the deck the caller is looking at, so there is
             // nothing to catch up with and no track to load.
@@ -204,7 +205,7 @@ impl Engine {
             &session_core::SessionCommand::SetNudge { deck, percent },
         )?;
         let deck_arc = self.deck(deck)?;
-        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let deck_state = deck_arc.locked();
         Ok(NudgeResult {
             position_sec: deck_state.position_sec(),
             effective_rate: deck_state.playback_rate * deck_state.jog_hold_factor,
@@ -249,7 +250,7 @@ impl Engine {
         // Resolving which of the two commands this press means is live-only. Applying it is not.
         let starts_playing = {
             let deck_arc = self.deck(deck)?;
-            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let deck_state = deck_arc.locked();
             deck_state.total_frames > 0 && (deck_state.is_cueing || !deck_state.is_playing)
         };
         let cmd = if starts_playing {
@@ -272,7 +273,7 @@ impl Engine {
         // Quantising the playhead is part of resolving which press this is, so it happens
         // before the outcome is read.
         let (outcome, had_loop) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
             if deck_state.quantize {
                 if let Some(bpm) = deck_state.bpm {
                     let sr = deck_state.device_sample_rate as f64;
@@ -288,12 +289,12 @@ impl Engine {
         };
         let cmd = match outcome {
             audio::CuePressOutcome::NoTrack => {
-                let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                let deck_state = deck_arc.locked();
                 return Ok(DeckSyncPayload::from_deck(&deck_state, false));
             }
             audio::CuePressOutcome::PreviewStarted => {
                 let sec = {
-                    let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                    let deck_state = deck_arc.locked();
                     deck_state.cue_point / deck_state.device_sample_rate as f64
                 };
                 session_core::SessionCommand::CuePreviewStart {
@@ -305,7 +306,7 @@ impl Engine {
             // events that carry one, so this branch stays a direct write.
             audio::CuePressOutcome::CueMoved { new_cue_point_sec } => {
                 let (payload, frame) = {
-                    let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut deck_state = deck_arc.locked();
                     deck_state.press_cue();
                     if had_loop {
                         deck_state.loop_active = false;
@@ -345,14 +346,14 @@ impl Engine {
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
         let (was_cueing, cue_point_sec) = {
-            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let deck_state = deck_arc.locked();
             (
                 deck_state.is_cueing,
                 deck_state.cue_point / deck_state.device_sample_rate as f64,
             )
         };
         if !was_cueing {
-            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let deck_state = deck_arc.locked();
             return Ok(DeckSyncPayload::from_deck(&deck_state, false));
         }
         let payload = self.apply_and_log(
@@ -391,13 +392,7 @@ impl Engine {
         let rate =
             rate_from_fader(position, self.audio.pitch_range_percent()).max(MIN_PLAYBACK_RATE);
         // Several fader positions land on one step, so quantizing alone repeats values.
-        if self
-            .deck(deck)?
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .playback_rate
-            == rate
-        {
+        if self.deck(deck)?.locked().playback_rate == rate {
             return Ok(());
         }
         self.set_playback_rate(origin, deck, rate)
@@ -410,7 +405,7 @@ impl Engine {
         // the ones the engine acts on, and a replay needs no shift state of its own.
         let (scaled, frame) = {
             let deck_arc = self.deck(deck)?;
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
             let scaled = crate::audio::logged_jog_ticks(
                 f64::from(ticks),
                 deck_state.jog_shift,
@@ -431,10 +426,7 @@ impl Engine {
     /// Held on the surface rather than latched, so it is set on both edges and
     /// moves nothing on its own.
     pub(crate) fn set_jog_shift(&self, deck: &str, held: bool) -> Result<(), String> {
-        self.deck(deck)?
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_jog_shift(held);
+        self.deck(deck)?.locked().set_jog_shift(held);
         Ok(())
     }
 
@@ -449,8 +441,8 @@ impl Engine {
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {deck}"))?;
         let (payload, cue_sec, quantize, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
+            let mut strip = strip_arc.locked();
             let sec = loop_in_core(&mut deck_state, &mut strip)?;
             let payload = DeckSyncPayload::from_deck(&deck_state, true);
             (payload, sec, deck_state.quantize, deck_state.render_frame())
@@ -476,8 +468,8 @@ impl Engine {
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {deck}"))?;
         let (result, quantize, frame) = {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
+            let mut strip = strip_arc.locked();
             let quantize = deck_state.quantize;
             (
                 loop_out_core(&mut deck_state, &mut strip)?,
@@ -510,7 +502,7 @@ impl Engine {
     ) -> Result<DeckSyncPayload, String> {
         let payload = if active {
             let deck_arc = self.deck(deck)?;
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck_state = deck_arc.locked();
             deck_state.loop_active = true;
             DeckSyncPayload::from_deck(&deck_state, false)
         } else {
@@ -539,7 +531,7 @@ impl Engine {
     ) -> Result<DeckSyncPayload, String> {
         let deck_arc = self.deck(deck)?;
         let (active, has_region) = {
-            let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let deck_state = deck_arc.locked();
             (
                 deck_state.loop_active,
                 deck_state.loop_end > deck_state.cue_point,
@@ -551,7 +543,7 @@ impl Engine {
         if has_region {
             return self.reloop(origin, deck);
         }
-        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let deck_state = deck_arc.locked();
         Ok(DeckSyncPayload::from_deck(&deck_state, false))
     }
 
@@ -561,12 +553,7 @@ impl Engine {
         let frame = self
             .audio
             .strip(deck)
-            .map(|strip| {
-                strip
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .render_frame()
-            })
+            .map(|strip| strip.locked().render_frame())
             .unwrap_or_else(|| self.master_frame());
         self.recorder.log_at(
             frame,
@@ -604,7 +591,7 @@ impl Engine {
                 .audio
                 .strip(deck)
                 .ok_or_else(|| format!("unknown deck: {}", deck))?;
-            let mut strip = strip_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let mut strip = strip_arc.locked();
             strip.set_xfader_assign(assign);
             strip.render_frame()
         };
@@ -656,7 +643,7 @@ impl Engine {
             let Some(strip) = self.audio.strip(&deck) else {
                 continue;
             };
-            let mut strip = strip.lock().unwrap_or_else(|error| error.into_inner());
+            let mut strip = strip.locked();
             write(&mut strip);
             frame = Some(
                 frame.map_or(strip.render_frame(), |seen: crate::audio::RenderFrame| {
@@ -686,8 +673,7 @@ impl Engine {
         self.audio
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {}", deck))?
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .locked()
             .cue_active = active;
         self.apply_cue_active(origin, deck, active);
         Ok(())
@@ -701,7 +687,7 @@ impl Engine {
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {}", deck))?;
         let active = {
-            let mut guard = strip.lock().unwrap_or_else(|error| error.into_inner());
+            let mut guard = strip.locked();
             guard.cue_active = !guard.cue_active;
             guard.cue_active
         };
@@ -747,8 +733,7 @@ mod tests {
             .audio
             .deck("A")
             .expect("deck A")
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .locked()
             .set_next_render_frame(4096);
 
         engine
@@ -770,8 +755,7 @@ mod tests {
             .audio
             .strip("A")
             .expect("strip A")
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .locked()
             .set_next_render_frame(2048);
 
         engine
@@ -1142,15 +1126,10 @@ mod loop_and_quantize {
         // strip at zero and the assertion depends on unordered iteration.
         for id in engine.audio.deck_ids() {
             if let Some(deck) = engine.audio.deck(&id) {
-                deck.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_next_render_frame(4096);
+                deck.locked().set_next_render_frame(4096);
             }
             if let Some(strip) = engine.audio.strip(&id) {
-                strip
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_next_render_frame(4096);
+                strip.locked().set_next_render_frame(4096);
             }
         }
         engine

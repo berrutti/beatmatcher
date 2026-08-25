@@ -1,51 +1,11 @@
 use crate::audio::{self, RenderFrame};
+use crate::lock::LockIgnoringPoison;
 use std::sync::{Arc, Mutex};
 
 fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
-    const SECS_PER_DAY: i64 = 86400;
-    const SECS_PER_HOUR: i64 = 3600;
-    const SECS_PER_MIN: i64 = 60;
-    // Offset from Unix epoch (1970-01-01) to the proleptic Gregorian epoch (0000-03-01).
-    const DAYS_TO_GREGORIAN_EPOCH: i64 = 719468;
-    const DAYS_PER_400_YEARS: i64 = 146097;
-    const DAYS_PER_100_YEARS: i64 = 36524;
-    const DAYS_PER_4_YEARS: i64 = 1460;
-    const DAYS_PER_YEAR: i64 = 365;
-
-    let elapsed = system_time
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let total_secs = elapsed.as_secs() as i64;
-    let milliseconds = elapsed.subsec_millis();
-
-    let time_of_day = total_secs.rem_euclid(SECS_PER_DAY);
-    let hours = time_of_day / SECS_PER_HOUR;
-    let minutes = (time_of_day % SECS_PER_HOUR) / SECS_PER_MIN;
-    let seconds = time_of_day % SECS_PER_MIN;
-
-    let days_since_gregorian_epoch = total_secs.div_euclid(SECS_PER_DAY) + DAYS_TO_GREGORIAN_EPOCH;
-    let gregorian_era = days_since_gregorian_epoch.div_euclid(DAYS_PER_400_YEARS);
-    let day_of_era = (days_since_gregorian_epoch - gregorian_era * DAYS_PER_400_YEARS) as u64;
-    let year_of_era = (day_of_era - day_of_era / DAYS_PER_4_YEARS as u64
-        + day_of_era / DAYS_PER_100_YEARS as u64
-        - day_of_era / (DAYS_PER_400_YEARS - 1) as u64)
-        / DAYS_PER_YEAR as u64;
-    let year_raw = year_of_era as i64 + gregorian_era * 400;
-    let day_of_year =
-        day_of_era - (DAYS_PER_YEAR as u64 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_param = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_param + 2) / 5 + 1;
-    let month = if month_param < 10 {
-        month_param + 3
-    } else {
-        month_param - 9
-    };
-    let year = year_raw + if month <= 2 { 1 } else { 0 };
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, milliseconds
-    )
+    chrono::DateTime::<chrono::Utc>::from(system_time)
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 /// A widened f32 writes the noise tail of a value the mixer never had. `Display` does not.
@@ -157,22 +117,25 @@ impl Recorder {
         for (event_type, payload) in start_events {
             logger.log_at(anchor.get(), event_type, payload);
         }
-        *self.held() = Some(logger);
+        *self.logger.locked() = Some(logger);
     }
 
     pub(crate) fn stop(&self, frame: RenderFrame) {
-        if let Some(logger) = self.held().as_mut() {
+        if let Some(logger) = self.logger.locked().as_mut() {
             logger.log_at(frame.get(), "recording_stop", serde_json::json!({}));
             logger.stop();
         }
     }
 
     pub(crate) fn take_pending(&self) -> Option<String> {
-        self.held().as_mut().and_then(SessionLogger::take_pending)
+        self.logger
+            .locked()
+            .as_mut()
+            .and_then(SessionLogger::take_pending)
     }
 
     pub(crate) fn log_at(&self, frame: RenderFrame, event_type: &str, payload: serde_json::Value) {
-        if let Some(logger) = self.held().as_mut() {
+        if let Some(logger) = self.logger.locked().as_mut() {
             logger.log_at(frame.get(), event_type, payload);
         }
     }
@@ -193,12 +156,6 @@ impl Recorder {
         payload.insert("param".into(), serde_json::json!(param));
         payload.insert("value".into(), f32_json(value));
         self.log_at(frame, "set_param", serde_json::Value::Object(payload));
-    }
-
-    fn held(&self) -> std::sync::MutexGuard<'_, Option<SessionLogger>> {
-        self.logger
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
     }
 }
 

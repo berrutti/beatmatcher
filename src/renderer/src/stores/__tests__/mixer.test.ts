@@ -337,13 +337,13 @@ describe('crossfader', () => {
     expect(mockedInvoke).not.toHaveBeenCalled();
   });
 
-  it('mirrors an engine-driven assign back to its name', () => {
+  it('mirrors an engine-driven assign, which travels by name', () => {
     const store = useMixerStore();
 
-    store.applyEngineParam({ deck: 'C', slot: 'xfader', param: 'assign', value: 2 });
+    store.applyEngineAssign({ deck: 'C', assign: 'b' });
     expect(store.xfaderAssign.C).toBe('b');
 
-    store.applyEngineParam({ deck: 'C', slot: 'xfader', param: 'assign', value: 0 });
+    store.applyEngineAssign({ deck: 'C', assign: 'thru' });
     expect(store.xfaderAssign.C).toBe('thru');
   });
 

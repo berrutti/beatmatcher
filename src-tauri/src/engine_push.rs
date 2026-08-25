@@ -1,5 +1,6 @@
 use crate::audio::AppAudio;
 use crate::deck_sync::DeckSyncPayload;
+use crate::lock::LockIgnoringPoison;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,6 +42,14 @@ struct RateChange {
     rate: f64,
 }
 
+/// Its own channel, not a `set_param`: three named buses are not a range.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignChange {
+    deck: String,
+    assign: &'static str,
+}
+
 // Cue is no manifest param, so slot and param cannot address it. It still reaches the UI
 // here, under a slot name the mixer store dispatches on.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,11 +87,7 @@ impl EnginePush {
         if origin == ParamOrigin::Ui {
             return;
         }
-        self.pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .dirty
-            .insert(address);
+        self.pending.locked().dirty.insert(address);
     }
 
     pub(crate) fn mark(&self, origin: ParamOrigin, deck: &str, slot: &str, param: &str) {
@@ -113,11 +118,7 @@ impl EnginePush {
         loop_region_cleared: bool,
     ) {
         if loop_region_cleared && origin != ParamOrigin::Ui {
-            self.pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .loops_cleared
-                .insert(deck.to_string());
+            self.pending.locked().loops_cleared.insert(deck.to_string());
         }
         self.insert(origin, Address::Transport(deck.to_string()));
     }
@@ -127,10 +128,7 @@ impl EnginePush {
     }
 
     fn take(&self) -> Pending {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut pending = self.pending.locked();
         std::mem::take(&mut *pending)
     }
 }
@@ -144,36 +142,26 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
         let loops_cleared = pending.loops_cleared;
         let mut transport: Vec<TransportChange> = Vec::new();
         let mut rates: Vec<RateChange> = Vec::new();
+        let mut assigns: Vec<AssignChange> = Vec::new();
         let batch: Vec<ParamChange> = pending
             .dirty
             .into_iter()
             .filter_map(|address| match address {
                 Address::Transport(deck) => {
                     let state = DeckSyncPayload::from_deck(
-                        &audio
-                            .deck(&deck)?
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner()),
+                        &audio.deck(&deck)?.locked(),
                         loops_cleared.contains(&deck),
                     );
                     transport.push(TransportChange { deck, state });
                     None
                 }
                 Address::Rate(deck) => {
-                    let rate = audio
-                        .deck(&deck)?
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .playback_rate;
+                    let rate = audio.deck(&deck)?.locked().playback_rate;
                     rates.push(RateChange { deck, rate });
                     None
                 }
                 Address::Param(deck, slot, param) => {
-                    let value = audio
-                        .strip(&deck)?
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .param(&slot, &param)?;
+                    let value = audio.strip(&deck)?.locked().param(&slot, &param)?;
                     Some(ParamChange {
                         deck,
                         slot,
@@ -182,11 +170,7 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
                     })
                 }
                 Address::Cue(deck) => {
-                    let active = audio
-                        .strip(&deck)?
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .cue_active;
+                    let active = audio.strip(&deck)?.locked().cue_active;
                     Some(ParamChange {
                         deck,
                         slot: "cue".to_string(),
@@ -203,21 +187,9 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
                     value: audio.monitor.xfader_position(),
                 }),
                 Address::XfaderAssign(deck) => {
-                    let assign = audio
-                        .strip(&deck)?
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .xfader_assign;
-                    Some(ParamChange {
-                        deck,
-                        slot: "xfader".to_string(),
-                        param: "assign".to_string(),
-                        value: match assign {
-                            session_core::XfaderAssign::Thru => 0.0,
-                            session_core::XfaderAssign::A => 1.0,
-                            session_core::XfaderAssign::B => 2.0,
-                        },
-                    })
+                    let assign = audio.strip(&deck)?.locked().xfader_assign.as_str();
+                    assigns.push(AssignChange { deck, assign });
+                    None
                 }
             })
             .collect();
@@ -229,6 +201,9 @@ pub fn start(app: tauri::AppHandle, audio: Arc<AppAudio>, push: Arc<EnginePush>)
         }
         if !rates.is_empty() {
             app.emit("engine-rate", rates).ok();
+        }
+        if !assigns.is_empty() {
+            app.emit("engine-assign", assigns).ok();
         }
     });
 }

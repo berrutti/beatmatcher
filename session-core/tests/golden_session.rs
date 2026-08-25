@@ -100,7 +100,11 @@ fn reconstruct(events: &[SessionEvent], from_ms: f64, deck: &str) -> Option<Reco
     }) {
         sim_apply_event(event, &mut sim, &cache, SAMPLE_RATE);
     }
-    let strip_gain = sim.strips.get(deck).map(|strip| strip.gain).unwrap_or(1.0);
+    let strip_gain = sim
+        .strips
+        .get(deck)
+        .and_then(|strip| strip.param("fader", "gain"))
+        .unwrap_or(1.0);
     sim.decks.get(deck).map(|deck_sim| Reconstructed {
         is_playing: deck_sim.is_playing,
         path: deck_sim.path.clone(),

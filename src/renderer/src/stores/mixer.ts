@@ -250,14 +250,6 @@ export const useMixerStore = defineStore('mixer', () => {
     return Object.prototype.hasOwnProperty.call(params, id);
   }
 
-  // Engine-originated only, and deliberately does not invoke back: Rust never pushes a
-  // value the UI wrote, so anything arriving here is a move the store has not made.
-  function assignFromValue(value: number): XfaderAssign {
-    if (value === 1) return 'a';
-    if (value === 2) return 'b';
-    return 'thru';
-  }
-
   function applyEngineParam(change: ParamChange): void {
     // Master scope, so it arrives with no deck and has to be read before the
     // guard below rejects it.
@@ -266,12 +258,7 @@ export const useMixerStore = defineStore('mixer', () => {
       return;
     }
     if (!isDeckId(change.deck)) return;
-    // Neither of these is a manifest param: the assign is categorical and cue is
-    // engine-only routing, so they are the two addresses `params` cannot hold.
-    if (change.slot === 'xfader' && change.param === 'assign') {
-      xfaderAssign[change.deck] = assignFromValue(change.value);
-      return;
-    }
+    // Engine-only routing, so it is the one address `params` cannot hold.
     if (change.slot === 'cue' && change.param === 'active') {
       cueActive[change.deck] = change.value !== 0;
       return;
@@ -282,6 +269,14 @@ export const useMixerStore = defineStore('mixer', () => {
 
   listen<ParamChange[]>('engine-params', (event) => {
     event.payload.forEach(applyEngineParam);
+  });
+
+  function applyEngineAssign(change: { deck: string; assign: XfaderAssign }): void {
+    if (isDeckId(change.deck)) xfaderAssign[change.deck] = change.assign;
+  }
+
+  listen<{ deck: string; assign: XfaderAssign }[]>('engine-assign', (event) => {
+    event.payload.forEach(applyEngineAssign);
   });
 
   function reset(): void {
@@ -519,6 +514,7 @@ export const useMixerStore = defineStore('mixer', () => {
     playedPaths,
     markPlayed,
     applyEngineParam,
+    applyEngineAssign,
     discardRecording,
     getDeckLevels,
     getMasterLevel,

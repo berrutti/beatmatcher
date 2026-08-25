@@ -1,219 +1,10 @@
 use crate::audio::{self, ChannelStrip, Deck, Limiter};
+use crate::audio_file::{read_wav_f32, write_wav_f32};
+use crate::lock::LockIgnoringPoison;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub fn read_wav_f32(path: &str) -> Result<(Vec<f32>, u32, u16), String> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut b4 = [0u8; 4];
-
-    macro_rules! r4 {
-        () => {{
-            f.read_exact(&mut b4).map_err(|e| e.to_string())?;
-            b4
-        }};
-    }
-    macro_rules! ru32 {
-        () => {
-            u32::from_le_bytes(r4!())
-        };
-    }
-    macro_rules! ru16 {
-        () => {{
-            let mut b = [0u8; 2];
-            f.read_exact(&mut b).map_err(|e| e.to_string())?;
-            u16::from_le_bytes(b)
-        }};
-    }
-
-    if &r4!() != b"RIFF" {
-        return Err(format!("{path}: not a RIFF file"));
-    }
-    let _ = ru32!(); // file size
-    if &r4!() != b"WAVE" {
-        return Err(format!("{path}: not a WAVE file"));
-    }
-
-    let mut sample_rate = 0u32;
-    let mut bit_depth = 0u16;
-    let mut channels = 0u16;
-    let mut data_offset = 0u64;
-    let mut data_bytes = 0u32;
-
-    loop {
-        let mut id = [0u8; 4];
-        if f.read_exact(&mut id).is_err() {
-            break;
-        }
-        let chunk_size = ru32!();
-        match &id {
-            b"fmt " => {
-                let _audio_fmt = ru16!();
-                channels = ru16!();
-                sample_rate = ru32!();
-                let _ = ru32!(); // byte rate
-                let _ = ru16!(); // block align
-                bit_depth = ru16!();
-                let extra = chunk_size.saturating_sub(16);
-                if extra > 0 {
-                    f.seek(SeekFrom::Current(extra as i64)).ok();
-                }
-            }
-            b"data" => {
-                data_bytes = chunk_size;
-                data_offset = f.stream_position().map_err(|e| e.to_string())?;
-                break;
-            }
-            _ => {
-                f.seek(SeekFrom::Current(chunk_size as i64)).ok();
-            }
-        }
-    }
-
-    if data_offset == 0 {
-        return Err(format!("{path}: no data chunk"));
-    }
-
-    let mut raw = vec![0u8; data_bytes as usize];
-    f.seek(SeekFrom::Start(data_offset))
-        .map_err(|e| e.to_string())?;
-    f.read_exact(&mut raw).map_err(|e| e.to_string())?;
-
-    let samples: Vec<f32> = match bit_depth {
-        16 => raw
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
-            .collect(),
-        24 => raw
-            .chunks_exact(3)
-            .map(|b| {
-                let v =
-                    i32::from_le_bytes([b[0], b[1], b[2], if b[2] & 0x80 != 0 { 0xff } else { 0 }]);
-                v as f32 / 8_388_608.0
-            })
-            .collect(),
-        32 => raw
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect(),
-        _ => return Err(format!("{path}: unsupported bit depth {bit_depth}")),
-    };
-
-    Ok((samples, sample_rate, channels))
-}
-
-pub fn write_wav_f32(
-    path: &str,
-    samples: &[f32],
-    sample_rate: u32,
-    channels: u16,
-) -> Result<(), String> {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    let byte_count = (samples.len() * 4) as u32;
-    f.write_all(b"RIFF").map_err(|e| e.to_string())?;
-    f.write_all(&(36 + byte_count).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(b"WAVE").map_err(|e| e.to_string())?;
-    f.write_all(b"fmt ").map_err(|e| e.to_string())?;
-    f.write_all(&16u32.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&3u16.to_le_bytes())
-        .map_err(|e| e.to_string())?; // IEEE float
-    f.write_all(&channels.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&sample_rate.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&(sample_rate * channels as u32 * 4).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&(channels * 4).to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(&32u16.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    f.write_all(b"data").map_err(|e| e.to_string())?;
-    f.write_all(&byte_count.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-    for &s in samples {
-        f.write_all(&s.to_le_bytes()).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-pub fn write_flac_f32(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
-    use flacenc::bitsink::ByteSink;
-    use flacenc::component::BitRepr;
-    use flacenc::error::Verify;
-    use std::io::Write;
-
-    const MAX_24BIT: f32 = 8_388_607.0;
-    let source = SliceSource {
-        samples: samples
-            .iter()
-            .map(|&s| (s.clamp(-1.0, 1.0) * MAX_24BIT) as i32)
-            .collect(),
-        channels: 2,
-        bits_per_sample: 24,
-        sample_rate: sample_rate as usize,
-        pos: 0,
-    };
-
-    let config = flacenc::config::Encoder::default()
-        .into_verified()
-        .map_err(|e| format!("FLAC config error: {e:?}"))?;
-    let block_size = config.block_size;
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
-        .map_err(|e| format!("FLAC encode error: {e:?}"))?;
-
-    let mut sink = ByteSink::with_capacity(stream.count_bits());
-    stream
-        .write(&mut sink)
-        .map_err(|e| format!("FLAC write error: {e:?}"))?;
-
-    std::fs::File::create(path)
-        .and_then(|mut f| f.write_all(sink.as_slice()))
-        .map_err(|e| format!("{path}: {e}"))
-}
-
-struct SliceSource {
-    samples: Vec<i32>,
-    channels: usize,
-    bits_per_sample: usize,
-    sample_rate: usize,
-    pos: usize,
-}
-
-impl flacenc::source::Source for SliceSource {
-    fn channels(&self) -> usize {
-        self.channels
-    }
-    fn bits_per_sample(&self) -> usize {
-        self.bits_per_sample
-    }
-    fn sample_rate(&self) -> usize {
-        self.sample_rate
-    }
-    fn len_hint(&self) -> Option<usize> {
-        Some(self.samples.len() / self.channels)
-    }
-
-    fn read_samples<F: flacenc::source::Fill>(
-        &mut self,
-        block_size: usize,
-        dest: &mut F,
-    ) -> Result<usize, flacenc::error::SourceError> {
-        let n = (block_size * self.channels).min(self.samples.len() - self.pos);
-        if n == 0 {
-            return Ok(0);
-        }
-        dest.fill_interleaved(&self.samples[self.pos..self.pos + n])?;
-        self.pos += n;
-        Ok(n / self.channels)
-    }
-}
-
-use session_core::event::SessionCommand;
-pub use session_core::event::{SessionEvent, SessionFile};
+use session_core::event::{SessionCommand, SessionEvent, SessionFile};
 
 pub struct CompareResult {
     pub total_frames: usize,
@@ -397,14 +188,14 @@ impl Mixer {
     fn warm_up(&mut self, frames: usize, restored: &std::collections::BTreeSet<String>) {
         let mut resume: Vec<(String, f64, f64)> = Vec::new();
         for (id, deck_arc) in self.decks.iter() {
-            let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut deck = deck_arc.locked();
             if !deck.is_playing || !restored.contains(id) {
                 continue;
             }
             resume.push((id.clone(), deck.main_pos, deck.cue_pos));
             let lead_in = frames as f64 * deck.playback_rate;
-            deck.main_pos = rewound(&deck, lead_in);
-            deck.cue_pos = deck.main_pos;
+            let rewound_to = rewound(&deck, lead_in);
+            deck.seek_both(rewound_to);
         }
         if resume.is_empty() {
             return;
@@ -413,8 +204,8 @@ impl Mixer {
         self.render_block(frames, &mut discarded);
         for (id, main_pos, cue_pos) in resume {
             if let Some(deck_arc) = self.decks.get(&id) {
-                let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-                deck.main_pos = main_pos;
+                let mut deck = deck_arc.locked();
+                deck.seek_both(main_pos);
                 deck.cue_pos = cue_pos;
             }
         }
@@ -444,74 +235,33 @@ fn rewound(deck: &Deck, frames: f64) -> f64 {
     }
 }
 
-/// What the session says the limiter was, when it says. Older files predate the stamp and
-/// all rendered through one, so `None` keeps them rendering as they always did.
+fn recording_start(session: &SessionFile) -> Option<&SessionEvent> {
+    session
+        .events
+        .iter()
+        .find(|event| event.event_type == "recording_start")
+}
+
 pub fn recorded_limiter(session: &SessionFile) -> Option<MasterLimiter> {
-    session
-        .events
-        .iter()
-        .find(|event| event.event_type == "recording_start")
-        .and_then(|event| event.limiter_enabled)
-        .map(|on| {
-            if on {
-                MasterLimiter::On
-            } else {
-                MasterLimiter::Off
-            }
-        })
-}
-
-/// The callback size the session was recorded at. Absent in the oldest files, which used 512.
-fn recorded_block_frames(session: &SessionFile) -> usize {
-    session
-        .events
-        .iter()
-        .find(|event| event.event_type == "recording_start")
-        .and_then(|event| event.buffer_size_frames)
-        .filter(|size| *size > 0)
-        .map_or(512, |size| size as usize)
-}
-
-const DEVICE_RATES: [f64; 5] = [96_000.0, 88_200.0, 48_000.0, 44_100.0, 32_000.0];
-
-fn measured_block_frames(session: &SessionFile) -> Option<f64> {
-    const FIT_TOLERANCE: f64 = 0.75;
-    const MIN_STAMPS: usize = 256;
-
-    let requested = f64::from(recorded_block_frames(session) as u32);
-    let rate = f64::from(recorded_sample_rate(session)?);
-
-    let mut stamps: Vec<f64> = session
-        .events
-        .iter()
-        .filter_map(|event| event.frame)
-        .filter(|frame| *frame > 0)
-        .map(|frame| frame as f64)
-        .collect();
-    stamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    stamps.dedup();
-    if stamps.len() < MIN_STAMPS {
-        return None;
-    }
-
-    let mut lengths: Vec<f64> = DEVICE_RATES
-        .iter()
-        .map(|device_rate| requested * rate / device_rate)
-        .collect();
-    lengths.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    lengths.into_iter().find(|length| {
-        stamps
-            .iter()
-            .all(|stamp| ((stamp / length).round() * length - stamp).abs() < FIT_TOLERANCE)
+    let on = recording_start(session)?.limiter_enabled?;
+    Some(if on {
+        MasterLimiter::On
+    } else {
+        MasterLimiter::Off
     })
 }
 
-/// Absent before the rate was stamped, and those sessions all ran at the render rate.
+/// The driver's period, fractional when the device was clocked at another rate, so the
+/// boundaries are `round(n * period)`.
+fn recorded_block_frames(session: &SessionFile) -> f64 {
+    recording_start(session)
+        .and_then(|event| event.buffer_size_frames)
+        .filter(|frames| *frames > 0.0)
+        .unwrap_or(512.0)
+}
+
 fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
-    session
-        .events
-        .iter()
-        .find(|event| event.event_type == "recording_start")
+    recording_start(session)
         .and_then(|event| event.sample_rate)
         .filter(|rate| *rate > 0)
 }
@@ -530,13 +280,21 @@ fn build_timeline(session: &SessionFile, sample_rate: u32) -> Vec<(usize, &Sessi
             (pos, event)
         })
         .collect();
-    // A deck_snapshot is initial state. At a shared frame it must apply before
-    // any other event, or it resets a deck a same-frame play already started.
+    // Position first, then the tiebreaks `event_sim_order` applies, so the render and
+    // the editor resolve a shared instant the same way.
     timeline.sort_by(|a, b| {
-        a.0.cmp(&b.0).then_with(|| {
-            u8::from(a.1.event_type != "deck_snapshot")
-                .cmp(&u8::from(b.1.event_type != "deck_snapshot"))
-        })
+        let snapshot_rank = |event: &SessionEvent| u8::from(event.event_type != "deck_snapshot");
+        a.0.cmp(&b.0)
+            .then_with(|| snapshot_rank(a.1).cmp(&snapshot_rank(b.1)))
+            .then_with(|| {
+                a.1.elapsed_ms
+                    .partial_cmp(&b.1.elapsed_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                session_core::sim::transport_phase(a.1)
+                    .cmp(&session_core::sim::transport_phase(b.1))
+            })
     });
     timeline
 }
@@ -547,8 +305,7 @@ fn render_timeline(
     restored: &std::collections::BTreeSet<String>,
     total_frames: usize,
     warmup_frames: usize,
-    block_frames: usize,
-    grid: Option<f64>,
+    block_frames: f64,
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
     let mut next_event = 0;
@@ -576,13 +333,7 @@ fn render_timeline(
         // jog accumulator once per call: a gap rendered as one long block drains it once
         // where the live callback drained it many times.
         while frame < chunk_end {
-            let span = match grid {
-                Some(step) => {
-                    let next = (((frame as f64 / step).floor() + 1.0) * step).round() as usize;
-                    next.max(frame + 1).min(chunk_end) - frame
-                }
-                None => block_frames.min(chunk_end - frame),
-            };
+            let span = (block_frames.round() as usize).min(chunk_end - frame);
             mixer.render_block(span, &mut output[frame * 2..(frame + span) * 2]);
             frame += span;
         }
@@ -630,16 +381,12 @@ pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<V
         total_frames,
         warmup_frames(request.sample_rate),
         recorded_block_frames(session),
-        measured_block_frames(session),
     )
 }
 
 fn resolve_xfader_gains(strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>, position: f32) {
     for strip in strips.values() {
-        strip
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_xfader_position(position);
+        strip.locked().set_xfader_position(position);
     }
 }
 
@@ -671,19 +418,14 @@ fn apply_event(
 
     if let SessionCommand::SetFaderCurve { curve } = cmd {
         for strip in strips.values() {
-            strip
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .set_fader_curve(curve);
+            strip.locked().set_fader_curve(curve);
         }
         return Ok(());
     }
 
     if let SessionCommand::SetJogRotationSpeed { speed } = cmd {
         for deck in decks.values() {
-            deck.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .set_jog_rotation_speed(speed);
+            deck.locked().set_jog_rotation_speed(speed);
         }
         return Ok(());
     }
@@ -695,8 +437,8 @@ fn apply_event(
     let strip_arc = strips
         .get(id)
         .ok_or_else(|| format!("unknown deck: {id}"))?;
-    let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-    let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+    let mut deck = deck_arc.locked();
+    let mut strip = strip_arc.locked();
 
     let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
         let (raw, channels, native_sr) =
@@ -978,6 +720,37 @@ mod golden {
         for [l, r] in probes(&rendered) {
             println!("    [{l:+.9e}, {r:+.9e}],");
         }
+    }
+}
+
+#[cfg(test)]
+mod ordering {
+    use super::*;
+
+    fn timeline_types(json: &str) -> Vec<String> {
+        let session: SessionFile = serde_json::from_str(json).expect("parse");
+        build_timeline(&session, 44_100)
+            .into_iter()
+            .map(|(_, event)| event.event_type.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_stop_and_a_play_on_one_frame_order_the_way_the_editor_orders_them() {
+        let json = r#"{"version":2,"events":[
+            {"elapsed_ms":1000.0,"frame":44100,"type":"play","deck":"A"},
+            {"elapsed_ms":1000.0,"frame":44100,"type":"stop","deck":"A"}
+        ]}"#;
+        assert_eq!(timeline_types(json), vec!["stop", "play"]);
+    }
+
+    #[test]
+    fn a_snapshot_still_leads_its_frame() {
+        let json = r#"{"version":2,"events":[
+            {"elapsed_ms":0.0,"frame":0,"type":"play","deck":"A"},
+            {"elapsed_ms":0.0,"frame":0,"type":"deck_snapshot","deck":"A","path":"x"}
+        ]}"#;
+        assert_eq!(timeline_types(json), vec!["deck_snapshot", "play"]);
     }
 }
 
@@ -1685,7 +1458,7 @@ mod live_parity {
 
     const SCHEDULES: [&[usize]; 5] = [
         &[BLOCK],
-        &[117, 118, 118, 117, 118],
+        &[118, 117, 118, 117, 118],
         &[64],
         &[512],
         &[61, 512, 128, 7, 1024, 199],
@@ -1930,7 +1703,7 @@ mod live_parity_fuzz {
     // Uniform only: a `.bms` states one buffer size, so a render can only block at
     // one. That a varying callback length changes nothing is a claim about the live
     // path alone, and `callback_length_cannot_change_what_is_heard` is where it lives.
-    const SCHEDULES: [&[usize]; 4] = [&[BLOCK], &[64], &[512], &[117, 118, 118, 117, 118]];
+    const SCHEDULES: [&[usize]; 3] = [&[BLOCK], &[64], &[512]];
 
     struct Rng(u64);
 

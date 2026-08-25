@@ -8,7 +8,7 @@ import type {
   MasterLaneKey,
   DeckId
 } from '@renderer/utils/types';
-import { DECK_ACCENTS, DECK_LANE_KEYS } from '@renderer/utils/types';
+import { DECK_ACCENTS, DECK_LANE_KEYS, LANE_DISPLAY } from '@renderer/utils/types';
 import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
 import { jogLaneColumns, jogLaneScale } from '@renderer/utils/jogLane';
 import { formatMs } from '@renderer/utils/time';
@@ -112,7 +112,6 @@ const MUTE_COLOR = '#ef4444';
 const NUDGE_COLOR = '#fbbf24';
 const JOG_FILL_COLOR = '#fbbf24cc';
 const JOG_SCALE_LABEL_COLOR = '#777';
-const JOG_SHORT_LABEL = 'JOG';
 const JOG_LANE_RULE_H = 1;
 const JOG_SCALE_LABEL_INSET_PX = 3;
 // Below this a tenth of a percent still reads. Above it the decimal is noise.
@@ -627,8 +626,8 @@ export function drawDeckLanes(
     const { key, top, height } = sublanes[laneIdx];
     if (key === 'jog') continue;
     const previous = laneIdx > 0 ? sublanes[laneIdx - 1].key : null;
-    const group = specs[key].laneGroup;
-    const prevGroup = previous && previous !== 'jog' ? specs[previous].laneGroup : -1;
+    const group = LANE_DISPLAY[key].group;
+    const prevGroup = previous && previous !== 'jog' ? LANE_DISPLAY[previous].group : -1;
     const trackW = canvasWidth - LABEL_W - PADDING;
 
     ctx.fillStyle = group % 2 === 0 ? LANE_GROUP_BG_COLOR_EVEN : LANE_GROUP_BG_COLOR_ODD;
@@ -962,8 +961,7 @@ export function drawDeckRowChrome(
   ctx: CanvasRenderingContext2D,
   row: RowLayout,
   canvasW: number,
-  chrome: DeckRowChrome,
-  mixerId: string
+  chrome: DeckRowChrome
 ): void {
   ctx.fillStyle =
     chrome.zebraIndex % 2 === 0 ? DECK_ROW_ZEBRA_COLOR_EVEN : DECK_ROW_ZEBRA_COLOR_ODD;
@@ -992,11 +990,7 @@ export function drawDeckRowChrome(
     const centerY = lane.top + lane.height / 2;
     ctx.fillStyle = LANE_DROPDOWN_COLOR;
     ctx.font = BOLD_LABEL_FONT;
-    ctx.fillText(
-      lane.key === 'jog' ? JOG_SHORT_LABEL : laneSpecs(mixerId)[lane.key].shortLabel,
-      LABEL_W / 2,
-      centerY - LANE_LABEL_OFFSET_PX
-    );
+    ctx.fillText(LANE_DISPLAY[lane.key].shortLabel, LABEL_W / 2, centerY - LANE_LABEL_OFFSET_PX);
     ctx.font = SUB_LABEL_FONT;
     ctx.fillText('▾', LABEL_W / 2, centerY + LANE_CARET_OFFSET_PX);
   }
@@ -1007,8 +1001,7 @@ export function drawMasterRowChrome(
   top: number,
   height: number,
   canvasW: number,
-  lane: MasterLaneKey,
-  mixerId: string
+  lane: MasterLaneKey
 ): void {
   ctx.fillStyle = MASTER_ROW_BG_COLOR;
   ctx.fillRect(0, top, canvasW, height);
@@ -1021,7 +1014,7 @@ export function drawMasterRowChrome(
   ctx.fillStyle = LANE_DROPDOWN_COLOR;
   ctx.font = SUB_LABEL_FONT;
   ctx.fillText(
-    `${laneSpecs(mixerId)[lane].shortLabel} ▾`,
+    `${LANE_DISPLAY[lane].shortLabel} ▾`,
     LABEL_W / 2,
     top + height / 2 + LANE_CARET_OFFSET_PX
   );

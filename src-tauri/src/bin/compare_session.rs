@@ -26,7 +26,7 @@ fn main() {
         });
     let stamped = std::fs::read_to_string(session_path)
         .ok()
-        .and_then(|json| app_lib::offline_render::SessionFile::parse(&json).ok())
+        .and_then(|json| session_core::event::SessionFile::parse(&json).ok())
         .and_then(|session| app_lib::offline_render::recorded_limiter(&session))
         .map(|limiter| limiter == app_lib::offline_render::MasterLimiter::On);
     let limiter_enabled = override_flag.or(stamped).unwrap_or(true);

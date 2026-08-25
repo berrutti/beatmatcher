@@ -1,7 +1,8 @@
 use super::unit::{make_unit, AudioUnit};
+use crate::audio::atomic_f32::AtomicF32;
 use session_core::{MixerManifest, ParamScope};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc,
 };
 
@@ -58,8 +59,8 @@ pub struct ChannelStrip {
     xfader_gain_target: f32,
     xfader_smooth_coeff: f32,
     pub(crate) next_render_frame: u64,
-    level_l: Arc<AtomicU32>,
-    level_r: Arc<AtomicU32>,
+    level_l: Arc<AtomicF32>,
+    level_r: Arc<AtomicF32>,
     settle_frames: usize,
     settle_window_frames: usize,
 }
@@ -120,8 +121,8 @@ impl ChannelStrip {
             xfader_gain_target: 1.0,
             xfader_smooth_coeff: 1.0 - (-1.0 / (sample_rate * XFADER_SMOOTHING_TAU_SEC)).exp(),
             next_render_frame: 0,
-            level_l: Arc::new(AtomicU32::new(0)),
-            level_r: Arc::new(AtomicU32::new(0)),
+            level_l: Arc::new(AtomicF32::default()),
+            level_r: Arc::new(AtomicF32::default()),
             settle_frames: settle_window_frames,
             settle_window_frames,
         }
@@ -152,15 +153,12 @@ impl ChannelStrip {
     }
 
     pub fn store_level(&self, l: f32, r: f32) {
-        self.level_l.store(l.to_bits(), Ordering::Relaxed);
-        self.level_r.store(r.to_bits(), Ordering::Relaxed);
+        self.level_l.set(l);
+        self.level_r.set(r);
     }
 
     pub fn get_level(&self) -> [f32; 2] {
-        [
-            f32::from_bits(self.level_l.load(Ordering::Relaxed)),
-            f32::from_bits(self.level_r.load(Ordering::Relaxed)),
-        ]
+        [self.level_l.get(), self.level_r.get()]
     }
 
     pub(crate) fn target_gain(&self) -> f32 {
@@ -212,22 +210,6 @@ impl ChannelStrip {
         }
         self.restart_settle();
         true
-    }
-
-    pub fn set_eq_band(&mut self, band: &str, db: f32) {
-        self.set_param("eq", band, db);
-    }
-
-    pub fn set_filter(&mut self, v: f32) {
-        self.set_param("filter", "value", v);
-    }
-
-    pub fn set_filter_active(&mut self, active: bool) {
-        self.set_param("filter", "active", if active { 1.0 } else { 0.0 });
-    }
-
-    pub fn set_gain(&mut self, v: f32) {
-        self.set_param(session_core::FADER_GAIN.0, session_core::FADER_GAIN.1, v);
     }
 
     // Separate from the fader gain, and not cleared by reset(), because scrubbing
@@ -403,6 +385,19 @@ impl Default for SpectralBands {
     }
 }
 
+/// What a scrub restores onto a deck, so the caller names the values rather than
+/// reaching into the fields one at a time.
+pub(crate) struct DeckRestore {
+    pub position: f64,
+    pub cue_point: f64,
+    pub loop_active: bool,
+    pub loop_end: f64,
+    pub playback_rate: f64,
+    pub jog_hold_factor: f64,
+    pub bpm: Option<f64>,
+    pub beat_offset_frames: f64,
+}
+
 pub struct Deck {
     pub(crate) samples: Arc<Vec<f32>>, // interleaved f32 at device_sample_rate
     pub(crate) channels: usize,
@@ -481,6 +476,65 @@ impl Deck {
         self.bpm = None;
         self.beat_offset_frames = 0.0;
         self.loaded_path = None;
+    }
+
+    /// The one place a track's samples reach a deck. Three copies of this had drifted.
+    pub(crate) fn load(
+        &mut self,
+        path: &str,
+        samples: Arc<Vec<f32>>,
+        channels: usize,
+        sample_rate: u32,
+    ) {
+        let total_frames = samples.len() / channels;
+        self.reset();
+        self.samples = samples;
+        self.channels = channels;
+        self.device_sample_rate = sample_rate;
+        self.total_frames = total_frames;
+        self.duration = total_frames as f64 / f64::from(sample_rate);
+        self.loaded_path = Some(path.to_string());
+        self.bands = SpectralBands::default();
+    }
+
+    /// Where the deck sits when a track opens: the playhead and the cue both at `frames`.
+    pub(crate) fn open_at(&mut self, frames: f64) {
+        self.main_pos = frames;
+        self.cue_pos = frames;
+        self.cue_point = frames;
+    }
+
+    /// Both playheads together, which is what every seek and rewind wants.
+    pub(crate) fn seek_both(&mut self, frames: f64) {
+        self.main_pos = frames;
+        self.cue_pos = frames;
+    }
+
+    pub(crate) fn set_bands(&mut self, bands: SpectralBands) {
+        self.bands = bands;
+    }
+
+    /// The transport state a `deck_snapshot` restores, clamped to the loaded track.
+    pub(crate) fn restore(&mut self, snapshot: DeckRestore) {
+        let limit = self.total_frames as f64;
+        self.seek_both(snapshot.position.min(limit));
+        self.cue_point = snapshot.cue_point.min(limit);
+        self.loop_active = snapshot.loop_active;
+        self.loop_end = snapshot.loop_end.min(limit);
+        self.playback_rate = snapshot.playback_rate;
+        self.jog_hold_factor = snapshot.jog_hold_factor;
+        self.bpm = snapshot.bpm;
+        self.beat_offset_frames = snapshot.beat_offset_frames;
+        self.is_playing = false;
+        self.is_cueing = false;
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self.is_playing = false;
+    }
+
+    pub(crate) fn set_quantize(&mut self, quantize: bool) {
+        self.quantize = quantize;
     }
 
     pub(crate) fn reset(&mut self) {
@@ -574,12 +628,6 @@ impl Deck {
         }
         self.main_pos / self.device_sample_rate as f64
     }
-
-    // Wall clock, not per block. The one-pole runs once a block, so a fixed
-    // coefficient would settle over a time that moves with the buffer setting.
-
-    // How much further a hand movement seeks a paused deck than it bends a playing
-    // one. Set by ear: a smaller value overshoots the beat.
 
     pub fn set_jog_rotation_speed(&mut self, speed: session_core::JogRotationSpeed) {
         self.jog_rotation_speed = speed;
@@ -1412,7 +1460,7 @@ mod tests {
     #[test]
     fn channel_strip_gain_does_not_jump_on_change() {
         let mut strip = ChannelStrip::new(48000.0);
-        strip.set_gain(0.0);
+        strip.set_param("fader", "gain", 0.0);
         let (l, _) = strip.process_main(1.0, 1.0);
         assert!(l > 0.5, "expected gain near 1.0 on first sample, got {}", l);
     }
@@ -1420,7 +1468,7 @@ mod tests {
     #[test]
     fn channel_strip_gain_converges_to_target() {
         let mut strip = ChannelStrip::new(48000.0);
-        strip.set_gain(0.0);
+        strip.set_param("fader", "gain", 0.0);
         for _ in 0..24_000 {
             strip.process_main(1.0, 1.0);
         }
@@ -1601,7 +1649,7 @@ mod tests {
         let mut strip = ChannelStrip::new(48000.0);
         strip.set_muted(true);
         strip.reset();
-        strip.set_gain(1.0);
+        strip.set_param("fader", "gain", 1.0);
         for _ in 0..24_000 {
             strip.process_main(1.0, 1.0);
         }
@@ -1938,11 +1986,11 @@ mod render_block_equivalence {
         let mut deck = Deck::loaded_for_testing(SR, duration_secs);
         deck.is_playing = true;
         let mut strip = ChannelStrip::new(SR as f32);
-        strip.set_eq_band("low", 4.0);
-        strip.set_eq_band("high", -6.0);
-        strip.set_filter(-0.4);
-        strip.set_filter_active(true);
-        strip.set_gain(0.3);
+        strip.set_param("eq", "low", 4.0);
+        strip.set_param("eq", "high", -6.0);
+        strip.set_param("filter", "value", -0.4);
+        strip.set_param("filter", "active", 1.0);
+        strip.set_param("fader", "gain", 0.3);
         strip.cue_active = true;
         (deck, strip)
     }
@@ -2108,7 +2156,7 @@ mod silence_early_out {
         render(&mut deck, &mut strip, blocks_to_settle());
         assert!(strip.settled(), "precondition: already skipping");
 
-        strip.set_gain(0.25);
+        strip.set_param("fader", "gain", 0.25);
         assert!(!strip.settled(), "a fader move must restart processing");
         render(&mut deck, &mut strip, blocks_to_settle());
 
@@ -2124,8 +2172,8 @@ mod silence_early_out {
         let (mut deck, mut strip) = stopped_pair();
         render(&mut deck, &mut strip, blocks_to_settle());
 
-        strip.set_filter(-0.8);
-        strip.set_filter_active(true);
+        strip.set_param("filter", "value", -0.8);
+        strip.set_param("filter", "active", 1.0);
         assert!(!strip.settled());
         render(&mut deck, &mut strip, blocks_to_settle());
 

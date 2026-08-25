@@ -146,11 +146,6 @@ fn end_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     }
 }
 
-fn stable_sort_by_ms(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events.sort_by(crate::sim::event_sim_order);
-    events
-}
-
 struct Neighborhood {
     prev: Option<TransportBlock>,
     next: Option<TransportBlock>,
@@ -505,7 +500,7 @@ pub fn move_transport_block(
     kept.extend(end_events_for(block, new_end));
 
     MoveResult {
-        events: stable_sort_by_ms(kept),
+        events: crate::sim::sorted_by_sim_order(kept),
         applied_delta_ms: applied,
     }
 }
@@ -592,7 +587,7 @@ pub fn trim_transport_block(
             }
         }
         return TrimResult {
-            events: stable_sort_by_ms(kept),
+            events: crate::sim::sorted_by_sim_order(kept),
             applied_ms: applied,
         };
     }
@@ -634,7 +629,7 @@ pub fn trim_transport_block(
         }
     }
     TrimResult {
-        events: stable_sort_by_ms(kept),
+        events: crate::sim::sorted_by_sim_order(kept),
         applied_ms: applied,
     }
 }
@@ -755,7 +750,7 @@ pub fn delete_transport_block(
             kept.extend(start_events_for(next, t1));
         }
     }
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // The right part starts on the audio it played before, so removing a mid-block region
@@ -808,7 +803,7 @@ pub fn delete_block_range(
         sec: Some(resume_sec),
         ..SessionEvent::at(range_end, "play", deck)
     });
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // Both halves keep their original phase: the right part resumes exactly the audio it
@@ -835,7 +830,7 @@ pub fn split_transport_block(
         let mut resumed = block.clone();
         resumed.track_start_sec = resume_sec;
         kept.extend(start_events_for(&resumed, split_ms));
-        return stable_sort_by_ms(kept);
+        return crate::sim::sorted_by_sim_order(kept);
     }
 
     let resume_sec = (block.track_start_sec
@@ -847,7 +842,7 @@ pub fn split_transport_block(
         sec: Some(resume_sec),
         ..SessionEvent::at(split_ms, "play", deck)
     });
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // The deck's track position at wall time `ms` inside a looping block, read off
@@ -945,7 +940,7 @@ fn delete_loop_block_range(
         resumed.track_start_sec = sec;
         kept.extend(start_events_for(&resumed, range_end));
     }
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

@@ -17,15 +17,11 @@ pub const FILTER_DEAD_ZONE: f64 = 0.05;
 // has no descriptor to read these from.
 const RATE_MIN: f64 = 0.92;
 const RATE_MAX: f64 = 1.08;
-const RATE_SHORT_LABEL: &str = "RT";
-const RATE_LANE_GROUP: u8 = 2;
 const RATE_UNIT: &str = "ratio";
 
 /// How the editor labels a lane. `unit` is what the value means, so a gesture
 /// readout cannot print dB for a mixer whose eq is a 0-1 kill.
 pub struct LaneDisplay {
-    pub short_label: &'static str,
-    pub lane_group: u8,
     pub unit: &'static str,
 }
 
@@ -112,15 +108,9 @@ impl EditableLane {
             .or_else(|| self.canonical_descriptor())
         {
             Some(descriptor) => LaneDisplay {
-                short_label: descriptor.short_label,
-                lane_group: descriptor.lane_group,
                 unit: descriptor.unit.id(),
             },
-            None => LaneDisplay {
-                short_label: RATE_SHORT_LABEL,
-                lane_group: RATE_LANE_GROUP,
-                unit: RATE_UNIT,
-            },
+            None => LaneDisplay { unit: RATE_UNIT },
         }
     }
 }
@@ -236,11 +226,6 @@ impl LaneSpec {
     }
 }
 
-fn sort_by_ms(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events.sort_by(crate::sim::event_sim_order);
-    events
-}
-
 // A drag can scrub back and forth over the same time range. The last value
 // written at each timestamp is the one the user ended on.
 pub fn normalize_gesture_samples(samples: &[LanePoint]) -> Vec<LanePoint> {
@@ -312,7 +297,7 @@ pub fn splice_lane_events(
 
     // Sorted first because `points` arrives from a public API and a drag can scrub
     // backwards. The restore check has to compare against the temporally last value.
-    let mut inserted: Vec<SessionEvent> = sort_by_ms(
+    let mut inserted: Vec<SessionEvent> = crate::sim::sorted_by_sim_order(
         points
             .iter()
             .map(|point| spec.make_event(point.ms, spec.clamp_value(point.value), deck))
@@ -326,7 +311,7 @@ pub fn splice_lane_events(
     }
 
     kept.append(&mut inserted);
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // The rate lane is a step function, so one inserted point holds until the next change.
@@ -344,7 +329,7 @@ pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> V
         rate: Some(rate),
         ..SessionEvent::at(ms, "set_playback_rate", deck)
     });
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // The rate is not clamped to the lane's display range: the user typed a BPM.
@@ -380,7 +365,7 @@ pub fn set_rate_span(
             ..SessionEvent::at(end_ms, "set_playback_rate", deck)
         });
     }
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // Scans backwards for the last event of `event_type` for `deck` at or before
@@ -461,7 +446,7 @@ fn replace_range_with_opener_and_restore<T: PartialEq + Copy>(
     }
 
     kept.append(&mut inserted);
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // Shift+drag on the filter lane: toggles filter on/off over [range_start_ms,
@@ -626,7 +611,7 @@ pub fn resize_filter_active_span(
                 }
             })
             .collect();
-        return sort_by_ms(out);
+        return crate::sim::sorted_by_sim_order(out);
     }
 
     // edge == "end"
@@ -662,7 +647,7 @@ pub fn resize_filter_active_span(
                 }
             })
             .collect();
-        sort_by_ms(out)
+        crate::sim::sorted_by_sim_order(out)
     } else {
         let mut out = events.to_vec();
         out.push(SessionEvent::param(
@@ -672,7 +657,7 @@ pub fn resize_filter_active_span(
             "active",
             0.0,
         ));
-        sort_by_ms(out)
+        crate::sim::sorted_by_sim_order(out)
     }
 }
 
@@ -732,7 +717,7 @@ pub fn move_filter_active_span(
             event.clone()
         })
         .collect();
-    sort_by_ms(out)
+    crate::sim::sorted_by_sim_order(out)
 }
 
 // Rewrites event track paths after the user relocates missing files.
@@ -1138,7 +1123,7 @@ mod fuzz {
                     spec.make_event(ms, value, deck)
                 })
                 .collect();
-            events = sort_by_ms(events);
+            events = crate::sim::sorted_by_sim_order(events);
 
             let first = (rng(&mut seed) % 10_000) as f64;
             let second = (rng(&mut seed) % 10_000) as f64;

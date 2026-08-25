@@ -183,8 +183,6 @@ export type LaneSpec = {
   max: number;
   defaultValue: number;
   epsilon: number;
-  shortLabel: string;
-  laneGroup: number;
   unit: LaneUnit;
 };
 
@@ -205,8 +203,6 @@ export function laneSpecs(mixerId: string): Record<EditableLaneKey, LaneSpec> {
 export type MixerParamSpec = {
   slot: string;
   param: string;
-  label: string;
-  shortLabel: string;
   min: number;
   max: number;
   defaultValue: number;

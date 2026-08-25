@@ -65,7 +65,7 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_size_frames: Option<u32>,
+    pub buffer_size_frames: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limiter_enabled: Option<bool>,
     /// The device rate `frame` counts in, so a render at another rate can scale it.

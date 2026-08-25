@@ -319,6 +319,7 @@ name = "beatmatcher"
 version = "8.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "cpal",
  "dirs",
  "flacenc",

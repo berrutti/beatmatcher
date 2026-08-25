@@ -84,13 +84,7 @@ export function deckChromeItem(
   return {
     bounds: (viewContext) => ({ x: 0, y: row.top, w: viewContext.canvasW, h: row.height }),
     draw: (ctx, viewContext) =>
-      drawDeckRowChrome(
-        ctx,
-        row,
-        viewContext.canvasW,
-        { zebraIndex, ...chrome },
-        viewContext.mixerId
-      ),
+      drawDeckRowChrome(ctx, row, viewContext.canvasW, { zebraIndex, ...chrome }),
     hitTest: (point) => {
       // Only the label-column lane caret is interactive here.
       if (point.x > LABEL_W || row.lanes.length === 0) return null;
@@ -359,7 +353,7 @@ export function masterItem(
   return {
     bounds: (viewContext) => ({ x: 0, y: top, w: viewContext.canvasW, h: height }),
     draw: (ctx, viewContext) => {
-      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane, viewContext.mixerId);
+      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane);
       drawMasterLane(
         ctx,
         points,

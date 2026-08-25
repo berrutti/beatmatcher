@@ -30,7 +30,7 @@ pub use param::{
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
     sim_state_from_snapshot, DeckSim, DeckSnap, SampleCache, SessionSnapshot, SimState, StripSim,
-    StripSnap, DEFAULT_MASTER_GAIN, JOG_FACTOR_MIN,
+    DEFAULT_MASTER_GAIN, JOG_FACTOR_MIN,
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
@@ -135,8 +135,6 @@ mod wasm {
                         "max": spec.max,
                         "defaultValue": spec.default_value,
                         "epsilon": spec.epsilon,
-                        "shortLabel": display.short_label,
-                        "laneGroup": display.lane_group,
                         "unit": display.unit,
                     }),
                 )
@@ -160,8 +158,6 @@ mod wasm {
                     serde_json::json!({
                         "slot": slot,
                         "param": param.id,
-                        "label": param.label,
-                        "shortLabel": param.short_label,
                         "min": param.min,
                         "max": param.max,
                         "defaultValue": param.default,

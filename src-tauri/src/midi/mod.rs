@@ -1,3 +1,4 @@
+use crate::lock::LockIgnoringPoison;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -35,10 +36,7 @@ impl Monitor {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let mut buffer = self
-            .buffer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut buffer = self.buffer.locked();
         if buffer.len() == MONITOR_CAPACITY {
             buffer.pop_front();
         }
@@ -46,10 +44,7 @@ impl Monitor {
     }
 
     fn drain(&self) -> Vec<MidiMessage> {
-        let mut buffer = self
-            .buffer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut buffer = self.buffer.locked();
         buffer.drain(..).collect()
     }
 }
@@ -101,12 +96,7 @@ impl MidiState {
     }
 
     pub(crate) fn clear_control_memory(&self) {
-        for device in self
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .values_mut()
-        {
+        for device in self.devices.locked().values_mut() {
             device.memory.clear();
         }
     }
@@ -120,10 +110,7 @@ impl MidiState {
     /// A port that is still present is left untouched, so a rescan never disturbs
     /// the deck assignment of a device someone is playing.
     fn sync_devices(&self, ports: &[String]) {
-        let mut devices = self
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = self.devices.locked();
         devices.retain(|port, _| ports.contains(port));
         for port in ports {
             if devices.contains_key(port) {
@@ -150,10 +137,7 @@ impl MidiState {
     }
 
     fn send(&self, request: Request) {
-        let sender = self
-            .requests
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let sender = self.requests.locked();
         let _ = sender.send(request);
     }
 }
@@ -238,10 +222,7 @@ fn connect(
                 });
                 // Cloned out so the slot is not held while the handler takes
                 // engine locks.
-                let handler = dispatch
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .clone();
+                let handler = dispatch.locked().clone();
                 if let Some(handler) = handler {
                     handler(&source, data);
                 }
@@ -254,10 +235,7 @@ fn connect(
 /// The only path from the MIDI thread into the app, so mapped input cannot reach device
 /// or buffer configuration, which rebuild the streams and stay on the main thread.
 pub fn set_dispatch(state: &MidiState, dispatch: Dispatch) {
-    *state
-        .dispatch
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(dispatch);
+    *state.dispatch.locked() = Some(dispatch);
 }
 
 impl From<ResolutionSpec> for Resolution {
@@ -284,10 +262,7 @@ pub(crate) fn apply(
     }
     // Scoped so the device lock is released before the engine locks are taken.
     let moved = {
-        let mut devices = midi
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = midi.devices.locked();
         let Some(device) = devices.get_mut(port) else {
             return;
         };
@@ -304,32 +279,46 @@ pub(crate) fn apply(
         Some(Move::Cue { deck }) => {
             engine
                 .toggle_cue_active(crate::ParamOrigin::Midi, &deck)
-                .ok();
+                .or_log("cue");
             refresh_led(engine, midi, Feedback::Cue, &deck);
         }
         Some(Move::Play { deck }) => {
-            engine.toggle_play(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .toggle_play(crate::ParamOrigin::Midi, &deck)
+                .or_log("play");
         }
         Some(Move::CuePress { deck }) => {
-            engine.press_cue(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .press_cue(crate::ParamOrigin::Midi, &deck)
+                .or_log("cue press");
         }
         Some(Move::CueRelease { deck }) => {
-            engine.release_cue(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .release_cue(crate::ParamOrigin::Midi, &deck)
+                .or_log("cue release");
         }
         Some(Move::LoopIn { deck }) => {
-            engine.loop_in(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .loop_in(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop in");
         }
         Some(Move::LoopOut { deck }) => {
-            engine.loop_out(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .loop_out(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop out");
         }
         Some(Move::LoopExitOrReloop { deck }) => {
-            engine.exit_or_reloop(crate::ParamOrigin::Midi, &deck).ok();
+            engine
+                .exit_or_reloop(crate::ParamOrigin::Midi, &deck)
+                .or_log("loop exit");
         }
         Some(Move::Jog { deck, ticks }) => {
-            engine.jog(crate::ParamOrigin::Midi, &deck, ticks).ok();
+            engine
+                .jog(crate::ParamOrigin::Midi, &deck, ticks)
+                .or_log("jog");
         }
         Some(Move::Shift { deck, held }) => {
-            engine.set_jog_shift(&deck, held).ok();
+            engine.set_jog_shift(&deck, held).or_log("jog shift");
         }
         // Forwarded rather than acted on: the frontend owns the flag and writes
         // it back through `set_quantize`, which is also what lights the button.
@@ -359,7 +348,7 @@ pub(crate) fn apply(
         Some(Move::Tempo { deck, position }) => {
             engine
                 .set_playback_rate_from_fader(crate::ParamOrigin::Midi, &deck, position)
-                .ok();
+                .or_log("tempo");
         }
         Some(Move::Xfader { position }) => {
             let Some(descriptor) = engine.audio.mixer().descriptor(
@@ -389,7 +378,7 @@ pub(crate) fn apply(
             let value = descriptor.from_unit_interval(position);
             engine
                 .set_deck_param(crate::ParamOrigin::Midi, &deck, &slot, &param, value as f32)
-                .ok();
+                .or_log("param");
         }
     }
 }
@@ -398,10 +387,7 @@ pub(crate) fn apply(
 /// button too.
 pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
     let writes: Vec<(String, u8, u8)> = {
-        let devices = state
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let devices = state.devices.locked();
         devices
             .iter()
             .filter_map(|(port, device)| {
@@ -429,10 +415,7 @@ pub fn send_led(state: &MidiState, kind: Feedback, deck: &str, active: bool) {
 /// on would stay dark until the next toggle.
 fn resync_leds(engine: &crate::engine::Engine, midi: &MidiState) {
     let lit: Vec<(Feedback, String)> = {
-        let devices = midi
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let devices = midi.devices.locked();
         let mut lit: Vec<(Feedback, String)> = devices
             .values()
             .filter_map(|device| device.profile.as_ref())
@@ -455,18 +438,14 @@ pub(crate) fn refresh_led(
     deck: &str,
 ) {
     let on = match kind {
-        Feedback::Cue => engine.audio.strip(deck).map(|strip| {
-            strip
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .cue_active
-        }),
-        Feedback::Quantize => engine.deck(deck).ok().map(|deck_state| {
-            deck_state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .quantize
-        }),
+        Feedback::Cue => engine
+            .audio
+            .strip(deck)
+            .map(|strip| strip.locked().cue_active),
+        Feedback::Quantize => engine
+            .deck(deck)
+            .ok()
+            .map(|deck_state| deck_state.locked().quantize),
     };
     if let Some(on) = on {
         send_led(midi, kind, deck, on);
@@ -503,10 +482,7 @@ fn port_names() -> Result<Vec<String>, String> {
 }
 
 fn device_list(state: &MidiState) -> Vec<MidiDevice> {
-    let devices = state
-        .devices
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let devices = state.devices.locked();
     let mut list: Vec<MidiDevice> = devices
         .iter()
         .map(|(port, device)| MidiDevice {
@@ -550,10 +526,7 @@ pub fn set_midi_device_deck(
     deck: Option<String>,
 ) -> Result<(), String> {
     {
-        let mut devices = state
-            .devices
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut devices = state.devices.locked();
         let Some(device) = devices.get_mut(&port) else {
             return Err(format!("no MIDI device on '{port}'"));
         };
@@ -590,6 +563,19 @@ use decode::{resolve_move, ControlMemory, Move};
 pub(crate) use mapping::Feedback;
 use mapping::{built_in_mappings, Mapping, Profile, ResolutionSpec};
 use wire::{Key, Resolution, NOTE_ON};
+
+/// A mapped control that fails without saying so reads as broken hardware.
+trait OrLog {
+    fn or_log(self, control: &str);
+}
+
+impl<T> OrLog for Result<T, String> {
+    fn or_log(self, control: &str) {
+        if let Err(error) = self {
+            log::warn!("midi {control}: {error}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

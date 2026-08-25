@@ -132,13 +132,9 @@ pub(crate) fn apply_deck_command(
         }
         SessionCommand::SetParam {
             slot, param, value, ..
-        } => match (slot, param) {
-            ("fader", "gain") => strip.set_gain(value as f32),
-            ("eq", band) => strip.set_eq_band(band, value as f32),
-            ("filter", "value") => strip.set_filter(value as f32),
-            ("filter", "active") => strip.set_filter_active(value != 0.0),
-            _ => {}
-        },
+        } => {
+            strip.set_param(slot, param, value as f32);
+        }
 
         SessionCommand::SetPlaybackRate { rate, .. } => {
             deck.playback_rate = rate.max(0.1);
@@ -235,14 +231,7 @@ fn load_into(
     load_samples: &mut LoadSamples<'_>,
 ) -> Result<(), String> {
     let (samples, channels) = load_samples(path)?;
-    let total_frames = samples.len() / channels;
-    deck.reset();
-    deck.samples = samples;
-    deck.channels = channels;
-    deck.device_sample_rate = sample_rate;
-    deck.total_frames = total_frames;
-    deck.duration = total_frames as f64 / sample_rate as f64;
-    deck.loaded_path = Some(path.to_string());
+    deck.load(path, samples, channels, sample_rate);
     Ok(())
 }
 

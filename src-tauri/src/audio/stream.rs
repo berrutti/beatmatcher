@@ -1,5 +1,7 @@
 use super::deck::{ChannelStrip, Deck, RenderTargets};
 use super::dsp::Limiter;
+use crate::audio::atomic_f32::AtomicF32;
+use crate::lock::LockIgnoringPoison;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
 use std::sync::{atomic::Ordering, Arc, Mutex};
@@ -16,17 +18,14 @@ pub(crate) type ChannelPairs = Vec<ChannelPair>;
 
 pub(crate) use session_core::DEFAULT_MASTER_GAIN;
 
-// What a buffer-size setting of 0 ("driver default") resolves to on macOS Core Audio.
-pub(crate) const DEFAULT_BUFFER_FRAMES: u32 = 512;
-
 #[derive(Clone)]
 pub struct MasterMonitor {
-    pub level_l: Arc<std::sync::atomic::AtomicU32>,
-    pub level_r: Arc<std::sync::atomic::AtomicU32>,
-    pub master_gain: Arc<std::sync::atomic::AtomicU32>,
-    pub cue_mix: Arc<std::sync::atomic::AtomicU32>,
+    pub level_l: Arc<AtomicF32>,
+    pub level_r: Arc<AtomicF32>,
+    pub master_gain: Arc<AtomicF32>,
+    pub cue_mix: Arc<AtomicF32>,
     // Here and not on the strips, which carry only the gain it resolves to against their assign.
-    pub xfader_position: Arc<std::sync::atomic::AtomicU32>,
+    pub xfader_position: Arc<AtomicF32>,
     // A Mutex and not an atomic because it is categorical, and the audio thread never reads it.
     pub fader_curve: Arc<Mutex<session_core::FaderCurve>>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
@@ -34,6 +33,7 @@ pub struct MasterMonitor {
     // The soundcard's clock, not the OS one: they are different oscillators, so anything
     // scheduled against wall time drifts against the audio output.
     pub output_frames: Arc<std::sync::atomic::AtomicU64>,
+    output_callbacks: Arc<std::sync::atomic::AtomicU64>,
     // Only the callback can know it: whether the buffer in flight reaches the file is decided there.
     capture_start: Arc<std::sync::atomic::AtomicU64>,
     // The first frame the recording may contain. A buffer whose decks rendered before arming
@@ -46,17 +46,16 @@ pub(crate) const NOT_CAPTURING: u64 = u64::MAX;
 impl MasterMonitor {
     pub(crate) fn new() -> Self {
         Self {
-            level_l: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            level_r: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            master_gain: Arc::new(std::sync::atomic::AtomicU32::new(
-                DEFAULT_MASTER_GAIN.to_bits(),
-            )),
-            cue_mix: Arc::new(std::sync::atomic::AtomicU32::new(0u32)),
-            xfader_position: Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits())),
+            level_l: Arc::new(AtomicF32::default()),
+            level_r: Arc::new(AtomicF32::default()),
+            master_gain: Arc::new(AtomicF32::new(DEFAULT_MASTER_GAIN)),
+            cue_mix: Arc::new(AtomicF32::default()),
+            xfader_position: Arc::new(AtomicF32::default()),
             fader_curve: Arc::new(Mutex::new(session_core::FaderCurve::default())),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            output_callbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             capture_start: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
             capture_from: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
         }
@@ -69,8 +68,19 @@ impl MasterMonitor {
     /// Claims the buffer about to be rendered, so a command that reads the clock while the
     /// callback is running still names the first frame it can reach. Once per master buffer.
     fn claim_output_frames(&self, frames: usize) -> u64 {
+        self.output_callbacks.fetch_add(1, Ordering::Relaxed);
         self.output_frames
             .fetch_add(frames as u64, Ordering::Relaxed)
+    }
+
+    /// The driver's period, which is fractional when the device is clocked at another
+    /// rate: a 128-frame buffer at 48 kHz is 117.6 frames of a 44.1 kHz stream.
+    pub fn frames_per_callback(&self) -> f64 {
+        let callbacks = self.output_callbacks.load(Ordering::Relaxed);
+        if callbacks == 0 {
+            return 0.0;
+        }
+        self.output_frames.load(Ordering::Relaxed) as f64 / callbacks as f64
     }
 
     pub fn capture_start_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
@@ -83,48 +93,34 @@ impl MasterMonitor {
     }
 
     pub fn get_levels(&self) -> [f32; 2] {
-        [
-            f32::from_bits(self.level_l.load(Ordering::Relaxed)),
-            f32::from_bits(self.level_r.load(Ordering::Relaxed)),
-        ]
+        [self.level_l.get(), self.level_r.get()]
     }
 
     pub fn set_master_gain(&self, gain: f32) {
-        self.master_gain
-            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.master_gain.set(gain.clamp(0.0, 1.0));
     }
 
     pub fn set_cue_mix(&self, mix: f32) {
-        self.cue_mix
-            .store(mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.cue_mix.set(mix.clamp(0.0, 1.0));
     }
 
     /// Reports whether the throw actually moved, so a caller can skip re-resolving every
     /// strip and logging an event for a value the mixer is already at.
     pub fn set_xfader_position(&self, position: f32) -> bool {
         let clamped = position.clamp(-1.0, 1.0);
-        let previous = self
-            .xfader_position
-            .swap(clamped.to_bits(), Ordering::Relaxed);
-        f32::from_bits(previous) != clamped
+        self.xfader_position.replace(clamped) != clamped
     }
 
     pub fn xfader_position(&self) -> f32 {
-        f32::from_bits(self.xfader_position.load(Ordering::Relaxed))
+        self.xfader_position.get()
     }
 
     pub fn set_fader_curve(&self, curve: session_core::FaderCurve) {
-        *self
-            .fader_curve
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = curve;
+        *self.fader_curve.locked() = curve;
     }
 
     pub fn fader_curve(&self) -> session_core::FaderCurve {
-        *self
-            .fader_curve
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        *self.fader_curve.locked()
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {
@@ -136,8 +132,8 @@ impl MasterMonitor {
     }
 
     pub(crate) fn store_levels(&self, l: f32, r: f32) {
-        self.level_l.store(l.to_bits(), Ordering::Relaxed);
-        self.level_r.store(r.to_bits(), Ordering::Relaxed);
+        self.level_l.set(l);
+        self.level_r.set(r);
     }
 }
 
@@ -150,8 +146,8 @@ pub(crate) fn mix_channels(
     mut cue: Option<&mut [f32]>,
 ) {
     for (deck_arc, strip_arc) in channels {
-        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut deck = deck_arc.locked();
+        let mut strip = strip_arc.locked();
         deck.set_next_render_frame(buffer_start + frames as u64);
         strip.set_next_render_frame(buffer_start + frames as u64);
         let (sum_l, sum_r) = deck.render_block(
@@ -484,8 +480,8 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
     let buffer_start = monitor.as_ref().map(|m| m.claim_output_frames(frames));
 
     for (deck_arc, strip_arc) in channels.iter() {
-        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut deck = deck_arc.locked();
+        let mut strip = strip_arc.locked();
         // Per deck, not one shared mix: `mix_frame`'s mono fold averages l and
         // r before summing, so folding a combined mix would round differently.
         scratch.fill(0.0);
@@ -519,7 +515,7 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
     }
 
     if let Some(m) = monitor {
-        let gain = f32::from_bits(m.master_gain.load(Ordering::Relaxed));
+        let gain = m.master_gain.get();
         let use_limiter = m.limiter_enabled.load(Ordering::Relaxed);
         for i in 0..frames {
             let base = i * output_channels + channel_offset;
@@ -573,10 +569,10 @@ fn fill_cue_with_master_tap(
 
     mix_channels(channels, frames, buffer_start, master_mix, Some(cue_buf));
 
-    let gain = f32::from_bits(monitor.master_gain.load(Ordering::Relaxed));
+    let gain = monitor.master_gain.get();
     let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
     super::master_block(use_limiter.then_some(&mut *limiter), gain, master_mix);
-    let mix = f32::from_bits(monitor.cue_mix.load(Ordering::Relaxed));
+    let mix = monitor.cue_mix.get();
     for i in 0..frames {
         let cl = cue_buf[i * 2].clamp(-1.0, 1.0);
         let cr = cue_buf[i * 2 + 1].clamp(-1.0, 1.0);
@@ -630,8 +626,8 @@ fn fill_output_combined(
     ctx.main_scratch.resize(frames * 2, 0.0);
 
     for (deck_arc, strip_arc) in ctx.channels {
-        let mut deck = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let mut strip = strip_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut deck = deck_arc.locked();
+        let mut strip = strip_arc.locked();
 
         ctx.main_scratch.fill(0.0);
         deck.set_next_render_frame(buffer_start + frames as u64);
@@ -658,7 +654,7 @@ fn fill_output_combined(
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
 
-    let gain = f32::from_bits(ctx.monitor.master_gain.load(Ordering::Relaxed));
+    let gain = ctx.monitor.master_gain.get();
 
     let use_limiter = ctx.monitor.limiter_enabled.load(Ordering::Relaxed);
 
@@ -677,7 +673,7 @@ fn fill_output_combined(
         }
     }
 
-    let mix = f32::from_bits(ctx.monitor.cue_mix.load(Ordering::Relaxed));
+    let mix = ctx.monitor.cue_mix.get();
 
     for i in 0..frames {
         let cl = ctx.cue_buf[i * 2].clamp(-1.0, 1.0);

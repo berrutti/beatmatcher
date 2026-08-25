@@ -1,6 +1,7 @@
 use crate::audio::{self, DeviceInfo, TrackInfo};
 use crate::deck_sync::DeckSyncPayload;
 use crate::engine::{LoopOutResult, NudgeResult};
+use crate::lock::LockIgnoringPoison;
 use crate::ParamOrigin;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -13,9 +14,6 @@ fn band_normalization_scale(band: &[f32]) -> f32 {
         1.0
     }
 }
-
-// `loop_active` can be false while a region is still defined, so reloop can re-enter it;
-// `loop_region_cleared` says the region itself is gone and the overlay should go with it.
 
 /// Where the crossfader was when recording started. Thru is skipped because every reader
 /// already defaults to it, and stamping it would head every session with inert events.
@@ -81,14 +79,6 @@ fn jog_speed_start_event(
     )
 }
 
-/// 0 means "driver default", which is what the offline renderer falls back to.
-fn recorded_buffer_frames(setting: u32) -> u32 {
-    match setting {
-        0 => crate::audio::DEFAULT_BUFFER_FRAMES,
-        frames => frames,
-    }
-}
-
 fn xfader_assigns(
     audio: &crate::audio::AppAudio,
 ) -> Vec<(&'static str, session_core::XfaderAssign)> {
@@ -97,12 +87,7 @@ fn xfader_assigns(
         .map(|deck_id| {
             let assign = audio
                 .strip(deck_id)
-                .map(|strip| {
-                    strip
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .xfader_assign
-                })
+                .map(|strip| strip.locked().xfader_assign)
                 .unwrap_or_default();
             (deck_id, assign)
         })
@@ -119,14 +104,9 @@ fn deck_snapshot_event(
     // knows whether a deck already playing at record start is audible.
     let gain = audio
         .strip(deck_id)
-        .map(|strip| {
-            strip
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .target_gain()
-        })
+        .map(|strip| strip.locked().target_gain())
         .unwrap_or(1.0);
-    let deck = arc.lock().unwrap_or_else(|e| e.into_inner());
+    let deck = arc.locked();
     let path = deck.loaded_path.as_ref()?;
     let sample_rate = deck.device_sample_rate as f64;
     Some((
@@ -153,7 +133,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         (
             "recording_start",
             serde_json::json!({
-                "buffer_size_frames": recorded_buffer_frames(audio.get_buffer_frames()),
+                "buffer_size_frames": audio.monitor.frames_per_callback(),
                 "sample_rate": audio.device_sample_rate,
                 "limiter_enabled": audio.monitor.limiter_enabled(),
             }),
@@ -174,7 +154,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         let Some(arc) = audio.strip(deck_id) else {
             continue;
         };
-        let strip = arc.lock().unwrap_or_else(|e| e.into_inner());
+        let strip = arc.locked();
         events.extend(strip_start_events(audio.mixer(), deck_id, |slot, param| {
             strip.param(slot, param)
         }));
@@ -337,11 +317,7 @@ pub(crate) fn stop(
     engine: tauri::State<'_, crate::engine::Engine>,
     deck: String,
 ) -> Result<(), String> {
-    engine
-        .deck(&deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_playing = false;
+    engine.deck(&deck)?.locked().stop();
     Ok(())
 }
 
@@ -421,11 +397,7 @@ pub(crate) fn set_quantize(
     deck: String,
     quantize: bool,
 ) -> Result<(), String> {
-    engine
-        .deck(&deck)?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .quantize = quantize;
+    engine.deck(&deck)?.locked().set_quantize(quantize);
     crate::midi::refresh_led(&engine, &midi, crate::midi::Feedback::Quantize, &deck);
     Ok(())
 }
@@ -500,8 +472,7 @@ pub(crate) fn set_deck_muted(
         .audio
         .strip(&deck)
         .ok_or_else(|| format!("unknown deck: {deck}"))?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .locked()
         .set_muted(muted);
     Ok(())
 }
@@ -617,26 +588,15 @@ pub(crate) async fn load_track(
 
     let loaded_at_frame;
     {
-        let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut deck_state = deck_arc.locked();
         loaded_at_frame = deck_state.render_frame();
-        deck_state.samples = Arc::clone(&samples);
-        deck_state.channels = channels;
-        deck_state.device_sample_rate = device_sample_rate;
-        deck_state.total_frames = total_frames;
-        deck_state.duration = duration;
-        deck_state.loaded_path = Some(path_for_log.clone());
-        deck_state.is_playing = false;
-        deck_state.is_cueing = false;
-        deck_state.main_pos = start_pos;
-        deck_state.cue_pos = start_pos;
-        deck_state.cue_point = start_pos;
-        deck_state.loop_active = false;
-        deck_state.loop_end = 0.0;
-        deck_state.bpm = None;
-        deck_state.beat_offset_frames = 0.0;
-        deck_state.playback_rate = 1.0;
-        deck_state.jog_hold_factor = 1.0;
-        deck_state.bands = audio::SpectralBands::default();
+        deck_state.load(
+            &path_for_log,
+            Arc::clone(&samples),
+            channels,
+            device_sample_rate,
+        );
+        deck_state.open_at(start_pos);
     }
 
     // Compute spectral bands in background. Emit "bands-ready" when done so the
@@ -654,15 +614,15 @@ pub(crate) async fn load_track(
         let high_scale = band_normalization_scale(&high_band);
 
         {
-            let mut deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
-            deck_state.bands = audio::SpectralBands {
+            let mut deck_state = deck_arc.locked();
+            deck_state.set_bands(audio::SpectralBands {
                 bass: Arc::new(bass_band),
                 mid: Arc::new(mid_band),
                 high: Arc::new(high_band),
                 bass_scale,
                 mid_scale,
                 high_scale,
-            };
+            });
         }
 
         app.emit("bands-ready", deck_id).ok();
@@ -709,7 +669,7 @@ pub(crate) async fn get_spectral_waveform_region(
 ) -> Result<tauri::ipc::Response, String> {
     let deck_arc = engine.deck(&deck)?;
     let (samples, channels, bands, device_sr) = {
-        let deck_state = deck_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let deck_state = deck_arc.locked();
         (
             Arc::clone(&deck_state.samples),
             deck_state.channels,
@@ -952,7 +912,7 @@ pub(crate) fn save_recording(
         }
     }
     if write_cue {
-        match serde_json::from_str::<crate::offline_render::SessionFile>(&log) {
+        match serde_json::from_str::<session_core::event::SessionFile>(&log) {
             Ok(session) => write_cue_sheet(&dest, &session.events),
             Err(error) => log::warn!("save_recording: cannot parse log for cue sheet: {error}"),
         }
@@ -994,12 +954,7 @@ pub(crate) async fn render_session_to_file(
     write_cue: bool,
 ) -> Result<(), String> {
     // Prefer the in-memory session so unsaved edits are rendered too.
-    let cached = sessions
-        .files
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&session_path)
-        .cloned();
+    let cached = sessions.files.locked().get(&session_path).cloned();
     let limiter = if engine.audio.monitor.limiter_enabled() {
         crate::offline_render::MasterLimiter::On
     } else {
@@ -1012,7 +967,7 @@ pub(crate) async fn render_session_to_file(
                 let json = std::fs::read_to_string(&session_path)
                     .map_err(|e| format!("{session_path}: {e}"))?;
                 std::sync::Arc::new(
-                    crate::offline_render::SessionFile::parse(&json)
+                    session_core::event::SessionFile::parse(&json)
                         .map_err(|e| format!("parse error: {e}"))?,
                 )
             }
@@ -1027,9 +982,9 @@ pub(crate) async fn render_session_to_file(
             },
         )?;
         let write_result = if use_flac {
-            crate::offline_render::write_flac_f32(&output_path, &rendered, sample_rate)
+            crate::audio_file::write_flac_f32(&output_path, &rendered, sample_rate)
         } else {
-            crate::offline_render::write_wav_f32(&output_path, &rendered, sample_rate, 2)
+            crate::audio_file::write_wav_f32(&output_path, &rendered, sample_rate, 2)
         };
         if write_result.is_ok() && write_cue {
             write_cue_sheet(&output_path, &session.events);
@@ -1223,16 +1178,6 @@ mod tests {
     }
 
     #[test]
-    fn a_default_buffer_setting_records_the_shared_default() {
-        assert_eq!(
-            recorded_buffer_frames(0),
-            crate::audio::DEFAULT_BUFFER_FRAMES
-        );
-        assert_eq!(recorded_buffer_frames(128), 128);
-        assert_eq!(recorded_buffer_frames(1024), 1024);
-    }
-
-    #[test]
     fn record_start_stamps_a_filter_that_was_already_engaged() {
         let events =
             strip_start_events(&session_core::CLASSIC_3BAND_V2, "A", |slot, param| {
@@ -1341,12 +1286,21 @@ mod tests {
     //
     // Mirrors the seek command logic (pos update + conditional loop disarm).
 
+    /// Through the real applier, so these cannot pass against a copy of the logic.
     fn simulate_seek(deck_state: &mut Deck, pos: f64) {
-        deck_state.main_pos = pos;
-        deck_state.cue_pos = pos;
-        if deck_state.outside_loop(pos) {
-            deck_state.loop_active = false;
-        }
+        let mut strip = crate::audio::ChannelStrip::from_manifest(crate::audio::MIXER, SR as f32);
+        crate::audio::apply_deck_command(
+            &session_core::SessionCommand::Seek {
+                deck: "A",
+                sec: pos / f64::from(SR),
+            },
+            deck_state,
+            &mut strip,
+            SR,
+            0.0,
+            &mut |path: &str| Err(format!("no load in a seek test: {path}")),
+        )
+        .expect("seek applies");
     }
 
     #[test]
