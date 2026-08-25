@@ -197,7 +197,9 @@
   },
   "modal": {
     "cancel": "Cancelar",
-    "confirm": "Confirmar"
+    "confirm": "Confirmar",
+    "save": "Guardar",
+    "discard": "Descartar"
   },
   "bpmModal": {
     "title": "Fijar BPM de la pista",
@@ -258,7 +260,6 @@
     "renderWav": "Renderizar WAV",
     "renderFlac": "Renderizar FLAC",
     "edit": "Editar sesión",
-    "save": "Guardar",
     "saveAs": "Guardar como",
     "discardTitle": "Descartar cambios sin guardar?",
     "discardBody": "La sesión tiene cambios sin guardar. Al expulsar se descartarán.",
@@ -279,7 +280,11 @@
     "loadingPhaseReading": "Leyendo el archivo de sesión",
     "loadingPhaseParsing": "Analizando eventos",
     "loadingPhaseDecoding": "Decodificando pistas",
-    "loadingPhaseIndexing": "Construyendo el índice"
+    "loadingPhaseIndexing": "Construyendo el índice",
+    "renderingTitle": "Renderizando mezcla",
+    "renderingBody": "Renderizando la sesión a un archivo de audio.",
+    "renderingPhaseRendering": "Renderizando audio",
+    "renderingPhaseWriting": "Escribiendo archivo"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",
@@ -287,5 +292,16 @@
     "bodySession": "La sesion se esta reproduciendo. Salir de todas formas?",
     "bodyDirty": "La sesión tiene cambios sin guardar. Salir de todas formas?",
     "confirm": "Salir"
+  },
+  "recovery": {
+    "title": "Trabajo sin terminar recuperado",
+    "body": "La sesión anterior terminó inesperadamente antes de guardar estos archivos.",
+    "audioFile": "Grabación de audio",
+    "sessionLog": "Registro de sesión (.bms)",
+    "renderFile": "Mezcla renderizada",
+    "remaining": "{count} más en espera",
+    "discardTitle": "¿Descartar estos archivos?",
+    "discardBody": "El audio recuperado y el registro de sesión se eliminarán definitivamente.",
+    "dontAskAgain": "No volver a preguntar"
   }
 }

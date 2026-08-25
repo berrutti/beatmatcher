@@ -56,15 +56,36 @@ describe('Modal', () => {
     wrapper.unmount();
   });
 
+  // Attached, because Escape is handled on the document: a listener on the panel stops
+  // seeing it the moment a backdrop click moves focus to the body.
   it('emits cancel when Escape is pressed', async () => {
     const wrapper = mount(Modal, {
       global: { plugins: [i18n] },
-      props: { open: true, title: 'Title' }
+      props: { open: true, title: 'Title' },
+      attachTo: document.body
     });
 
-    await wrapper.find('.modal__backdrop').trigger('keydown', { key: 'Escape' });
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
 
     expect(wrapper.emitted('cancel')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('still emits cancel on Escape after the backdrop was clicked', async () => {
+    const wrapper = mount(Modal, {
+      global: { plugins: [i18n] },
+      props: { open: true, title: 'Title' },
+      attachTo: document.body
+    });
+
+    await wrapper.find('.modal__backdrop').trigger('mousedown');
+    document.body.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+
+    expect(wrapper.emitted('cancel')).toBeTruthy();
+    wrapper.unmount();
   });
 
   it('emits cancel when clicking the backdrop', async () => {
@@ -92,14 +113,108 @@ describe('Modal', () => {
   it('closes off every exit when not dismissable', async () => {
     const wrapper = mount(Modal, {
       global: { plugins: [i18n] },
-      props: { open: true, title: 'Title', dismissable: false }
+      props: { open: true, title: 'Title', dismissable: false },
+      attachTo: document.body
     });
 
     expect(wrapper.findAll('button')).toHaveLength(0);
 
     await wrapper.find('.modal__backdrop').trigger('click');
-    await wrapper.find('.modal__backdrop').trigger('keydown', { key: 'Escape' });
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
 
     expect(wrapper.emitted('cancel')).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
+describe('focus on mount', () => {
+  it('focuses even when it mounts with open already true', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T' },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('.modal__btn--confirm').element);
+    wrapper.unmount();
+  });
+
+  it('falls back to the panel when it opens with no controls', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T', dismissable: false },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('.modal').element);
+    wrapper.unmount();
+  });
+});
+
+describe('focus trap', () => {
+  it('wraps Tab from the last control back to the first', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T' },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    const buttons = wrapper.findAll('button');
+    buttons[buttons.length - 1].element.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+    await nextTick();
+    expect(document.activeElement).toBe(buttons[0].element);
+    wrapper.unmount();
+  });
+
+  it('wraps Shift+Tab from the first control back to the last', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T' },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    const buttons = wrapper.findAll('button');
+    buttons[0].element.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true }));
+    await nextTick();
+    expect(document.activeElement).toBe(buttons[buttons.length - 1].element);
+    wrapper.unmount();
+  });
+
+  it('still moves focus on Tab after a backdrop click sent focus to the body', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T' },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    await wrapper.find('.modal__backdrop').trigger('click');
+    document.body.focus();
+    expect(wrapper.find('.modal').element.contains(document.activeElement)).toBe(false);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+    await nextTick();
+
+    const buttons = wrapper.findAll('button');
+    expect(document.activeElement).toBe(buttons[0].element);
+    wrapper.unmount();
+  });
+
+  it('keeps focus on the panel when the modal has no controls at all', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, title: 'T', dismissable: false },
+      global: { plugins: [i18n] },
+      attachTo: document.body
+    });
+    await nextTick();
+    expect(wrapper.findAll('button')).toHaveLength(0);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('.modal').element);
+    wrapper.unmount();
   });
 });

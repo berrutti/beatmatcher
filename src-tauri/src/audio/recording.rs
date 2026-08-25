@@ -10,7 +10,7 @@ pub(crate) fn wav_writer_thread(
     bit_depth: u16,
     receiver: std::sync::mpsc::Receiver<Vec<f32>>,
 ) -> Result<(), String> {
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::Write;
 
     let file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
     let mut buf = std::io::BufWriter::new(file);
@@ -45,6 +45,7 @@ pub(crate) fn wav_writer_thread(
         .map_err(|error| error.to_string())?;
 
     let mut data_bytes = 0u32;
+    let mut synced_at = 0u32;
 
     while let Ok(chunk) = receiver.recv() {
         for &sample in &chunk {
@@ -59,21 +60,38 @@ pub(crate) fn wav_writer_thread(
                 data_bytes = data_bytes.saturating_add(4);
             }
         }
+        if data_bytes.saturating_sub(synced_at) >= SIZE_SYNC_BYTES {
+            synced_at = data_bytes;
+            write_sizes(&mut buf, data_bytes)?;
+        }
     }
 
-    buf.flush().map_err(|error| error.to_string())?;
+    write_sizes(&mut buf, data_bytes)?;
+    Ok(())
+}
 
-    let riff_size = data_bytes.saturating_add(36);
-    let mut file = buf.into_inner().map_err(|error| error.to_string())?;
+/// About three seconds of stereo float at 48 kHz. A recording killed between syncs
+/// still opens: only the samples past the last one are outside the declared size.
+const SIZE_SYNC_BYTES: u32 = 1_000_000;
+
+/// RIFF declares its lengths in the header, so a file whose sizes are only written at
+/// the end reads as empty when the process dies. Rewritten as the recording grows.
+fn write_sizes(buf: &mut std::io::BufWriter<std::fs::File>, data_bytes: u32) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    buf.flush().map_err(|error| error.to_string())?;
+    let file = buf.get_mut();
+    let end = file.stream_position().map_err(|error| error.to_string())?;
     file.seek(SeekFrom::Start(4))
         .map_err(|error| error.to_string())?;
-    file.write_all(&riff_size.to_le_bytes())
+    file.write_all(&data_bytes.saturating_add(36).to_le_bytes())
         .map_err(|error| error.to_string())?;
     file.seek(SeekFrom::Start(40))
         .map_err(|error| error.to_string())?;
     file.write_all(&data_bytes.to_le_bytes())
         .map_err(|error| error.to_string())?;
-
+    file.seek(SeekFrom::Start(end))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

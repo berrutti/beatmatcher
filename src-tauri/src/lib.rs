@@ -9,6 +9,7 @@ mod lock;
 mod midi;
 pub mod offline_render;
 mod recorder;
+mod recovery;
 pub(crate) mod session_playback;
 pub mod settings;
 
@@ -93,6 +94,7 @@ pub fn run() {
         .manage(session_playback::SessionLibrary::new())
         .manage(SurfaceControl::default())
         .manage(midi::MidiState::new())
+        .manage(recovery::Recovery::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(move |app| {
@@ -100,7 +102,10 @@ pub fn run() {
             install_logging(app, app_level)?;
             spawn_track_ended_poller(app, ended_flags);
             match app.path().app_data_dir() {
-                Ok(data_dir) => broadcast::start(data_dir, audio_for_broadcast),
+                Ok(data_dir) => {
+                    app.state::<recovery::Recovery>().set_root(&data_dir);
+                    broadcast::start(data_dir, audio_for_broadcast);
+                }
                 Err(error) => log::warn!("performer broadcast disabled: {error}"),
             }
             engine_push::start(app.handle().clone(), audio_for_push, engine_push);
@@ -112,6 +117,10 @@ pub fn run() {
             commands::analyze_track,
             commands::discard_recording,
             commands::render_session_to_file,
+            commands::cancel_render,
+            commands::list_recoverable,
+            commands::recover_save_file,
+            commands::recover_discard,
             commands::save_bms_only,
             commands::eject_track,
             commands::files_info,

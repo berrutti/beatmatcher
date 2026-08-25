@@ -7,6 +7,7 @@ import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useBrowseStore } from '@renderer/stores/browse';
+import { anyModalOpen } from '@renderer/utils/modalStack';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -101,7 +102,7 @@ export function useKeyboard() {
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (settings.isOpen) return;
+    if (anyModalOpen.value) return;
 
     if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -192,7 +193,7 @@ export function useKeyboard() {
   }
 
   function onKeyUp(e: KeyboardEvent) {
-    if (settings.isOpen) return;
+    if (anyModalOpen.value) return;
 
     if (e.key === 'Shift') {
       shiftHeld.value = false;

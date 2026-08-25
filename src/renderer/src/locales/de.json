@@ -197,7 +197,9 @@
   },
   "modal": {
     "cancel": "Abbrechen",
-    "confirm": "Bestätigen"
+    "confirm": "Bestätigen",
+    "save": "Speichern",
+    "discard": "Verwerfen"
   },
   "bpmModal": {
     "title": "BPM des Tracks festlegen",
@@ -258,7 +260,6 @@
     "renderWav": "Als WAV rendern",
     "renderFlac": "Als FLAC rendern",
     "edit": "Session editieren",
-    "save": "Speichern",
     "saveAs": "Speichern unter",
     "discardTitle": "Ungespeicherte Änderungen verwerfen?",
     "discardBody": "Die Session hat ungespeicherte Änderungen. Beim Auswerfen gehen sie verloren.",
@@ -279,7 +280,11 @@
     "loadingPhaseReading": "Session-Datei wird gelesen",
     "loadingPhaseParsing": "Events werden gelesen",
     "loadingPhaseDecoding": "Tracks werden dekodiert",
-    "loadingPhaseIndexing": "Index wird erstellt"
+    "loadingPhaseIndexing": "Index wird erstellt",
+    "renderingTitle": "Mix wird gerendert",
+    "renderingBody": "Die Session wird in eine Audiodatei gerendert.",
+    "renderingPhaseRendering": "Audio wird gerendert",
+    "renderingPhaseWriting": "Datei wird geschrieben"
   },
   "quitModal": {
     "title": "Beatmatcher beenden?",
@@ -287,5 +292,16 @@
     "bodySession": "Die Session wird gerade abgespielt. Trotzdem beenden?",
     "bodyDirty": "Die Session hat ungespeicherte Änderungen. Trotzdem beenden?",
     "confirm": "Beenden"
+  },
+  "recovery": {
+    "title": "Unfertige Arbeit wiederhergestellt",
+    "body": "Die vorherige Sitzung wurde unerwartet beendet, bevor diese Dateien gespeichert wurden.",
+    "audioFile": "Audioaufnahme",
+    "sessionLog": "Sitzungsprotokoll (.bms)",
+    "renderFile": "Gerenderter Mix",
+    "remaining": "{count} weitere warten",
+    "discardTitle": "Diese Dateien verwerfen?",
+    "discardBody": "Das wiederhergestellte Audio und das Sitzungsprotokoll werden endgültig gelöscht.",
+    "dontAskAgain": "Nicht mehr fragen"
   }
 }

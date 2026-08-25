@@ -49,12 +49,23 @@ fn main() {
         } else {
             app_lib::offline_render::MasterLimiter::Off
         },
+        &mut |fraction| {
+            use std::io::Write;
+            eprint!(
+                "\rrendering       : {:>3}%",
+                (fraction * 100.0).floor() as u32
+            );
+            std::io::stderr().flush().ok();
+            true
+        },
     ) {
         Err(error) => {
+            eprintln!();
             eprintln!("error: {error}");
             std::process::exit(1);
         }
         Ok(report) => {
+            eprintln!();
             println!("frames compared : {}", report.compared_frames);
             println!("max |diff|       : {:.6}", report.max_abs_diff);
             println!("RMS diff         : {:.1} dBFS", report.rms_diff_db);

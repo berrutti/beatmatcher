@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 type Commands = {
   analyze_track: { args: { path: string }; returns: unknown };
+  cancel_render: { args: Record<string, never>; returns: void };
   confirm_quit: { args: Record<string, never>; returns: void };
   discard_recording: { args: { path: string }; returns: void };
   eject_track: { args: { deck: string }; returns: void };
@@ -20,6 +21,7 @@ type Commands = {
   };
   list_audio_devices: { args: Record<string, never>; returns: unknown[] };
   list_midi_devices: { args: Record<string, never>; returns: unknown[] };
+  list_recoverable: { args: Record<string, never>; returns: unknown[] };
   load_track: {
     args: { deck: string; path: string; analyze: boolean; beatOffsetSec: number };
     returns: unknown;
@@ -30,6 +32,8 @@ type Commands = {
   press_cue: { args: { deck: string }; returns: unknown };
   read_file: { args: { path: string }; returns: string };
   read_track_tags: { args: { path: string }; returns: unknown };
+  recover_discard: { args: { id: string }; returns: void };
+  recover_save_file: { args: { id: string; file: string; dest: string }; returns: void };
   release_cue: { args: { deck: string }; returns: unknown };
   render_session_to_file: {
     args: { sessionPath: string; outputPath: string; useFlac: boolean; writeCue: boolean };

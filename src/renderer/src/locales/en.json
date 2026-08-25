@@ -197,7 +197,9 @@
   },
   "modal": {
     "cancel": "Cancel",
-    "confirm": "Confirm"
+    "confirm": "Confirm",
+    "save": "Save",
+    "discard": "Discard"
   },
   "bpmModal": {
     "title": "Set track BPM",
@@ -258,7 +260,6 @@
     "renderWav": "Render WAV",
     "renderFlac": "Render FLAC",
     "edit": "Edit session",
-    "save": "Save",
     "saveAs": "Save as",
     "discardTitle": "Discard unsaved edits?",
     "discardBody": "The session has unsaved edits. Ejecting will discard them.",
@@ -279,7 +280,11 @@
     "loadingPhaseReading": "Reading session file",
     "loadingPhaseParsing": "Parsing events",
     "loadingPhaseDecoding": "Decoding tracks",
-    "loadingPhaseIndexing": "Building scrub index"
+    "loadingPhaseIndexing": "Building scrub index",
+    "renderingTitle": "Rendering mix",
+    "renderingBody": "Rendering the session to an audio file.",
+    "renderingPhaseRendering": "Rendering audio",
+    "renderingPhaseWriting": "Writing file"
   },
   "quitModal": {
     "title": "Quit Beatmatcher?",
@@ -287,5 +292,16 @@
     "bodySession": "The session is currently playing. Quit anyway?",
     "bodyDirty": "The session has unsaved edits. Quit anyway?",
     "confirm": "Quit"
+  },
+  "recovery": {
+    "title": "Unfinished work recovered",
+    "body": "The previous session ended unexpectedly before these files were saved.",
+    "audioFile": "Audio recording",
+    "sessionLog": "Session log (.bms)",
+    "renderFile": "Rendered mix",
+    "remaining": "{count} more waiting",
+    "discardTitle": "Discard these files?",
+    "discardBody": "The recovered audio and session log will be deleted permanently.",
+    "dontAskAgain": "Don't ask again"
   }
 }

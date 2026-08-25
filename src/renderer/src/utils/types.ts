@@ -155,3 +155,13 @@ export type MasterLanes = {
   // Empty for a session recorded on a mixer with no crossfader.
   xfader: LanePoint[];
 };
+
+export type Recoverable = {
+  id: string;
+  kind: 'recording' | 'render';
+  startedAt: number;
+  suggestedName: string;
+  audioPath: string | null;
+  audioBytes: number;
+  logPath: string | null;
+};

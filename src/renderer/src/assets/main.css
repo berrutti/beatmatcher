@@ -71,3 +71,21 @@ body {
   background: transparent;
   border: 1px solid var(--color-border);
 }
+
+/* Applied by App.vue to a component root, so it cannot live in a scoped block. */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-fade-enter-active,
+  .modal-fade-leave-active {
+    transition-duration: 0.01ms;
+  }
+}

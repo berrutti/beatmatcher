@@ -33,7 +33,10 @@ pub struct MasterMonitor {
     // The soundcard's clock, not the OS one: they are different oscillators, so anything
     // scheduled against wall time drifts against the audio output.
     pub output_frames: Arc<std::sync::atomic::AtomicU64>,
-    output_callbacks: Arc<std::sync::atomic::AtomicU64>,
+    // Reset whenever the stream is rebuilt: the period belongs to the current stream, and
+    // averaging across a buffer-size change reports one the callback never delivered.
+    period_frames: Arc<std::sync::atomic::AtomicU64>,
+    period_callbacks: Arc<std::sync::atomic::AtomicU64>,
     // Only the callback can know it: whether the buffer in flight reaches the file is decided there.
     capture_start: Arc<std::sync::atomic::AtomicU64>,
     // The first frame the recording may contain. A buffer whose decks rendered before arming
@@ -55,7 +58,8 @@ impl MasterMonitor {
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            output_callbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            period_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            period_callbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             capture_start: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
             capture_from: Arc::new(std::sync::atomic::AtomicU64::new(NOT_CAPTURING)),
         }
@@ -68,7 +72,9 @@ impl MasterMonitor {
     /// Claims the buffer about to be rendered, so a command that reads the clock while the
     /// callback is running still names the first frame it can reach. Once per master buffer.
     fn claim_output_frames(&self, frames: usize) -> u64 {
-        self.output_callbacks.fetch_add(1, Ordering::Relaxed);
+        self.period_callbacks.fetch_add(1, Ordering::Relaxed);
+        self.period_frames
+            .fetch_add(frames as u64, Ordering::Relaxed);
         self.output_frames
             .fetch_add(frames as u64, Ordering::Relaxed)
     }
@@ -76,11 +82,16 @@ impl MasterMonitor {
     /// The driver's period, which is fractional when the device is clocked at another
     /// rate: a 128-frame buffer at 48 kHz is 117.6 frames of a 44.1 kHz stream.
     pub fn frames_per_callback(&self) -> f64 {
-        let callbacks = self.output_callbacks.load(Ordering::Relaxed);
+        let callbacks = self.period_callbacks.load(Ordering::Relaxed);
         if callbacks == 0 {
             return 0.0;
         }
-        self.output_frames.load(Ordering::Relaxed) as f64 / callbacks as f64
+        self.period_frames.load(Ordering::Relaxed) as f64 / callbacks as f64
+    }
+
+    pub fn restart_period(&self) {
+        self.period_frames.store(0, Ordering::Relaxed);
+        self.period_callbacks.store(0, Ordering::Relaxed);
     }
 
     pub fn capture_start_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {

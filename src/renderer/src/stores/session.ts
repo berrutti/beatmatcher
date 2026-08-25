@@ -5,7 +5,7 @@ import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { DEFAULT_MIXER_ID, useSettingsStore } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 import { portEvents } from '@renderer/utils/bmsCompatibility';
 import { bmsVersion } from '@renderer/utils/sessionCore';
@@ -26,6 +26,21 @@ export type ParsedSession = {
 };
 
 export type SessionLoadPhase = 'reading' | 'parsing' | 'decoding' | 'indexing' | 'done';
+export type RenderProgress = { fraction: number; writing: boolean };
+
+export const SESSION_LOAD_PHASE_KEYS: Record<SessionLoadPhase, string> = {
+  reading: 'session.loadingPhaseReading',
+  parsing: 'session.loadingPhaseParsing',
+  decoding: 'session.loadingPhaseDecoding',
+  indexing: 'session.loadingPhaseIndexing',
+  done: 'session.loadingPhaseIndexing'
+};
+
+// Only the decode reports increments. Reading, parsing and indexing each take
+// one long step, so a percentage there would sit at 0 and read as a hang.
+export function sessionLoadIsMeasured(phase: SessionLoadPhase): boolean {
+  return phase === 'decoding' || phase === 'done';
+}
 
 export type SessionLoadProgress = {
   path: string;
@@ -50,6 +65,9 @@ export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
   const loadProgress = ref<SessionLoadProgress | null>(null);
+  // Null except while a render is in flight, so a stray event from a finished
+  // render cannot reopen the modal.
+  const renderProgress = ref<RenderProgress | null>(null);
   // Per-track waveform region [startSec, endSec] at some point density. Zoom-
   // driven LOD (Timeline.vue) refetches a tighter range at higher density as the
   // user zooms in, so the visible span always renders near one point per pixel.
@@ -319,6 +337,10 @@ export const useSessionStore = defineStore('session', () => {
     loadProgress.value = event.payload;
   }).catch(() => {});
 
+  listen<RenderProgress>('render-progress', (event) => {
+    if (renderProgress.value) renderProgress.value = event.payload;
+  }).catch(() => {});
+
   // Every track has to be decoded before the scheduler can place it, so playback is refused
   // over queued: a press that silently starts seconds later reads as a broken button.
   const isLoading = computed(() => loadProgress.value !== null && !loadProgress.value.done);
@@ -362,6 +384,34 @@ export const useSessionStore = defineStore('session', () => {
     await unload();
   }
 
+  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
+    return call('pick_save_path', { format: useFlac ? 'flac' : 'wav', baseName });
+  }
+
+  async function renderSession(
+    sessionPath: string,
+    outputPath: string,
+    useFlac: boolean
+  ): Promise<void> {
+    renderProgress.value = { fraction: 0, writing: false };
+    try {
+      await call('render_session_to_file', {
+        sessionPath,
+        outputPath,
+        useFlac,
+        writeCue: useSettingsStore().recordCue
+      });
+    } finally {
+      renderProgress.value = null;
+    }
+  }
+
+  // The encode cannot be interrupted, so the button is withdrawn once it starts
+  // rather than accepting a press that would do nothing.
+  async function cancelRender(): Promise<void> {
+    await call('cancel_render');
+  }
+
   return {
     session,
     isPlaying,
@@ -382,6 +432,10 @@ export const useSessionStore = defineStore('session', () => {
     ensureWaveformBase,
     openSession,
     openSessionFromPath,
+    renderProgress,
+    renderSession,
+    cancelRender,
+    pickRenderOutputPath,
     play,
     stop,
     unload,

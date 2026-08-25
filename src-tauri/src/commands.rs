@@ -4,7 +4,7 @@ use crate::engine::{LoopOutResult, NudgeResult};
 use crate::lock::LockIgnoringPoison;
 use crate::ParamOrigin;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 fn band_normalization_scale(band: &[f32]) -> f32 {
     let max = band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
@@ -170,6 +170,14 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
 // Mirrors the "filename (1).ext" pattern browsers use for repeat downloads,
 // since this path is auto-derived from the audio filename and never goes
 // through a save dialog the user could redirect away from an existing file.
+fn strip_audio_extension(path: &str) -> &str {
+    path.strip_suffix(".wav")
+        .or_else(|| path.strip_suffix(".WAV"))
+        .or_else(|| path.strip_suffix(".flac"))
+        .or_else(|| path.strip_suffix(".FLAC"))
+        .unwrap_or(path)
+}
+
 fn unique_path(path: &str) -> String {
     if !std::path::Path::new(path).exists() {
         return path.to_string();
@@ -317,8 +325,7 @@ pub(crate) fn stop(
     engine: tauri::State<'_, crate::engine::Engine>,
     deck: String,
 ) -> Result<(), String> {
-    engine.deck(&deck)?.locked().stop();
-    Ok(())
+    engine.stop(&deck)
 }
 
 #[tauri::command]
@@ -848,13 +855,29 @@ pub(crate) fn set_bpm_range(engine: tauri::State<'_, crate::engine::Engine>, min
 #[tauri::command]
 pub(crate) fn start_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
     bit_depth: u16,
     use_flac: bool,
     record_session: bool,
 ) -> Result<(), String> {
+    let audio_file = if use_flac {
+        crate::recovery::AUDIO_FLAC
+    } else {
+        crate::recovery::AUDIO_WAV
+    };
+    let started = crate::recorder::system_time_to_iso8601(std::time::SystemTime::now());
+    let job = recovery.begin(
+        crate::recovery::JobKind::Recording,
+        &format!("recording-{}", &started[..10.min(started.len())]),
+        Some(audio_file),
+        record_session.then_some(crate::recovery::SESSION_LOG),
+    )?;
+
     // Armed before anything is logged, so every event is timed against the first
     // captured frame rather than against the JSON written on the way there.
-    let anchor = engine.audio.start_recording(bit_depth, use_flac)?;
+    let anchor = engine
+        .audio
+        .start_recording(bit_depth, use_flac, job.path(audio_file))?;
 
     if record_session {
         engine.recorder.start(
@@ -863,7 +886,11 @@ pub(crate) fn start_recording(
             crate::audio::RenderFrame::from_master_clock(anchor),
             start_events(&engine.audio),
         );
+        engine
+            .recorder
+            .journal_to(job.path(crate::recovery::SESSION_LOG));
     }
+    recovery.set_active_recording(job);
     Ok(())
 }
 
@@ -872,6 +899,7 @@ pub(crate) async fn stop_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
 ) -> Result<String, String> {
     engine.recorder.stop(engine.master_frame());
+    engine.recorder.end_journal();
     let audio = Arc::clone(&engine.audio);
     tokio::task::spawn_blocking(move || audio.stop_recording())
         .await
@@ -881,6 +909,7 @@ pub(crate) async fn stop_recording(
 #[tauri::command]
 pub(crate) fn save_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
     src: String,
     dest: String,
     write_bms: bool,
@@ -894,19 +923,16 @@ pub(crate) fn save_recording(
         }
     }
     if !write_bms && !write_cue {
+        recovery.finish_recording();
         return Ok(());
     }
     let Some(log) = engine.recorder.take_pending() else {
+        recovery.finish_recording();
         return Ok(());
     };
     if write_bms {
-        let stem = dest
-            .strip_suffix(".wav")
-            .or_else(|| dest.strip_suffix(".WAV"))
-            .or_else(|| dest.strip_suffix(".flac"))
-            .or_else(|| dest.strip_suffix(".FLAC"))
-            .unwrap_or(&dest);
-        let log_dest = unique_path(&format!("{}.bms", stem));
+        let stem = strip_audio_extension(&dest);
+        let log_dest = unique_path(&format!("{stem}.bms"));
         if let Err(e) = std::fs::write(&log_dest, log.as_bytes()) {
             eprintln!("save_recording: failed to write session log {log_dest}: {e}");
         }
@@ -917,16 +943,47 @@ pub(crate) fn save_recording(
             Err(error) => log::warn!("save_recording: cannot parse log for cue sheet: {error}"),
         }
     }
+    recovery.finish_recording();
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn discard_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
     path: String,
 ) -> Result<(), String> {
     engine.recorder.take_pending();
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+    std::fs::remove_file(&path).ok();
+    recovery.finish_recording();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn list_recoverable(
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
+) -> Vec<crate::recovery::Recoverable> {
+    recovery.list()
+}
+
+/// One file at a time, so a user who wants the log but not the audio is not made to take
+/// both. Moving it out is what retires it: a job holding nothing is swept by `list`.
+#[tauri::command]
+pub(crate) fn recover_save_file(
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
+    id: String,
+    file: String,
+    dest: String,
+) -> Result<(), String> {
+    recovery.save_file(&id, &file, &dest)
+}
+
+#[tauri::command]
+pub(crate) fn recover_discard(
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
+    id: String,
+) -> Result<(), String> {
+    recovery.discard(&id)
 }
 
 #[tauri::command]
@@ -944,8 +1001,25 @@ pub(crate) fn save_bms_only(
     Ok(())
 }
 
+static RENDER_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub(crate) fn cancel_render() {
+    RENDER_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderProgress {
+    fraction: f64,
+    /// The encode runs after the last block and takes seconds on a long set, so it is
+    /// announced rather than left as a full bar.
+    writing: bool,
+}
+
 #[tauri::command]
 pub(crate) async fn render_session_to_file(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, crate::engine::Engine>,
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
     session_path: String,
@@ -953,6 +1027,23 @@ pub(crate) async fn render_session_to_file(
     use_flac: bool,
     write_cue: bool,
 ) -> Result<(), String> {
+    RENDER_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    let audio_file = if use_flac {
+        crate::recovery::AUDIO_FLAC
+    } else {
+        crate::recovery::AUDIO_WAV
+    };
+    let job = app.state::<crate::recovery::Recovery>().begin(
+        crate::recovery::JobKind::Render,
+        strip_audio_extension(
+            std::path::Path::new(&output_path)
+                .file_name()
+                .map_or("render", |name| name.to_str().unwrap_or("render")),
+        ),
+        Some(audio_file),
+        None,
+    )?;
+    let partial_path = job.path(audio_file);
     // Prefer the in-memory session so unsaved edits are rendered too.
     let cached = sessions.files.locked().get(&session_path).cloned();
     let limiter = if engine.audio.monitor.limiter_enabled() {
@@ -972,27 +1063,62 @@ pub(crate) async fn render_session_to_file(
                 )
             }
         };
-        let sample_rate = 44100u32;
-        let rendered = crate::offline_render::render_session(
+        let sample_rate = crate::offline_render::recorded_sample_rate(&session).unwrap_or(44_100);
+        let rendered = crate::offline_render::render_session_with_progress(
             &session,
             crate::offline_render::RenderRequest {
                 sample_rate,
                 min_frames: 0,
                 limiter,
             },
+            &mut |fraction| {
+                app.emit(
+                    "render-progress",
+                    RenderProgress {
+                        fraction,
+                        writing: false,
+                    },
+                )
+                .ok();
+                !RENDER_CANCEL.load(std::sync::atomic::Ordering::Relaxed)
+            },
         )?;
+        app.emit(
+            "render-progress",
+            RenderProgress {
+                fraction: 1.0,
+                writing: true,
+            },
+        )
+        .ok();
         let write_result = if use_flac {
-            crate::audio_file::write_flac_f32(&output_path, &rendered, sample_rate)
+            crate::audio_file::write_flac_f32(&partial_path, &rendered, sample_rate)
         } else {
-            crate::audio_file::write_wav_f32(&output_path, &rendered, sample_rate, 2)
+            crate::audio_file::write_wav_f32(&partial_path, &rendered, sample_rate, 2)
         };
-        if write_result.is_ok() && write_cue {
+        // Left in the recovery directory on failure rather than deleted: an encode that
+        // died still holds most of a render the user waited a long time for.
+        write_result?;
+        if std::fs::rename(&partial_path, &output_path).is_err() {
+            std::fs::copy(&partial_path, &output_path).map_err(|e| e.to_string())?;
+            std::fs::remove_file(&partial_path).ok();
+        }
+        if write_cue {
             write_cue_sheet(&output_path, &session.events);
         }
-        write_result
+        job.finish();
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
+    // A cancel is something the user asked for, not a failure to report back at them.
+    .or_else(|error| {
+        if error == crate::offline_render::RENDER_CANCELLED {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })
 }
 
 #[tauri::command]

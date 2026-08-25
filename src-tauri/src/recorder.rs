@@ -2,7 +2,7 @@ use crate::audio::{self, RenderFrame};
 use crate::lock::LockIgnoringPoison;
 use std::sync::{Arc, Mutex};
 
-fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
+pub(crate) fn system_time_to_iso8601(system_time: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(system_time)
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
@@ -23,6 +23,23 @@ struct SessionLogger {
     events: Vec<serde_json::Value>,
     pending: Option<String>,
     capture_start: Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn rebased(mut event: serde_json::Value, origin: u64) -> serde_json::Value {
+    let Some(frame) = event.get("frame").and_then(serde_json::Value::as_u64) else {
+        return event;
+    };
+    if let Some(object) = event.as_object_mut() {
+        if origin == audio::NOT_CAPTURING {
+            object.remove("frame");
+        } else {
+            object.insert(
+                "frame".into(),
+                serde_json::json!(frame.saturating_sub(origin)),
+            );
+        }
+    }
+    event
 }
 
 impl SessionLogger {
@@ -59,33 +76,38 @@ impl SessionLogger {
             .capture_start
             .load(std::sync::atomic::Ordering::Relaxed);
         for event in self.events.iter_mut() {
-            let Some(frame) = event.get("frame").and_then(serde_json::Value::as_u64) else {
-                continue;
-            };
-            let Some(object) = event.as_object_mut() else {
-                continue;
-            };
-            if origin == audio::NOT_CAPTURING {
-                object.remove("frame");
-            } else {
-                object.insert(
-                    "frame".into(),
-                    serde_json::json!(frame.saturating_sub(origin)),
-                );
-            }
+            *event = rebased(std::mem::take(event), origin);
         }
     }
 
     fn stop(&mut self) {
         self.rebase_frames();
-        let started_at = system_time_to_iso8601(self.start_wall);
+        let events = std::mem::take(&mut self.events);
+        self.pending = self.serialize(events);
+    }
+
+    /// The same file `stop` produces, from a copy, so a journal can be written while the
+    /// recording continues. Rebasing happens on the copy: the live log stays raw until stop.
+    fn snapshot(&self) -> Option<String> {
+        let origin = self
+            .capture_start
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let events = self
+            .events
+            .iter()
+            .map(|event| rebased(event.clone(), origin))
+            .collect();
+        self.serialize(events)
+    }
+
+    fn serialize(&self, events: Vec<serde_json::Value>) -> Option<String> {
         let log = serde_json::json!({
             "version": session_core::BMS_VERSION,
-            "startedAt": started_at,
+            "startedAt": system_time_to_iso8601(self.start_wall),
             "mixer": self.mixer.header(),
-            "events": std::mem::take(&mut self.events),
+            "events": events,
         });
-        self.pending = serde_json::to_string_pretty(&log).ok();
+        serde_json::to_string_pretty(&log).ok()
     }
 
     fn take_pending(&mut self) -> Option<String> {
@@ -96,14 +118,59 @@ impl SessionLogger {
 /// Owns the session log for a recording: nothing outside here touches the `Option`,
 /// so "is a session being recorded" is answered in one place.
 pub(crate) struct Recorder {
-    logger: Mutex<Option<SessionLogger>>,
+    logger: Arc<Mutex<Option<SessionLogger>>>,
+    journal: Mutex<Option<Journal>>,
 }
+
+/// Writes the log beside the audio while the recording runs, so a crash leaves both
+/// halves on disk rather than the audio alone.
+struct Journal {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+const JOURNAL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Recorder {
     pub(crate) fn new() -> Self {
         Self {
-            logger: Mutex::new(None),
+            logger: Arc::new(Mutex::new(None)),
+            journal: Mutex::new(None),
         }
+    }
+
+    /// Started separately from `start`, because a recording with nowhere to journal to
+    /// is still a recording.
+    pub(crate) fn journal_to(&self, path: String) {
+        self.end_journal();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let logger = Arc::clone(&self.logger);
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(JOURNAL_INTERVAL);
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let snapshot = logger.locked().as_ref().and_then(SessionLogger::snapshot);
+                if let Some(json) = snapshot {
+                    if let Err(error) = std::fs::write(&path, json.as_bytes()) {
+                        log::warn!("journal: cannot write {path}: {error}");
+                    }
+                }
+            }
+        });
+        *self.journal.locked() = Some(Journal { stop, thread });
+    }
+
+    pub(crate) fn end_journal(&self) {
+        let Some(journal) = self.journal.locked().take() else {
+            return;
+        };
+        journal
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        journal.thread.join().ok();
     }
 
     pub(crate) fn start(

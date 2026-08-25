@@ -27,7 +27,13 @@ vi.mock('@renderer/stores/settings', async (importOriginal) => {
   };
 });
 
-import { useSessionStore } from '../session';
+import {
+  useSessionStore,
+  SESSION_LOAD_PHASE_KEYS,
+  sessionLoadIsMeasured,
+  type SessionLoadPhase
+} from '../session';
+import en from '@renderer/locales/en.json';
 import { useSessionEditStore } from '../sessionEdit';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -360,5 +366,26 @@ describe('a preload failure against the session it was started for', () => {
     });
 
     expect(store.isLoading).toBe(false);
+  });
+});
+
+describe('session load phases', () => {
+  const PHASES: SessionLoadPhase[] = ['reading', 'parsing', 'decoding', 'indexing', 'done'];
+
+  it('names every phase with a key the locale actually defines', () => {
+    for (const phase of PHASES) {
+      const key = SESSION_LOAD_PHASE_KEYS[phase];
+      expect(key, phase).toBeDefined();
+      const leaf = key.replace('session.', '');
+      expect(en.session[leaf as keyof typeof en.session], key).toBeTruthy();
+    }
+  });
+
+  it('measures only the phases that report increments', () => {
+    expect(sessionLoadIsMeasured('decoding')).toBe(true);
+    expect(sessionLoadIsMeasured('done')).toBe(true);
+    for (const phase of ['reading', 'parsing', 'indexing'] as const) {
+      expect(sessionLoadIsMeasured(phase), phase).toBe(false);
+    }
   });
 });

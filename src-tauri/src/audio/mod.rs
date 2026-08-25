@@ -299,6 +299,7 @@ impl AppAudio {
     // One callback when main and cue share a device: two CoreAudio callbacks interfere,
     // and the cue one writing zeros blanks the main output.
     fn rebuild_streams(&self) -> Result<(), String> {
+        self.monitor.restart_period();
         let routing = self.routing.locked().clone();
         let main_id = routing.main.device_id;
         let main_off = routing.main.channel_offset;
@@ -501,20 +502,16 @@ impl AppAudio {
             .unwrap_or_else(|| self.monitor.output_frames())
     }
 
-    pub fn start_recording(&self, bit_depth: u16, use_flac: bool) -> Result<u64, String> {
+    pub fn start_recording(
+        &self,
+        bit_depth: u16,
+        use_flac: bool,
+        temp_path: String,
+    ) -> Result<u64, String> {
         let mut recording = self.recording.locked();
         if recording.is_some() {
             return Err("already recording".to_string());
         }
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let ext = if use_flac { "flac" } else { "wav" };
-        let temp_path = std::env::temp_dir()
-            .join(format!("beatmatcher_rec_{}.{}", ts, ext))
-            .to_string_lossy()
-            .into_owned();
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
         let anchor;

@@ -20,6 +20,7 @@ pub fn render_and_compare(
     reference_path: &str,
     output_path: Option<&str>,
     limiter: MasterLimiter,
+    progress: &mut dyn FnMut(f64) -> bool,
 ) -> Result<CompareResult, String> {
     let (reference, sample_rate, ref_channels) = read_wav_f32(reference_path)?;
     if ref_channels != 2 {
@@ -31,13 +32,14 @@ pub fn render_and_compare(
     let json = std::fs::read_to_string(session_path).map_err(|e| format!("{session_path}: {e}"))?;
     let session = SessionFile::parse(&json).map_err(|e| format!("parse error: {e}"))?;
 
-    let rendered = render_session(
+    let rendered = render_session_with_progress(
         &session,
         RenderRequest {
             sample_rate,
             min_frames: reference.len() / 2,
             limiter,
         },
+        progress,
     )?;
 
     if let Some(out) = output_path {
@@ -260,7 +262,7 @@ fn recorded_block_frames(session: &SessionFile) -> f64 {
         .unwrap_or(512.0)
 }
 
-fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
+pub fn recorded_sample_rate(session: &SessionFile) -> Option<u32> {
     recording_start(session)
         .and_then(|event| event.sample_rate)
         .filter(|rate| *rate > 0)
@@ -306,11 +308,14 @@ fn render_timeline(
     total_frames: usize,
     warmup_frames: usize,
     block_frames: f64,
+    progress: &mut dyn FnMut(f64) -> bool,
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0f32; total_frames * 2];
     let mut next_event = 0;
     let mut frame = 0usize;
     let mut warmed = false;
+    let report_every = (total_frames / PROGRESS_STEPS).max(1);
+    let mut report_at = report_every;
 
     while frame < total_frames {
         while next_event < timeline.len() && timeline[next_event].0 <= frame {
@@ -336,11 +341,26 @@ fn render_timeline(
             let span = (block_frames.round() as usize).min(chunk_end - frame);
             mixer.render_block(span, &mut output[frame * 2..(frame + span) * 2]);
             frame += span;
+            if frame >= report_at {
+                if !progress(frame as f64 / total_frames as f64) {
+                    return Err(RENDER_CANCELLED.to_string());
+                }
+                report_at = frame + report_every;
+            }
         }
     }
 
+    progress(1.0);
     Ok(output)
 }
+
+/// Returned when the progress sink asks to stop, so a caller can tell a cancellation
+/// apart from a render that actually failed.
+pub const RENDER_CANCELLED: &str = "render cancelled";
+
+/// Coarse enough that a twenty-minute render reports a couple of hundred times rather
+/// than once per block, which would flood the event channel it is emitted on.
+const PROGRESS_STEPS: usize = 200;
 
 /// The bypass crossfade settles slowest of anything on a strip, at a 50 ms time constant.
 /// `approach` snaps once its step rounds to nothing, which takes about ten time
@@ -358,6 +378,14 @@ fn warmup_frames(sample_rate: u32) -> usize {
 }
 
 pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<Vec<f32>, String> {
+    render_session_with_progress(session, request, &mut |_| true)
+}
+
+pub fn render_session_with_progress(
+    session: &SessionFile,
+    request: RenderRequest,
+    progress: &mut dyn FnMut(f64) -> bool,
+) -> Result<Vec<f32>, String> {
     let mut mixer = Mixer::new(session, &request)?;
     let timeline = build_timeline(session, request.sample_rate);
 
@@ -381,6 +409,7 @@ pub fn render_session(session: &SessionFile, request: RenderRequest) -> Result<V
         total_frames,
         warmup_frames(request.sample_rate),
         recorded_block_frames(session),
+        progress,
     )
 }
 

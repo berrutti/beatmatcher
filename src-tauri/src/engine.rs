@@ -199,6 +199,11 @@ impl Engine {
         self.apply_and_log(deck, &session_core::SessionCommand::Seek { deck, sec })
     }
 
+    pub(crate) fn stop(&self, deck: &str) -> Result<(), String> {
+        self.apply_and_log(deck, &session_core::SessionCommand::Stop { deck })?;
+        Ok(())
+    }
+
     pub(crate) fn set_nudge(&self, deck: &str, percent: f64) -> Result<NudgeResult, String> {
         self.apply_and_log(
             deck,
@@ -769,6 +774,26 @@ mod tests {
             .expect("a set_param event");
         assert_eq!(param["frame"], 2048);
         assert_eq!(param["value"], -6.0);
+    }
+
+    #[test]
+    fn stopping_a_deck_outside_the_play_toggle_is_logged() {
+        let engine = recording_engine();
+        engine
+            .audio
+            .deck("A")
+            .expect("deck A")
+            .locked()
+            .set_next_render_frame(8192);
+
+        engine.stop("A").expect("deck A is a live deck");
+
+        let events = logged_events(engine);
+        let stop = events
+            .iter()
+            .find(|event| event["type"] == "stop")
+            .expect("a stop event");
+        assert_eq!(stop["frame"], 8192);
     }
 
     #[test]

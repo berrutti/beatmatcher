@@ -423,26 +423,6 @@ export const useMixerStore = defineStore('mixer', () => {
     await call('discard_recording', { path });
   }
 
-  async function renderSession(
-    sessionPath: string,
-    outputPath: string,
-    useFlac: boolean
-  ): Promise<void> {
-    await call('render_session_to_file', {
-      sessionPath,
-      outputPath,
-      useFlac,
-      writeCue: useSettingsStore().recordCue
-    });
-  }
-
-  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
-    return call('pick_save_path', {
-      format: useFlac ? 'flac' : 'wav',
-      baseName
-    });
-  }
-
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
     deviceError.value = '';
     const newCueOffset = channelOffset ?? cueChannelOffset.value;
@@ -519,9 +499,7 @@ export const useMixerStore = defineStore('mixer', () => {
     getDeckLevels,
     getMasterLevel,
     loadOutputDevices,
-    pickRenderOutputPath,
     pickSavePath,
-    renderSession,
     reset,
     saveRecording,
     setCueActive,
