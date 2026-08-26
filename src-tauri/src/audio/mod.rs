@@ -39,6 +39,7 @@ use std::sync::{
 
 use analysis::{BPM_MAX, BPM_MIN};
 use recording::{flac_writer_thread, wav_writer_thread, Recording};
+pub(crate) use recording::{SAVE_DONE, SAVE_IDLE};
 use stream::{
     best_output_config, build_combined_stream, build_cue_stream, build_stream, find_output_device,
     MasterMonitor as Monitor, SendStream,
@@ -108,6 +109,9 @@ pub struct AppAudio {
     cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
     recording: Mutex<Option<Recording>>,
+    // Permille of the save that runs after the last frame is captured. Only the
+    // FLAC encode has one: a WAV is already on disk by then.
+    save_progress: Arc<AtomicU32>,
     mixer: &'static session_core::MixerManifest,
 }
 
@@ -174,6 +178,7 @@ impl AppAudio {
             cue_stream: Mutex::new(None),
             monitor: Monitor::new(),
             recording: Mutex::new(None),
+            save_progress: Arc::new(AtomicU32::new(SAVE_IDLE)),
             mixer: MIXER,
         }
     }
@@ -523,13 +528,34 @@ impl AppAudio {
         }
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
+        self.save_progress
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let progress = Arc::clone(&self.save_progress);
         let thread = if use_flac {
-            std::thread::spawn(move || flac_writer_thread(path_for_thread, sr, bit_depth, rx))
+            std::thread::spawn(move || {
+                flac_writer_thread(path_for_thread, sr, bit_depth, rx, progress)
+            })
         } else {
+            // Streamed straight to disk, so stopping only back-patches the header.
             std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, bit_depth, rx))
         };
         *recording = Some(Recording { thread, temp_path });
         Ok(anchor)
+    }
+
+    /// None when nothing is saving.
+    pub fn save_progress(&self) -> Option<f64> {
+        let permille = self.save_progress.load(Ordering::Relaxed);
+        if permille == SAVE_IDLE {
+            return None;
+        }
+        Some(f64::from(permille) / f64::from(SAVE_DONE))
+    }
+
+    /// Handed to whatever is doing the saving, so a copy reports on the same dial
+    /// the encode does.
+    pub(crate) fn save_progress_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.save_progress)
     }
 
     pub fn stop_recording(&self) -> Result<String, String> {

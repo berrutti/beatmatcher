@@ -41,17 +41,23 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
     loadedSpans: [],
     deckLanes: {},
     masterLanes: { gain: [], xfader: [] },
-    deckNudges: {},
     deckJog: {},
     waveforms: new Map(),
     playheadMs: 0,
     durationMs: 1000,
     editMode: false,
-    laneFor: () => 'filter' as LaneKey,
+    lanesFor: () => ['filter'] as LaneKey[],
     masterLane,
-    laneHeight: 64,
-    waveformHeight: 80,
+    laneHeightFor: () => 64,
+    waveformHeightFor: () => 80,
+    openLaneFor: () => null,
+    badgeAlphaFor: () => 0,
+    menuOpenFor: () => false,
+    resetPreview: null,
     accentFor: () => '#ffffff',
+    laneLabel: (key: string) => key.toUpperCase(),
+    deckLabel: (deck: string) => `DECK ${deck}`,
+    badgeLabel: () => 'MUTE',
     audibleFor: () => true,
     soloFor: () => false,
     mutedFor: () => false,
@@ -71,10 +77,9 @@ describe('the master row', () => {
   it('opens the lane picker from its label column', () => {
     const { items } = buildScene(input([]));
 
-    expect(hitsAt(items, 4, insideMasterRow)).toContainEqual({
-      target: 'laneDropdown',
-      deck: 'master'
-    });
+    expect(hitsAt(items, 4, insideMasterRow)).toContainEqual(
+      expect.objectContaining({ target: 'laneDropdown', deck: 'master' })
+    );
   });
 
   it('reports the lane on display, not a fixed one', () => {
@@ -96,19 +101,18 @@ describe('the jog lane', () => {
     return {
       ...input([]),
       editMode: true,
-      laneFor: () => 'jog' as LaneKey,
+      lanesFor: () => ['jog'] as LaneKey[],
       deckJog: {
         A: [
           { ms: 0, value: 0 },
           { ms: 500, value: 30 },
           { ms: 520, value: 0 }
         ]
-      },
-      deckNudges: { A: [{ startMs: 100, endMs: 300, percent: 4 }] }
+      }
     };
   }
 
-  it('reports no lane hit anywhere on its surface', () => {
+  it('reports a lane hit across its surface, so the shared draw gesture arms', () => {
     const { items, rows } = buildScene(jogInput());
     const lane = rows[0].lanes[0];
     const y = lane.top + lane.height / 2;
@@ -117,7 +121,9 @@ describe('the jog lane', () => {
       .map((item) => item.hitTest?.({ x: LABEL_W + 10, y }, vc) ?? null)
       .filter((hit) => hit !== null);
 
-    expect(hits.every((hit) => hit?.target !== 'lane')).toBe(true);
+    const laneHit = hits.find((hit) => hit?.target === 'lane');
+    expect(laneHit?.part).toBe('jog');
+    expect(laneHit?.deck).toBe('A');
   });
 
   it('still opens the lane picker from the label column', () => {
@@ -128,7 +134,7 @@ describe('the jog lane', () => {
       .map((item) => item.hitTest?.({ x: 4, y: lane.top + lane.height / 2 }, vc) ?? null)
       .filter((hit) => hit !== null);
 
-    expect(hits).toContainEqual({ target: 'laneDropdown', deck: 'A' });
+    expect(hits).toContainEqual(expect.objectContaining({ target: 'laneDropdown', deck: 'A' }));
   });
 });
 
@@ -146,5 +152,19 @@ describe('buildScene z-order', () => {
 
     expect(overlayIdx).toBeGreaterThanOrEqual(0);
     expect(dividerIdx).toBeGreaterThan(overlayIdx);
+  });
+});
+
+describe('the master row sizes like any other', () => {
+  it('takes its height from storage and offers a separator to drag it', () => {
+    const tall = { ...input([]), waveformHeightFor: () => 140 };
+    const { items, rows } = buildScene(tall);
+
+    const separator = items
+      .map((item) => item.hitTest?.({ x: 200, y: 16 + 140 }, vc) ?? null)
+      .find((hit) => hit?.target === 'waveformSeparator');
+
+    expect(separator?.deck).toBe('master');
+    expect(rows[0].top).toBe(16 + 140);
   });
 });

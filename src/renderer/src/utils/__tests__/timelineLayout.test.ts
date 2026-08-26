@@ -60,13 +60,25 @@ describe('computeRowLayout', () => {
 
   it('uses a custom waveform height for the strip and the lane offset', () => {
     const rows = computeRowLayout(
-      [{ deckId: 'A', laneHeights: [{ key: 'filter', height: 64 }] }],
-      0,
-      120
+      [{ deckId: 'A', waveformHeight: 120, laneHeights: [{ key: 'filter', height: 64 }] }],
+      0
     );
     expect(rows[0].waveformHeight).toBe(120);
     expect(rows[0].lanes[0].top).toBe(120); // lane sits directly below the waveform
     expect(rows[0].height).toBe(120 + 64);
+  });
+
+  it('sizes each deck waveform on its own, so one resize moves one deck', () => {
+    const rows = computeRowLayout(
+      [
+        { deckId: 'A', waveformHeight: 120, laneHeights: [] },
+        { deckId: 'B', waveformHeight: 40, laneHeights: [] }
+      ],
+      0
+    );
+    expect(rows[0].waveformHeight).toBe(120);
+    expect(rows[1].waveformHeight).toBe(40);
+    expect(rows[1].top).toBe(120);
   });
 });
 

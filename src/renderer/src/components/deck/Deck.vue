@@ -57,7 +57,7 @@
         <span
           class="deck__compact-track-name"
           :class="{ 'deck__track-name--empty': !props.deck.trackName }"
-          v-tooltip="props.deck.trackName || undefined"
+          v-tooltip.truncated="props.deck.trackName || undefined"
           >{{ props.deck.trackName || $t('deck.notLoaded') }}</span
         >
       </div>
@@ -116,8 +116,9 @@
               <button
                 class="deck__q-btn"
                 :class="{ 'deck__q-btn--on': props.deck.quantized }"
-                :disabled="!props.deck.trackLoaded"
+                :disabled="!props.deck.trackLoaded || !props.deck.hasGrid"
                 :tabindex="-1"
+                v-tooltip="quantizeTooltip"
                 @click="props.deck.toggleQuantized()"
               >
                 Q
@@ -126,7 +127,7 @@
                 class="deck__eject-btn"
                 :disabled="!props.deck.trackLoaded"
                 :tabindex="-1"
-                v-tooltip="$t('deck.ejectTitle')"
+                v-tooltip="props.deck.trackLoaded ? $t('deck.ejectTitle') : undefined"
                 @click="props.deck.requestEject()"
               >
                 ⏏
@@ -141,14 +142,14 @@
                 <p
                   v-if="artistTitle.artist"
                   class="deck__track-line deck__track-line--artist"
-                  v-tooltip="artistTitle.artist"
+                  v-tooltip.truncated="artistTitle.artist"
                 >
                   <span class="deck__track-line-label">{{ $t('deck.artist') }}</span
                   ><span class="deck__track-line-value">{{ artistTitle.artist }}</span>
                 </p>
                 <p
                   class="deck__track-line deck__track-line--track"
-                  v-tooltip="artistTitle.title ?? undefined"
+                  v-tooltip.truncated="artistTitle.title ?? undefined"
                 >
                   <span class="deck__track-line-label">{{ $t('deck.track') }}</span
                   ><span class="deck__track-line-value">{{ artistTitle.title }}</span>
@@ -255,6 +256,7 @@
           :value="-props.deck.pitchOffset"
           orient="vertical"
           :disabled="!props.deck.trackLoaded || props.deck.loading"
+          v-tooltip="props.deck.trackLoaded ? $t('deck.pitchHint') : undefined"
           @input="onSliderInput"
           @dblclick="onPitchDblClick"
         />
@@ -294,6 +296,13 @@ const props = defineProps<{
 
 const keybindings = computed(() => settingsStore.keybindings[props.deck.id as keyof Keybindings]);
 
+// Explains the disablement when the reason is not the empty deck: quantizing
+// snaps to a grid, and a track whose BPM never resolved has none.
+const quantizeTooltip = computed(() => {
+  if (!props.deck.trackLoaded) return undefined;
+  return props.deck.hasGrid ? t('deck.quantizeTitle') : t('deck.quantizeNeedsGrid');
+});
+
 // Track metadata only stores a single combined "Artist - Title" (or "Artist
 // – Title") string, not separate fields, so split it here for display.
 const ARTIST_TITLE_SEPARATOR = /\s[–-]\s/;
@@ -306,15 +315,16 @@ const artistTitle = computed(() => {
 });
 
 // Up is slower, down is faster.
-function onSliderInput(e: Event) {
+async function onSliderInput(event: Event) {
   if (!props.deck.trackLoaded) return;
-  const val = parseFloat((e.target as HTMLInputElement).value);
-  props.deck.setPitchOffset(-val);
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  await props.deck.setPitchOffset(-parseFloat(target.value));
 }
 
-function onPitchDblClick() {
+async function onPitchDblClick() {
   if (!props.deck.trackLoaded) return;
-  props.deck.setPitchOffset(0);
+  await props.deck.setPitchOffset(0);
 }
 
 function onNudgeStart(direction: 'back' | 'forward') {
@@ -459,6 +469,7 @@ function onConfirmLoad() {
   font-size: 0.8em;
   font-weight: 700;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--deck-accent);
   flex-shrink: 0;
 }

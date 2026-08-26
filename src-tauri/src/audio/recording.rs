@@ -3,7 +3,9 @@ pub(crate) struct Recording {
     pub(crate) temp_path: String,
 }
 
-// Dedicated writer thread. On channel close it back-patches the RIFF/data sizes.
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
 pub(crate) fn wav_writer_thread(
     path: String,
     sample_rate: u32,
@@ -95,15 +97,19 @@ fn write_sizes(buf: &mut std::io::BufWriter<std::fs::File>, data_bytes: u32) -> 
     Ok(())
 }
 
-// Streams f32 samples from the recording channel to a temp .pcm file as i32 LE
-// (converting on the fly), then encodes that file to FLAC block-by-block via a
-// custom Source impl. Peak RAM during recording: O(one chunk). During encode:
-// O(one FLAC block, ~32 KB). 32-bit source becomes 24-bit FLAC, 16-bit stays 16-bit.
+pub(crate) const SAVE_DONE: u32 = 1000;
+
+/// Distinct from any permille, so "nothing is saving" needs no second flag.
+pub(crate) const SAVE_IDLE: u32 = u32::MAX;
+
+// Via a temp .pcm file rather than buffering the take: peak RAM is one chunk
+// while recording and one FLAC block while encoding, whatever the length.
 pub(crate) fn flac_writer_thread(
     path: String,
     sample_rate: u32,
     bit_depth: u16,
     receiver: std::sync::mpsc::Receiver<Vec<f32>>,
+    progress: Arc<AtomicU32>,
 ) -> Result<(), String> {
     use std::io::Write;
 
@@ -137,6 +143,7 @@ pub(crate) fn flac_writer_thread(
         flac_bits,
         sample_rate as usize,
         total_samples_per_channel,
+        Arc::clone(&progress),
     )
     .map_err(|error| error.to_string())?;
 
@@ -161,6 +168,7 @@ pub(crate) fn flac_writer_thread(
         .map_err(|error| error.to_string())?;
 
     std::fs::remove_file(&pcm_path).ok();
+    progress.store(SAVE_IDLE, Ordering::Relaxed);
     Ok(())
 }
 
@@ -172,6 +180,8 @@ struct PcmFileSource {
     bits_per_sample: usize,
     sample_rate: usize,
     total_samples_per_channel: usize,
+    read_so_far: usize,
+    progress: Arc<AtomicU32>,
 }
 
 impl PcmFileSource {
@@ -181,6 +191,7 @@ impl PcmFileSource {
         bits_per_sample: usize,
         sample_rate: usize,
         total_samples_per_channel: usize,
+        progress: Arc<AtomicU32>,
     ) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
         Ok(Self {
@@ -189,6 +200,8 @@ impl PcmFileSource {
             bits_per_sample,
             sample_rate,
             total_samples_per_channel,
+            read_so_far: 0,
+            progress,
         })
     }
 }
@@ -244,6 +257,18 @@ impl flacenc::source::Source for PcmFileSource {
             .collect();
 
         dest.fill_interleaved(&samples)?;
+        // The encoder pulls from here, so draining the source is the only place
+        // that knows how far a `encode_with_fixed_block_size` call has got.
+        self.read_so_far += per_channel;
+        let done = self.read_so_far.min(self.total_samples_per_channel);
+        if let Some(permille) =
+            (done * SAVE_DONE as usize).checked_div(self.total_samples_per_channel)
+        {
+            self.progress.store(
+                permille.min(SAVE_DONE as usize - 1) as u32,
+                Ordering::Relaxed,
+            );
+        }
         Ok(per_channel)
     }
 }

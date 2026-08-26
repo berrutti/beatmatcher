@@ -68,6 +68,91 @@ describe('collection store: analyze / reanalyze', () => {
     expect(track.lastAnalysisFailed).toBe(false);
   });
 
+  it('marks a track ready and loadable when analysis finds no BPM', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'files_info') return [1000];
+      if (cmd === 'analyze_track') return { bpm: null, silenceEnd: 0.5 };
+      if (cmd === 'read_track_tags') return { title: null, artist: null };
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const store = useCollectionStore();
+    await store.addFilesFromPaths(['/music/track.mp3']);
+    await flush();
+    const track = store.tracks[0];
+    store.analyzeTrack(track.id);
+    await flush();
+
+    expect(track.status).toBe('ready');
+    expect(store.getBpm(track)).toBeNull();
+    expect(track.lastAnalysisFailed).toBe(false);
+    expect(store.getLoadableTrack('/music/track.mp3')).toMatchObject({
+      bpm: null,
+      beatOffset: 0.5
+    });
+  });
+
+  it('treats a detected bpm of zero as no bpm', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'files_info') return [1000];
+      if (cmd === 'analyze_track') return { bpm: 0, silenceEnd: 0.5 };
+      if (cmd === 'read_track_tags') return { title: null, artist: null };
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const store = useCollectionStore();
+    await store.addFilesFromPaths(['/music/track.mp3']);
+    await flush();
+    const track = store.tracks[0];
+    store.analyzeTrack(track.id);
+    await flush();
+
+    expect(track.status).toBe('ready');
+    expect(store.getBpm(track)).toBeNull();
+    expect(store.getSaved('/music/track.mp3')?.bpm).toBeNull();
+  });
+
+  it('a track analyzed without a bpm takes a manual one on its detected beat offset', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'files_info') return [1000];
+      if (cmd === 'analyze_track') return { bpm: null, silenceEnd: 0.5 };
+      if (cmd === 'read_track_tags') return { title: null, artist: null };
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const store = useCollectionStore();
+    await store.addFilesFromPaths(['/music/track.mp3']);
+    await flush();
+    const track = store.tracks[0];
+    store.analyzeTrack(track.id);
+    await flush();
+
+    store.setBpm(track.id, 130);
+
+    expect(store.getBpm(track)).toBe(130);
+    expect(store.getSaved('/music/track.mp3')?.beatOffset).toBe(0.5);
+    expect(store.getLoadableTrack('/music/track.mp3')).toMatchObject({ bpm: 130 });
+  });
+
+  it('leaves a track whose decode failed unloadable', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'files_info') return [1000];
+      if (cmd === 'analyze_track') throw new Error('analysis failed');
+      if (cmd === 'read_track_tags') return { title: null, artist: null };
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const store = useCollectionStore();
+    await store.addFilesFromPaths(['/music/track.mp3']);
+    await flush();
+    const track = store.tracks[0];
+    store.analyzeTrack(track.id);
+    await flush();
+
+    expect(track.status).toBe('error');
+    expect(store.getLoadableTrack('/music/track.mp3')).toBeNull();
+  });
+
   it('marks a never-analyzed track as error when analysis fails', async () => {
     mockedInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'files_info') return [1000];

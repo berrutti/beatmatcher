@@ -8,13 +8,12 @@ import { ROW_H, type LaneKey, type RowLayout, type SublaneLayout } from './timel
 export type LaneHeight = { key: LaneKey; height: number };
 
 export function computeRowLayout(
-  decks: { deckId: DeckId; laneHeights: LaneHeight[] }[],
-  topY: number,
-  waveformHeight: number = ROW_H
+  decks: { deckId: DeckId; waveformHeight?: number; laneHeights: LaneHeight[] }[],
+  topY: number
 ): RowLayout[] {
   const rows: RowLayout[] = [];
   let rowY = topY;
-  for (const { deckId, laneHeights } of decks) {
+  for (const { deckId, laneHeights, waveformHeight = ROW_H } of decks) {
     let sublaneTop = rowY + waveformHeight;
     const lanes: SublaneLayout[] = laneHeights.map(({ key, height }) => {
       const sublane = { key, top: sublaneTop, height };

@@ -6,6 +6,8 @@ import { listen } from '@tauri-apps/api/event';
 import { DECKS_DISPOSITION, TWO_DECK_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
+
+const SAVE_POLL_MS = 200;
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
@@ -373,6 +375,9 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const isRecording = ref(false);
+  // Null when no save is running. A WAV is already on disk when the recording
+  // stops, so only a FLAC encode ever reports a fraction here.
+  const saveProgress = ref<number | null>(null);
   const playedPaths = reactive(new Set<string>());
 
   function markPlayed(path: string): void {
@@ -392,10 +397,26 @@ export const useMixerStore = defineStore('mixer', () => {
     });
   }
 
+  // Polled rather than pushed: the audio layer reports permille into an atomic so
+  // it never needs an app handle to emit with.
+  async function whileReportingSaveProgress<T>(work: () => Promise<T>): Promise<T> {
+    const poll = window.setInterval(async () => {
+      saveProgress.value = await call('recording_save_progress');
+    }, SAVE_POLL_MS);
+    try {
+      return await work();
+    } finally {
+      window.clearInterval(poll);
+      saveProgress.value = null;
+    }
+  }
+
   async function stopRecording(): Promise<string> {
-    const tempPath = await call('stop_recording');
-    isRecording.value = false;
-    return tempPath;
+    return whileReportingSaveProgress(async () => {
+      const tempPath = await call('stop_recording');
+      isRecording.value = false;
+      return tempPath;
+    });
   }
 
   async function pickSavePath(baseName: string): Promise<string | null> {
@@ -409,14 +430,16 @@ export const useMixerStore = defineStore('mixer', () => {
     const settings = useSettingsStore();
     if (settings.recordingFormat === 'session') {
       await call('save_bms_only', { src, dest });
-    } else {
-      await call('save_recording', {
+      return;
+    }
+    await whileReportingSaveProgress(() =>
+      call('save_recording', {
         src,
         dest,
         writeBms: settings.recordBms,
         writeCue: settings.recordCue
-      });
-    }
+      })
+    );
   }
 
   async function discardRecording(path: string): Promise<void> {
@@ -491,6 +514,7 @@ export const useMixerStore = defineStore('mixer', () => {
     xfaderPosition,
     xfaderAssign,
     isRecording,
+    saveProgress,
     playedPaths,
     markPlayed,
     applyEngineParam,

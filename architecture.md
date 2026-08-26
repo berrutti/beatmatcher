@@ -49,6 +49,17 @@ Every `#[tauri::command]` lives in `commands.rs`. Where the work belongs to anot
 command is a wrapper that calls into it, so `session_playback` and `midi` keep their internals
 private.
 
+## Calling a command
+
+`tauriCommands.ts` is generated from the `#[tauri::command]` signatures (`yarn generate:commands`,
+verified by `yarn check:commands`). Its `call` wrapper checks the command name, its arguments and
+its return type against the Rust that will receive them, so it is the default.
+
+The generator reads only primitives, `String`, `bool`, `Vec`, `Option` and `HashMap`. A command
+returning a struct comes back as `unknown`, and those take `invoke<T>('name', args)` with `T` a
+hand-written mirror: `DeckSyncPayload`, `TrackInfo`, `LoopOutResult` and the other transport
+commands. Using `invoke` where the generator did type the return throws away the check.
+
 ## Audio signal chain (per deck)
 
 ```mermaid

@@ -25,6 +25,7 @@
               :value="mixer.paramValue(deckId, keyOf(spec))"
               orient="vertical"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
+              v-tooltip="$t('mixer.eqHint')"
               @input="(e) => onInput(deckId, spec, e)"
               @dblclick="onReset(deckId, spec)"
             />
@@ -38,6 +39,7 @@
             :class="{ 'mixer__filter-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
             tabindex="-1"
+            v-tooltip="$t('mixer.filterToggle')"
             @click="mixer.toggleParam(deckId, FILTER_ACTIVE)"
           >
             F
@@ -50,6 +52,7 @@
             :step="mixer.filterSpec.step"
             :value="mixer.paramValue(deckId, FILTER_VALUE)"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            v-tooltip="$t('mixer.filterHint')"
             @input="(e) => onInput(deckId, mixer.filterSpec, e)"
             @dblclick="onReset(deckId, mixer.filterSpec)"
           />
@@ -73,7 +76,13 @@
             :value="mixer.paramValue(deckId, FADER_GAIN)"
             orient="vertical"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
+            v-tooltip="$t('mixer.faderHint')"
+            v-fader-reset="{
+              enabled: () => settings.faderClickResets,
+              reset: () => onReset(deckId, mixer.faderSpec)
+            }"
             @input="(e) => onInput(deckId, mixer.faderSpec, e)"
+            @dblclick="onReset(deckId, mixer.faderSpec)"
           />
           <div class="mixer__meter">
             <div
@@ -144,6 +153,7 @@ import {
   FILTER_ACTIVE,
   type XfaderSide
 } from '@renderer/stores/mixer';
+import { useSettingsStore } from '@renderer/stores/settings';
 import type { DeckId } from '@renderer/utils/types';
 import { reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
@@ -151,6 +161,7 @@ import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
+const settings = useSettingsStore();
 
 const XFADER_ASSIGNS: { value: XfaderSide; short: string; label: string }[] = [
   { value: 'a', short: 'A', label: 'mixer.assignA' },
@@ -285,34 +296,30 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   z-index: 1;
 }
 
-/* The whole highlight (fill + outline) lives on ::before, sitting behind the
-   channel's controls (z-index: -1) so a right-connected channel can stretch it
-   across the inter-channel gap to its neighbor without tinting the sliders. */
+/* On ::before at z-index -1 so it sits behind the channel's controls rather
+   than tinting the sliders. */
 .mixer__channel--swarm-selected::before {
   content: '';
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: color-mix(in srgb, var(--color-accent-amber) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent-amber) 40%, transparent);
+  /* Carries the whole highlight now that there is no outline, so it is stronger
+     than the fill that used to sit inside one. */
+  background: color-mix(in srgb, var(--color-accent-amber) 18%, transparent);
   border-radius: 4px;
   pointer-events: none;
 }
 
-/* Adjacent selected channels read as one rounded group. The channel whose
-   right neighbor is also selected stretches its highlight across the column gap
-   (0.4em, see .mixer__channels) to meet that neighbor and drops the touching
-   border + corners; the left neighbor only drops its touching border + corners,
-   so the two halves join seamlessly with rounded ends. */
+/* Adjacent selected channels read as one rounded group. `.mixer__channels` has
+   no gap, so they already touch: each only drops the corners on the side it
+   meets a neighbour. Stretching one highlight over the other paints that strip
+   twice and the overlap reads as a bright seam. */
 .mixer__channel--swarm-no-right::before {
-  right: -0.4em;
-  border-right: none;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
 .mixer__channel--swarm-no-left::before {
-  border-left: none;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
@@ -566,6 +573,15 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   box-shadow:
     0 3px 7px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Click-to-reset makes the thumb a button, so it reads as one until a drag starts. */
+.mixer__fader[data-click-resets]::-webkit-slider-thumb {
+  cursor: pointer;
+}
+
+.mixer__fader[data-dragging]::-webkit-slider-thumb {
+  cursor: grabbing;
 }
 
 .mixer__assign {

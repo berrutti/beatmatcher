@@ -126,18 +126,54 @@ describe('pitch and bpm under fuzzed input', () => {
     }
   });
 
-  it('leaves a deck with no grid alone', () => {
+  it('shows a gridless deck the rate the engine resolved, not the one asked for', async () => {
     const decks = useDecksStore();
     const random = makeRandom(13);
 
+    // Deliberately coarser than any rule the store could apply on its own, so a
+    // mirrored value and a locally computed one cannot agree by accident.
+    function engineRate(percent: number): number {
+      return 1 + Math.round(Math.max(-PITCH_RANGE, Math.min(PITCH_RANGE, percent))) / 100;
+    }
+
+    mockedInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd !== 'set_pitch_offset') return {};
+      const percent =
+        typeof args === 'object' && args !== null && 'percent' in args ? args.percent : undefined;
+      if (typeof percent !== 'number') throw new Error('set_pitch_offset needs a percent');
+      return engineRate(percent);
+    });
+
     for (let step = 0; step < 500; step++) {
-      decks.deckD.setPitchOffset((random() * 2 - 1) * 100);
-      decks.deckD.setTargetBpm(random() * 300);
-      decks.deckD.applyEngineRate(1 + random());
+      const asked = (random() * 2 - 1) * 100;
+      await decks.deckD.setPitchOffset(asked);
+      const resolved = engineRate(asked);
 
       expect(decks.deckD.trackBpm, `step ${step}`).toBeNull();
       expect(decks.deckD.targetBpm, `step ${step}`).toBeNull();
-      expect(decks.deckD.pitchOffset, `step ${step}`).toBe(0);
+      expect(Math.abs(decks.deckD.rate - resolved), `step ${step}`).toBeLessThan(1e-9);
+      expect(Math.abs(decks.deckD.pitchOffset - (resolved - 1) * 100), `step ${step}`).toBeLessThan(
+        1e-9
+      );
+    }
+  });
+
+  it('never invents a bpm for a gridless deck', () => {
+    const decks = useDecksStore();
+    const random = makeRandom(21);
+
+    for (let step = 0; step < 500; step++) {
+      decks.deckC.setTargetBpm(random() * 300);
+      expect(decks.deckC.trackBpm, `step ${step}`).toBeNull();
+      expect(decks.deckC.targetBpm, `step ${step}`).toBeNull();
+
+      const rate = 0.5 + random();
+      decks.deckC.applyEngineRate(rate);
+      expect(decks.deckC.targetBpm, `step ${step}`).toBeNull();
+      expect(Math.abs(decks.deckC.pitchOffset - (rate - 1) * 100), `step ${step}`).toBeLessThan(
+        1e-9
+      );
+      expect(Math.abs(decks.deckC.rate - rate), `step ${step}`).toBeLessThan(1e-9);
     }
   });
 });

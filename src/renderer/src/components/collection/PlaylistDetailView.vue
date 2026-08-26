@@ -324,7 +324,8 @@ function rowShiftStyle(index: number) {
 
 function onPlaylistTrackPointerDown(event: PointerEvent, fromIdx: number) {
   const item = playlistItems.value[fromIdx];
-  if (item) startTrackDrag(store, event, item.path);
+  if (item?.entry?.status !== 'ready') return;
+  startTrackDrag(store, event, item.path);
 }
 
 function onGripPointerDown(event: PointerEvent, fromIdx: number) {

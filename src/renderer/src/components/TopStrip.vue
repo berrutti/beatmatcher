@@ -4,10 +4,11 @@
       <button
         class="btn-secondary topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
+        :disabled="recordingBusy"
         tabindex="-1"
         @click="onRecClick"
       >
-        {{ $t('topStrip.rec') }}
+        {{ recordingBusy ? $t('topStrip.finishing') : $t('topStrip.rec') }}
       </button>
 
       <button
@@ -56,6 +57,11 @@
       max="1"
       step="0.01"
       :value="mixer.masterGain"
+      v-tooltip="$t('topStrip.masterHint')"
+      v-fader-reset="{
+        enabled: () => settings.faderClickResets,
+        reset: () => mixer.setMasterGain(1)
+      }"
       @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
       @dblclick="mixer.setMasterGain(1)"
     />
@@ -167,6 +173,7 @@ import { useI18n } from 'vue-i18n';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 import { dateStamp } from '@renderer/utils/time';
 
@@ -174,6 +181,7 @@ const { t } = useI18n();
 const mixer = useMixerStore();
 const decksStore = useDecksStore();
 const appMode = useAppModeStore();
+const settings = useSettingsStore();
 
 const stopMarkPlayedWatch = watch(
   () => DECKS_DISPOSITION.map((id) => decksStore.decks[id].loadedPath),
@@ -217,17 +225,30 @@ async function pollLevels() {
   rafId = requestAnimationFrame(pollLevels);
 }
 
+// Set before the first await, so the press disables the button on the same tick
+// rather than after the file finishes writing.
+const recordingBusy = ref(false);
+
 async function onRecClick() {
-  if (mixer.isRecording) {
-    const tempPath = await mixer.stopRecording();
-    const destPath = await mixer.pickSavePath(t('files.defaultName', { date: dateStamp() }));
-    if (destPath) {
-      await mixer.saveRecording(tempPath, destPath);
-    } else {
-      await mixer.discardRecording(tempPath);
+  if (recordingBusy.value) return;
+  recordingBusy.value = true;
+  let tempPath: string;
+  try {
+    if (!mixer.isRecording) {
+      await mixer.startRecording();
+      return;
     }
+    tempPath = await mixer.stopRecording();
+  } finally {
+    // Released here rather than after the save: the take is off the recorder by
+    // now, so a new one can start while the previous file is still being written.
+    recordingBusy.value = false;
+  }
+  const destPath = await mixer.pickSavePath(t('files.defaultName', { date: dateStamp() }));
+  if (destPath) {
+    await mixer.saveRecording(tempPath, destPath);
   } else {
-    await mixer.startRecording();
+    await mixer.discardRecording(tempPath);
   }
 }
 
@@ -398,6 +419,14 @@ onUnmounted(() => {
   margin-top: -5.5px;
 }
 
+.topstrip__master-fader[data-click-resets]::-webkit-slider-thumb {
+  cursor: pointer;
+}
+
+.topstrip__master-fader[data-dragging]::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+
 .topstrip__label--dim {
   opacity: 0.5;
 }
@@ -472,6 +501,11 @@ onUnmounted(() => {
   border-radius: 3px;
   cursor: pointer;
   text-transform: uppercase;
+}
+
+.topstrip__rec-btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
 }
 
 .topstrip__rec-btn:hover {

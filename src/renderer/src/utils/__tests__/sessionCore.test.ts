@@ -17,7 +17,6 @@ import {
   decimateSteps,
   filterActiveAt,
   toggleFilterActiveRange,
-  deleteNudgeRange,
   relocateEventPaths,
   editConstants,
   currentBeat
@@ -60,7 +59,6 @@ describe('buildTimeline', () => {
     expect(built.loadedSpans[0].trackName).toBe('name:/tracks/one.mp3');
     expect(built.deckLanes['A'].gain.length).toBeGreaterThan(1);
     expect(built.masterLanes.gain[0].ms).toBe(0);
-    expect(built.deckNudges['A']).toEqual([]);
   });
 
   it('prefers the collection grid and falls back to recorded values', () => {
@@ -237,11 +235,6 @@ describe('lane edit wrappers', () => {
 });
 
 describe('reference-preserving no-ops', () => {
-  it('deleteNudgeRange returns the input reference when nothing matches', () => {
-    const events = simpleSession();
-    expect(deleteNudgeRange(events, 'A', 1000, 2000)).toBe(events);
-  });
-
   it('relocateEventPaths returns the input reference for an unmapped set', () => {
     const events = simpleSession();
     expect(relocateEventPaths(events, { '/never/there.mp3': '/new.mp3' })).toBe(events);

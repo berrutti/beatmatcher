@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  jogLaneColumns,
-  jogLaneScale,
-  nudgeSpanAt,
-  JOG_LANE_MIN_SCALE_PCT
-} from '@renderer/utils/jogLane';
+import { jogLaneColumns, jogLaneScale, JOG_LANE_MIN_SCALE_PCT } from '@renderer/utils/jogLane';
 import type { LanePoint } from '@renderer/utils/types';
 
 const COLUMNS = 10;
@@ -66,20 +61,5 @@ describe('jogLaneScale', () => {
 
   it('grows to the largest excursion in either direction', () => {
     expect(jogLaneScale([4, -37, 2])).toBe(37);
-  });
-});
-
-describe('nudgeSpanAt', () => {
-  const spans = [
-    { startMs: 100, endMs: 200 },
-    { startMs: 400, endMs: 900 }
-  ];
-
-  it('finds the span under the cursor', () => {
-    expect(nudgeSpanAt(spans, 500)).toEqual(spans[1]);
-  });
-
-  it('is null between spans', () => {
-    expect(nudgeSpanAt(spans, 300)).toBeNull();
   });
 });

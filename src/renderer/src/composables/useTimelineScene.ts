@@ -1,16 +1,8 @@
-// Composes the timeline's scene: turns the session data + current interaction
-// state into the ordered list of SceneItems the engine renders and hit-tests.
-// This is "the timeline knows which components to render." It's a pure function
-// (rebuilt each frame from reactive inputs) and also reports the content height
-// so the camera can clamp vertical scroll.
+// Pure, and rebuilt each frame from reactive inputs. Also reports the content
+// height, because only the composed scene knows how tall the rows came out.
 
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
-import {
-  MASTER_ROW_H,
-  TrackWaveform,
-  type LaneKey,
-  type RowLayout
-} from '@renderer/utils/timelineDraw';
+import { TrackWaveform, type LaneKey, type RowLayout } from '@renderer/utils/timelineDraw';
 import {
   computeRowLayout,
   selectionSpansFor,
@@ -25,6 +17,7 @@ import {
   filterRegionItem,
   filterSelectionItem,
   laneSeparatorItem,
+  rowSeparatorItem,
   waveformSeparatorItem,
   masterItem,
   rowDividersItem,
@@ -32,14 +25,14 @@ import {
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
-import type { DeckId } from '@renderer/utils/types';
+import { MASTER_ROW_ID, type DeckId } from '@renderer/utils/types';
 import type {
   Clip,
   LoadedSpan,
   DeckLanes,
   MasterLanes,
   MasterLaneKey,
-  NudgeSpan,
+  EditableLaneKey,
   LanePoint
 } from '@renderer/utils/types';
 
@@ -50,17 +43,25 @@ export type SceneInput = {
   loadedSpans: LoadedSpan[];
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
-  deckNudges: Record<string, NudgeSpan[]>;
   deckJog: Record<string, LanePoint[]>;
   waveforms: Map<string, TrackWaveform>;
   playheadMs: number;
   durationMs: number;
   editMode: boolean;
-  laneFor: (deck: string) => LaneKey;
+  lanesFor: (deck: string) => LaneKey[];
   masterLane: MasterLaneKey;
-  laneHeight: number;
-  waveformHeight: number;
+  laneHeightFor: (deck: string, key: LaneKey) => number;
+  waveformHeightFor: (deck: string) => number;
+  openLaneFor: (deck: string) => string | null;
+  badgeAlphaFor: (deck: string) => number;
+  menuOpenFor: (deck: string) => boolean;
+  // The span a "reset this move" would clear, shown while its menu is open.
+  resetPreview: { deck: string; lane: EditableLaneKey; startMs: number; endMs: number } | null;
   accentFor: (deck: string) => string;
+  // Named by the locale, so the timeline never spells a lane or a deck out itself.
+  laneLabel: (key: EditableLaneKey) => string;
+  deckLabel: (deck: string) => string;
+  badgeLabel: (deck: string) => string;
   audibleFor: (deck: string) => boolean;
   soloFor: (deck: string) => boolean;
   mutedFor: (deck: string) => boolean;
@@ -76,30 +77,60 @@ export type SceneResult = {
   contentHeight: number;
 };
 
+function resetHighlight(
+  preview: SceneInput['resetPreview'],
+  deck: string,
+  lane: EditableLaneKey
+): { lane: EditableLaneKey; startMs: number; endMs: number } | null {
+  if (!preview || preview.deck !== deck || preview.lane !== lane) return null;
+  return { lane, startMs: preview.startMs, endMs: preview.endMs };
+}
+
 export function buildScene(input: SceneInput): SceneResult {
   const { vc, decks } = input;
   const deckSpecs = decks.map((deckId) => ({
     deckId,
-    laneHeights: input.editMode ? [{ key: input.laneFor(deckId), height: input.laneHeight }] : []
+    waveformHeight: input.waveformHeightFor(deckId),
+    laneHeights: input.editMode
+      ? input.lanesFor(deckId).map((key) => ({ key, height: input.laneHeightFor(deckId, key) }))
+      : []
   }));
   // The master lane sits at the top, directly below the time ruler and above
   // every deck row. The deck rows begin below it.
   const masterTop = vc.laneOriginY;
-  const masterHeight = MASTER_ROW_H;
-  const rows = computeRowLayout(deckSpecs, masterTop + masterHeight, input.waveformHeight);
+  const masterHeight = input.waveformHeightFor(MASTER_ROW_ID);
+  const rows = computeRowLayout(deckSpecs, masterTop + masterHeight);
 
   const items: SceneItem[] = [];
 
-  items.push(masterItem(masterTop, masterHeight, input.masterLanes, input.masterLane));
+  items.push(
+    masterItem(
+      masterTop,
+      masterHeight,
+      input.masterLanes,
+      input.masterLane,
+      input.laneLabel(input.masterLane),
+      input.openLaneFor(MASTER_ROW_ID) !== null,
+      resetHighlight(input.resetPreview, MASTER_ROW_ID, input.masterLane)
+    )
+  );
 
-  rows.forEach((row, rowIndex) => {
+  items.push(rowSeparatorItem(masterTop + masterHeight, MASTER_ROW_ID));
+
+  rows.forEach((row) => {
     const deck = row.deckId;
     items.push(
-      deckChromeItem(row, rowIndex, {
+      deckChromeItem(row, {
         accent: input.accentFor(deck),
         audible: input.audibleFor(deck),
         solo: input.soloFor(deck),
-        muted: input.mutedFor(deck)
+        muted: input.mutedFor(deck),
+        deckLabel: input.deckLabel(deck),
+        badgeLabel: input.badgeLabel(deck),
+        laneLabel: input.laneLabel,
+        badgeAlpha: input.badgeAlphaFor(deck),
+        openLane: input.openLaneFor(deck),
+        menuOpen: input.menuOpenFor(deck)
       })
     );
     items.push(
@@ -113,14 +144,31 @@ export function buildScene(input: SceneInput): SceneResult {
         input.editMode ? selectionSpansFor(input.clipSelection, deck) : []
       )
     );
-    const lane = row.lanes[0];
-    if (lane) {
+    const deckClips = input.clips.filter((clip) => clip.deck === deck);
+    for (const lane of row.lanes) {
       if (lane.key === 'jog') {
         items.push(
-          jogLaneItem(lane, deck, input.deckJog[deck] ?? [], input.deckNudges[deck] ?? [])
+          jogLaneItem(
+            lane,
+            deck,
+            input.deckJog[deck] ?? [],
+            deckClips,
+            input.waveforms,
+            input.accentFor(deck)
+          )
         );
       } else {
-        items.push(laneSurfaceItem(lane, deck, input.deckLanes[deck]));
+        items.push(
+          laneSurfaceItem(
+            lane,
+            deck,
+            input.deckLanes[deck],
+            deckClips,
+            input.waveforms,
+            input.accentFor(deck),
+            resetHighlight(input.resetPreview, deck, lane.key)
+          )
+        );
       }
       if (lane.key === 'filter') {
         for (const span of input.deckLanes[deck]?.filterActive ?? []) {
@@ -131,9 +179,10 @@ export function buildScene(input: SceneInput): SceneResult {
           items.push(filterSelectionItem(lane, sel.startMs, sel.endMs));
         }
       }
+      // One per lane, so a drag grows the lane it is on rather than the stack.
       items.push(laneSeparatorItem(lane, deck));
-      items.push(waveformSeparatorItem(row, deck));
     }
+    if (row.lanes.length > 0) items.push(waveformSeparatorItem(row, deck));
   });
 
   const lastRow = rows[rows.length - 1];

@@ -21,16 +21,13 @@
   </div>
 
   <Teleport to="body">
-    <!-- Deck right-click menu: mute/solo, nudge delete, and the lanes submenu. -->
     <div
       v-if="deckMenu"
+      v-menu-placement
       class="lane-menu"
       :style="{ left: deckMenu.x + 'px', top: deckMenu.y + 'px' }"
       @click.stop
     >
-      <button v-if="deckMenu.nudge" class="lane-menu__item" @click="onDeleteNudge">
-        {{ $t('session.deleteNudge') }}
-      </button>
       <button
         v-if="editStore.editMode && deckMenu.bpm"
         class="lane-menu__item"
@@ -46,25 +43,49 @@
         {{ $t('session.setBpmFromHere') }}
       </button>
       <button
+        v-if="editStore.editMode && deckMenu.lane"
+        class="lane-menu__item"
+        @click="onResetLane('thisMove')"
+      >
+        {{ $t('session.resetLaneThisMove', { lane: laneName(deckMenu.lane.key) }) }}
+      </button>
+      <button
+        v-if="editStore.editMode && deckMenu.lane"
+        class="lane-menu__item"
+        @click="onResetLane('toEnd')"
+      >
+        {{ $t('session.resetLaneFromHere', { lane: laneName(deckMenu.lane.key) }) }}
+      </button>
+      <button
+        v-if="editStore.editMode && deckMenu.lane"
+        class="lane-menu__item"
+        @click="onResetLane('untilHere')"
+      >
+        {{ $t('session.resetLaneUntilHere', { lane: laneName(deckMenu.lane.key) }) }}
+      </button>
+      <button
         v-if="editStore.editMode && deckMenu.split"
         class="lane-menu__item"
         @click="onSplitClip"
       >
         {{ $t('session.splitClip') }}
       </button>
-      <button class="lane-menu__item" @click="onToggleMute">
+      <button v-if="deckMenu.deck !== MASTER_ROW_ID" class="lane-menu__item" @click="onToggleMute">
         {{ $t('session.mute') }}
-        <span class="lane-menu__check">{{
-          sessionStore.mutedDecks.has(deckMenu.deck) ? '✓' : ''
+        <span class="lane-menu__radio">{{
+          sessionStore.mutedDecks.has(deckMenu.deck) ? '◉' : '○'
         }}</span>
       </button>
-      <button class="lane-menu__item" @click="onToggleSolo">
+      <button v-if="deckMenu.deck !== MASTER_ROW_ID" class="lane-menu__item" @click="onToggleSolo">
         {{ $t('session.solo') }}
-        <span class="lane-menu__check">{{
-          sessionStore.soloDecks.has(deckMenu.deck) ? '✓' : ''
+        <span class="lane-menu__radio">{{
+          sessionStore.soloDecks.has(deckMenu.deck) ? '◉' : '○'
         }}</span>
       </button>
-      <div v-if="editStore.editMode" class="lane-menu__item lane-menu__item--sub">
+      <div
+        v-if="editStore.editMode && deckMenu.deck !== MASTER_ROW_ID"
+        class="lane-menu__item lane-menu__item--sub"
+      >
         {{ $t('session.lanesMenu') }}
         <span class="lane-menu__arrow">▶</span>
         <div class="lane-menu__submenu">
@@ -75,9 +96,7 @@
             @click="onPickLaneFromMenu(key)"
           >
             {{ $t(`session.lanes.${key}`) }}
-            <span class="lane-menu__check">{{
-              controller.laneFor(deckMenu.deck) === key ? '✓' : ''
-            }}</span>
+            <span class="lane-menu__check">{{ laneIsShown(deckMenu.deck, key) ? '✓' : '' }}</span>
           </button>
         </div>
       </div>
@@ -89,9 +108,9 @@
       @contextmenu.prevent="deckMenu = null"
     />
 
-    <!-- Lane dropdown: choose which automation lane a deck shows. -->
     <div
       v-if="lanePicker"
+      v-menu-placement
       class="lane-menu"
       :style="{ left: lanePicker.x + 'px', top: lanePicker.y + 'px' }"
       @click.stop
@@ -103,7 +122,9 @@
         @click="onPickLane(key)"
       >
         {{ $t(`session.lanes.${key}`) }}
-        <span class="lane-menu__check">{{ pickedLane(lanePicker.deck) === key ? '✓' : '' }}</span>
+        <span :class="lanePicker.deck === MASTER_ROW_ID ? 'lane-menu__radio' : 'lane-menu__check'">
+          {{ laneMarker(lanePicker.deck, key) }}
+        </span>
       </button>
     </div>
     <div
@@ -113,9 +134,9 @@
       @contextmenu.prevent="lanePicker = null"
     />
 
-    <!-- Filter-region right-click menu: delete (mirrors the nudge delete). -->
     <div
       v-if="filterMenu"
+      v-menu-placement
       class="lane-menu"
       :style="{ left: filterMenu.x + 'px', top: filterMenu.y + 'px' }"
       @click.stop
@@ -131,7 +152,6 @@
       @contextmenu.prevent="filterMenu = null"
     />
 
-    <!-- Set-BPM dialog: insert a rate change at the right-clicked point. -->
     <BpmModal
       :open="bpmDialog !== null"
       :current-bpm="bpmDialog?.currentBpm ?? null"
@@ -142,22 +162,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
-import type {
-  Clip,
-  LoadedSpan,
-  DeckLanes,
-  MasterLanes,
-  NudgeSpan,
-  LanePoint
-} from '@renderer/utils/types';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
+import type { Clip, LoadedSpan, DeckLanes, MasterLanes, LanePoint } from '@renderer/utils/types';
 import {
   DECK_LANE_KEYS,
   MASTER_LANE_KEYS,
   MASTER_ROW_ID,
+  type EditableLaneKey,
   isMasterLaneKey,
   type MasterLaneKey
 } from '@renderer/utils/types';
+import type { ResetExtent } from '@renderer/utils/sessionCore';
 import {
   DECK_ORDER,
   LABEL_W,
@@ -167,6 +183,13 @@ import {
   type RowLayout,
   type TrackWaveform
 } from '@renderer/utils/timelineDraw';
+import {
+  badgeAlpha,
+  badgeFading,
+  updateBadgeFade,
+  type Badge,
+  type BadgeFade
+} from '@renderer/utils/badgeFade';
 import { overlapsRange } from '@renderer/utils/timelineView';
 import { renderScene, type SceneItem, type ViewContext } from '@renderer/utils/timelineEngine';
 import { useTimelineView } from '@renderer/composables/useTimelineView';
@@ -175,7 +198,7 @@ import { useTimelineGestures } from '@renderer/composables/useTimelineGestures';
 import { buildScene } from '@renderer/composables/useTimelineScene';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { useSettingsStore, DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import type { BpmContext } from '@renderer/utils/timelineIntents';
 
@@ -195,16 +218,15 @@ const props = defineProps<{
   playheadMs: number;
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
-  deckNudges: Record<string, NudgeSpan[]>;
   deckJog: Record<string, LanePoint[]>;
   waveforms: Map<string, TrackWaveform>;
 }>();
 
 const emit = defineEmits<{ seek: [ms: number] }>();
 
+const { t } = useI18n();
 const sessionStore = useSessionStore();
 const editStore = useSessionEditStore();
-const settingsStore = useSettingsStore();
 
 const containerEl = ref<HTMLDivElement | null>(null);
 const scrollEl = ref<HTMLDivElement | null>(null);
@@ -243,13 +265,10 @@ const gestures = useTimelineGestures({
   getClips: () => props.clips,
   getEvents: () => sessionStore.session?.events ?? [],
   getDeckLanes: () => props.deckLanes,
-  laneHeight: () => controller.laneHeight.value,
-  waveformHeight: () => controller.waveformHeight.value,
+  laneHeightFor: (deck, lane) => controller.laneHeightOf(deck, lane),
+  waveformHeightFor: (deck) => controller.waveformHeightOf(deck),
   isEditMode: () => editStore.editMode,
   durationMs: () => props.durationMs,
-  nudgeDirectionAt: (_deck, y, rowTop) =>
-    y < rowTop + controller.waveformHeight.value / 2 ? 1 : -1,
-  nudgeSensitivity: () => settingsStore.nudgeSensitivity,
   accentFor: controller.accentFor,
   requestRender: scheduleRender,
   setCursor: (cursor) => {
@@ -264,6 +283,20 @@ function scheduleRender(): void {
     raf = 0;
     render();
   });
+}
+
+const badgeFades = new Map<string, BadgeFade>();
+
+function badgeFor(deck: string): Badge | null {
+  if (sessionStore.soloDecks.has(deck)) return { label: t('session.solo'), solo: true };
+  if (sessionStore.mutedDecks.has(deck)) return { label: t('session.mute'), solo: false };
+  return null;
+}
+
+function fadeOf(deck: string, nowMs: number): BadgeFade {
+  const fade = updateBadgeFade(badgeFades.get(deck), badgeFor(deck), nowMs);
+  badgeFades.set(deck, fade);
+  return fade;
 }
 
 function render(): void {
@@ -286,6 +319,9 @@ function render(): void {
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, cw, ch);
 
+  const nowMs = performance.now();
+  const fades = new Map<string, BadgeFade>(DECK_ORDER.map((deck) => [deck, fadeOf(deck, nowMs)]));
+
   const vc = camera.viewContext(cw, ch);
   const scene = buildScene({
     vc,
@@ -294,19 +330,28 @@ function render(): void {
     loadedSpans: props.loadedSpans,
     deckLanes: props.deckLanes,
     masterLanes: props.masterLanes,
-    deckNudges: props.deckNudges,
     deckJog: props.deckJog,
     waveforms: props.waveforms,
     playheadMs: props.playheadMs,
     durationMs: props.durationMs,
     editMode: editStore.editMode,
-    laneFor: controller.laneFor,
+    lanesFor: controller.lanesFor,
     masterLane: controller.selectedMasterLane.value,
-    laneHeight: controller.laneHeight.value,
-    waveformHeight: controller.waveformHeight.value,
+    laneHeightFor: controller.laneHeightOf,
+    waveformHeightFor: controller.waveformHeightOf,
+    openLaneFor: openLaneOf,
     accentFor: controller.accentFor,
+    laneLabel: (key) => t(`session.lanes.${key}`),
+    deckLabel: (deck) => t('deck.label', { id: deck }),
+    badgeLabel: (deck) => fades.get(deck)?.badge?.label ?? '',
+    badgeAlphaFor: (deck) => {
+      const fade = fades.get(deck);
+      return fade ? badgeAlpha(fade, nowMs) : 0;
+    },
+    menuOpenFor: (deck) => deckMenu.value?.deck === deck,
+    resetPreview: resetPreview.value,
     audibleFor: (deck) => sessionStore.deckAudible(deck),
-    soloFor: (deck) => sessionStore.soloDecks.has(deck),
+    soloFor: (deck) => fades.get(deck)?.badge?.solo ?? false,
     mutedFor: (deck) => sessionStore.mutedDecks.has(deck),
     clipSelection: controller.clipSelection.value,
     filterSelection: controller.filterSelection.value,
@@ -322,6 +367,13 @@ function render(): void {
   sceneItems = scene.items;
   sceneRows = scene.rows;
   renderScene(ctx, scene.items, vc);
+
+  for (const fade of fades.values()) {
+    if (badgeFading(fade, nowMs)) {
+      scheduleRender();
+      return;
+    }
+  }
 }
 
 // The native scrollbar / wheel moved the container: mirror it into the camera so
@@ -371,32 +423,17 @@ function onCanvasWheel(e: WheelEvent): void {
   gestures.onWheel(e, canvasEl.value.getBoundingClientRect());
 }
 
-// Last hover position (canvas-local), kept so a Shift press/release can refresh
-// the cursor without the pointer moving.
-let lastHoverPoint: { x: number; y: number } | null = null;
-
-function applyHoverCursor(shiftKey: boolean): void {
-  if (gestures.hasActive() || !canvasEl.value || !lastHoverPoint) return;
-  canvasEl.value.style.cursor = gestures.cursorFor(lastHoverPoint, shiftKey);
-}
-
 function onCanvasHoverMove(e: MouseEvent): void {
   if (gestures.hasActive() || !canvasEl.value) return;
   const rect = canvasEl.value.getBoundingClientRect();
-  lastHoverPoint = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  applyHoverCursor(e.shiftKey);
+  canvasEl.value.style.cursor = gestures.cursorFor({
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top
+  });
 }
 
 function onCanvasHoverLeave(): void {
-  lastHoverPoint = null;
   if (!gestures.hasActive() && canvasEl.value) canvasEl.value.style.cursor = '';
-}
-
-function onDeleteNudge(): void {
-  const menu = deckMenu.value;
-  deckMenu.value = null;
-  if (!menu?.nudge) return;
-  editStore.deleteNudge(menu.deck, menu.nudge.startMs, menu.nudge.endMs).catch(() => {});
 }
 
 function onSplitClip(): void {
@@ -416,13 +453,66 @@ function onToggleSolo(): void {
   deckMenu.value = null;
 }
 
+// Read once when the menu opens: the events do not change while it is up.
+const resetPreview = computed(() => {
+  const menu = deckMenu.value;
+  if (!menu?.lane || !editStore.editMode) return null;
+  const lanes = props.deckLanes[menu.deck];
+  const span = editStore.moveSpanAt(menu.deck, menu.lane.key, menu.lane.ms, {
+    rateMin: lanes?.rateMin,
+    rateMax: lanes?.rateMax
+  });
+  if (!span) return null;
+  return {
+    deck: menu.deck,
+    lane: menu.lane.key,
+    startMs: span.startMs,
+    endMs: span.endMs
+  };
+});
+
+function laneName(lane: EditableLaneKey): string {
+  return t(`session.lanes.${lane}`);
+}
+
+function onResetLane(extent: ResetExtent): void {
+  const menu = deckMenu.value;
+  deckMenu.value = null;
+  if (!menu?.lane) return;
+  const lanes = props.deckLanes[menu.deck];
+  controller.handleIntent({
+    type: 'lane.reset',
+    deck: menu.deck,
+    lane: menu.lane.key,
+    ms: menu.lane.ms,
+    extent,
+    rateMin: lanes?.rateMin ?? 0.92,
+    rateMax: lanes?.rateMax ?? 1.08
+  });
+}
+
 function onPickLaneFromMenu(lane: LaneKey): void {
-  if (deckMenu.value) controller.setDeckLane(deckMenu.value.deck, lane);
+  if (deckMenu.value) controller.toggleDeckLane(deckMenu.value.deck, lane);
   deckMenu.value = null;
 }
 
-function pickedLane(deck: string): LaneKey | MasterLaneKey {
-  return deck === MASTER_ROW_ID ? controller.selectedMasterLane.value : controller.laneFor(deck);
+// The master row shows one lane at a time, so its picker reads as a radio; a
+// deck stacks as many as it likes and keeps ticks.
+function laneMarker(deck: string, lane: LaneKey | MasterLaneKey): string {
+  const shown = laneIsShown(deck, lane);
+  if (deck !== MASTER_ROW_ID) return shown ? '✓' : '';
+  return shown ? '◉' : '○';
+}
+
+// The master row still shows one lane at a time; a deck stacks as many as it likes.
+function laneIsShown(deck: string, lane: LaneKey | MasterLaneKey): boolean {
+  if (deck === MASTER_ROW_ID) return controller.selectedMasterLane.value === lane;
+  return isMasterLaneKey(lane) ? false : controller.lanesFor(deck).includes(lane);
+}
+
+function openLaneOf(deck: string): string | null {
+  const picker = lanePicker.value;
+  return picker && picker.deck === deck ? picker.lane : null;
 }
 
 // One picker serves both row kinds, so the pick is routed by which row opened it.
@@ -433,7 +523,7 @@ function onPickLane(lane: LaneKey | MasterLaneKey): void {
     if (isMasterLaneKey(lane)) controller.setMasterLane(lane);
     return;
   }
-  if (!isMasterLaneKey(lane)) controller.setDeckLane(picker.deck, lane);
+  if (!isMasterLaneKey(lane)) controller.toggleDeckLane(picker.deck, lane);
 }
 
 function onDeleteFilterRegion(): void {
@@ -579,10 +669,6 @@ watch(
 // Delete/Backspace removes whichever editable thing is selected (clip takes
 // precedence over a filter span). Edit-mode only. The commit stops playback.
 function onKeyDown(e: KeyboardEvent): void {
-  if (e.key === 'Shift') {
-    applyHoverCursor(true);
-    return;
-  }
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (!editStore.editMode) return;
   if (controller.clipSelection.value.length > 0) {
@@ -592,10 +678,6 @@ function onKeyDown(e: KeyboardEvent): void {
     e.preventDefault();
     controller.deleteSelectedFilterSpan(props.deckLanes);
   }
-}
-
-function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Shift') applyHoverCursor(false);
 }
 
 // blockIds are reallocated whenever clips rebuild (any edit), so clip selection
@@ -627,7 +709,6 @@ onMounted(() => {
   // native scrollbar appears/disappears (which changes the usable canvas width).
   if (scrollEl.value) ro.observe(scrollEl.value);
   window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
   scheduleRender();
 });
 
@@ -635,7 +716,6 @@ onUnmounted(() => {
   ro?.disconnect();
   if (lodTimer !== null) clearTimeout(lodTimer);
   window.removeEventListener('keydown', onKeyDown);
-  window.removeEventListener('keyup', onKeyUp);
   window.removeEventListener('mousemove', onWindowMove);
   window.removeEventListener('mouseup', onWindowUp);
 });
@@ -650,17 +730,19 @@ watch(
     props.playheadMs,
     props.deckLanes,
     props.masterLanes,
-    props.deckNudges,
     props.deckJog,
     props.waveforms,
     camera.viewStartMs.value,
     camera.viewDurationMs.value,
     camera.scrollY.value,
-    controller.selectedDeckLane.value,
-    controller.laneHeight.value,
-    controller.waveformHeight.value,
+    controller.storedDeckLanes.value,
+    controller.storedLaneHeights.value,
+    controller.storedWaveformHeights.value,
     controller.clipSelection.value,
     controller.filterSelection.value,
+    controller.lanePicker.value,
+    controller.deckMenu.value,
+    resetPreview.value,
     editStore.editMode,
     sessionStore.mutedDecks,
     sessionStore.soloDecks,
@@ -751,6 +833,17 @@ watch(
   margin-left: auto;
   width: 1em;
   text-align: center;
+  color: var(--color-accent-cyan);
+}
+
+.lane-menu__radio {
+  margin-left: auto;
+  width: 1em;
+  text-align: center;
+  color: var(--color-muted);
+}
+
+.lane-menu__item:hover .lane-menu__radio {
   color: var(--color-accent-cyan);
 }
 

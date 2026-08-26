@@ -95,6 +95,16 @@
         </section>
 
         <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.faderClick.title') }}</div>
+          <Checkbox
+            class="settings-checkbox-row"
+            :model-value="settings.faderClickResets"
+            @update:model-value="settings.setFaderClickResets($event)"
+          >
+            {{ $t('settings.faderClick.label') }}
+          </Checkbox>
+          <p class="settings-hint">{{ $t('settings.faderClick.hint') }}</p>
+
           <div class="settings-section-label">{{ $t('settings.filterStart.title') }}</div>
           <label class="settings-toggle">
             <input
@@ -233,33 +243,25 @@
             </button>
           </div>
           <p class="settings-hint">{{ RECORDING_FORMAT_HINTS[settings.recordingFormat] }}</p>
-          <label
+          <Checkbox
             class="settings-checkbox-row"
-            :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+            :model-value="settings.recordingFormat === 'session' || settings.recordBms"
+            :disabled="settings.recordingFormat === 'session'"
+            @update:model-value="settings.setRecordBms($event)"
           >
-            <input
-              type="checkbox"
-              :checked="settings.recordingFormat === 'session' || settings.recordBms"
-              :disabled="settings.recordingFormat === 'session'"
-              @change="settings.setRecordBms(($event.target as HTMLInputElement).checked)"
-            />
-            <span>{{ $t('settings.recording.bmsCheckbox') }}</span>
-          </label>
+            {{ $t('settings.recording.bmsCheckbox') }}
+          </Checkbox>
           <p class="settings-hint">
             {{ $t('settings.recording.bmsHint') }}
           </p>
-          <label
+          <Checkbox
             class="settings-checkbox-row"
-            :class="{ 'settings-checkbox-row--disabled': settings.recordingFormat === 'session' }"
+            :model-value="settings.recordingFormat !== 'session' && settings.recordCue"
+            :disabled="settings.recordingFormat === 'session'"
+            @update:model-value="settings.setRecordCue($event)"
           >
-            <input
-              type="checkbox"
-              :checked="settings.recordingFormat !== 'session' && settings.recordCue"
-              :disabled="settings.recordingFormat === 'session'"
-              @change="settings.setRecordCue(($event.target as HTMLInputElement).checked)"
-            />
-            <span>{{ $t('settings.recording.cueCheckbox') }}</span>
-          </label>
+            {{ $t('settings.recording.cueCheckbox') }}
+          </Checkbox>
           <p class="settings-hint">
             {{ $t('settings.recording.cueHint') }}
           </p>
@@ -371,6 +373,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import Checkbox from '@renderer/components/Checkbox.vue';
 import { focusableWithin, trapTabWithin } from '@renderer/utils/focusTrap';
 import { markModalClosed, markModalOpen } from '@renderer/utils/modalStack';
 import { useI18n } from 'vue-i18n';
@@ -630,11 +633,16 @@ onUnmounted(() => {
 
 <style scoped>
 /* The overlay's own fade is global (App.vue applies it); the panel's motion stays here. */
-.settings-overlay.modal-fade-enter-active .settings-modal,
+.settings-overlay.modal-fade-enter-active .settings-modal {
+  transition:
+    opacity 0.16s ease-out,
+    transform 0.16s cubic-bezier(0.2, 0, 0.2, 1);
+}
+
 .settings-overlay.modal-fade-leave-active .settings-modal {
   transition:
-    opacity 0.16s ease,
-    transform 0.16s cubic-bezier(0.2, 0, 0.2, 1);
+    opacity 0.2s ease-in,
+    transform 0.2s cubic-bezier(0.4, 0, 1, 1);
 }
 
 .settings-overlay.modal-fade-enter-from .settings-modal,
@@ -750,19 +758,8 @@ onUnmounted(() => {
 }
 
 .settings-checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
   font-size: 11px;
   color: var(--color-text);
-  user-select: none;
-}
-
-.settings-checkbox-row--disabled {
-  opacity: 0.4;
-  cursor: default;
-  pointer-events: none;
 }
 
 .settings-toggle {

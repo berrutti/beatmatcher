@@ -14,13 +14,13 @@ import init, {
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   spliceLaneEvents as wasmSplice,
+  resetLaneFrom as wasmResetLaneFrom,
+  laneMoveSpan as wasmLaneMoveSpan,
   filterActiveAt as wasmFilterActiveAt,
   toggleFilterActiveRange as wasmToggleFilter,
   deleteFilterActiveSpan as wasmDeleteFilterSpan,
   resizeFilterActiveSpan as wasmResizeFilterSpan,
   moveFilterActiveSpan as wasmMoveFilterSpan,
-  paintNudgeRange as wasmPaintNudge,
-  deleteNudgeRange as wasmDeleteNudge,
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
@@ -38,7 +38,6 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
-  NudgeSpan,
   LanePoint,
   EditableLaneKey,
   TransportBlock
@@ -77,7 +76,6 @@ export function buildTimeline(
   loadedSpans: LoadedSpan[];
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
-  deckNudges: Record<string, NudgeSpan[]>;
   deckJog: Record<string, LanePoint[]>;
 } {
   const raw = parse<{
@@ -85,7 +83,6 @@ export function buildTimeline(
     loadedSpans: RawLoadedSpan[];
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
-    deckNudges: Record<string, NudgeSpan[]>;
     deckJog: Record<string, LanePoint[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
@@ -106,7 +103,6 @@ export function buildTimeline(
     })),
     deckLanes: raw.deckLanes,
     masterLanes: raw.masterLanes,
-    deckNudges: raw.deckNudges,
     deckJog: raw.deckJog
   };
 }
@@ -186,7 +182,7 @@ export type LaneSpec = {
   unit: LaneUnit;
 };
 
-type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
+type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio' | 'percent';
 
 const laneSpecCache = new Map<string, Record<EditableLaneKey, LaneSpec>>();
 
@@ -307,6 +303,39 @@ export function spliceLaneEvents(
   );
 }
 
+export type ResetExtent = 'toEnd' | 'untilHere' | 'thisMove';
+
+export type LaneMoveSpan = { startMs: number; endMs: number };
+
+export function laneMoveSpan(
+  events: SessionEvent[],
+  laneKey: EditableLaneKey,
+  mixerId: string,
+  deck: string,
+  ms: number,
+  rateMin = 0.92,
+  rateMax = 1.08
+): LaneMoveSpan | null {
+  return parse(
+    wasmLaneMoveSpan(JSON.stringify(events), laneKey, mixerId, deck, ms, rateMin, rateMax)
+  );
+}
+
+export function resetLaneFrom(
+  events: SessionEvent[],
+  laneKey: EditableLaneKey,
+  mixerId: string,
+  deck: string,
+  ms: number,
+  extent: ResetExtent,
+  rateMin = 0.92,
+  rateMax = 1.08
+): SessionEvent[] {
+  return parse(
+    wasmResetLaneFrom(JSON.stringify(events), laneKey, mixerId, deck, ms, extent, rateMin, rateMax)
+  );
+}
+
 export function filterActiveAt(
   events: SessionEvent[],
   deck: string,
@@ -359,29 +388,6 @@ export function moveFilterActiveSpan(
   return parse(
     wasmMoveFilterSpan(JSON.stringify(events), deck, startMs, endMs, deltaMs, durationMs)
   );
-}
-
-export function paintNudgeRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number,
-  percent: number
-): SessionEvent[] {
-  return parse(wasmPaintNudge(JSON.stringify(events), deck, t0, t1, percent));
-}
-
-// No-op (Rust sends null) returns the input reference so callers can skip it.
-export function deleteNudgeRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number
-): SessionEvent[] {
-  const edited = parse<SessionEvent[] | null>(
-    wasmDeleteNudge(JSON.stringify(events), deck, t0, t1)
-  );
-  return edited ?? events;
 }
 
 export function setRateAt(

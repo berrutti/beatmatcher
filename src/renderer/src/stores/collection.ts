@@ -11,7 +11,7 @@ export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | '
 export type SavedTrack = {
   path: string;
   name: string;
-  bpm: number;
+  bpm: number | null;
   silenceEnd: number;
   beatOffset: number;
 };
@@ -222,9 +222,8 @@ export const useCollectionStore = defineStore('collection', () => {
     persistColumnsState();
   }
 
-  // `beforeField` is the field `field` should land in front of, or null to
-  // move it to the end. Working in terms of fields rather than indices keeps
-  // this correct regardless of how many hidden columns sit between them.
+  // A null `beforeField` moves it to the end. Working in fields rather than
+  // indices keeps this correct however many hidden columns sit between them.
   function reorderColumn(field: ColumnField, beforeField: ColumnField | null) {
     const order = columnsState.order;
     const fromIndex = order.indexOf(field);
@@ -471,36 +470,27 @@ export const useCollectionStore = defineStore('collection', () => {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
         path: entry.path
       });
-      if (result.bpm !== null && result.bpm > 0) {
-        entry.silenceEnd = result.silenceEnd;
-        saveSaved({
-          path: entry.path,
-          name: entry.name,
-          bpm: result.bpm,
-          silenceEnd: result.silenceEnd,
-          beatOffset: result.silenceEnd
-        });
+      const detected = result.bpm !== null && result.bpm > 0 ? result.bpm : null;
+      // silenceEnd is left alone here because setBpm derives beatOffset from it,
+      // and a run not trusted for the BPM is not trusted to shift the grid.
+      if (detected === null && hadPreviousBpm) {
         entry.status = 'ready';
-        entry.lastAnalysisFailed = false;
-      } else {
-        markAnalysisFallback(entry, hadPreviousBpm);
+        entry.lastAnalysisFailed = true;
+        return;
       }
-    } catch {
-      markAnalysisFallback(entry, hadPreviousBpm);
-    }
-  }
-
-  // A failed or low-confidence reanalysis keeps the previously saved BPM
-  // grid intact rather than discarding it. Entry.silenceEnd is deliberately
-  // left untouched here since setBpm reads it to derive beatOffset, and a
-  // detector run that wasn't trusted enough to update the BPM shouldn't be
-  // trusted to shift the beat grid either.
-  function markAnalysisFallback(entry: CollectionEntry, hadPreviousBpm: boolean) {
-    if (hadPreviousBpm) {
+      entry.silenceEnd = result.silenceEnd;
+      saveSaved({
+        path: entry.path,
+        name: entry.name,
+        bpm: detected,
+        silenceEnd: result.silenceEnd,
+        beatOffset: result.silenceEnd
+      });
       entry.status = 'ready';
-      entry.lastAnalysisFailed = true;
-    } else {
-      entry.status = 'error';
+      entry.lastAnalysisFailed = false;
+    } catch {
+      entry.status = hadPreviousBpm ? 'ready' : 'error';
+      entry.lastAnalysisFailed = hadPreviousBpm;
     }
   }
 

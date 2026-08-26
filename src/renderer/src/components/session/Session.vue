@@ -65,7 +65,6 @@
           :playhead-ms="playheadMs"
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
-          :deck-nudges="deckNudges"
           :deck-jog="deckJog"
           :waveforms="session.waveforms"
           @seek="onSeek"
@@ -85,7 +84,7 @@
       <button
         class="session__btn session__btn--transport"
         :class="{ 'session__btn--active': editStore.editMode }"
-        v-tooltip="$t('session.edit')"
+        v-tooltip="$t('session.editHint')"
         @click="editStore.toggleEditMode()"
       >
         ✎
@@ -156,12 +155,13 @@ const collection = useCollectionStore();
 const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog } = useSessionTimeline(
+const { clips, loadedSpans, deckLanes, masterLanes, deckJog } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path),
   (path) => {
     const saved = collection.getSaved(path);
-    return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
+    if (saved === null || saved.bpm === null) return null;
+    return { bpm: saved.bpm, beatOffsetSec: saved.beatOffset };
   }
 );
 
@@ -214,12 +214,19 @@ function isTypingTarget(e: KeyboardEvent): boolean {
 }
 
 // Spacebar toggles transport, like the edit view. preventDefault also stops a
-// focused button from being activated by the same keypress.
+// focused button from being activated by the same keypress, and on Tab it stops
+// the browser moving focus.
 function onKeyDown(e: KeyboardEvent) {
-  if (e.code !== 'Space' || e.repeat) return;
+  if (e.repeat) return;
   if (!session.session || settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) {
     return;
   }
+  if (e.code === 'Tab') {
+    e.preventDefault();
+    editStore.toggleEditMode();
+    return;
+  }
+  if (e.code !== 'Space') return;
   e.preventDefault();
   onTransport().catch(() => {});
 }

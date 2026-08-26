@@ -37,10 +37,3 @@ export function jogLaneScale(columns: number[]): number {
   for (const value of columns) scale = Math.max(scale, Math.abs(value));
   return scale;
 }
-
-export function nudgeSpanAt<T extends { startMs: number; endMs: number }>(
-  spans: T[],
-  ms: number
-): T | null {
-  return spans.find((span) => ms >= span.startMs && ms <= span.endMs) ?? null;
-}

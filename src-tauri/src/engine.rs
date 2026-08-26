@@ -2,7 +2,6 @@ use crate::audio::{self, AppAudio, ChannelStrip, Deck};
 use crate::deck_sync::DeckSyncPayload;
 use crate::engine_push::{EnginePush, ParamOrigin};
 use crate::lock::LockIgnoringPoison;
-use crate::rate_from_fader;
 use crate::recorder::Recorder;
 use crate::MIN_PLAYBACK_RATE;
 use std::sync::Arc;
@@ -225,14 +224,14 @@ impl Engine {
     pub(crate) fn set_beat_grid(
         &self,
         deck: &str,
-        bpm: f64,
+        bpm: Option<f64>,
         beat_offset_sec: f64,
     ) -> Result<(), String> {
         self.apply_and_log(
             deck,
             &session_core::SessionCommand::SetBeatGrid {
                 deck,
-                bpm: Some(bpm),
+                bpm,
                 beat_offset_sec: Some(beat_offset_sec),
             },
         )?;
@@ -393,14 +392,30 @@ impl Engine {
         deck: &str,
         position: f64,
     ) -> Result<(), String> {
+        let range = self.audio.pitch_range_percent();
+        self.set_playback_rate_from_offset(
+            origin,
+            deck,
+            crate::fader_offset_percent(position, range),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_playback_rate_from_offset(
+        &self,
+        origin: ParamOrigin,
+        deck: &str,
+        offset_percent: f64,
+    ) -> Result<f64, String> {
+        let range = self.audio.pitch_range_percent();
         // Clamped here too, so a rate the deck would refuse still compares equal.
-        let rate =
-            rate_from_fader(position, self.audio.pitch_range_percent()).max(MIN_PLAYBACK_RATE);
+        let rate = crate::rate_from_offset(offset_percent, range).max(MIN_PLAYBACK_RATE);
         // Several fader positions land on one step, so quantizing alone repeats values.
         if self.deck(deck)?.locked().playback_rate == rate {
-            return Ok(());
+            return Ok(rate);
         }
-        self.set_playback_rate(origin, deck, rate)
+        self.set_playback_rate(origin, deck, rate)?;
+        Ok(rate)
     }
 
     /// Wheel ticks accumulate on the deck and the audio thread consumes them, so this waits
@@ -803,6 +818,80 @@ mod tests {
         assert!(engine
             .set_deck_param(ParamOrigin::Ui, "Z", "eq", "low", 0.0)
             .is_err());
+    }
+
+    #[test]
+    fn a_beat_grid_with_no_bpm_still_moves_the_beat_offset() {
+        let engine = Engine::for_testing(48_000);
+        engine.set_beat_grid("A", None, 0.25).expect("deck A");
+        let deck = engine.deck("A").expect("deck A");
+        let deck_state = deck.locked();
+        assert_eq!(deck_state.bpm, None);
+        assert_eq!(deck_state.beat_offset_frames, 0.25 * 48_000.0);
+    }
+
+    #[test]
+    fn a_beat_grid_with_no_bpm_does_not_clear_one_already_set() {
+        let engine = Engine::for_testing(48_000);
+        engine.set_beat_grid("A", Some(128.0), 0.0).expect("deck A");
+        engine.set_beat_grid("A", None, 0.5).expect("deck A");
+        let deck = engine.deck("A").expect("deck A");
+        let deck_state = deck.locked();
+        assert_eq!(deck_state.bpm, Some(128.0));
+        assert_eq!(deck_state.beat_offset_frames, 0.5 * 48_000.0);
+    }
+
+    #[test]
+    fn a_pitch_offset_never_drives_the_deck_below_the_minimum_rate() {
+        let engine = Engine::for_testing(48_000);
+        engine.audio.set_pitch_range_percent(100.0);
+        let rate = engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", -100.0)
+            .expect("deck A");
+        assert_eq!(rate, MIN_PLAYBACK_RATE);
+        assert_eq!(
+            engine.deck("A").expect("deck A").locked().playback_rate,
+            MIN_PLAYBACK_RATE
+        );
+    }
+
+    #[test]
+    fn a_pitch_offset_beyond_the_range_is_pulled_back_to_its_edge() {
+        let engine = Engine::for_testing(48_000);
+        engine.audio.set_pitch_range_percent(8.0);
+        let rate = engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", 90.0)
+            .expect("deck A");
+        assert!((rate - 1.08).abs() < 1e-12, "got {rate}");
+    }
+
+    #[test]
+    fn a_repeated_pitch_offset_reports_the_rate_without_logging_twice() {
+        let engine = recording_engine();
+        engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", 3.0)
+            .expect("deck A");
+        let again = engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", 3.0)
+            .expect("deck A");
+        assert!((again - 1.03).abs() < 1e-12, "got {again}");
+        let rates = logged_events(engine)
+            .into_iter()
+            .filter(|event| event["type"] == "set_playback_rate")
+            .count();
+        assert_eq!(rates, 1);
+    }
+
+    #[test]
+    fn two_offsets_inside_one_step_resolve_to_the_same_rate() {
+        let engine = Engine::for_testing(48_000);
+        let first = engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", 3.001)
+            .expect("deck A");
+        let second = engine
+            .set_playback_rate_from_offset(ParamOrigin::Ui, "A", 3.004)
+            .expect("deck A");
+        assert_eq!(first, second);
     }
 }
 
@@ -1237,7 +1326,7 @@ mod loop_and_quantize {
     #[test]
     fn a_beat_grid_logs_the_frame_the_deck_will_render_at() {
         let engine = engine_mid_callback();
-        engine.set_beat_grid("A", 128.0, 0.1).expect("deck A");
+        engine.set_beat_grid("A", Some(128.0), 0.1).expect("deck A");
         assert_eq!(logged(engine, "set_beat_grid")["frame"], 4096);
     }
 

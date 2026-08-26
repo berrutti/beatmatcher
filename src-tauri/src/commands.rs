@@ -362,10 +362,19 @@ pub(crate) fn seek(
 }
 
 #[tauri::command]
+pub(crate) fn set_pitch_offset(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    deck: String,
+    percent: f64,
+) -> Result<f64, String> {
+    engine.set_playback_rate_from_offset(ParamOrigin::Ui, &deck, percent)
+}
+
+#[tauri::command]
 pub(crate) fn set_beat_grid(
     engine: tauri::State<'_, crate::engine::Engine>,
     deck: String,
-    bpm: f64,
+    bpm: Option<f64>,
     beat_offset_sec: f64,
 ) -> Result<(), String> {
     engine.set_beat_grid(&deck, bpm, beat_offset_sec)
@@ -537,7 +546,6 @@ pub(crate) async fn load_track(
 
     let path_for_log = path.clone();
 
-    // Run all CPU-heavy work in a single blocking thread.
     let (samples, channels, bpm, silence_end, native_sr, cover_art) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let cover_art = audio::read_cover_art(&path);
@@ -606,8 +614,7 @@ pub(crate) async fn load_track(
         deck_state.open_at(start_pos);
     }
 
-    // Compute spectral bands in background. Emit "bands-ready" when done so the
-    // frontend can fetch waveform data without blocking track load.
+    // Backgrounded so the waveform never holds up the load.
     let deck_id = deck.clone();
     tokio::spawn(async move {
         let (bass_band, mid_band, high_band) = tokio::task::spawn_blocking(move || {
@@ -748,9 +755,8 @@ pub(crate) async fn analyze_track(
     .map_err(|e| e.to_string())?
 }
 
-// Amplitude for the track sub-range [start_sec, end_sec) at num_points, for
-// zoom-driven LOD. Reads the in-memory session cache (no re-decode) so refetching
-// at higher resolution while zooming is cheap. Falls back to decode otherwise.
+// Reads the in-memory session cache rather than re-decoding, so refetching at a
+// higher resolution while zooming is cheap. Falls back to a decode otherwise.
 #[tauri::command]
 pub(crate) async fn get_track_amplitude_region(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -894,6 +900,15 @@ pub(crate) fn start_recording(
     Ok(())
 }
 
+/// Polled rather than pushed like `render-progress`, so the audio layer stays
+/// free of an app handle.
+#[tauri::command]
+pub(crate) fn recording_save_progress(
+    engine: tauri::State<'_, crate::engine::Engine>,
+) -> Option<f64> {
+    engine.audio.save_progress()
+}
+
 #[tauri::command]
 pub(crate) async fn stop_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -906,8 +921,42 @@ pub(crate) async fn stop_recording(
         .map_err(|e| e.to_string())?
 }
 
+fn copy_with_progress(
+    src: &str,
+    dest: &str,
+    progress: &std::sync::atomic::AtomicU32,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    const CHUNK_BYTES: usize = 1 << 20;
+
+    let mut reader = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let total = reader.metadata().map_err(|e| e.to_string())?.len();
+    let mut writer = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    let mut copied: u64 = 0;
+
+    loop {
+        let read = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        writer
+            .write_all(&buffer[..read])
+            .map_err(|e| e.to_string())?;
+        copied += read as u64;
+        if let Some(permille) = (copied * u64::from(crate::audio::SAVE_DONE)).checked_div(total) {
+            progress.store(
+                (permille as u32).min(crate::audio::SAVE_DONE - 1),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+    writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
-pub(crate) fn save_recording(
+pub(crate) async fn save_recording(
     engine: tauri::State<'_, crate::engine::Engine>,
     recovery: tauri::State<'_, crate::recovery::Recovery>,
     src: String,
@@ -916,18 +965,27 @@ pub(crate) fn save_recording(
     write_cue: bool,
 ) -> Result<(), String> {
     if std::fs::rename(&src, &dest).is_err() {
-        // rename fails across filesystems. Fall back to copy then delete
-        std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+        // rename fails across filesystems.
+        let progress = engine.audio.save_progress_handle();
+        let (from, to) = (src.clone(), dest.clone());
+        let copied = tokio::task::spawn_blocking(move || copy_with_progress(&from, &to, &progress))
+            .await
+            .map_err(|e| e.to_string())?;
+        engine.audio.save_progress_handle().store(
+            crate::audio::SAVE_IDLE,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        copied?;
         if let Err(e) = std::fs::remove_file(&src) {
             eprintln!("save_recording: failed to remove source file {src}: {e}");
         }
     }
     if !write_bms && !write_cue {
-        recovery.finish_recording();
+        recovery.finish_recording(&src);
         return Ok(());
     }
     let Some(log) = engine.recorder.take_pending() else {
-        recovery.finish_recording();
+        recovery.finish_recording(&src);
         return Ok(());
     };
     if write_bms {
@@ -943,7 +1001,7 @@ pub(crate) fn save_recording(
             Err(error) => log::warn!("save_recording: cannot parse log for cue sheet: {error}"),
         }
     }
-    recovery.finish_recording();
+    recovery.finish_recording(&src);
     Ok(())
 }
 
@@ -955,7 +1013,7 @@ pub(crate) fn discard_recording(
 ) -> Result<(), String> {
     engine.recorder.take_pending();
     std::fs::remove_file(&path).ok();
-    recovery.finish_recording();
+    recovery.finish_recording(&path);
     Ok(())
 }
 
@@ -1409,9 +1467,6 @@ mod tests {
         assert_eq!(cue_escape(r#"A "quoted" title"#), "A 'quoted' title");
     }
 
-    //
-    // Mirrors the seek command logic (pos update + conditional loop disarm).
-
     /// Through the real applier, so these cannot pass against a copy of the logic.
     fn simulate_seek(deck_state: &mut Deck, pos: f64) {
         let mut strip = crate::audio::ChannelStrip::from_manifest(crate::audio::MIXER, SR as f32);
@@ -1511,7 +1566,6 @@ mod tests {
         );
     }
 
-    // Simulate the deck state that load_track produces for a given beat_offset_sec.
     fn load_deck_at_beat_offset(beat_offset_sec: f64, duration_secs: f64) -> Deck {
         let mut d = Deck::loaded_for_testing(SR, duration_secs);
         let start_pos = (beat_offset_sec * SR_F).clamp(0.0, d.total_frames as f64);
@@ -1540,11 +1594,8 @@ mod tests {
 
     #[test]
     fn press_cue_cue_moved_when_main_pos_differs_from_cue_point() {
-        // Regression: before start_pos was introduced, seek(beatOffset) moved main_pos but
-        // left cue_point at silence_pos. This caused CueMoved on the first press.
-        let mut d = load_deck_at_beat_offset(0.0, 10.0); // silence_pos = 0
-        d.main_pos = 1.5 * SR_F; // beatOffset != silence_pos
-                                 // cue_point is still 0. the old broken state
+        let mut d = load_deck_at_beat_offset(0.0, 10.0);
+        d.main_pos = 1.5 * SR_F;
         let outcome = d.press_cue();
         assert!(
             matches!(outcome, CuePressOutcome::CueMoved { .. }),

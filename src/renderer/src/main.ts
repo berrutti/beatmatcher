@@ -8,6 +8,8 @@ import './assets/main.css';
 import { i18n } from './i18n';
 import { initSessionCore } from '@renderer/utils/sessionCore';
 import { vTooltip } from '@renderer/directives/tooltip';
+import { vFaderReset } from '@renderer/directives/faderReset';
+import { vMenuPlacement } from '@renderer/directives/menuPlacement';
 
 async function init() {
   await initSessionCore();
@@ -17,6 +19,8 @@ async function init() {
   app.use(pinia);
   app.use(i18n);
   app.directive('tooltip', vTooltip);
+  app.directive('fader-reset', vFaderReset);
+  app.directive('menu-placement', vMenuPlacement);
   app.mount('#app');
 
   if (import.meta.hot) {

@@ -35,19 +35,17 @@ export type SessionEvent = {
 
 // Master-scope lanes have no deck row, so they are excluded from the per-deck
 // picker and offered on the master row instead.
-export const EDITABLE_DECK_LANE_KEYS = [
+export const DECK_LANE_KEYS = [
   'gain',
   'filter',
   'rate',
   'eqLow',
   'eqMid',
-  'eqHigh'
+  'eqHigh',
+  'jog'
 ] as const;
-// The wheel lane plots recorded gestures rather than a mixer param, so it has no
-// entry in the manifest's lane specs and never reaches the splice path.
-export const DECK_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, 'jog'] as const;
 export const MASTER_LANE_KEYS = ['masterGain', 'xfader'] as const;
-export const ALL_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
+export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
 
 export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
 
@@ -70,24 +68,12 @@ export function isMasterLaneKey(key: string): key is MasterLaneKey {
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
-// How a lane is drawn. The engine answers what a lane's value does; the label it
-// carries and the row it shares are the timeline's own decisions.
-export const LANE_DISPLAY: Record<EditableLaneKey | 'jog', { shortLabel: string; group: number }> =
-  {
-    gain: { shortLabel: 'G', group: 0 },
-    filter: { shortLabel: 'F', group: 1 },
-    rate: { shortLabel: 'RT', group: 2 },
-    eqLow: { shortLabel: 'LO', group: 3 },
-    eqMid: { shortLabel: 'MD', group: 3 },
-    eqHigh: { shortLabel: 'HI', group: 3 },
-    masterGain: { shortLabel: 'M', group: 0 },
-    xfader: { shortLabel: 'X', group: 0 },
-    jog: { shortLabel: 'JOG', group: 4 }
-  };
+export function isEditableLaneKey(key: string): key is EditableLaneKey {
+  return ALL_LANE_KEYS.some((lane) => lane === key);
+}
 
-// A user-draggable unit on the timeline: one regular play segment, or one run
-// of loop iterations (which always moves as a whole). Derived from buildClips
-// output, so every field reflects what the listener actually heard.
+// Derived from buildClips output, so every field reflects what the listener
+// actually heard. Loop iterations always move as a whole.
 export type TransportBlock = {
   deck: string;
   blockId: number;
@@ -111,7 +97,8 @@ export type Clip = {
   blockId: number;
   // Recorded beat grid in effect when the clip started. Null bpm = draw no beats.
   bpm: number | null;
-  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
+  // Drawing the waveform and beats per segment is what keeps them
+  // stretched/compressed correctly across rate changes.
   waveSegments: WaveSegment[];
   beatOffsetSec: number | null;
   deck: string;
@@ -135,8 +122,6 @@ export type LoadedSpan = {
 export type LanePoint = { ms: number; value: number };
 
 export type FilterActiveSpan = { startMs: number; endMs: number };
-
-export type NudgeSpan = { startMs: number; endMs: number; percent: number };
 
 export type DeckLanes = {
   gain: LanePoint[];

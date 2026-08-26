@@ -841,14 +841,6 @@ pub struct FilterActiveSpan {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NudgeSpan {
-    pub start_ms: f64,
-    pub end_ms: f64,
-    pub percent: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DeckLanes {
     pub gain: Vec<LanePoint>,
     pub eq_low: Vec<LanePoint>,
@@ -874,7 +866,6 @@ pub struct MasterLanes {
 pub struct LanesBuild {
     pub deck_lanes: BTreeMap<String, DeckLanes>,
     pub master_lanes: MasterLanes,
-    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -884,7 +875,6 @@ pub struct TimelineBuild {
     pub loaded_spans: Vec<LoadedSpan>,
     pub deck_lanes: BTreeMap<String, DeckLanes>,
     pub master_lanes: MasterLanes,
-    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
     pub deck_jog: BTreeMap<String, Vec<LanePoint>>,
 }
 
@@ -906,7 +896,6 @@ pub fn build_timeline(
         loaded_spans: clips.loaded_spans,
         deck_lanes: lanes.deck_lanes,
         master_lanes: lanes.master_lanes,
-        deck_nudges: lanes.deck_nudges,
         deck_jog: clips.deck_jog,
     }
 }
@@ -916,8 +905,6 @@ pub fn build_timeline(
 struct DeckAccum {
     lanes: DeckLanes,
     filter_active_since_ms: Option<f64>,
-    nudge_since: Option<(f64, f64)>,
-    nudges: Vec<NudgeSpan>,
 }
 
 impl DeckAccum {
@@ -925,8 +912,6 @@ impl DeckAccum {
         Self {
             lanes: make_deck_lanes(),
             filter_active_since_ms: None,
-            nudge_since: None,
-            nudges: Vec::new(),
         }
     }
 }
@@ -1088,29 +1073,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                 }
             }
 
-            // A nudge interval runs from the first non-zero `percent` event to
-            // the following `percent: 0` event for that deck (mirrors
-            // filter-active pairing).
-            "set_nudge" => {
-                if let (Some(id), Some(percent)) = (deck_id, event.percent) {
-                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
-                    let since = &mut deck.nudge_since;
-                    if percent != 0.0 {
-                        match since {
-                            None => *since = Some((event.elapsed_ms, percent)),
-                            Some((_start, p)) => *p = percent,
-                        }
-                    } else if let Some((start, p)) = *since {
-                        deck.nudges.push(NudgeSpan {
-                            start_ms: start,
-                            end_ms: event.elapsed_ms,
-                            percent: p,
-                        });
-                        *since = None;
-                    }
-                }
-            }
-
             _ => {}
         }
     }
@@ -1120,13 +1082,6 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
             deck.lanes.filter_active.push(FilterActiveSpan {
                 start_ms: since,
                 end_ms: duration_ms,
-            });
-        }
-        if let Some((start, percent)) = deck.nudge_since {
-            deck.nudges.push(NudgeSpan {
-                start_ms: start,
-                end_ms: duration_ms,
-                percent,
             });
         }
         let auto = &mut deck.lanes;
@@ -1154,16 +1109,13 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     }
 
     let mut deck_lanes = BTreeMap::new();
-    let mut deck_nudges = BTreeMap::new();
     for (id, deck) in decks {
-        deck_lanes.insert(id.clone(), deck.lanes);
-        deck_nudges.insert(id, deck.nudges);
+        deck_lanes.insert(id, deck.lanes);
     }
 
     LanesBuild {
         deck_lanes,
         master_lanes,
-        deck_nudges,
     }
 }
 
@@ -2010,112 +1962,6 @@ mod tests {
             vec![FilterActiveSpan {
                 start_ms: 7000.0,
                 end_ms: 10_000.0
-            }]
-        );
-    }
-
-    #[test]
-    fn pairs_nudge_percent_with_following_zero() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(8.0),
-                ..event("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..event("set_nudge", 1500.0, Some("A"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 1500.0,
-                percent: 8.0
-            }]
-        );
-    }
-
-    #[test]
-    fn keeps_original_start_when_percent_changes_mid_interval() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(4.0),
-                ..event("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(8.0),
-                ..event("set_nudge", 1200.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..event("set_nudge", 1500.0, Some("A"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 1500.0,
-                percent: 8.0
-            }]
-        );
-    }
-
-    #[test]
-    fn closes_unfinished_nudge_span_at_session_end() {
-        let events = vec![SessionEvent {
-            percent: Some(6.0),
-            ..event("set_nudge", 9000.0, Some("A"))
-        }];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 9000.0,
-                end_ms: 10_000.0,
-                percent: 6.0
-            }]
-        );
-    }
-
-    #[test]
-    fn keeps_nudge_spans_independent_across_decks() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(5.0),
-                ..event("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(-5.0),
-                ..event("set_nudge", 2000.0, Some("B"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..event("set_nudge", 3000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..event("set_nudge", 4000.0, Some("B"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 3000.0,
-                percent: 5.0
-            }]
-        );
-        assert_eq!(
-            deck_nudges["B"],
-            vec![NudgeSpan {
-                start_ms: 2000.0,
-                end_ms: 4000.0,
-                percent: -5.0
             }]
         );
     }

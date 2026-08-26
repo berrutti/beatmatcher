@@ -72,10 +72,29 @@ body {
   border: 1px solid var(--color-border);
 }
 
+/* While a fader is held, nothing else can be actioned, so no element gets to
+   advertise its own cursor. Needs !important to beat every control's own rule. */
+body.fader-dragging,
+body.fader-dragging * {
+  cursor: grabbing !important;
+}
+
+/* Separately, because `*` does not reach a pseudo-element and every slider draws
+   its own thumb cursor. Its own rule, or one engine rejecting the selector would
+   drop the block above with it. */
+body.fader-dragging *::-webkit-slider-thumb {
+  cursor: grabbing !important;
+}
+
 /* Applied by App.vue to a component root, so it cannot live in a scoped block. */
-.modal-fade-enter-active,
+.modal-fade-enter-active {
+  transition: opacity 0.16s ease-out;
+}
+
+/* Accelerating out, because a front-loaded curve lifts the dim almost at once
+   and the exit reads as far quicker than the entrance at the same duration. */
 .modal-fade-leave-active {
-  transition: opacity 0.16s ease;
+  transition: opacity 0.2s ease-in;
 }
 
 .modal-fade-enter-from,

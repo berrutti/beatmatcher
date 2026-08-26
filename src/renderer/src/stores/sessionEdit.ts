@@ -1,20 +1,24 @@
 import { ref, computed, watch } from 'vue';
 import { defineStore } from 'pinia';
+import { STORAGE_KEYS, storageGet, storageSet } from '@renderer/utils/storage';
 import { call } from '@renderer/tauriCommands';
 import { useSessionStore, type ParsedSession } from './session';
-import { useSettingsStore } from './settings';
-import { laneSpecFor, spliceLaneEvents } from '@renderer/utils/sessionEditOps';
+import {
+  laneMoveSpan,
+  laneSpecFor,
+  resetLaneFrom,
+  spliceLaneEvents
+} from '@renderer/utils/sessionEditOps';
+import type { LaneMoveSpan, ResetExtent } from '@renderer/utils/sessionCore';
 import { basename, indexByBasename } from '@renderer/utils/path';
 import {
   normalizeGestureSamples,
   decimateSteps,
-  deleteNudgeRange,
   relocateEventPaths,
   toggleFilterActiveRange,
   deleteFilterActiveSpan,
   resizeFilterActiveSpan,
   moveFilterActiveSpan,
-  paintNudgeRange,
   setRateAt,
   setRateSpan,
   moveTransportBlock,
@@ -38,7 +42,7 @@ const MAX_UNDO = 100;
 export const useSessionEditStore = defineStore('sessionEdit', () => {
   const sessionStore = useSessionStore();
 
-  const editMode = ref(false);
+  const editMode = ref(storageGet(STORAGE_KEYS.sessionEditMode, false));
   const selectedLane = ref<SelectedLane | null>(null);
   const undoStack = ref<SessionEvent[][]>([]);
   const redoStack = ref<SessionEvent[][]>([]);
@@ -60,7 +64,6 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
   );
 
   function reset(baselineEvents: SessionEvent[] | null = sessionStore.session?.events ?? null) {
-    editMode.value = false;
     selectedLane.value = null;
     undoStack.value = [];
     redoStack.value = [];
@@ -70,6 +73,7 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
 
   function toggleEditMode() {
     editMode.value = !editMode.value;
+    storageSet(STORAGE_KEYS.sessionEditMode, editMode.value);
     if (!editMode.value) selectedLane.value = null;
   }
 
@@ -134,6 +138,37 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     applyEdit(spliceLaneEvents(session.events, spec, session.mixerId, deck, t0, t1, points));
   }
 
+  async function commitLaneReset(
+    deck: string,
+    lane: EditableLaneKey,
+    ms: number,
+    extent: ResetExtent,
+    opts: { rateMin?: number; rateMax?: number } = {}
+  ): Promise<void> {
+    const session = sessionStore.session;
+    if (!session) return;
+    if (sessionStore.isPlaying) await sessionStore.stop();
+    const spec = laneSpecFor(lane, session.mixerId, opts);
+    applyEdit(resetLaneFrom(session.events, spec, session.mixerId, deck, ms, extent));
+  }
+
+  function moveSpanAt(
+    deck: string,
+    lane: EditableLaneKey,
+    ms: number,
+    opts: { rateMin?: number; rateMax?: number } = {}
+  ): LaneMoveSpan | null {
+    const session = sessionStore.session;
+    if (!session) return null;
+    return laneMoveSpan(
+      session.events,
+      laneSpecFor(lane, session.mixerId, opts),
+      session.mixerId,
+      deck,
+      ms
+    );
+  }
+
   async function commitFilterActiveToggle(deck: string, t0: number, t1: number): Promise<void> {
     const session = sessionStore.session;
     if (!session) return;
@@ -187,19 +222,6 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     );
   }
 
-  async function commitNudgePaint(
-    deck: string,
-    t0: number,
-    t1: number,
-    direction: 1 | -1
-  ): Promise<void> {
-    const session = sessionStore.session;
-    if (!session) return;
-    if (sessionStore.isPlaying) await sessionStore.stop();
-    const percent = direction * useSettingsStore().nudgeSensitivity;
-    applyEdit(paintNudgeRange(session.events, deck, t0, t1, percent));
-  }
-
   // Backs right-click "Set BPM from here".
   async function commitSetBpm(deck: string, ms: number, rate: number): Promise<void> {
     const session = sessionStore.session;
@@ -219,13 +241,6 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!session) return;
     if (sessionStore.isPlaying) await sessionStore.stop();
     applyEdit(setRateSpan(session.events, deck, startMs, endMs, rate));
-  }
-
-  async function deleteNudge(deck: string, t0: number, t1: number): Promise<void> {
-    const session = sessionStore.session;
-    if (!session) return;
-    if (sessionStore.isPlaying) await sessionStore.stop();
-    applyEdit(deleteNudgeRange(session.events, deck, t0, t1));
   }
 
   async function commitClipMove(
@@ -368,12 +383,12 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     commitClipTrim,
     commitClipSplit,
     commitFilterActiveToggle,
+    commitLaneReset,
+    moveSpanAt,
     commitGesture,
-    commitNudgePaint,
     commitSetBpm,
     commitSetClipBpm,
     deleteFilterSpan,
-    deleteNudge,
     dirty,
     editMode,
     flushSync,

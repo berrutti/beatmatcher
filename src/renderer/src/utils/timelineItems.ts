@@ -30,6 +30,7 @@ import {
   type OverviewHit
 } from '@renderer/utils/timelineView';
 import { blocksForDeck } from '@renderer/utils/sessionCore';
+import { laneSpecFor } from '@renderer/utils/sessionEditOps';
 import type {
   TransportBlock,
   Clip,
@@ -37,17 +38,16 @@ import type {
   DeckLanes,
   MasterLanes,
   MasterLaneKey,
-  NudgeSpan,
+  EditableLaneKey,
   LanePoint,
   FilterActiveSpan
 } from '@renderer/utils/types';
 import { MASTER_ROW_ID } from '@renderer/utils/types';
-import { nudgeSpanAt } from '@renderer/utils/jogLane';
 import type { TrackWaveform } from '@renderer/utils/timelineDraw';
 
 // Thin grab tolerance for edges/separators, in pixels.
 const EDGE_GRAB_PX = 6;
-const SEPARATOR_GRAB_PX = 3;
+export const SEPARATOR_GRAB_PX = 3;
 
 // The playhead's drawn line is 1px. Its bounds are widened so the clip rect
 // the engine sets never clips the line at the view edges.
@@ -76,21 +76,27 @@ export function tickRowItem(): SceneItem {
   };
 }
 
-export function deckChromeItem(
-  row: RowLayout,
-  zebraIndex: number,
-  chrome: Omit<DeckRowChrome, 'zebraIndex'>
-): SceneItem {
+export function deckChromeItem(row: RowLayout, chrome: DeckRowChrome): SceneItem {
   return {
     bounds: (viewContext) => ({ x: 0, y: row.top, w: viewContext.canvasW, h: row.height }),
-    draw: (ctx, viewContext) =>
-      drawDeckRowChrome(ctx, row, viewContext.canvasW, { zebraIndex, ...chrome }),
+    draw: (ctx, viewContext) => drawDeckRowChrome(ctx, row, viewContext.canvasW, chrome),
     hitTest: (point) => {
-      // Only the label-column lane caret is interactive here.
-      if (point.x > LABEL_W || row.lanes.length === 0) return null;
-      const lane = row.lanes[0];
-      if (point.y < lane.top || point.y > lane.top + lane.height) return null;
-      return { target: 'laneDropdown', deck: row.deckId };
+      // Only the label-column lane caret is interactive here, and every stacked
+      // lane carries one.
+      if (point.x > LABEL_W) return null;
+      if (point.y < row.top + row.waveformHeight) {
+        return { target: 'deckLabel', deck: row.deckId, data: { top: row.top } };
+      }
+      const over = row.lanes.find(
+        (lane) => point.y >= lane.top && point.y <= lane.top + lane.height
+      );
+      if (!over) return null;
+      return {
+        target: 'laneDropdown',
+        deck: row.deckId,
+        part: over.key,
+        data: { top: over.top, height: over.height }
+      };
     }
   };
 }
@@ -205,23 +211,42 @@ export function blockAtPoint(
   return null;
 }
 
-// Read-only, because drawing a curve back into wheel ticks means inverting the filter.
-// The one hit it reports is the nudge span the deck menu deletes.
+// Reports a plain lane hit, so the shared draw gesture drives it like any other.
 export function jogLaneItem(
   lane: SublaneLayout,
   deck: string,
   curve: LanePoint[],
-  nudgeSpans: NudgeSpan[]
+  clips: Clip[],
+  waveforms: Map<string, TrackWaveform>,
+  accent: string
 ): SceneItem {
   return {
     bounds: (viewContext) => trackRect(viewContext, lane.top, lane.height),
     draw: (ctx, viewContext) =>
-      drawJogLane(ctx, viewContext.canvasW, lane.top, lane.height, curve, viewContext.xToMs),
+      drawJogLane(
+        ctx,
+        viewContext.canvasW,
+        lane.top,
+        lane.height,
+        curve,
+        viewContext.xToMs,
+        // The same range a gesture draws against, so a stroke lands where it was put.
+        laneSpecFor('jog', viewContext.mixerId).max,
+        clips,
+        waveforms,
+        viewContext.msToX,
+        accent
+      ),
     hitTest: (point, viewContext) => {
       if (point.x < LABEL_W || point.x > LABEL_W + viewContext.trackW) return null;
       if (point.y < lane.top || point.y > lane.top + lane.height) return null;
-      const span = nudgeSpanAt(nudgeSpans, viewContext.xToMs(point.x));
-      return span ? { target: 'nudgeSpan', deck, data: span } : null;
+      const pad = laneValuePad(lane.height);
+      return {
+        target: 'lane',
+        deck,
+        part: lane.key,
+        data: { top: lane.top + pad, height: lane.height - 2 * pad }
+      };
     }
   };
 }
@@ -229,7 +254,11 @@ export function jogLaneItem(
 export function laneSurfaceItem(
   lane: SublaneLayout,
   deck: string,
-  deckLanes: DeckLanes | undefined
+  deckLanes: DeckLanes | undefined,
+  clips: Clip[],
+  waveforms: Map<string, TrackWaveform>,
+  accent: string,
+  highlight: { lane: EditableLaneKey; startMs: number; endMs: number } | null = null
 ): SceneItem {
   return {
     bounds: (viewContext) => trackRect(viewContext, lane.top, lane.height),
@@ -242,7 +271,11 @@ export function laneSurfaceItem(
         [lane],
         viewContext.view.start,
         viewContext.view.start + viewContext.view.duration,
-        viewContext.mixerId
+        viewContext.mixerId,
+        clips,
+        waveforms,
+        accent,
+        highlight
       );
     },
     hitTest: (point, viewContext) => {
@@ -281,8 +314,6 @@ export function filterRegionItem(
         return { target: 'filterRegion', deck, part: 'start', data: span };
       if (Math.abs(point.x - endX) <= EDGE_GRAB_PX)
         return { target: 'filterRegion', deck, part: 'end', data: span };
-      if (point.x >= startX && point.x <= endX)
-        return { target: 'filterRegion', deck, part: 'body', data: span };
       return null;
     }
   };
@@ -302,8 +333,8 @@ export function filterSelectionItem(
       const endX = viewContext.msToX(endMs);
       ctx.strokeStyle = '#ffffffcc';
       ctx.lineWidth = 1.5;
-      // Match the lane's inset value area so the outline frames the curve and its
-      // bottom border clears the row divider (drawn on top of the lane).
+      // Frames the same inset band the span's tint covers, so its bottom border
+      // stays clear of the row divider drawn on top of the lane.
       const pad = laneValuePad(lane.height);
       ctx.strokeRect(startX, lane.top + pad, Math.max(1, endX - startX), lane.height - 2 * pad);
     },
@@ -311,13 +342,15 @@ export function filterSelectionItem(
   };
 }
 
+// Spans the label column too, because that is where a lane's name sits and the
+// edge under it is the one a drag reaches for.
 export function laneSeparatorItem(lane: SublaneLayout, deck: string): SceneItem {
   const edgeY = lane.top + lane.height;
   return {
     bounds: (viewContext) => ({
-      x: LABEL_W,
+      x: 0,
       y: edgeY - SEPARATOR_GRAB_PX,
-      w: viewContext.trackW,
+      w: LABEL_W + viewContext.trackW,
       h: SEPARATOR_GRAB_PX * 2
     }),
     draw: () => {},
@@ -328,13 +361,12 @@ export function laneSeparatorItem(lane: SublaneLayout, deck: string): SceneItem 
   };
 }
 
-export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
-  const edgeY = row.top + row.waveformHeight;
+export function rowSeparatorItem(edgeY: number, deck: string): SceneItem {
   return {
     bounds: (viewContext) => ({
-      x: LABEL_W,
+      x: 0,
       y: edgeY - SEPARATOR_GRAB_PX,
-      w: viewContext.trackW,
+      w: LABEL_W + viewContext.trackW,
       h: SEPARATOR_GRAB_PX * 2
     }),
     draw: () => {},
@@ -343,17 +375,24 @@ export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
   };
 }
 
+export function waveformSeparatorItem(row: RowLayout, deck: string): SceneItem {
+  return rowSeparatorItem(row.top + row.waveformHeight, deck);
+}
+
 export function masterItem(
   top: number,
   height: number,
   lanes: MasterLanes,
-  lane: MasterLaneKey
+  lane: MasterLaneKey,
+  laneLabel: string,
+  pickerOpen: boolean,
+  highlight: { startMs: number; endMs: number } | null = null
 ): SceneItem {
   const points = lane === 'xfader' ? lanes.xfader : lanes.gain;
   return {
     bounds: (viewContext) => ({ x: 0, y: top, w: viewContext.canvasW, h: height }),
     draw: (ctx, viewContext) => {
-      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane);
+      drawMasterRowChrome(ctx, top, height, viewContext.canvasW, lane, laneLabel, pickerOpen);
       drawMasterLane(
         ctx,
         points,
@@ -364,12 +403,20 @@ export function masterItem(
         viewContext.msToX,
         viewContext.view.start,
         viewContext.view.start + viewContext.view.duration,
-        viewContext.mixerId
+        viewContext.mixerId,
+        highlight
       );
     },
     hitTest: (point, viewContext) => {
       if (point.y < top + 2 || point.y > top + height - 2) return null;
-      if (point.x < LABEL_W) return { target: 'laneDropdown', deck: MASTER_ROW_ID };
+      if (point.x < LABEL_W) {
+        return {
+          target: 'laneDropdown',
+          deck: MASTER_ROW_ID,
+          part: lane,
+          data: { top, height }
+        };
+      }
       if (point.x > LABEL_W + viewContext.trackW) return null;
       return {
         target: 'lane',

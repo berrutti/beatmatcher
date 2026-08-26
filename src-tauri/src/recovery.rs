@@ -46,14 +46,14 @@ pub(crate) struct Recoverable {
 /// app starts is work the last run never delivered, which is the whole crash detector.
 pub(crate) struct Recovery {
     root: std::sync::Mutex<Option<PathBuf>>,
-    active_recording: std::sync::Mutex<Option<Job>>,
+    active_recordings: std::sync::Mutex<Vec<Job>>,
 }
 
 impl Recovery {
     pub(crate) fn new() -> Self {
         Self {
             root: std::sync::Mutex::new(None),
-            active_recording: std::sync::Mutex::new(None),
+            active_recordings: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -81,15 +81,20 @@ impl Recovery {
     }
 
     pub(crate) fn set_active_recording(&self, job: Job) {
-        *self.active_recording.locked() = Some(job);
+        self.active_recordings.locked().push(job);
     }
 
-    /// The recording reached the user's disk, or they threw it away. Either way it is
-    /// no longer unfinished work.
-    pub(crate) fn finish_recording(&self) {
-        if let Some(job) = self.active_recording.locked().take() {
-            job.finish();
-        }
+    /// Identified by the file it wrote, because a new recording can start while the
+    /// previous one is still being saved.
+    pub(crate) fn finish_recording(&self, recorded_file: &str) {
+        let Some(dir) = Path::new(recorded_file).parent() else {
+            return;
+        };
+        let mut jobs = self.active_recordings.locked();
+        let Some(index) = jobs.iter().position(|job| job.dir == dir) else {
+            return;
+        };
+        jobs.remove(index).finish();
     }
 
     pub(crate) fn begin(
@@ -184,7 +189,7 @@ impl Recovery {
 }
 
 pub(crate) struct Job {
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 
 impl Job {
