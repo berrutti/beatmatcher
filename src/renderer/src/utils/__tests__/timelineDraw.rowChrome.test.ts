@@ -4,9 +4,9 @@ import {
   LANE_CARET_CLOSED,
   LANE_CARET_OPEN,
   drawDeckRowChrome,
-  type LaneKey,
   type RowLayout
 } from '@renderer/utils/timelineDraw';
+import type { DeckLaneKey } from '@renderer/utils/types';
 
 type Fill = { style: string; x: number; y: number; w: number; h: number };
 type Label = { text: string; y: number; alpha: number; clip: Rect | null };
@@ -21,11 +21,10 @@ const ROW: RowLayout = {
 };
 
 type ChromeOverrides = {
-  openLane?: LaneKey | null;
+  openLane?: DeckLaneKey | null;
   badgeAlpha?: number;
   menuOpen?: boolean;
   solo?: boolean;
-  muted?: boolean;
 };
 
 function drawWith(
@@ -79,7 +78,6 @@ function drawWith(
     accent,
     audible: true,
     solo: overrides.solo ?? false,
-    muted: overrides.muted ?? false,
     deckLabel: 'DECK A',
     badgeLabel: 'MUTE',
     badgeAlpha: overrides.badgeAlpha ?? 0,
@@ -157,19 +155,19 @@ describe('the lane caret points at its menu', () => {
 
 describe('the mute and solo badge fades', () => {
   it('draws nothing while it is fully faded out', () => {
-    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0, muted: true });
+    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0 });
 
     expect(labels.some((label) => label.text.includes('MUTE'))).toBe(false);
   });
 
   it('draws it at the fade alpha, so it arrives and leaves gradually', () => {
-    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0.4, muted: true });
+    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0.4 });
 
     expect(labels.find((label) => label.text.includes('MUTE'))?.alpha).toBeCloseTo(0.4);
   });
 
   it('leaves the rest of the row opaque, so only the badge fades', () => {
-    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0.4, muted: true });
+    const { labels } = drawWith(ROW, '#3b82f6', { badgeAlpha: 0.4 });
 
     expect(labels.find((label) => label.text.includes('DECK A'))?.alpha).toBe(1);
     expect(labels.find((label) => label.text.includes('FILTER'))?.alpha).toBe(1);

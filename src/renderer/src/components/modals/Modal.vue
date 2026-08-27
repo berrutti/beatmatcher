@@ -40,10 +40,7 @@ const {
   // because all of them want the same one paragraph of muted text.
   body?: string;
   confirmLabel?: string;
-  // Element to focus when the modal opens, e.g. a form input inside the
-  // slot, passed down as a template ref (Vue auto-unwraps it in the
-  // template, so this receives the element itself). Falls back to the
-  // confirm button when not given.
+  // Falls back to the confirm button when not given.
   autoFocusEl?: { focus: () => void } | null;
   // Off for a gate the user must wait out: the buttons are exits too, so they
   // go with the backdrop click and the escape key rather than separately.
@@ -68,9 +65,6 @@ watch(
   },
   { immediate: true }
 );
-// On the document rather than the panel: clicking the backdrop puts focus on the body,
-// whose ancestors do not include the panel, so a listener there stops seeing Tab at all.
-// Capture, so it runs before anything the page has bound.
 // Every open modal listens on the document, so without this the one underneath a
 // blocking dialog would answer an Escape aimed at the dialog on top of it.
 function isTopmost(): boolean {
@@ -78,6 +72,8 @@ function isTopmost(): boolean {
   return panels.length === 0 || panels[panels.length - 1] === panel.value;
 }
 
+// On the document, not the panel: a backdrop click moves focus to the body,
+// whose ancestors exclude the panel, so a listener there stops seeing Tab.
 function onDocumentKeydown(nativeEvent: KeyboardEvent): void {
   if (!isTopmost()) return;
   if (nativeEvent.key === 'Tab') {

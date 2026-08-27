@@ -64,10 +64,10 @@
       "linear": "Linear",
       "logarithmic": "Logarithmisch"
     },
-    "faderClick": {
-      "title": "Fader-Klick",
-      "label": "Klick auf den Fader-Griff setzt ihn auf voll zurück",
-      "hint": "Nur der Griff reagiert; Ziehen bleibt unverändert. Doppelklick ist dabei wirkungslos."
+    "sliderClick": {
+      "title": "Regler-Klick",
+      "label": "Auf den Griff eines Reglers klicken, um ihn zurückzusetzen",
+      "hint": "Gilt für alle Fader, EQs, Filter und Pitch-Regler. Nur der Griff reagiert; Ziehen bleibt unverändert. Doppelklick ist wirkungslos, solange dies aktiv ist."
     },
     "filterStart": {
       "title": "Filter beim Start",
@@ -160,7 +160,7 @@
     "colTitle": "Titel",
     "colBpm": "BPM",
     "colAdded": "Hinzugefügt",
-    "colDecks": "An Deck senden",
+    "colDecks": "Senden an",
     "colTracks": "Tracks",
     "colArtist": "Künstler",
     "colAlbum": "Album",
@@ -176,7 +176,6 @@
     "columnsMenuTitle": "Spalten",
     "columnRequired": "Mindestens eine Spalte erforderlich",
     "detecting": "wird analysiert...",
-    "statusError": "Fehler",
     "statusMissing": "fehlt",
     "analyze": "Analysieren",
     "setBpm": "BPM setzen",
@@ -199,8 +198,7 @@
     "sendToEdit": "Klicken, um an Edit zu senden",
     "sendToDeck": "Klicken, um an Deck {deckId} zu senden",
     "analyzeFirst": "Diesen Track zuerst analysieren, bevor er an ein Deck gesendet wird",
-    "sameDeck": "Kann nicht an dasselbe Deck gesendet werden",
-    "analyzeFailedTooltip": "Dieser Track konnte nicht analysiert werden"
+    "sameDeck": "Kann nicht an dasselbe Deck gesendet werden"
   },
   "search": {
     "placeholder": "Suchen"
@@ -245,7 +243,8 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "Kein Track geladen"
+    "noTrackLoaded": "Kein Track geladen",
+    "loading": "Track wird geladen…"
   },
   "mixer": {
     "cue": "CUE",
@@ -276,7 +275,7 @@
     "rendering": "Wird gerendert...",
     "renderWav": "Als WAV rendern",
     "renderFlac": "Als FLAC rendern",
-    "edit": "Session editieren",
+    "edit": "Bearbeiten",
     "editHint": "Session editieren: Spuren zeichnen, Clips verschieben (Tab)",
     "saveAs": "Speichern unter",
     "discardTitle": "Ungespeicherte Änderungen verwerfen?",
@@ -291,9 +290,12 @@
     "setClipBpm": "BPM festlegen (ganzer Clip)…",
     "setBpmFromHere": "BPM ab hier festlegen…",
     "splitClip": "Clip hier teilen",
-    "mute": "Mute",
+    "enabled": "Aktiv",
+    "enabledOverridden": "Ein Solo-Deck setzt dies außer Kraft",
+    "disabledBadge": "Aus",
     "solo": "Solo",
     "lanesMenu": "Parameter",
+    "lastLane": "Eine Zeile braucht mindestens eine Spur",
     "loadingTitle": "Session wird geladen",
     "loadingBody": "Tracks werden dekodiert. Die Wiedergabe startet, sobald alle bereit sind.",
     "loadingTracks": "{loaded} von {total} Tracks",

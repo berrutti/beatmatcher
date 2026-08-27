@@ -14,8 +14,8 @@
       :open="pendingLoad !== null"
       :title="$t('deck.loadTitle')"
       :body="$t('deck.loadBody')"
-      @confirm="onConfirmLoad"
-      @cancel="pendingLoad = null"
+      @confirm="confirmPendingLoad"
+      @cancel="cancelPendingLoad"
     />
 
     <ConfirmModal
@@ -257,6 +257,7 @@
           orient="vertical"
           :disabled="!props.deck.trackLoaded || props.deck.loading"
           v-tooltip="props.deck.trackLoaded ? $t('deck.pitchHint') : undefined"
+          v-slider-reset="{ enabled: settingsStore.sliderClickResets, reset: onPitchReset }"
           @input="onSliderInput"
           @dblclick="onPitchDblClick"
         />
@@ -267,17 +268,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
-import type { Deck, LoadableTrack } from '@renderer/stores/decks';
+import { useDeckDrop } from '@renderer/composables/useDeckDrop';
+import type { Deck } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
 import PhaseRing from '@renderer/components/deck/PhaseRing.vue';
-import { DROP_LANDING_MS } from '@renderer/utils/dragGhostLanding';
-import type { DeckDropDetail } from '@renderer/utils/deckDrop';
 import TrackWaveform from '@renderer/components/deck/TrackWaveform.vue';
 import DeckBpmHeader from '@renderer/components/deck/DeckBpmHeader.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
@@ -327,6 +327,12 @@ async function onPitchDblClick() {
   await props.deck.setPitchOffset(0);
 }
 
+// The directive's reset returns nothing, so the rejection is caught here rather
+// than left floating.
+function onPitchReset(): void {
+  onPitchDblClick().catch(() => {});
+}
+
 function onNudgeStart(direction: 'back' | 'forward') {
   if (!props.deck.trackLoaded) return;
   props.deck.nudgeStart(direction);
@@ -357,60 +363,16 @@ function onTogglePlay() {
   props.deck.togglePlay();
 }
 
-const pendingLoad = ref<LoadableTrack | null>(null);
-let scheduledLoad = 0;
-
 const collectionStore = useCollectionStore();
 const { isDragOver: isDragOverCollection } = useCollectionDragOver(
   deckEl,
   () => props.deck.loadedPath
 );
 
-function onCollectionDrop(event: Event) {
-  if (!(event instanceof CustomEvent)) return;
-  const detail: DeckDropDetail = event.detail;
-  if (detail.deckId !== props.deck.id) return;
-  if (props.deck.loadedPath === detail.path) return;
-  const loadable = collectionStore.getLoadableTrack(detail.path);
-  if (!loadable) return;
-  detail.accept();
-  if (props.deck.loopPlaying) {
-    pendingLoad.value = loadable;
-    return;
-  }
-  scheduleLoad(loadable);
-}
-
-// Held for the length of the drop animation, so the deck takes the name as the
-// ghost reaches it rather than the instant the pointer came up.
-function scheduleLoad(loadable: LoadableTrack) {
-  clearScheduledLoad();
-  scheduledLoad = window.setTimeout(async () => {
-    scheduledLoad = 0;
-    try {
-      await props.deck.loadTrack(loadable);
-    } catch (error) {
-      console.error('deck load failed', error);
-    }
-  }, DROP_LANDING_MS);
-}
-
-function clearScheduledLoad() {
-  if (scheduledLoad !== 0) window.clearTimeout(scheduledLoad);
-  scheduledLoad = 0;
-}
-
-onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => {
-  window.removeEventListener('bm:collection-drop', onCollectionDrop);
-  clearScheduledLoad();
+const { pendingLoad, confirmPendingLoad, cancelPendingLoad } = useDeckDrop({
+  deck: () => props.deck,
+  resolve: (path) => collectionStore.getLoadableTrack(path)
 });
-
-function onConfirmLoad() {
-  const loadable = pendingLoad.value;
-  pendingLoad.value = null;
-  if (loadable) props.deck.loadTrack(loadable);
-}
 </script>
 
 <style scoped>
@@ -552,9 +514,18 @@ function onConfirmLoad() {
   flex-shrink: 0;
   line-height: 1;
 }
+.deck__q-btn:hover:not(:disabled):not(.deck__q-btn--on) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
 .deck__q-btn--on {
   color: var(--deck-accent);
   border-color: var(--deck-accent);
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill), transparent);
+}
+.deck__q-btn--on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill-hover), transparent);
 }
 .deck__q-btn:disabled {
   opacity: var(--disabled-opacity);
@@ -767,6 +738,7 @@ function onConfirmLoad() {
 }
 
 .deck__slider {
+  --slider-thumb-length: 0.9em;
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
@@ -796,7 +768,7 @@ function onConfirmLoad() {
   -webkit-appearance: none;
   appearance: none;
   width: 1.4em;
-  height: 0.9em;
+  height: var(--slider-thumb-length);
   background:
     repeating-linear-gradient(
       to bottom,

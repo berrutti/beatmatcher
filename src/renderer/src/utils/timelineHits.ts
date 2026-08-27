@@ -1,9 +1,6 @@
-// Listed front to back: earlier wins when several items claim the same point.
-
 import type { Hit } from '@renderer/utils/timelineEngine';
 
-// The targets the timeline's own items emit. The engine stays generic over
-// target names, so this is where the vocabulary is pinned.
+// The engine stays generic over target names, so the vocabulary is pinned here.
 export const HIT_TARGETS = [
   'overview',
   'laneDropdown',
@@ -26,28 +23,23 @@ export const HIT_PRECEDENCE: readonly (HitTarget | `${HitTarget}:${string}`)[] =
   'filterRegion:end',
   'clip:start',
   'clip:end',
-  // Elements you click. They all sit ABOVE the lane separator: a separator can
-  // still be grabbed by moving off the element (it spans the full width), but if
-  // the separator won you could never reach an element overlapping it.
+  // Above the lane separator, which spans the full width: if it won, an element
+  // overlapping it could never be reached.
   'filterRegion:body',
-  // The waveform separator sits ON the clip band (clips cover the waveform), so
-  // unlike the lane separator it must beat the clip body to stay grabbable.
+  // Sits on the clip band rather than beside it, so it has to beat the clip body.
   'waveformSeparator',
   'clip:body',
-  // The lane separator sits over the (often empty) lane bottom, so it can sink
-  // below the elements: move off an element to grab it.
+  // Over the lane's own empty bottom, so it can sink below the elements above it.
   'laneSeparator',
-  // Below both separators, which cross it in the label column: a drag there
-  // resizes the lane rather than opening the picker. Nothing else reaches that
-  // column, so this costs the dropdown nothing.
+  // Below both separators where they cross the label column, so a drag there
+  // resizes rather than opening the picker.
   'laneDropdown',
   'deckLabel',
   'lane',
   'clipBand'
 ];
 
-// Keyed by plain string: the engine is generic over target names, so a lookup
-// can legitimately ask about one this table does not rank.
+// Plain string keys: a lookup can ask about a target this table does not rank.
 const RANK = new Map<string, number>(
   HIT_PRECEDENCE.map((key, i) => [key, HIT_PRECEDENCE.length - i])
 );

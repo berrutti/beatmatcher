@@ -158,7 +158,7 @@ pub fn rate_lane_spec(rate_min: Option<f64>, rate_max: Option<f64>) -> LaneSpec 
     }
 }
 
-pub fn jog_lane_spec() -> LaneSpec {
+fn jog_lane_spec() -> LaneSpec {
     LaneSpec {
         lane: EditableLane::Jog,
         min: NUDGE_MIN_PCT,
@@ -364,12 +364,9 @@ pub enum ResetExtent {
     ThisMove,
 }
 
-// `ThisMove` covers the excursion the click landed in: back to where the curve
-// left the default and forward to where it reaches it again. Stopping at the
-// neighbouring events instead would flatten a millisecond, since a recorded
-// curve changes on every frame it was moved.
-// The excursion around `ms`: from where the curve last came to rest at the
-// default to where it rests there again, or None where the lane is at rest.
+// The excursion around `ms`, bounded by the crossings either side rather than by
+// the neighbouring events: a recorded curve changes on every frame it was moved,
+// so stopping at the neighbours would flatten a millisecond.
 pub fn lane_move_span(
     events: &[SessionEvent],
     spec: &LaneSpec,

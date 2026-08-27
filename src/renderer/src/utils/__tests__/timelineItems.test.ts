@@ -6,7 +6,8 @@ import {
   deckChromeItem,
   blockAtPoint,
   laneSurfaceItem,
-  masterItem,
+  masterChromeItem,
+  masterLaneItem,
   waveformSeparatorItem,
   overviewItem,
   readOverviewHit
@@ -74,9 +75,11 @@ describe('lane hit-test', () => {
     expect(hit?.data).toEqual({ top: lane.top + pad, height: lane.height - 2 * pad });
   });
 
-  it('reports the master row as a lane so it draws like a deck lane', () => {
-    const masterLanes = { gain: [], xfader: [] };
-    const item = masterItem(200, 20, masterLanes, 'masterGain', 'MASTER', false);
+  it('reports a master lane as a lane so it draws like a deck lane', () => {
+    const item = masterLaneItem(
+      { key: 'masterGain', top: 200, height: 20 },
+      { gain: [], xfader: [] }
+    );
     const hit = item.hitTest({ x: LABEL_W + 10, y: 210 }, vc);
     expect(hit?.target).toBe('lane');
     expect(hit?.deck).toBe(MASTER_ROW_ID);
@@ -87,9 +90,20 @@ describe('lane hit-test', () => {
     });
   });
 
-  it('keeps the master label column on the dropdown', () => {
-    const item = masterItem(200, 20, { gain: [], xfader: [] }, 'xfader', 'CROSSFADER', false);
-    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.target).toBe('laneDropdown');
+  it('names the stacked master lane whose label column was clicked', () => {
+    const item = masterChromeItem(
+      200,
+      40,
+      [
+        { key: 'masterGain', top: 200, height: 20 },
+        { key: 'xfader', top: 220, height: 20 }
+      ],
+      (key) => key,
+      null
+    );
+    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.part).toBe('masterGain');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 230 }, vc)?.part).toBe('xfader');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 230 }, vc)?.target).toBe('laneDropdown');
   });
 });
 

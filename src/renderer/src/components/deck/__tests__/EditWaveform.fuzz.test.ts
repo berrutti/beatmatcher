@@ -79,7 +79,7 @@ function mountWaveform() {
     props: {
       accent: '#a855f7',
       trackData,
-      isDragOver: false,
+      loading: false,
       trackBpm: 128,
       beatOffset: 0,
       cuePoint: 0,

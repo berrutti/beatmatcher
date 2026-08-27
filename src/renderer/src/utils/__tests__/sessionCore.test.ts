@@ -25,6 +25,25 @@ import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 
 const CLASSIC = 'classic-3band';
+
+// The rate range only bounds the rate lane, so a gain splice takes the lane's own.
+function spliceGain(events: SessionEvent[]) {
+  const rate = laneSpecs(CLASSIC).rate;
+  return spliceLaneEvents(
+    events,
+    'gain',
+    CLASSIC,
+    'A',
+    5000,
+    8000,
+    [
+      { ms: 5000, value: 0.4 },
+      { ms: 6000, value: 0.4 }
+    ],
+    rate.min,
+    rate.max
+  );
+}
 const ISOLATOR = 'isolator-3band';
 
 function simpleSession(): SessionEvent[] {
@@ -164,10 +183,7 @@ describe('lane edit wrappers', () => {
     const events: SessionEvent[] = [
       { elapsed_ms: 1000, type: 'set_param', deck: 'A', slot: 'fader', param: 'gain', value: 0.8 }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const gains = out
       .filter((event) => event.type === 'set_param' && event.slot === 'fader')
       .map((event) => event.value);
@@ -198,10 +214,7 @@ describe('lane edit wrappers', () => {
         frame: 882000
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const untouched = out.find((event) => event.elapsed_ms === 20000);
     expect(untouched?.frame).toBe(882000);
   });
@@ -218,10 +231,7 @@ describe('lane edit wrappers', () => {
         frame: 44100
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const created = out.filter((event) => event.elapsed_ms >= 5000 && event.elapsed_ms <= 8000);
     expect(created.length).toBeGreaterThan(0);
     for (const event of created) expect(event.frame).toBeUndefined();

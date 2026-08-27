@@ -6,7 +6,7 @@ export type DeckDropDetail = {
   accept: () => void;
 };
 
-const DECK_DROP_EVENT = 'bm:collection-drop';
+export const DECK_DROP_EVENT = 'bm:collection-drop';
 
 // Returns whether a deck took it, which the caller only learns because every
 // handler runs before `dispatchEvent` comes back.

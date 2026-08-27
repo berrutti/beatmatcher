@@ -64,10 +64,10 @@
       "linear": "Linear",
       "logarithmic": "Logarithmic"
     },
-    "faderClick": {
-      "title": "Fader click",
-      "label": "Click the fader thumb to return it to full",
-      "hint": "Only the thumb responds; dragging is unaffected. Double-click does nothing while this is on."
+    "sliderClick": {
+      "title": "Slider click",
+      "label": "Click a slider's handle to return it to its default",
+      "hint": "Applies to every fader, EQ, filter and pitch control. Only the handle responds; dragging is unaffected. Double-click does nothing while this is on."
     },
     "filterStart": {
       "title": "Filters at startup",
@@ -160,7 +160,7 @@
     "colTitle": "Title",
     "colBpm": "BPM",
     "colAdded": "Added",
-    "colDecks": "Send to deck",
+    "colDecks": "Send to",
     "colTracks": "Tracks",
     "colArtist": "Artist",
     "colAlbum": "Album",
@@ -176,7 +176,6 @@
     "columnsMenuTitle": "Columns",
     "columnRequired": "At least one column required",
     "detecting": "Detecting...",
-    "statusError": "Error",
     "statusMissing": "missing",
     "analyze": "Analyze",
     "setBpm": "Set BPM",
@@ -199,8 +198,7 @@
     "sendToEdit": "Click to send to Edit",
     "sendToDeck": "Click to send to Deck {deckId}",
     "analyzeFirst": "Analyze this track before sending it to a deck",
-    "sameDeck": "Cannot send to the same deck",
-    "analyzeFailedTooltip": "Couldn't analyze this track"
+    "sameDeck": "Cannot send to the same deck"
   },
   "search": {
     "placeholder": "Search"
@@ -245,7 +243,8 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "No track loaded"
+    "noTrackLoaded": "No track loaded",
+    "loading": "Loading track…"
   },
   "mixer": {
     "cue": "CUE",
@@ -276,7 +275,7 @@
     "rendering": "Rendering...",
     "renderWav": "Render WAV",
     "renderFlac": "Render FLAC",
-    "edit": "Edit session",
+    "edit": "Edit",
     "editHint": "Edit session: draw lanes, move clips (Tab)",
     "saveAs": "Save as",
     "discardTitle": "Discard unsaved edits?",
@@ -291,9 +290,12 @@
     "setClipBpm": "Set BPM (whole clip)…",
     "setBpmFromHere": "Set BPM from here…",
     "splitClip": "Split clip here",
-    "mute": "Mute",
+    "enabled": "Enabled",
+    "enabledOverridden": "A soloed deck overrides this",
+    "disabledBadge": "Off",
     "solo": "Solo",
     "lanesMenu": "Lanes",
+    "lastLane": "A row needs at least one lane",
     "loadingTitle": "Loading session",
     "loadingBody": "Decoding tracks. Playback starts when every track is ready.",
     "loadingTracks": "{loaded} of {total} tracks",

@@ -1,8 +1,5 @@
 import type { LanePoint } from '@renderer/utils/types';
 
-// A quiet lane must not amplify a fraction of a percent into a full-height shape.
-export const JOG_LANE_MIN_SCALE_PCT = 5;
-
 // Takes each column's extreme rather than its edge: a gesture settles in tens of
 // milliseconds, so zoomed out it falls entirely inside one column and would vanish.
 export function jogLaneColumns(
@@ -29,11 +26,4 @@ export function jogLaneColumns(
     columns[column] = peak;
   }
   return columns;
-}
-
-// Symmetric, so the centre line stays at zero.
-export function jogLaneScale(columns: number[]): number {
-  let scale = JOG_LANE_MIN_SCALE_PCT;
-  for (const value of columns) scale = Math.max(scale, Math.abs(value));
-  return scale;
 }

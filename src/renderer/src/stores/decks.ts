@@ -9,6 +9,8 @@ import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
 
+export const EDIT_DECK_ID = 'E' as const;
+
 // The pair a two-deck mixer shows. C and D are the outer decks of the four-deck layout, so
 // they are the ones that go, and the remaining two keep their disposition order.
 export const TWO_DECK_DISPOSITION = ['A', 'B'] as const;
@@ -36,10 +38,8 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-// Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
-// typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
-// of Float32 data. For 10 minutes ~2.1 MB. Anything zoomed deeper than the
-// rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
+// Covers zoom down to ~5s on a 1000-2000px canvas, at ~650 KB of Float32 for a
+// three-minute track. Deeper zoom falls back to an on-demand fetch.
 const DENSE_LOD_PTS_PER_SEC = 250;
 
 type DeckSyncPayload = {
@@ -125,6 +125,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
   let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
   let bandsReadyUnlisten: (() => void) | null = null;
   let loadGeneration = 0;
+  let pitchGeneration = 0;
 
   async function fetchDenseLodChunked(
     generation: number,
@@ -264,7 +265,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const pitchRange = useSettingsStore().pitchRange;
       state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
       if (state.trackBpm === null) {
+        // A drag outruns the round trip, so an older reply must not land on top
+        // of a newer one.
+        const generation = ++pitchGeneration;
         const rate = await call('set_pitch_offset', { deck: id, percent: pct });
+        if (generation !== pitchGeneration) return;
         syncPosition();
         localRate = rate;
         state.pitchOffset = (rate - 1) * 100;
@@ -297,9 +302,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.trackData = null;
       positionCache = 0;
 
-      // Named before the decode, which takes long enough that a glance at the
-      // deck in between reads the track that was there before. Not loaded until
-      // it returns, so a swap shows the same pending state as an empty deck.
+      // Before the decode, which takes long enough that a glance at the deck in
+      // between would otherwise read the track that was there before.
       state.trackName = data.name;
       state.coverArt = null;
       state.trackLoaded = false;

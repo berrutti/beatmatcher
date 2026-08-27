@@ -84,14 +84,11 @@ impl Recovery {
         self.active_recordings.locked().push(job);
     }
 
-    /// Identified by the file it wrote, because a new recording can start while the
-    /// previous one is still being saved.
+    /// Found by the directory the named file sits in, because a new recording can
+    /// start while the previous one is still being saved.
     pub(crate) fn finish_recording(&self, recorded_file: &str) {
-        let Some(dir) = Path::new(recorded_file).parent() else {
-            return;
-        };
         let mut jobs = self.active_recordings.locked();
-        let Some(index) = jobs.iter().position(|job| job.dir == dir) else {
+        let Some(index) = jobs.iter().position(|job| job.holds(recorded_file)) else {
             return;
         };
         jobs.remove(index).finish();
@@ -106,7 +103,10 @@ impl Recovery {
     ) -> Result<Job, String> {
         let started_at = unix_secs();
         let root = self.root()?;
-        let dir = root.join(format!("{started_at}-{}", std::process::id()));
+        // A sequence number as well as the clock: two recordings can begin in the
+        // same second, and two jobs sharing a directory overwrite each other.
+        let seq = NEXT_JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = root.join(format!("{started_at}-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let manifest = Manifest {
             kind,
@@ -188,13 +188,19 @@ impl Recovery {
     }
 }
 
+static NEXT_JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) struct Job {
-    pub(crate) dir: PathBuf,
+    dir: PathBuf,
 }
 
 impl Job {
     pub(crate) fn path(&self, file: &str) -> String {
         self.dir.join(file).to_string_lossy().into_owned()
+    }
+
+    fn holds(&self, file: &str) -> bool {
+        Path::new(file).parent() == Some(self.dir.as_path())
     }
 
     /// The work reached the place the user asked for, so the job stops being recoverable.

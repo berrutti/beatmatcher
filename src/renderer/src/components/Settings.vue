@@ -95,15 +95,15 @@
         </section>
 
         <section class="settings-section">
-          <div class="settings-section-label">{{ $t('settings.faderClick.title') }}</div>
+          <div class="settings-section-label">{{ $t('settings.sliderClick.title') }}</div>
           <Checkbox
             class="settings-checkbox-row"
-            :model-value="settings.faderClickResets"
-            @update:model-value="settings.setFaderClickResets($event)"
+            :model-value="settings.sliderClickResets"
+            @update:model-value="settings.setSliderClickResets($event)"
           >
-            {{ $t('settings.faderClick.label') }}
+            {{ $t('settings.sliderClick.label') }}
           </Checkbox>
-          <p class="settings-hint">{{ $t('settings.faderClick.hint') }}</p>
+          <p class="settings-hint">{{ $t('settings.sliderClick.hint') }}</p>
 
           <div class="settings-section-label">{{ $t('settings.filterStart.title') }}</div>
           <label class="settings-toggle">

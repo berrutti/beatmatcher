@@ -1,11 +1,26 @@
 import type { Clip, TransportBlock, WaveSegment } from '@renderer/utils/types';
 import type { DeckId } from '@renderer/utils/types';
-import { ROW_H, type LaneKey, type RowLayout, type SublaneLayout } from './timelineDraw';
+import { ROW_H, type RowLayout, type SublaneLayout } from './timelineDraw';
+import type { DeckLaneKey } from '@renderer/utils/types';
 
 // Pure geometry for the session timeline: everything draw() needs to know
 // about where things sit, computed without a canvas so it can be unit tested.
 
-export type LaneHeight = { key: LaneKey; height: number };
+export type LaneHeight = { key: DeckLaneKey; height: number };
+
+// Lays a run of lanes end to end from `top`. Shared by the deck rows and the
+// master row, which stack the same way and differ only in what precedes them.
+export function stackLanes<Key extends string>(
+  top: number,
+  lanes: { key: Key; height: number }[]
+): { key: Key; top: number; height: number }[] {
+  let laneTop = top;
+  return lanes.map(({ key, height }) => {
+    const lane = { key, top: laneTop, height };
+    laneTop += height;
+    return lane;
+  });
+}
 
 export function computeRowLayout(
   decks: { deckId: DeckId; waveformHeight?: number; laneHeights: LaneHeight[] }[],
@@ -14,14 +29,11 @@ export function computeRowLayout(
   const rows: RowLayout[] = [];
   let rowY = topY;
   for (const { deckId, laneHeights, waveformHeight = ROW_H } of decks) {
-    let sublaneTop = rowY + waveformHeight;
-    const lanes: SublaneLayout[] = laneHeights.map(({ key, height }) => {
-      const sublane = { key, top: sublaneTop, height };
-      sublaneTop += height;
-      return sublane;
-    });
-    rows.push({ deckId, top: rowY, height: sublaneTop - rowY, waveformHeight, lanes });
-    rowY = sublaneTop;
+    const lanes: SublaneLayout[] = stackLanes(rowY + waveformHeight, laneHeights);
+    const last = lanes[lanes.length - 1];
+    const bottom = last === undefined ? rowY + waveformHeight : last.top + last.height;
+    rows.push({ deckId, top: rowY, height: bottom - rowY, waveformHeight, lanes });
+    rowY = bottom;
   }
   return rows;
 }
@@ -55,9 +67,7 @@ export function clipGestureDeltaSec(
   return (targetMs - (kind === 'trim-start' ? blockStartMs : blockEndMs)) / 1000;
 }
 
-// A selected span on a deck's clip band: a whole block, a loop iteration, or a
-// constant-BPM region inside a block. Spans are wall-time and stay meaningful
-// only until the clips rebuild (selections are cleared on every rebuild).
+// Wall-time, because blockIds reallocate on every rebuild.
 export type ClipSelectionRef = {
   deck: string;
   startMs: number;
@@ -85,9 +95,7 @@ function segmentBpm(clip: Clip, segment: WaveSegment): number | null {
   return clip.bpm * (trackSpan / wallSec);
 }
 
-// The constant-BPM region under `ms`: the run of adjacent wave segments whose
-// displayed tempo matches the clicked one. Whole clip when the track has no
-// grid or no segment contains ms.
+// The whole clip when the track has no grid, or when no segment contains `ms`.
 export function bpmRegionSpanAt(clip: Clip, ms: number): { startMs: number; endMs: number } {
   const segments = clip.waveSegments;
   const index = segments.findIndex(
@@ -106,9 +114,8 @@ export function bpmRegionSpanAt(clip: Clip, ms: number): { startMs: number; endM
   return { startMs: segments[lo].wallStartMs, endMs: segments[hi].wallEndMs };
 }
 
-// Selection targets for a marquee rectangle: for each deck whose waveform
-// strip crosses the rect vertically, the rect's time range clipped to each
-// block it touches, so a partial overlap selects (and deletes) just that part.
+// Clipped to each block the rect touches, so a partial overlap selects only
+// the part inside it.
 export function marqueeTargets(
   rows: { deckId: string; top: number; waveformHeight: number }[],
   blocksFor: (deck: string) => TransportBlock[],

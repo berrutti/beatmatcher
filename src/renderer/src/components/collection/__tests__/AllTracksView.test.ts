@@ -76,7 +76,6 @@ async function mountWithReadyTrack() {
         BpmModal: true,
         ConfirmModal: true,
         TrackBpmCell: true,
-        TrackStatusTag: true,
         TrackContextMenu: true,
         ColumnVisibilityMenu: true
       }

@@ -47,6 +47,18 @@
       </div>
     </template>
 
+    <template v-else-if="appMode.mode === 'session'">
+      <button
+        class="btn-secondary topstrip__edit-btn"
+        :class="{ 'topstrip__edit-btn--active': editStore.editMode }"
+        tabindex="-1"
+        v-tooltip="$t('session.editHint')"
+        @click="editStore.toggleEditMode()"
+      >
+        ✎ {{ $t('session.edit') }}
+      </button>
+    </template>
+
     <div class="topstrip__spacer" />
 
     <span class="topstrip__label">{{ $t('topStrip.vol') }}</span>
@@ -58,8 +70,8 @@
       step="0.01"
       :value="mixer.masterGain"
       v-tooltip="$t('topStrip.masterHint')"
-      v-fader-reset="{
-        enabled: () => settings.faderClickResets,
+      v-slider-reset="{
+        enabled: settings.sliderClickResets,
         reset: () => mixer.setMasterGain(1)
       }"
       @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
@@ -124,9 +136,10 @@
           max="1"
           step="0.01"
           :value="mixer.cueMix"
+          v-tooltip="$t('topStrip.cueMixHint')"
+          v-slider-reset="{ enabled: settings.sliderClickResets, reset: () => mixer.setCueMix(0) }"
           @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
           @dblclick="mixer.setCueMix(0)"
-          v-tooltip="$t('topStrip.cueMixHint')"
         />
         <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.mix') }}</span>
         <select
@@ -173,6 +186,7 @@ import { useI18n } from 'vue-i18n';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 import { dateStamp } from '@renderer/utils/time';
@@ -181,6 +195,7 @@ const { t } = useI18n();
 const mixer = useMixerStore();
 const decksStore = useDecksStore();
 const appMode = useAppModeStore();
+const editStore = useSessionEditStore();
 const settings = useSettingsStore();
 
 const stopMarkPlayedWatch = watch(
@@ -343,7 +358,7 @@ onUnmounted(() => {
 .topstrip__swarm-btn--active {
   border-color: var(--color-accent-amber);
   color: var(--color-accent-amber);
-  background: color-mix(in srgb, var(--color-accent-amber) 15%, transparent);
+  background: color-mix(in srgb, var(--color-accent-amber) var(--toggle-on-fill), transparent);
   animation: swarm-pulse 1.2s ease-in-out infinite;
 }
 
@@ -396,6 +411,7 @@ onUnmounted(() => {
 }
 
 .topstrip__master-fader {
+  --slider-thumb-length: 8px;
   -webkit-appearance: none;
   appearance: none;
   width: 72px;
@@ -412,19 +428,11 @@ onUnmounted(() => {
 .topstrip__master-fader::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 8px;
+  width: var(--slider-thumb-length);
   height: 14px;
   background: #e8e8e8;
   border-radius: 2px;
   margin-top: -5.5px;
-}
-
-.topstrip__master-fader[data-click-resets]::-webkit-slider-thumb {
-  cursor: pointer;
-}
-
-.topstrip__master-fader[data-dragging]::-webkit-slider-thumb {
-  cursor: grabbing;
 }
 
 .topstrip__label--dim {
@@ -432,6 +440,7 @@ onUnmounted(() => {
 }
 
 .topstrip__cue-mix-fader {
+  --slider-thumb-length: 8px;
   -webkit-appearance: none;
   appearance: none;
   width: 56px;
@@ -448,7 +457,7 @@ onUnmounted(() => {
 .topstrip__cue-mix-fader::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 8px;
+  width: var(--slider-thumb-length);
   height: 14px;
   background: #e8e8e8;
   border-radius: 2px;
@@ -508,15 +517,16 @@ onUnmounted(() => {
   cursor: progress;
 }
 
-.topstrip__rec-btn:hover {
-  border-color: var(--color-danger);
-  color: var(--color-danger);
+.topstrip__rec-btn:hover:not(:disabled):not(.topstrip__rec-btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .topstrip__rec-btn--active {
   border-color: var(--color-danger);
   color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  background: color-mix(in srgb, var(--color-danger) var(--toggle-on-fill), transparent);
   animation: rec-pulse 1.2s ease-in-out infinite;
 }
 
@@ -530,6 +540,7 @@ onUnmounted(() => {
   }
 }
 
+.topstrip__edit-btn,
 .topstrip__deck-count-btn {
   color: var(--color-muted);
   font-family: var(--font);
@@ -546,14 +557,31 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
-.topstrip__deck-count-btn:hover {
-  border-color: var(--color-text);
+.topstrip__deck-count-btn:hover:not(.topstrip__deck-count-btn--active),
+.topstrip__edit-btn:hover:not(.topstrip__edit-btn--active) {
+  border-color: var(--color-border-hover);
   color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
+
+.topstrip__edit-btn--active {
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
+}
+
+.topstrip__edit-btn--active:hover {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .topstrip__deck-count-btn--active {
-  border-color: var(--color-text);
-  color: var(--color-text);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
+}
+
+.topstrip__deck-count-btn--active:hover {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .topstrip__refresh {

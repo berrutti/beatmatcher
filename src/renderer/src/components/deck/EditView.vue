@@ -1,17 +1,11 @@
 <template>
-  <div
-    class="edit-view"
-    ref="viewEl"
-    data-deck-id="E"
-    :style="{ '--deck-accent': deck.accent }"
-    :class="{ 'edit-view--drag-over': isDragOver }"
-  >
+  <div class="edit-view" :style="{ '--deck-accent': deck.accent }">
     <ConfirmModal
       :open="pendingLoad !== null"
       :title="$t('deck.loadTitle')"
       :body="$t('deck.loadBody')"
-      @confirm="onConfirmLoad"
-      @cancel="pendingLoad = null"
+      @confirm="confirmPendingLoad"
+      @cancel="cancelPendingLoad"
     />
     <BpmModal
       :open="bpmModalOpen"
@@ -20,12 +14,18 @@
       @cancel="bpmModalOpen = false"
     />
 
-    <div class="edit-view__body">
+    <div
+      class="edit-view__body"
+      ref="deckEl"
+      data-deck-id="E"
+      :class="{ 'edit-view__body--drag-over': isDragOver }"
+    >
       <WaveformDisplay
         class="edit-view__waveform"
+        :[DROP_LANDING_ATTRIBUTE]="''"
         :accent="deck.accent"
         :track-data="deck.trackData"
-        :is-drag-over="isDragOver"
+        :loading="deck.loading"
         :track-bpm="deck.trackBpm"
         :beat-offset="deck.beatOffset"
         :cue-point="deck.cuePoint"
@@ -103,11 +103,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
-import type { Deck, LoadableTrack } from '@renderer/stores/decks';
+import { ref } from 'vue';
+import type { Deck } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
+import { useDeckDrop } from '@renderer/composables/useDeckDrop';
 import { formatMs } from '@renderer/utils/time';
+import { DROP_LANDING_ATTRIBUTE } from '@renderer/utils/dropLanding';
 import WaveformDisplay from '@renderer/components/deck/EditWaveform.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
@@ -115,35 +117,23 @@ import Browser from '@renderer/components/collection/Browser.vue';
 
 const props = defineProps<{ deck: Deck }>();
 
-const viewEl = ref<HTMLElement | null>(null);
-const pendingLoad = ref<LoadableTrack | null>(null);
+// The waveform and its transport, not the whole view: the collection sits beside
+// them and is not somewhere a track can be dropped onto this deck.
+const deckEl = ref<HTMLElement | null>(null);
+
 const bpmModalOpen = ref(false);
 
 const collectionStore = useCollectionStore();
 
-const { isDragOver } = useCollectionDragOver(viewEl);
+const { isDragOver } = useCollectionDragOver(deckEl, () => props.deck.loadedPath);
+
+const { pendingLoad, confirmPendingLoad, cancelPendingLoad } = useDeckDrop({
+  deck: () => props.deck,
+  resolve: (path) => collectionStore.getLoadableTrack(path)
+});
 
 function onSetGrid() {
   props.deck.setBeatOffset(props.deck.getPlayheadPosition());
-}
-
-function onCollectionDrop(e: Event) {
-  const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
-  if (deckId !== props.deck.id) return;
-  if (props.deck.loadedPath === path) return;
-  const loadable = collectionStore.getLoadableTrack(path);
-  if (!loadable) return;
-  if (props.deck.loopPlaying) {
-    pendingLoad.value = loadable;
-    return;
-  }
-  props.deck.loadTrack(loadable);
-}
-
-function onConfirmLoad() {
-  const loadable = pendingLoad.value;
-  pendingLoad.value = null;
-  if (loadable) props.deck.loadTrack(loadable);
 }
 
 function onBpmSubmit(bpm: number) {
@@ -153,9 +143,6 @@ function onBpmSubmit(bpm: number) {
     collectionStore.updateTrack(props.deck.loadedPath, { bpm });
   }
 }
-
-onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionDrop));
 </script>
 
 <style scoped>
@@ -169,7 +156,7 @@ onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionD
   font-family: var(--font);
 }
 
-.edit-view--drag-over {
+.edit-view__body--drag-over {
   outline: 2px dashed var(--deck-accent);
   outline-offset: -4px;
 }
@@ -262,11 +249,20 @@ onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionD
   background: color-mix(in srgb, var(--deck-accent) 20%, transparent);
 }
 
-.edit-view__btn--play:hover:not(:disabled),
+.edit-view__btn--play:hover:not(:disabled):not(.edit-view__btn--playing) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
+
 .edit-view__btn--playing {
-  background: color-mix(in srgb, var(--deck-accent) 15%, transparent);
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill), transparent);
   border-color: var(--deck-accent);
   color: var(--deck-accent);
+}
+
+.edit-view__btn--playing:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill-hover), transparent);
 }
 
 .edit-view__controls-right {

@@ -14,11 +14,11 @@ pub use clip_edit::{
 pub use cue::{build_cue_points, CuePoint};
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use lane_edit::{
-    decimate_steps, delete_filter_active_span, filter_active_at, jog_lane_spec, lane_move_span,
-    lane_spec_for, move_filter_active_span, normalize_gesture_samples, original_value_at,
-    rate_lane_spec, relocate_event_paths, reset_lane_from, resize_filter_active_span, set_rate_at,
-    set_rate_span, splice_lane_events, toggle_filter_active_range, EditableLane, LaneDisplay,
-    LaneSpec, ResetExtent, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    decimate_steps, delete_filter_active_span, filter_active_at, lane_move_span, lane_spec_for,
+    move_filter_active_span, normalize_gesture_samples, original_value_at, rate_lane_spec,
+    relocate_event_paths, reset_lane_from, resize_filter_active_span, set_rate_at, set_rate_span,
+    splice_lane_events, toggle_filter_active_range, EditableLane, LaneDisplay, LaneSpec,
+    ResetExtent, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use param::{
     is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,

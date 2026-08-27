@@ -1,7 +1,10 @@
-import type { DeckLaneKey } from '@renderer/utils/laneSelection';
+import { MASTER_ROW_ID, type EditableLaneKey } from '@renderer/utils/types';
 import { ROW_H } from '@renderer/utils/timelineDraw';
 
 export const DEFAULT_LANE_HEIGHT = 96;
+// The master lanes plot one value line, not a curve read against a waveform, so
+// they need a fraction of the height a deck lane does.
+export const DEFAULT_MASTER_LANE_HEIGHT = 32;
 export const MIN_LANE_HEIGHT = 28;
 const MAX_LANE_HEIGHT = 240;
 
@@ -19,10 +22,10 @@ export function clampWaveformHeight(height: number): number {
   return Math.min(MAX_WAVEFORM_HEIGHT, Math.max(MIN_WAVEFORM_HEIGHT, height));
 }
 
-// Keyed by deck as well as lane: every separator on screen is its own drag, so
-// two decks showing the same lane size independently.
-function slot(deck: string, key: DeckLaneKey | 'waveform'): string {
-  return `${deck}:${key}`;
+// Keyed by row as well as lane: every separator on screen is its own drag, so
+// two rows showing the same lane size independently.
+function slot(row: string, key: EditableLaneKey | 'waveform'): string {
+  return `${row}:${key}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,15 +42,19 @@ function withHeight(stored: unknown, key: string, height: number): StoredLaneHei
   return { ...(isRecord(stored) ? stored : {}), [key]: height };
 }
 
-export function laneHeightFor(stored: unknown, deck: string, key: DeckLaneKey): number {
-  const height = storedHeight(stored, slot(deck, key));
-  return height === null ? DEFAULT_LANE_HEIGHT : clampLaneHeight(height);
+export function defaultLaneHeight(row: string): number {
+  return row === MASTER_ROW_ID ? DEFAULT_MASTER_LANE_HEIGHT : DEFAULT_LANE_HEIGHT;
+}
+
+export function laneHeightFor(stored: unknown, row: string, key: EditableLaneKey): number {
+  const height = storedHeight(stored, slot(row, key));
+  return height === null ? defaultLaneHeight(row) : clampLaneHeight(height);
 }
 
 export function withLaneHeight(
   stored: unknown,
   deck: string,
-  key: DeckLaneKey,
+  key: EditableLaneKey,
   height: number
 ): StoredLaneHeights {
   return withHeight(stored, slot(deck, key), clampLaneHeight(height));

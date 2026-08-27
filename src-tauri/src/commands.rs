@@ -944,11 +944,8 @@ fn copy_with_progress(
             .write_all(&buffer[..read])
             .map_err(|e| e.to_string())?;
         copied += read as u64;
-        if let Some(permille) = (copied * u64::from(crate::audio::SAVE_DONE)).checked_div(total) {
-            progress.store(
-                (permille as u32).min(crate::audio::SAVE_DONE - 1),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+        if let Some(permille) = crate::audio::save_permille(copied, total) {
+            progress.store(permille, std::sync::atomic::Ordering::Relaxed);
         }
     }
     writer.flush().map_err(|e| e.to_string())?;
@@ -965,16 +962,16 @@ pub(crate) async fn save_recording(
     write_cue: bool,
 ) -> Result<(), String> {
     if std::fs::rename(&src, &dest).is_err() {
-        // rename fails across filesystems.
-        let progress = engine.audio.save_progress_handle();
-        let (from, to) = (src.clone(), dest.clone());
-        let copied = tokio::task::spawn_blocking(move || copy_with_progress(&from, &to, &progress))
-            .await
-            .map_err(|e| e.to_string())?;
-        engine.audio.save_progress_handle().store(
-            crate::audio::SAVE_IDLE,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // rename fails across filesystems. Scoped so the dial reads idle again
+        // before the log and cue sheet are written, which report nothing.
+        let copied = {
+            let progress = engine.audio.begin_save();
+            let dial = progress.share();
+            let (from, to) = (src.clone(), dest.clone());
+            tokio::task::spawn_blocking(move || copy_with_progress(&from, &to, &dial))
+                .await
+                .map_err(|e| e.to_string())?
+        };
         copied?;
         if let Err(e) = std::fs::remove_file(&src) {
             eprintln!("save_recording: failed to remove source file {src}: {e}");

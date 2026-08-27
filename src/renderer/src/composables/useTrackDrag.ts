@@ -30,10 +30,8 @@ function clearDragGhost() {
   currentDragGhost = null;
 }
 
-// Flies the ghost to where the release landed and fades it, so a drop that
-// registered and one that did not look different. The element is dropped from
-// `currentDragGhost` first, so a new drag starting mid-flight is never blocked
-// by one still animating.
+// Released from `currentDragGhost` first, so a new drag starting mid-flight is
+// not blocked by one still animating.
 function landDragGhost(ghost: DragGhost, target: HTMLElement | null, origin: LandingSpot) {
   const { element } = ghost;
   if (currentDragGhost?.element === element) currentDragGhost = null;
@@ -50,12 +48,9 @@ function landDragGhost(ghost: DragGhost, target: HTMLElement | null, origin: Lan
   window.setTimeout(() => element.remove(), DROP_LANDING_MS);
 }
 
-// A <tr> cloned on its own and appended to <body> loses the table's column
-// model (no <colgroup>/<table> ancestor), so its cells would render squished
-// instead of matching the real row. Wrapping the clone in a table that
-// carries the same <colgroup> keeps the ghost's column widths identical.
-// The colgroup must come from the still-attached original row: the clone is
-// detached, so `closest` on it can never find an ancestor table.
+// A detached <tr> loses the table's column model and renders squished, so the
+// clone is wrapped in a table carrying the same colgroup. That colgroup comes
+// from the original row, since `closest` on a detached clone finds nothing.
 function wrapRowClone(
   row: HTMLTableRowElement,
   originalRow: HTMLTableRowElement
@@ -118,13 +113,9 @@ function deckElementAtPoint(clientX: number, clientY: number): HTMLElement | nul
 export function startTrackDrag(store: DragStore, event: PointerEvent, path: string) {
   if (event.button !== 0) return;
   if (!(event.target instanceof HTMLElement) || event.target.closest('button')) return;
-  // Without this, a sustained mousedown-and-move is the browser's own
-  // built-in gesture for extending a text selection, and WebKit auto-scrolls
-  // whatever scroll container is under the pointer the instant it nears that
-  // container's edge - independent of any of this file's own drag logic, and
-  // not stoppable by handling wheel/scroll events since no such event is
-  // ever fired for it. Suppressing the default action on pointerdown itself
-  // (before a selection can start) is what actually stops it.
+  // A sustained press-and-move is WebKit's own text-selection gesture, which
+  // auto-scrolls whatever container the pointer nears. It fires no wheel or
+  // scroll event, so stopping the selection before it starts is the only way.
   event.preventDefault();
 
   const startX = event.clientX;

@@ -2,9 +2,10 @@
 // height, because only the composed scene knows how tall the rows came out.
 
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
-import { TrackWaveform, type LaneKey, type RowLayout } from '@renderer/utils/timelineDraw';
+import { TrackWaveform, type MasterSublane, type RowLayout } from '@renderer/utils/timelineDraw';
 import {
   computeRowLayout,
+  stackLanes,
   selectionSpansFor,
   type ClipSelectionRef
 } from '@renderer/utils/timelineLayout';
@@ -17,15 +18,20 @@ import {
   filterRegionItem,
   filterSelectionItem,
   laneSeparatorItem,
-  rowSeparatorItem,
   waveformSeparatorItem,
-  masterItem,
+  masterChromeItem,
+  masterLaneItem,
   rowDividersItem,
   playheadItem,
   overviewItem,
   frameGuttersItem
 } from '@renderer/utils/timelineItems';
-import { MASTER_ROW_ID, type DeckId } from '@renderer/utils/types';
+import {
+  MASTER_ROW_ID,
+  isMasterLaneKey,
+  type DeckId,
+  type DeckLaneKey
+} from '@renderer/utils/types';
 import type {
   Clip,
   LoadedSpan,
@@ -48,11 +54,11 @@ export type SceneInput = {
   playheadMs: number;
   durationMs: number;
   editMode: boolean;
-  lanesFor: (deck: string) => LaneKey[];
-  masterLane: MasterLaneKey;
-  laneHeightFor: (deck: string, key: LaneKey) => number;
+  lanesFor: (deck: string) => DeckLaneKey[];
+  masterLanesFor: () => MasterLaneKey[];
+  laneHeightFor: (deck: string, key: EditableLaneKey) => number;
   waveformHeightFor: (deck: string) => number;
-  openLaneFor: (deck: string) => string | null;
+  openLaneFor: (deck: string) => EditableLaneKey | null;
   badgeAlphaFor: (deck: string) => number;
   menuOpenFor: (deck: string) => boolean;
   // The span a "reset this move" would clear, shown while its menu is open.
@@ -64,7 +70,6 @@ export type SceneInput = {
   badgeLabel: (deck: string) => string;
   audibleFor: (deck: string) => boolean;
   soloFor: (deck: string) => boolean;
-  mutedFor: (deck: string) => boolean;
   clipSelection: ClipSelectionRef[];
   filterSelection: { deck: string; startMs: number; endMs: number } | null;
   // Active gesture/selection previews, drawn on top of the rows.
@@ -95,27 +100,38 @@ export function buildScene(input: SceneInput): SceneResult {
       ? input.lanesFor(deckId).map((key) => ({ key, height: input.laneHeightFor(deckId, key) }))
       : []
   }));
-  // The master lane sits at the top, directly below the time ruler and above
-  // every deck row. The deck rows begin below it.
+  // The master lanes sit at the top, directly below the time ruler and above
+  // every deck row. The deck rows begin below them.
   const masterTop = vc.laneOriginY;
-  const masterHeight = input.waveformHeightFor(MASTER_ROW_ID);
+  const masterSublanes: MasterSublane[] = stackLanes(
+    masterTop,
+    input.masterLanesFor().map((key) => ({ key, height: input.laneHeightFor(MASTER_ROW_ID, key) }))
+  );
+  const masterHeight = masterSublanes.reduce((total, lane) => total + lane.height, 0);
   const rows = computeRowLayout(deckSpecs, masterTop + masterHeight);
 
   const items: SceneItem[] = [];
 
+  const openMaster = input.openLaneFor(MASTER_ROW_ID);
   items.push(
-    masterItem(
+    masterChromeItem(
       masterTop,
       masterHeight,
-      input.masterLanes,
-      input.masterLane,
-      input.laneLabel(input.masterLane),
-      input.openLaneFor(MASTER_ROW_ID) !== null,
-      resetHighlight(input.resetPreview, MASTER_ROW_ID, input.masterLane)
+      masterSublanes,
+      input.laneLabel,
+      openMaster !== null && isMasterLaneKey(openMaster) ? openMaster : null
     )
   );
-
-  items.push(rowSeparatorItem(masterTop + masterHeight, MASTER_ROW_ID));
+  for (const lane of masterSublanes) {
+    items.push(
+      masterLaneItem(
+        lane,
+        input.masterLanes,
+        resetHighlight(input.resetPreview, MASTER_ROW_ID, lane.key)
+      )
+    );
+    items.push(laneSeparatorItem(lane, MASTER_ROW_ID));
+  }
 
   rows.forEach((row) => {
     const deck = row.deckId;
@@ -124,7 +140,6 @@ export function buildScene(input: SceneInput): SceneResult {
         accent: input.accentFor(deck),
         audible: input.audibleFor(deck),
         solo: input.soloFor(deck),
-        muted: input.mutedFor(deck),
         deckLabel: input.deckLabel(deck),
         badgeLabel: input.badgeLabel(deck),
         laneLabel: input.laneLabel,

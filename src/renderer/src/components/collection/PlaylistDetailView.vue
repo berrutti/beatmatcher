@@ -13,8 +13,7 @@
           <col :style="{ width: TABLE_CHROME_WIDTH.playlistGrip + 'px' }" />
           <col :style="{ width: TABLE_CHROME_WIDTH.playlistIdx + 'px' }" />
           <TableColgroup :fields="store.orderedVisibleColumns" :get-width="columnWidth" />
-          <col :style="{ width: TABLE_CHROME_WIDTH.status + 'px' }" />
-          <col :style="{ width: TABLE_CHROME_WIDTH.actions + 'px' }" />
+          <col :style="{ width: actionsColumnWidth + 'px' }" />
           <col :style="{ width: TABLE_CHROME_WIDTH.remove + 'px' }" />
         </template>
         <template #header>
@@ -30,7 +29,6 @@
             :on-resizer-pointer-down="onResizerPointerDown"
             :on-auto-fit-column="autoFitColumn"
           />
-          <TableHeaderCell class="table__header-cell--status"></TableHeaderCell>
           <TableHeaderCell align="right">{{ $t('browser.colDecks') }}</TableHeaderCell>
           <TableHeaderCell></TableHeaderCell>
         </template>
@@ -86,15 +84,6 @@
             <template v-else>
               {{ formatAddedDate(item.addedAt) }}
             </template>
-          </td>
-          <td class="collection__td collection__td--status">
-            <TrackStatusTag
-              :has-error="
-                Boolean(
-                  item.entry && (item.entry.status === 'error' || item.entry.lastAnalysisFailed)
-                )
-              "
-            />
           </td>
           <td class="collection__td collection__td--actions">
             <div class="collection__item-actions">
@@ -191,6 +180,7 @@ import { playlistListId } from '@renderer/stores/browse';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
 import { displayName, formatAddedDate } from '@renderer/utils/trackDisplay';
 import { loadToDeck } from '@renderer/utils/deckDrop';
+import { useDeckButtons } from '@renderer/composables/useDeckButtons';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import Search from '@renderer/components/collection/Search.vue';
 import Buttons from '@renderer/components/collection/Buttons.vue';
@@ -199,7 +189,6 @@ import TableColgroup from '@renderer/components/collection/TableColgroup.vue';
 import TableHeaderCell from '@renderer/components/collection/TableHeaderCell.vue';
 import TableHeaderCells from '@renderer/components/collection/TableHeaderCells.vue';
 import TrackBpmCell from '@renderer/components/collection/TrackBpmCell.vue';
-import TrackStatusTag from '@renderer/components/collection/TrackStatusTag.vue';
 import TrackContextMenu from '@renderer/components/collection/TrackContextMenu.vue';
 import ColumnVisibilityMenu from '@renderer/components/collection/ColumnVisibilityMenu.vue';
 
@@ -216,12 +205,15 @@ const { columnMenuEl, onHeaderContextmenu } = useColumnVisibilityMenuTrigger();
 // Chrome shared with the main table (status/actions/remove) plus the two
 // leading columns unique to the playlist-detail table.
 const TABLE_CHROME_WIDTH = { ...BASE_TABLE_CHROME_WIDTH, playlistIdx: 28, playlistGrip: 20 };
-const PLAYLIST_DETAIL_FIXED_TOTAL =
-  TABLE_CHROME_WIDTH.playlistIdx +
-  TABLE_CHROME_WIDTH.playlistGrip +
-  TABLE_CHROME_WIDTH.status +
-  TABLE_CHROME_WIDTH.actions +
-  TABLE_CHROME_WIDTH.remove;
+const { columnWidth: actionsColumnWidth } = useDeckButtons();
+
+const playlistDetailFixedTotal = computed(
+  () =>
+    TABLE_CHROME_WIDTH.playlistIdx +
+    TABLE_CHROME_WIDTH.playlistGrip +
+    actionsColumnWidth.value +
+    TABLE_CHROME_WIDTH.remove
+);
 
 const playlistDetail = useElementSize();
 const playlistListEl = playlistDetail.el;
@@ -232,7 +224,7 @@ const pinnedColumnsWidth = usePinnedColumnsWidth();
 const playlistDetailAvailableResizableWidth = () =>
   Math.max(
     0,
-    playlistDetailViewportWidth.value - PLAYLIST_DETAIL_FIXED_TOTAL - pinnedColumnsWidth.value
+    playlistDetailViewportWidth.value - playlistDetailFixedTotal.value - pinnedColumnsWidth.value
   );
 
 const {

@@ -1,7 +1,5 @@
-// rodhad gives Rødhåd
-// A collection can hold thousands of tracks and the filter runs on every
-// keystroke, so a track's own fields are folded once and kept. The query is not
-// cached: every keystroke is a new string, and the map would grow with each one.
+// Thousands of tracks refiltered on every keystroke, so a field is folded once
+// and kept. The query is not: each keystroke is a new string the map would grow by.
 const foldedFields = new Map<string, string>();
 
 function foldField(value: string): string {

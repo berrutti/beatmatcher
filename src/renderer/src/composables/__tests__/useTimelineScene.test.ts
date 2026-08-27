@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
 import type { DeckId } from '@renderer/utils/types';
-import { LABEL_W, type LaneKey } from '@renderer/utils/timelineDraw';
+import { LABEL_W } from '@renderer/utils/timelineDraw';
+import type { DeckLaneKey } from '@renderer/utils/types';
 import type { MasterLaneKey } from '@renderer/utils/types';
 
 // Tag the row-divider item so we can locate it in the composed scene.
@@ -46,8 +47,8 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
     playheadMs: 0,
     durationMs: 1000,
     editMode: false,
-    lanesFor: () => ['filter'] as LaneKey[],
-    masterLane,
+    lanesFor: () => ['filter'] as DeckLaneKey[],
+    masterLanesFor: () => [masterLane],
     laneHeightFor: () => 64,
     waveformHeightFor: () => 80,
     openLaneFor: () => null,
@@ -60,7 +61,6 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
     badgeLabel: () => 'MUTE',
     audibleFor: () => true,
     soloFor: () => false,
-    mutedFor: () => false,
     clipSelection: [],
     filterSelection: null,
     overlays
@@ -101,7 +101,7 @@ describe('the jog lane', () => {
     return {
       ...input([]),
       editMode: true,
-      lanesFor: () => ['jog'] as LaneKey[],
+      lanesFor: () => ['jog'] as DeckLaneKey[],
       deckJog: {
         A: [
           { ms: 0, value: 0 },
@@ -156,15 +156,33 @@ describe('buildScene z-order', () => {
 });
 
 describe('the master row sizes like any other', () => {
-  it('takes its height from storage and offers a separator to drag it', () => {
-    const tall = { ...input([]), waveformHeightFor: () => 140 };
-    const { items, rows } = buildScene(tall);
+  it('takes each lane height from storage and pushes the deck rows below the stack', () => {
+    const stacked: SceneInput = {
+      ...input([]),
+      masterLanesFor: () => ['masterGain', 'xfader'],
+      laneHeightFor: () => 70
+    };
 
-    const separator = items
-      .map((item) => item.hitTest?.({ x: 200, y: 16 + 140 }, vc) ?? null)
-      .find((hit) => hit?.target === 'waveformSeparator');
+    const { rows } = buildScene(stacked);
 
-    expect(separator?.deck).toBe('master');
-    expect(rows[0].top).toBe(16 + 140);
+    expect(rows[0].top).toBe(16 + 70 * 2);
+  });
+
+  it('offers a separator under each master lane, so either can be dragged', () => {
+    const stacked: SceneInput = {
+      ...input([]),
+      masterLanesFor: () => ['masterGain', 'xfader'],
+      laneHeightFor: () => 70
+    };
+
+    const { items } = buildScene(stacked);
+    const separatorAt = (y: number) =>
+      items
+        .map((item) => item.hitTest?.({ x: 200, y }, vc) ?? null)
+        .find((hit) => hit?.target === 'laneSeparator');
+
+    expect(separatorAt(16 + 70)?.deck).toBe('master');
+    expect(separatorAt(16 + 70)?.data).toBe('masterGain');
+    expect(separatorAt(16 + 140)?.data).toBe('xfader');
   });
 });

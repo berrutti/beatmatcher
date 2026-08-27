@@ -30,13 +30,4 @@ defineProps<{
 .table__header-cell--right {
   text-align: right;
 }
-
-/* Specificity, not just source order, has to beat the base rule above: this
-   rule's selector is scoped to the same [data-v-xxx] attribute Vue adds to
-   it, so an equivalent override living in another component's global
-   stylesheet (lower specificity - no scope attribute) loses to this one
-   regardless of which stylesheet loads later. */
-.table__header-cell--status {
-  border-right: none;
-}
 </style>

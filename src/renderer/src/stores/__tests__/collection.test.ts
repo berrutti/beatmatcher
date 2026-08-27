@@ -65,7 +65,6 @@ describe('collection store: analyze / reanalyze', () => {
 
     expect(track.status).toBe('ready');
     expect(store.getBpm(track)).toBe(128);
-    expect(track.lastAnalysisFailed).toBe(false);
   });
 
   it('marks a track ready and loadable when analysis finds no BPM', async () => {
@@ -85,7 +84,6 @@ describe('collection store: analyze / reanalyze', () => {
 
     expect(track.status).toBe('ready');
     expect(store.getBpm(track)).toBeNull();
-    expect(track.lastAnalysisFailed).toBe(false);
     expect(store.getLoadableTrack('/music/track.mp3')).toMatchObject({
       bpm: null,
       beatOffset: 0.5
@@ -197,11 +195,10 @@ describe('collection store: analyze / reanalyze', () => {
     await flush();
 
     expect(track.status).toBe('ready');
-    expect(track.lastAnalysisFailed).toBe(true);
     expect(store.getBpm(track)).toBe(128);
   });
 
-  it('reanalyze: on success, updates the BPM and clears lastAnalysisFailed', async () => {
+  it('reanalyze: on success, updates the BPM', async () => {
     mockedInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'files_info') return [1000];
       if (cmd === 'analyze_track') return { bpm: 128, silenceEnd: 0.5 };
@@ -224,7 +221,6 @@ describe('collection store: analyze / reanalyze', () => {
     await flush();
 
     expect(track.status).toBe('ready');
-    expect(track.lastAnalysisFailed).toBe(false);
     expect(store.getBpm(track)).toBe(140);
   });
 
@@ -253,7 +249,6 @@ describe('collection store: analyze / reanalyze', () => {
     store.reanalyzeTrack(track.id);
     await flush();
     expect(track.status).toBe('ready');
-    expect(track.lastAnalysisFailed).toBe(true);
     expect(store.getBpm(track)).toBe(128);
 
     store.setBpm(track.id, 130);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_LANE_HEIGHT,
+  DEFAULT_MASTER_LANE_HEIGHT,
   MIN_LANE_HEIGHT,
   DEFAULT_WAVEFORM_HEIGHT,
   MIN_WAVEFORM_HEIGHT,
@@ -9,11 +10,17 @@ import {
   withLaneHeight,
   withWaveformHeight
 } from '@renderer/utils/laneHeights';
+import { MASTER_ROW_ID } from '@renderer/utils/types';
 import { SEPARATOR_GRAB_PX } from '@renderer/utils/timelineItems';
 
 describe('laneHeightFor', () => {
   it('starts an unsized lane at the default', () => {
     expect(laneHeightFor({}, 'A', 'filter')).toBe(DEFAULT_LANE_HEIGHT);
+  });
+
+  it('starts a master lane far shorter than a deck lane', () => {
+    expect(laneHeightFor({}, MASTER_ROW_ID, 'masterGain')).toBe(DEFAULT_MASTER_LANE_HEIGHT);
+    expect(DEFAULT_MASTER_LANE_HEIGHT).toBeLessThan(DEFAULT_LANE_HEIGHT);
   });
 
   it('reads back a stored height', () => {

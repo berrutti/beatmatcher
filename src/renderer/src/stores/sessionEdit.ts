@@ -308,9 +308,8 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
 
     const before = session.events;
     applyEdit(relocateEventPaths(session.events, mapping));
-    // When nothing was rewritten the path set is unchanged and the watcher in
-    // the session store never fires, but the files may exist again now. When
-    // an edit did happen, the watcher already triggers the recheck.
+    // An unchanged path set never wakes the store's watcher, but the files may
+    // exist again now.
     if (session.events === before) await sessionStore.checkMissingTracks();
   }
 

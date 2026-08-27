@@ -64,10 +64,10 @@
       "linear": "Lineal",
       "logarithmic": "Logarítmica"
     },
-    "faderClick": {
-      "title": "Clic en el fader",
-      "label": "Haz clic en el pulgar del fader para volver al máximo",
-      "hint": "Solo responde el pulgar; arrastrar no cambia. El doble clic no hace nada con esto activado."
+    "sliderClick": {
+      "title": "Clic en el deslizador",
+      "label": "Haz clic en el tirador de un deslizador para restablecerlo",
+      "hint": "Se aplica a todos los faders, ecualizadores, filtros y controles de pitch. Solo responde el tirador; arrastrar no cambia. El doble clic no hace nada mientras esto está activo."
     },
     "filterStart": {
       "title": "Filtros al iniciar",
@@ -160,7 +160,7 @@
     "colTitle": "Título",
     "colBpm": "BPM",
     "colAdded": "Añadido",
-    "colDecks": "Enviar a deck",
+    "colDecks": "Enviar a",
     "colTracks": "Pistas",
     "colArtist": "Artista",
     "colAlbum": "Álbum",
@@ -176,7 +176,6 @@
     "columnsMenuTitle": "Columnas",
     "columnRequired": "Se requiere al menos una columna",
     "detecting": "Detectando...",
-    "statusError": "Error",
     "statusMissing": "no encontrado",
     "analyze": "Analizar",
     "setBpm": "Fijar BPM",
@@ -199,8 +198,7 @@
     "sendToEdit": "Clic para enviar a Edit",
     "sendToDeck": "Clic para enviar al Deck {deckId}",
     "analyzeFirst": "Analiza esta pista antes de enviarla a un deck",
-    "sameDeck": "No se puede enviar al mismo deck",
-    "analyzeFailedTooltip": "No se pudo analizar esta pista"
+    "sameDeck": "No se puede enviar al mismo deck"
   },
   "search": {
     "placeholder": "Buscar"
@@ -245,7 +243,8 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "Ninguna pista cargada"
+    "noTrackLoaded": "Ninguna pista cargada",
+    "loading": "Cargando pista…"
   },
   "mixer": {
     "cue": "CUE",
@@ -276,7 +275,7 @@
     "rendering": "Renderizando...",
     "renderWav": "Renderizar WAV",
     "renderFlac": "Renderizar FLAC",
-    "edit": "Editar sesión",
+    "edit": "Edición",
     "editHint": "Editar sesión: dibujar carriles, mover clips (Tab)",
     "saveAs": "Guardar como",
     "discardTitle": "Descartar cambios sin guardar?",
@@ -291,9 +290,12 @@
     "setClipBpm": "Ajustar BPM (todo el clip)…",
     "setBpmFromHere": "Ajustar BPM desde aquí…",
     "splitClip": "Dividir clip aquí",
-    "mute": "Silenciar",
+    "enabled": "Activo",
+    "enabledOverridden": "Un deck en solo anula esto",
+    "disabledBadge": "Off",
     "solo": "Solo",
     "lanesMenu": "Carriles",
+    "lastLane": "Una fila necesita al menos un carril",
     "loadingTitle": "Cargando sesión",
     "loadingBody": "Decodificando pistas. La reproducción empezará cuando todas estén listas.",
     "loadingTracks": "{loaded} de {total} pistas",

@@ -1,6 +1,5 @@
-// `initSessionCore()` must be awaited once at app startup before any of the
-// (synchronous) functions below are called. Wasm-bindgen exports are sync only
-// after the module has initialized.
+// Everything below is synchronous only once `initSessionCore()` has resolved,
+// which the app awaits at startup.
 
 import init, {
   buildTimeline as wasmBuildTimeline,
@@ -61,10 +60,8 @@ const parse = <T>(json: string): T => JSON.parse(json) as T;
 type RawClip = Omit<Clip, 'trackName'>;
 type RawLoadedSpan = Omit<LoadedSpan, 'trackName'>;
 
-// Clips, loaded spans, and automation lanes in a single boundary crossing: the
-// editor needs all of them on every event change, so deriving them together
-// serializes the event list once instead of once per builder. Track display
-// names are still resolved here (the Rust core returns paths only).
+// One boundary crossing for all three, so an event change serializes the list
+// once rather than once per builder.
 export function buildTimeline(
   events: SessionEvent[],
   durationMs: number,
@@ -246,10 +243,8 @@ export function trimTransportBlock(
   return result;
 }
 
-// Splits a block into two at splitMs, gaplessly (a stop immediately followed
-// by a play, the right part resuming exactly the audio it already played). A
-// no-op (returns the same events reference) if splitMs is within minBlockMs of
-// either edge.
+// Returns the same reference when `splitMs` is within `minBlockMs` of an edge,
+// so a caller can skip a no-op by identity.
 export function splitTransportBlock(
   events: SessionEvent[],
   clips: Clip[],
@@ -262,9 +257,7 @@ export function splitTransportBlock(
   return result.length === events.length ? events : result;
 }
 
-// A range covering a whole block deletes it, an edge range trims it, and an
-// interior range splits the block (the right part keeps playing exactly the
-// audio it played before).
+// One edit for every range: applied singly a delete, a trim and a split fight.
 export function deleteTransportRanges(
   events: SessionEvent[],
   clips: Clip[],
@@ -285,8 +278,8 @@ export function spliceLaneEvents(
   t0: number,
   t1: number,
   points: LanePoint[],
-  rateMin = 0.92,
-  rateMax = 1.08
+  rateMin: number,
+  rateMax: number
 ): SessionEvent[] {
   return parse(
     wasmSplice(
@@ -313,8 +306,8 @@ export function laneMoveSpan(
   mixerId: string,
   deck: string,
   ms: number,
-  rateMin = 0.92,
-  rateMax = 1.08
+  rateMin: number,
+  rateMax: number
 ): LaneMoveSpan | null {
   return parse(
     wasmLaneMoveSpan(JSON.stringify(events), laneKey, mixerId, deck, ms, rateMin, rateMax)
@@ -328,8 +321,8 @@ export function resetLaneFrom(
   deck: string,
   ms: number,
   extent: ResetExtent,
-  rateMin = 0.92,
-  rateMax = 1.08
+  rateMin: number,
+  rateMax: number
 ): SessionEvent[] {
   return parse(
     wasmResetLaneFrom(JSON.stringify(events), laneKey, mixerId, deck, ms, extent, rateMin, rateMax)

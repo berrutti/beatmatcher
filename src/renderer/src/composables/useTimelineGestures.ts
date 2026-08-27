@@ -1,6 +1,6 @@
 import type { SceneItem, ViewContext, Hit, Point } from '@renderer/utils/timelineEngine';
 import { hitScene } from '@renderer/utils/timelineEngine';
-import { hitPriority } from '@renderer/utils/timelineHits';
+import { hitPriority, type HitTarget } from '@renderer/utils/timelineHits';
 import { LABEL_W } from '@renderer/utils/timelineDraw';
 import {
   drawValueGesturePreview,
@@ -35,7 +35,6 @@ import type {
   FilterActiveSpan
 } from '@renderer/utils/types';
 import { isEditableLaneKey } from '@renderer/utils/types';
-import type { DeckLaneKey } from '@renderer/utils/laneSelection';
 import { clampLaneHeight, clampWaveformHeight } from '@renderer/utils/laneHeights';
 import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
@@ -48,6 +47,10 @@ const DRAG_THRESHOLD_PX = 3;
 const EDGE_SNAP_PX = 8;
 const LANE_MENU_GAP_PX = 6;
 
+// The label column and the separators are click targets of their own: a
+// right-click there is not a request for the deck menu.
+const DECK_MENU_TARGETS: readonly HitTarget[] = ['lane', 'clip', 'clipBand', 'filterRegion'];
+
 type Camera = ReturnType<typeof useTimelineView>;
 
 export type GestureDeps = {
@@ -59,7 +62,7 @@ export type GestureDeps = {
   getClips: () => Clip[];
   getEvents: () => SessionEvent[];
   getDeckLanes: () => Record<string, DeckLanes>;
-  laneHeightFor: (deck: string, lane: DeckLaneKey) => number;
+  laneHeightFor: (deck: string, lane: EditableLaneKey) => number;
   waveformHeightFor: (deck: string) => number;
   isEditMode: () => boolean;
   durationMs: () => number;
@@ -73,7 +76,7 @@ type ActiveGesture =
   | {
       kind: 'lane-resize';
       deck: string;
-      lane: DeckLaneKey;
+      lane: EditableLaneKey;
       startY: number;
       startHeight: number;
       height: number;
@@ -210,9 +213,9 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'laneSeparator': {
-        const lane = hit.data as DeckLaneKey;
+        const lane = hit.data;
         const deck = hit.deck;
-        if (!deck) return;
+        if (!deck || !isEditableLaneKey(lane)) return;
         const laneHeight = deps.laneHeightFor(deck, lane);
         active = {
           kind: 'lane-resize',
@@ -257,7 +260,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         deps.emit({
           type: 'lane.openDropdown',
           deck: hit.deck,
-          lane: hit.part ?? null,
+          lane: isEditableLaneKey(hit.part) ? hit.part : null,
           clientX: rect.left + LABEL_W + LANE_MENU_GAP_PX,
           clientY: anchor === null ? event.clientY : rect.top + anchor
         });
@@ -612,8 +615,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     const point = pointFrom(event, rect);
     const hit = hitAt(point);
     if (!hit) return;
-    if (hit.target === 'laneSeparator' && hit.deck) {
-      deps.emit({ type: 'lane.resizeReset', deck: hit.deck, lane: hit.data as DeckLaneKey });
+    if (hit.target === 'laneSeparator' && hit.deck && isEditableLaneKey(hit.data)) {
+      deps.emit({ type: 'lane.resizeReset', deck: hit.deck, lane: hit.data });
       return;
     }
     if (hit.target === 'waveformSeparator' && hit.deck) {
@@ -636,10 +639,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
   }
 
-  // The BPM context for a "Set BPM" menu item: the non-loop clip under `ms` on
-  // `deck` that has a known grid, with the tempo currently playing there (track
-  // bpm scaled by the segment's effective rate). Null when no such clip exists,
-  // so the menu item only appears over a pitchable clip.
+  // Null unless a pitchable clip sits under `ms`, so the menu item appears only
+  // where it would work.
   function bpmContextAt(deck: string, ms: number): BpmContext | null {
     for (const clip of deps.getClips()) {
       if (clip.deck !== deck || clip.loop) continue;
@@ -677,10 +678,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       });
       return;
     }
-    // The label column and the separators are click targets of their own: a
-    // right-click there is not a request for the deck menu.
-    const menuTargets = ['lane', 'clip', 'clipBand', 'filterRegion'];
-    if (hit.deck && menuTargets.includes(hit.target)) {
+    if (hit.deck && DECK_MENU_TARGETS.some((target) => target === hit.target)) {
       const laneKey = hit.target === 'lane' ? hit.part : null;
       deps.emit({
         type: 'menu.deck',
@@ -862,9 +860,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     };
   }
 
-  // Edge magnetism (NOT beat snapping): within a few pixels an edge locks onto a
-  // neighbour boundary or the block's own original position, so placing a clip
-  // "touching" or "back where it was" by eye is sample-exact.
+  // Edge magnetism, not beat snapping: an edge locks onto a neighbour or its own
+  // original position, so placing a clip by eye is sample-exact.
   function updateClip(gesture: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
     const { block, snapMs } = gesture;
     if (!gesture.edge) {

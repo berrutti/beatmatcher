@@ -3,10 +3,10 @@
 
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { lanesForDeck, toggleLane } from '@renderer/utils/laneSelection';
+import { lanesForDeck, lanesForMaster, toggleLane } from '@renderer/utils/laneSelection';
 import {
-  DEFAULT_LANE_HEIGHT,
   DEFAULT_WAVEFORM_HEIGHT,
+  defaultLaneHeight,
   laneHeightFor,
   waveformHeightFor,
   withLaneHeight,
@@ -14,16 +14,25 @@ import {
   type StoredLaneHeights
 } from '@renderer/utils/laneHeights';
 import { useDecksStore } from '@renderer/stores/decks';
-import { DECK_ACCENTS, type DeckId, type EditableLaneKey } from '@renderer/utils/types';
+import {
+  DECK_ACCENTS,
+  type DeckId,
+  type DeckLaneKey,
+  type EditableLaneKey
+} from '@renderer/utils/types';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { type LaneKey } from '@renderer/utils/timelineDraw';
 import {
   bpmRegionSpanAt,
   mergeSelectionRanges,
   type ClipSelectionRef
 } from '@renderer/utils/timelineLayout';
 import type { Clip, FilterActiveSpan, MasterLaneKey, TransportBlock } from '@renderer/utils/types';
-import { MASTER_LANE_KEYS } from '@renderer/utils/types';
+import {
+  DECK_LANE_KEYS,
+  MASTER_LANE_KEYS,
+  MASTER_ROW_ID,
+  isMasterLaneKey
+} from '@renderer/utils/types';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
@@ -35,7 +44,7 @@ export type DeckMenu = {
   split: { block: TransportBlock; ms: number } | null;
   lane: { key: EditableLaneKey; ms: number } | null;
 };
-export type LanePicker = { deck: string; lane: string | null; x: number; y: number };
+export type LanePicker = { deck: string; lane: EditableLaneKey | null; x: number; y: number };
 export type FilterMenu = { deck: string; span: FilterActiveSpan; x: number; y: number };
 
 export function useTimelineController(opts: {
@@ -50,9 +59,8 @@ export function useTimelineController(opts: {
   const storedDeckLanes = ref<Record<string, unknown>>(
     storageGet(STORAGE_KEYS.sessionDeckLane, {})
   );
-  const storedMasterLane = storageGet<string>(STORAGE_KEYS.sessionMasterLane, 'masterGain');
-  const selectedMasterLane = ref<MasterLaneKey>(
-    MASTER_LANE_KEYS.find((key) => key === storedMasterLane) ?? 'masterGain'
+  const storedMasterLanes = ref<unknown>(
+    storageGet<unknown>(STORAGE_KEYS.sessionMasterLane, undefined)
   );
   const storedLaneHeights = ref<StoredLaneHeights>(storageGet(STORAGE_KEYS.sessionLaneHeight, {}));
   const storedWaveformHeights = ref<StoredLaneHeights>(
@@ -67,32 +75,53 @@ export function useTimelineController(opts: {
   const lanePicker = ref<LanePicker | null>(null);
   const filterMenu = ref<FilterMenu | null>(null);
 
-  function lanesFor(deck: string): LaneKey[] {
+  function lanesFor(deck: string): DeckLaneKey[] {
     return lanesForDeck(storedDeckLanes.value, deck);
   }
 
-  function setMasterLane(lane: MasterLaneKey): void {
-    selectedMasterLane.value = lane;
-    storageSet(STORAGE_KEYS.sessionMasterLane, lane);
-    lanePicker.value = null;
-    opts.requestRender();
+  function masterLanesFor(): MasterLaneKey[] {
+    return lanesForMaster(storedMasterLanes.value);
   }
 
   // Left open, because a stack is built by toggling several in a row.
-  function toggleDeckLane(deck: string, lane: LaneKey): void {
+  function toggleMasterLane(lane: MasterLaneKey): void {
+    storedMasterLanes.value = toggleLane(MASTER_LANE_KEYS, masterLanesFor(), lane);
+    storageSet(STORAGE_KEYS.sessionMasterLane, storedMasterLanes.value);
+    opts.requestRender();
+  }
+
+  function toggleDeckLane(deck: string, lane: DeckLaneKey): void {
     storedDeckLanes.value = {
       ...storedDeckLanes.value,
-      [deck]: toggleLane(lanesFor(deck), lane)
+      [deck]: toggleLane(DECK_LANE_KEYS, lanesFor(deck), lane)
     };
     storageSet(STORAGE_KEYS.sessionDeckLane, storedDeckLanes.value);
     opts.requestRender();
   }
 
-  function laneHeightOf(deck: string, lane: LaneKey): number {
+  // Row-agnostic views of the two selections, for a picker that serves both row
+  // kinds and should not have to know which one it is looking at.
+  function laneKeysForRow(deck: string): readonly EditableLaneKey[] {
+    return deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS;
+  }
+
+  function lanesForRow(deck: string): readonly EditableLaneKey[] {
+    return deck === MASTER_ROW_ID ? masterLanesFor() : lanesFor(deck);
+  }
+
+  function toggleLaneForRow(deck: string, lane: EditableLaneKey): void {
+    if (deck === MASTER_ROW_ID) {
+      if (isMasterLaneKey(lane)) toggleMasterLane(lane);
+      return;
+    }
+    if (!isMasterLaneKey(lane)) toggleDeckLane(deck, lane);
+  }
+
+  function laneHeightOf(deck: string, lane: EditableLaneKey): number {
     return laneHeightFor(storedLaneHeights.value, deck, lane);
   }
 
-  function setLaneHeight(deck: string, lane: LaneKey, height: number): void {
+  function setLaneHeight(deck: string, lane: EditableLaneKey, height: number): void {
     storedLaneHeights.value = withLaneHeight(storedLaneHeights.value, deck, lane, height);
     storageSet(STORAGE_KEYS.sessionLaneHeight, storedLaneHeights.value);
     opts.requestRender();
@@ -203,7 +232,7 @@ export function useTimelineController(opts: {
         setLaneHeight(intent.deck, intent.lane, intent.height);
         break;
       case 'lane.resizeReset':
-        setLaneHeight(intent.deck, intent.lane, DEFAULT_LANE_HEIGHT);
+        setLaneHeight(intent.deck, intent.lane, defaultLaneHeight(intent.deck));
         break;
       case 'waveform.resize':
         setWaveformHeight(intent.deck, intent.height);
@@ -220,7 +249,6 @@ export function useTimelineController(opts: {
           intent.t1,
           { rateMin: intent.rateMin, rateMax: intent.rateMax }
         );
-        break;
         break;
       case 'filter.toggle':
         await editStore.commitFilterActiveToggle(intent.deck, intent.t0, intent.t1);
@@ -356,6 +384,7 @@ export function useTimelineController(opts: {
     storedDeckLanes,
     storedLaneHeights,
     laneHeightOf,
+    storedMasterLanes,
     storedWaveformHeights,
     waveformHeightOf,
     clipSelection,
@@ -363,8 +392,11 @@ export function useTimelineController(opts: {
     unlockedBlockIds,
     deckMenu,
     lanePicker,
-    selectedMasterLane,
-    setMasterLane,
+    masterLanesFor,
+    toggleMasterLane,
+    laneKeysForRow,
+    lanesForRow,
+    toggleLaneForRow,
     filterMenu,
     lanesFor,
     toggleDeckLane,

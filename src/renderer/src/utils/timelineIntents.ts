@@ -2,7 +2,6 @@
 // gestures emit these and never touch a store.
 
 import type { ResetExtent } from '@renderer/utils/sessionCore';
-import type { DeckLaneKey } from '@renderer/utils/laneSelection';
 import type { ViewWindow } from '@renderer/utils/timelineView';
 import type { ClipSelectionRef } from '@renderer/utils/timelineLayout';
 import type {
@@ -12,9 +11,7 @@ import type {
   TransportBlock
 } from '@renderer/utils/types';
 
-// Context for the "Set BPM" menu items: the clicked point, the clip span it
-// falls in, the track's grid bpm (to convert an entered BPM to a rate), and the
-// tempo currently playing there (to prefill the dialog).
+// `trackBpm` converts an entered BPM to a rate; `currentBpm` prefills the dialog.
 export type BpmContext = {
   ms: number;
   clipStartMs: number;
@@ -29,12 +26,12 @@ export type Intent =
   | {
       type: 'lane.openDropdown';
       deck: string;
-      lane: string | null;
+      lane: EditableLaneKey | null;
       clientX: number;
       clientY: number;
     }
-  | { type: 'lane.resize'; deck: string; lane: DeckLaneKey; height: number }
-  | { type: 'lane.resizeReset'; deck: string; lane: DeckLaneKey }
+  | { type: 'lane.resize'; deck: string; lane: EditableLaneKey; height: number }
+  | { type: 'lane.resizeReset'; deck: string; lane: EditableLaneKey }
   | { type: 'waveform.resize'; deck: string; height: number }
   | { type: 'waveform.resizeReset'; deck: string }
   | {
@@ -84,8 +81,8 @@ export type Intent =
       lane: EditableLaneKey;
       ms: number;
       extent: ResetExtent;
-      rateMin: number;
-      rateMax: number;
+      rateMin: number | undefined;
+      rateMax: number | undefined;
     }
   | {
       type: 'menu.filterRegion';

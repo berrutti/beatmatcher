@@ -14,15 +14,11 @@ import { useColumnLabels } from '@renderer/composables/useColumnLabels';
 const COLUMN_DRAG_THRESHOLD = 5;
 const MIN_COLUMN_PIXELS = 40;
 const AUTO_FIT_PADDING = 24;
-// String length is a cheap proxy for rendered width. Only the longest
-// handful of candidates are worth an actual canvas measurement, so a
-// library of hundreds of tracks doesn't run measureText() on all of them
-// every time a resizer is double-clicked.
+// String length picks the candidates so measureText runs on these rather than
+// on every track in the library.
 const AUTO_FIT_CANDIDATE_LIMIT = 30;
 
-// bpm/added aren't editable metadata at all, and trackNumber is editable
-// metadata that still never needs more room than this - all three are
-// pinned rather than joining the resizable text-field system.
+// Fixed width: none of these three holds text long enough to be worth resizing.
 const PINNED_FIELDS = ['bpm', 'added', 'trackNumber'] as const;
 type PinnedField = (typeof PINNED_FIELDS)[number];
 
@@ -40,25 +36,14 @@ function isFieldResizable(field: ColumnField): field is MetadataField {
   return isMetadataField(field) && !isPinnedField(field);
 }
 
-// Chrome shared by every table: never resizable, never part of the
-// order/visibility column system. The playlist-detail table has two extra
-// leading columns (grip/index) on top of this.
 export const TABLE_CHROME_WIDTH = {
-  status: 60,
-  actions: 180,
   remove: 32
 };
 
-// Split out from useColumnResize below (rather than returned alongside it) so
-// a table can compute its own available width - which needs this value - and
-// pass it in as useColumnResize's own `availableWidth` argument, without a
-// circular dependency on the composable it's feeding into.
+// Separate from useColumnResize because a table feeds this into that one's
+// `availableWidth`, and returning it there would be circular.
 export function usePinnedColumnsWidth() {
   const store = useCollectionStore();
-  // Pinned fields can be reordered anywhere among the resizable ones and
-  // hidden independently, so how much pinned width is actually in play (on
-  // top of each table's own always-present chrome) depends on which of them
-  // are currently visible.
   return computed(() =>
     store.orderedVisibleColumns
       .filter(isPinnedField)
@@ -71,9 +56,6 @@ export function metaCellValue(track: CollectionEntry, field: MetadataField): str
   return track[field] ?? '-';
 }
 
-// bpm/added share the resizable/reorderable column loop with the metadata
-// fields but render entirely different cell content, so each still needs its
-// own modifier class for column-specific styling (alignment etc).
 export function columnCellClass(field: ColumnField): string {
   return isMetadataField(field) ? 'collection__td--meta' : `collection__td--${field}`;
 }
@@ -86,20 +68,12 @@ export function useColumnResize(availableWidth: () => number) {
     return store.orderedVisibleColumns.filter(isFieldResizable);
   }
 
-  // Only pairs with a field that's genuinely its neighbor on screen right now
-  // - skipping over a pinned field to reach the next resizable one further
-  // down the (unfiltered) order would resize a pair that isn't actually
-  // adjacent, moving a boundary nowhere near the handle being dragged.
   function nextResizableField(field: MetadataField): MetadataField | null {
     const order = store.orderedVisibleColumns;
     const next = order[order.indexOf(field) + 1];
     return next !== undefined && isFieldResizable(next) ? next : null;
   }
 
-  // The last resizable column has nothing to its right to trade width with,
-  // so it gets no resize handle at all - it just takes whatever share of the
-  // leftover space it's been given, same as every other resizable column,
-  // but isn't draggable.
   function isResizableField(field: ColumnField): boolean {
     return isFieldResizable(field) && nextResizableField(field) !== null;
   }
@@ -123,9 +97,6 @@ export function useColumnResize(availableWidth: () => number) {
     return `${metadataWidthsPx.value[field] ?? 0}px`;
   }
 
-  // The header row is found via `closest` at drag start, so this one pair of
-  // refs and handlers works for the whole table without a container-specific
-  // element ref.
   const draggingColumn = ref<ColumnField | null>(null);
   const dropTargetColumn = ref<ColumnField | null>(null);
 
@@ -149,8 +120,6 @@ export function useColumnResize(availableWidth: () => number) {
       return slotRects.length - 1;
     }
 
-    // The swap itself only happens on drop. While dragging this just tracks
-    // what would happen so the drop target can be highlighted live.
     let pendingBefore: ColumnField | null = null;
     let hasPendingSwap = false;
 
@@ -199,18 +168,10 @@ export function useColumnResize(availableWidth: () => number) {
 
   function onResizerPointerDown(e: PointerEvent, field: ColumnField) {
     if (e.button !== 0 || !isFieldResizable(field)) return;
-    // TypeScript doesn't carry a control-flow-narrowed parameter's narrowing
-    // into a nested function declaration referenced later (as an event
-    // listener here) - rebinding to fresh consts right where the narrowing
-    // happens gives onMove variables whose declared type is already narrow,
-    // instead of relying on narrowing that won't survive the closure.
+    // Rebound because narrowing does not survive into a closure declared later.
     const resizedField = field;
     const candidateNeighbor = nextResizableField(resizedField);
     if (!candidateNeighbor) return;
-    // Same as resizedField above: the narrowing from `if (!candidateNeighbor)`
-    // only holds textually after that check, not inside a closure defined
-    // later - rebinding once more, right here, captures a variable whose
-    // declared type is already non-null from the start.
     const neighborField = candidateNeighbor;
     let lastX = e.clientX;
 
@@ -241,10 +202,8 @@ export function useColumnResize(availableWidth: () => number) {
     window.addEventListener('pointercancel', stop);
   }
 
-  // Auto-fit sizes a column to whatever it actually needs to show across the
-  // whole collection, not just whichever table's row happened to trigger it -
-  // the two tables' widths are shared, and the full collection is the only
-  // dataset that's stable regardless of which one you double-clicked in.
+  // The whole collection, not the table that was clicked: both tables share
+  // one set of widths.
   function columnCellValues(field: ColumnField): string[] {
     if (isMetadataField(field)) return store.tracks.map((track) => metaCellValue(track, field));
     if (field === 'bpm') {
@@ -267,9 +226,8 @@ export function useColumnResize(availableWidth: () => number) {
     const ctx = autoFitCanvas.getContext('2d');
     if (!ctx) return;
     ctx.font = th ? getComputedStyle(th).font : getComputedStyle(document.body).font;
-    // Fit to the widest of the header label and every row's own value, not
-    // just the header label - a short header like "Title" fitting the column
-    // to itself would shrink it below what most track titles need.
+    // The header label competes with the values: "Title" alone would fit the
+    // column below what most titles need.
     const candidates = [COLUMN_LABELS.value[field], ...columnCellValues(field)]
       .sort((a, b) => b.length - a.length)
       .slice(0, AUTO_FIT_CANDIDATE_LIMIT);

@@ -26,6 +26,10 @@
               orient="vertical"
               :style="{ '--eq-accent': decks.decks[deckId].accent }"
               v-tooltip="$t('mixer.eqHint')"
+              v-slider-reset="{
+                enabled: settings.sliderClickResets,
+                reset: () => onReset(deckId, spec)
+              }"
               @input="(e) => onInput(deckId, spec, e)"
               @dblclick="onReset(deckId, spec)"
             />
@@ -40,7 +44,7 @@
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
             tabindex="-1"
             v-tooltip="$t('mixer.filterToggle')"
-            @click="mixer.toggleParam(deckId, FILTER_ACTIVE)"
+            @click="mixer.swarmToggleParam(deckId, FILTER_ACTIVE)"
           >
             F
           </button>
@@ -53,6 +57,10 @@
             :value="mixer.paramValue(deckId, FILTER_VALUE)"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
             v-tooltip="$t('mixer.filterHint')"
+            v-slider-reset="{
+              enabled: settings.sliderClickResets,
+              reset: () => onReset(deckId, mixer.filterSpec)
+            }"
             @input="(e) => onInput(deckId, mixer.filterSpec, e)"
             @dblclick="onReset(deckId, mixer.filterSpec)"
           />
@@ -77,8 +85,8 @@
             orient="vertical"
             :style="{ '--fader-accent': decks.decks[deckId].accent }"
             v-tooltip="$t('mixer.faderHint')"
-            v-fader-reset="{
-              enabled: () => settings.faderClickResets,
+            v-slider-reset="{
+              enabled: settings.sliderClickResets,
               reset: () => onReset(deckId, mixer.faderSpec)
             }"
             @input="(e) => onInput(deckId, mixer.faderSpec, e)"
@@ -100,10 +108,9 @@
         <button
           class="mixer__cue-btn"
           :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
-          :disabled="mixer.swarmMode"
           v-tooltip="$t('mixer.cueHint')"
           tabindex="-1"
-          @click="mixer.setCueActive(deckId, !mixer.cueActive[deckId])"
+          @click="mixer.swarmSetCue(deckId, !mixer.cueActive[deckId])"
         >
           {{ $t('mixer.cue') }}
         </button>
@@ -135,6 +142,10 @@
         step="0.01"
         :value="mixer.xfaderPosition"
         v-tooltip="$t('mixer.xfaderHint')"
+        v-slider-reset="{
+          enabled: settings.sliderClickResets,
+          reset: () => mixer.setXfaderPosition(0)
+        }"
         @input="(e) => mixer.setXfaderPosition(parseFloat((e.target as HTMLInputElement).value))"
         @dblclick="mixer.setXfaderPosition(0)"
       />
@@ -264,6 +275,11 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 }
 
 .mixer__channel {
+  /* The cap, the track it rides and the CUE button below it all size from these,
+     so the cap stays centred on the track and flush with the button. */
+  --fader-track-width: 4px;
+  --fader-track-border: 1px;
+  --fader-cap-width: 28px;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -310,10 +326,9 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   pointer-events: none;
 }
 
-/* Adjacent selected channels read as one rounded group. `.mixer__channels` has
-   no gap, so they already touch: each only drops the corners on the side it
-   meets a neighbour. Stretching one highlight over the other paints that strip
-   twice and the overlap reads as a bright seam. */
+/* Each drops only the corners on the side it meets a neighbour: `.mixer__channels`
+   has no gap, so stretching one highlight over the other paints that strip twice
+   and the overlap comes out brighter. */
 .mixer__channel--swarm-no-right::before {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
@@ -343,6 +358,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 }
 
 .mixer__eq-slider {
+  --slider-thumb-length: 14px;
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
@@ -365,7 +381,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
-  height: 14px;
+  height: var(--slider-thumb-length);
   background:
     repeating-linear-gradient(
       to bottom,
@@ -408,6 +424,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 }
 
 .mixer__filter-slider {
+  --slider-thumb-length: 13px;
   -webkit-appearance: none;
   appearance: none;
   width: 6.5em;
@@ -427,7 +444,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 .mixer__filter-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 13px;
+  width: var(--slider-thumb-length);
   height: 18px;
   background:
     repeating-linear-gradient(
@@ -465,9 +482,10 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
     color 0.1s;
 }
 
-.mixer__filter-btn:hover {
-  border-color: var(--fader-accent);
-  color: var(--fader-accent);
+.mixer__filter-btn:hover:not(.mixer__filter-btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .mixer__filter-btn--ghost {
@@ -478,7 +496,11 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 .mixer__filter-btn--active {
   border-color: var(--fader-accent);
   color: var(--fader-accent);
-  background: color-mix(in srgb, var(--fader-accent) 15%, transparent);
+  background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill), transparent);
+}
+
+.mixer__filter-btn--active:hover {
+  background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
 }
 
 .mixer__fader-row {
@@ -531,6 +553,9 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 }
 
 .mixer__fader {
+  --slider-thumb-length: 20px;
+  /* The cap's shadow, which reads as part of it. */
+  --slider-thumb-grace: 4px;
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
@@ -542,18 +567,22 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   padding: 0;
 }
 
+/* `*` does not match a slider pseudo-element, so the global border-box never
+   reaches these two and their borders would otherwise sit outside the width. */
 .mixer__fader::-webkit-slider-runnable-track {
-  width: 4px;
+  box-sizing: border-box;
+  width: var(--fader-track-width);
   background: #111;
-  border: 1px solid #282828;
+  border: var(--fader-track-border) solid #282828;
   border-radius: 2px;
 }
 
 .mixer__fader::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 28px;
-  height: 20px;
+  box-sizing: border-box;
+  width: var(--fader-cap-width);
+  height: var(--slider-thumb-length);
   background: linear-gradient(
     to bottom,
     #303030 0%,
@@ -569,19 +598,14 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   border-left: 1px solid #444;
   border-right: 1px solid #444;
   cursor: grab;
-  margin-left: -14px;
+  /* Measured against the track's content box, which is what the cap is anchored
+     to: its borders sit outside the width the cap is offset from. */
+  margin-left: calc(
+    (var(--fader-track-width) - 2 * var(--fader-track-border) - var(--fader-cap-width)) / 2
+  );
   box-shadow:
     0 3px 7px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
-/* Click-to-reset makes the thumb a button, so it reads as one until a drag starts. */
-.mixer__fader[data-click-resets]::-webkit-slider-thumb {
-  cursor: pointer;
-}
-
-.mixer__fader[data-dragging]::-webkit-slider-thumb {
-  cursor: grabbing;
 }
 
 .mixer__assign {
@@ -607,15 +631,20 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
     color 0.1s;
 }
 
-.mixer__assign-btn:hover {
-  border-color: var(--fader-accent);
-  color: var(--fader-accent);
+.mixer__assign-btn:hover:not(.mixer__assign-btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .mixer__assign-btn--active {
   border-color: var(--fader-accent);
   color: var(--fader-accent);
-  background: color-mix(in srgb, var(--fader-accent) 15%, transparent);
+  background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill), transparent);
+}
+
+.mixer__assign-btn--active:hover {
+  background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
 }
 
 .mixer__xfader {
@@ -635,6 +664,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 /* The channel fader's cap and track, laid on its side: a crossfader is a fader,
    not a sweep, so it reads as one rather than borrowing the filter's knurl. */
 .mixer__xfader-slider {
+  --slider-thumb-length: 20px;
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -655,7 +685,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 .mixer__xfader-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 20px;
+  width: var(--slider-thumb-length);
   height: 28px;
   background: linear-gradient(
     to right,
@@ -686,7 +716,8 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   font-size: 0.6em;
   font-weight: 600;
   letter-spacing: 0.02em;
-  padding: 0.3em 0.7em;
+  width: var(--fader-cap-width);
+  padding: 0.3em 0;
   border-radius: 3px;
   cursor: pointer;
   transition:
@@ -695,19 +726,19 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
     color 0.1s;
 }
 
-.mixer__cue-btn:hover:not(:disabled) {
-  border-color: var(--color-cue);
-  color: var(--color-cue);
-}
-
-.mixer__cue-btn:disabled {
-  opacity: var(--disabled-opacity);
-  cursor: default;
+.mixer__cue-btn:hover:not(.mixer__cue-btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .mixer__cue-btn--active {
   border-color: var(--color-cue);
   color: var(--color-cue);
-  background: color-mix(in srgb, var(--color-cue) 15%, transparent);
+  background: color-mix(in srgb, var(--color-cue) var(--toggle-on-fill), transparent);
+}
+
+.mixer__cue-btn--active:hover {
+  background: color-mix(in srgb, var(--color-cue) var(--toggle-on-fill-hover), transparent);
 }
 </style>

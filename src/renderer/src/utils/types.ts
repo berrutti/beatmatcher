@@ -47,6 +47,8 @@ export const DECK_LANE_KEYS = [
 export const MASTER_LANE_KEYS = ['masterGain', 'xfader'] as const;
 export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
 
+export type DeckLaneKey = (typeof DECK_LANE_KEYS)[number];
+
 export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
 
 export type DeckId = 'A' | 'B' | 'C' | 'D' | 'E'; // Deck E is a special deck for Edit view
@@ -68,8 +70,8 @@ export function isMasterLaneKey(key: string): key is MasterLaneKey {
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
-export function isEditableLaneKey(key: string): key is EditableLaneKey {
-  return ALL_LANE_KEYS.some((lane) => lane === key);
+export function isEditableLaneKey(key: unknown): key is EditableLaneKey {
+  return typeof key === 'string' && ALL_LANE_KEYS.some((lane) => lane === key);
 }
 
 // Derived from buildClips output, so every field reflects what the listener

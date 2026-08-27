@@ -27,6 +27,12 @@
   --color-danger: #ef4444;
   --radius: 6px;
   --disabled-opacity: 0.35;
+  /* A toggle says "on" in its own colour and "hovered" in neutral grey, so an
+     off button under the cursor can never be mistaken for a lit one. */
+  --color-border-hover: #4a4a4a;
+  --toggle-hover-fill: rgba(255, 255, 255, 0.05);
+  --toggle-on-fill: 26%;
+  --toggle-on-fill-hover: 38%;
   --label-letter-spacing: 0.02em;
   --font:
     'Jost', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
@@ -72,18 +78,29 @@ body {
   border: 1px solid var(--color-border);
 }
 
-/* While a fader is held, nothing else can be actioned, so no element gets to
+/* While a slider is held, nothing else can be actioned, so no element gets to
    advertise its own cursor. Needs !important to beat every control's own rule. */
-body.fader-dragging,
-body.fader-dragging * {
+body.slider-dragging,
+body.slider-dragging * {
   cursor: grabbing !important;
 }
 
 /* Separately, because `*` does not reach a pseudo-element and every slider draws
    its own thumb cursor. Its own rule, or one engine rejecting the selector would
    drop the block above with it. */
-body.fader-dragging *::-webkit-slider-thumb {
+body.slider-dragging *::-webkit-slider-thumb {
   cursor: grabbing !important;
+}
+
+/* Global rather than per-slider: the directive sets these attributes on whatever
+   it is bound to, and each component would otherwise restate the same two rules.
+   Click-to-reset makes the thumb a button, so it reads as one until a drag starts. */
+input[type='range'][data-click-resets]::-webkit-slider-thumb {
+  cursor: pointer;
+}
+
+input[type='range'][data-dragging]::-webkit-slider-thumb {
+  cursor: grabbing;
 }
 
 /* Applied by App.vue to a component root, so it cannot live in a scoped block. */

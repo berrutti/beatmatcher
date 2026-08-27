@@ -98,7 +98,7 @@ describe('drawLaneWaveform', () => {
     expect(left).toBeGreaterThanOrEqual(msToX(1000) - 1);
   });
 
-  it('leaves no seam where two wave segments join', () => {
+  it('draws no lighter column where two wave segments join', () => {
     const columns = draw([splitClip(0, 3000)])
       .map((bar) => bar.x)
       .sort((left, right) => left - right);

@@ -70,16 +70,22 @@
       >
         {{ $t('session.splitClip') }}
       </button>
-      <button v-if="deckMenu.deck !== MASTER_ROW_ID" class="lane-menu__item" @click="onToggleMute">
-        {{ $t('session.mute') }}
-        <span class="lane-menu__radio">{{
-          sessionStore.mutedDecks.has(deckMenu.deck) ? '◉' : '○'
+      <button
+        v-if="deckMenu.deck !== MASTER_ROW_ID"
+        class="lane-menu__item"
+        :class="{ 'lane-menu__item--no-effect': sessionStore.soloedDeck !== null }"
+        v-tooltip="sessionStore.soloedDeck !== null ? $t('session.enabledOverridden') : undefined"
+        @click="onToggleEnabled"
+      >
+        {{ $t('session.enabled') }}
+        <span class="lane-menu__check">{{
+          sessionStore.deckEnabled(deckMenu.deck) ? '✓' : ''
         }}</span>
       </button>
       <button v-if="deckMenu.deck !== MASTER_ROW_ID" class="lane-menu__item" @click="onToggleSolo">
         {{ $t('session.solo') }}
-        <span class="lane-menu__radio">{{
-          sessionStore.soloDecks.has(deckMenu.deck) ? '◉' : '○'
+        <span class="lane-menu__check">{{
+          sessionStore.soloedDeck === deckMenu.deck ? '✓' : ''
         }}</span>
       </button>
       <div
@@ -93,6 +99,8 @@
             v-for="key in DECK_LANE_KEYS"
             :key="key"
             class="lane-menu__item"
+            :class="{ 'lane-menu__item--refused': isLastLane(deckMenu.deck, key) }"
+            v-tooltip="isLastLane(deckMenu.deck, key) ? $t('session.lastLane') : undefined"
             @click="onPickLaneFromMenu(key)"
           >
             {{ $t(`session.lanes.${key}`) }}
@@ -116,15 +124,15 @@
       @click.stop
     >
       <button
-        v-for="key in lanePicker.deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS"
+        v-for="key in controller.laneKeysForRow(lanePicker.deck)"
         :key="key"
         class="lane-menu__item"
+        :class="{ 'lane-menu__item--refused': isLastLane(lanePicker.deck, key) }"
+        v-tooltip="isLastLane(lanePicker.deck, key) ? $t('session.lastLane') : undefined"
         @click="onPickLane(key)"
       >
         {{ $t(`session.lanes.${key}`) }}
-        <span :class="lanePicker.deck === MASTER_ROW_ID ? 'lane-menu__radio' : 'lane-menu__check'">
-          {{ laneMarker(lanePicker.deck, key) }}
-        </span>
+        <span class="lane-menu__check">{{ laneIsShown(lanePicker.deck, key) ? '✓' : '' }}</span>
       </button>
     </div>
     <div
@@ -167,11 +175,9 @@ import { useI18n } from 'vue-i18n';
 import type { Clip, LoadedSpan, DeckLanes, MasterLanes, LanePoint } from '@renderer/utils/types';
 import {
   DECK_LANE_KEYS,
-  MASTER_LANE_KEYS,
   MASTER_ROW_ID,
-  type EditableLaneKey,
-  isMasterLaneKey,
-  type MasterLaneKey
+  type DeckLaneKey,
+  type EditableLaneKey
 } from '@renderer/utils/types';
 import type { ResetExtent } from '@renderer/utils/sessionCore';
 import {
@@ -179,7 +185,6 @@ import {
   LABEL_W,
   PADDING,
   makeMsToX,
-  type LaneKey,
   type RowLayout,
   type TrackWaveform
 } from '@renderer/utils/timelineDraw';
@@ -202,9 +207,8 @@ import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import type { BpmContext } from '@renderer/utils/timelineIntents';
 
-// Waveform LOD: as the user zooms, refetch only the VISIBLE track region of each
-// visible track at ~one point per physical pixel (oversampled a touch). Because
-// it's region-based, detail scales with zoom regardless of track length.
+// Region-based rather than whole-track, so detail scales with zoom however long
+// the track is.
 const MIN_REGION_POINTS = 256;
 const MAX_REGION_POINTS = 16000;
 const BASE_REGION_POINTS_MAX = 4000;
@@ -245,9 +249,8 @@ const controller = useTimelineController({
 });
 const { deckMenu, lanePicker, filterMenu } = controller;
 
-// The scene built on the last frame. Pointer hit-testing runs against it with a
-// freshly computed ViewContext (same canvas size, so geometry stays consistent).
-// The rows ride along for the marquee's rect-to-deck mapping.
+// Last frame's scene: hit-testing runs against it with a freshly computed
+// ViewContext, which shares the canvas size so the geometry still lines up.
 let sceneItems: SceneItem[] = [];
 let sceneRows: RowLayout[] = [];
 
@@ -288,8 +291,8 @@ function scheduleRender(): void {
 const badgeFades = new Map<string, BadgeFade>();
 
 function badgeFor(deck: string): Badge | null {
-  if (sessionStore.soloDecks.has(deck)) return { label: t('session.solo'), solo: true };
-  if (sessionStore.mutedDecks.has(deck)) return { label: t('session.mute'), solo: false };
+  if (sessionStore.soloedDeck === deck) return { label: t('session.solo'), solo: true };
+  if (!sessionStore.deckEnabled(deck)) return { label: t('session.disabledBadge'), solo: false };
   return null;
 }
 
@@ -336,7 +339,7 @@ function render(): void {
     durationMs: props.durationMs,
     editMode: editStore.editMode,
     lanesFor: controller.lanesFor,
-    masterLane: controller.selectedMasterLane.value,
+    masterLanesFor: controller.masterLanesFor,
     laneHeightFor: controller.laneHeightOf,
     waveformHeightFor: controller.waveformHeightOf,
     openLaneFor: openLaneOf,
@@ -352,16 +355,14 @@ function render(): void {
     resetPreview: resetPreview.value,
     audibleFor: (deck) => sessionStore.deckAudible(deck),
     soloFor: (deck) => fades.get(deck)?.badge?.solo ?? false,
-    mutedFor: (deck) => sessionStore.mutedDecks.has(deck),
     clipSelection: controller.clipSelection.value,
     filterSelection: controller.filterSelection.value,
     overlays: gestures.overlays()
   });
 
   camera.setContentMetrics(scene.contentHeight, vc.scrollViewport.bottom - vc.scrollViewport.top);
-  // The spacer's height is the scrollable amount, so the native scrollbar's
-  // range matches camera.scrollY exactly. Re-sync scrollTop in case the content
-  // shrank and setContentMetrics clamped scrollY below the element's position.
+  // Re-synced in case the content shrank and the clamp moved scrollY below where
+  // the element still sits.
   if (sizerEl.value) sizerEl.value.style.height = `${camera.maxScrollY()}px`;
   if (scroll.scrollTop !== camera.scrollY.value) scroll.scrollTop = camera.scrollY.value;
   sceneItems = scene.items;
@@ -443,17 +444,16 @@ function onSplitClip(): void {
   controller.handleIntent({ type: 'clip.split', block: menu.split.block, ms: menu.split.ms });
 }
 
-function onToggleMute(): void {
-  if (deckMenu.value) sessionStore.toggleMute(deckMenu.value.deck);
-  deckMenu.value = null;
+// Left open, like the lane ticks: a listener flips these against each other
+// while comparing decks, so a click is rarely the last thing they want.
+function onToggleEnabled(): void {
+  if (deckMenu.value) sessionStore.toggleDeckEnabled(deckMenu.value.deck);
 }
 
 function onToggleSolo(): void {
   if (deckMenu.value) sessionStore.toggleSolo(deckMenu.value.deck);
-  deckMenu.value = null;
 }
 
-// Read once when the menu opens: the events do not change while it is up.
 const resetPreview = computed(() => {
   const menu = deckMenu.value;
   if (!menu?.lane || !editStore.editMode) return null;
@@ -486,44 +486,34 @@ function onResetLane(extent: ResetExtent): void {
     lane: menu.lane.key,
     ms: menu.lane.ms,
     extent,
-    rateMin: lanes?.rateMin ?? 0.92,
-    rateMax: lanes?.rateMax ?? 1.08
+    rateMin: lanes?.rateMin,
+    rateMax: lanes?.rateMax
   });
 }
 
-function onPickLaneFromMenu(lane: LaneKey): void {
+function onPickLaneFromMenu(lane: DeckLaneKey): void {
   if (deckMenu.value) controller.toggleDeckLane(deckMenu.value.deck, lane);
-  deckMenu.value = null;
 }
 
-// The master row shows one lane at a time, so its picker reads as a radio; a
-// deck stacks as many as it likes and keeps ticks.
-function laneMarker(deck: string, lane: LaneKey | MasterLaneKey): string {
-  const shown = laneIsShown(deck, lane);
-  if (deck !== MASTER_ROW_ID) return shown ? '✓' : '';
-  return shown ? '◉' : '○';
+function laneIsShown(deck: string, lane: EditableLaneKey): boolean {
+  return controller.lanesForRow(deck).includes(lane);
 }
 
-// The master row still shows one lane at a time; a deck stacks as many as it likes.
-function laneIsShown(deck: string, lane: LaneKey | MasterLaneKey): boolean {
-  if (deck === MASTER_ROW_ID) return controller.selectedMasterLane.value === lane;
-  return isMasterLaneKey(lane) ? false : controller.lanesFor(deck).includes(lane);
+// The row would have no lane left to click on, so the tick is held down.
+function isLastLane(deck: string, lane: EditableLaneKey): boolean {
+  const shown = controller.lanesForRow(deck);
+  return shown.length === 1 && shown[0] === lane;
 }
 
-function openLaneOf(deck: string): string | null {
+function openLaneOf(deck: string): EditableLaneKey | null {
   const picker = lanePicker.value;
   return picker && picker.deck === deck ? picker.lane : null;
 }
 
-// One picker serves both row kinds, so the pick is routed by which row opened it.
-function onPickLane(lane: LaneKey | MasterLaneKey): void {
+// Stays open: a stack is built by ticking several in a row.
+function onPickLane(lane: EditableLaneKey): void {
   const picker = lanePicker.value;
-  if (!picker) return;
-  if (picker.deck === MASTER_ROW_ID) {
-    if (isMasterLaneKey(lane)) controller.setMasterLane(lane);
-    return;
-  }
-  if (!isMasterLaneKey(lane)) controller.toggleDeckLane(picker.deck, lane);
+  if (picker) controller.toggleLaneForRow(picker.deck, lane);
 }
 
 function onDeleteFilterRegion(): void {
@@ -558,9 +548,6 @@ function onSetBpm(bpm: number): void {
   }
 }
 
-// Ask the session store for a finer waveform on each visible track when the zoom
-// (or canvas width) calls for more detail than is loaded. The store no-ops when
-// it already has enough points. Redraws happen when the new data lands.
 function clipTrackSegments(clip: Clip) {
   return clip.waveSegments.length > 0
     ? clip.waveSegments
@@ -576,6 +563,8 @@ function clipTrackSegments(clip: Clip) {
       ];
 }
 
+// The store no-ops when it already holds enough points, and the redraw follows
+// whenever new data lands.
 function updateWaveformLod(): void {
   const container = containerEl.value;
   if (!container) return;
@@ -736,6 +725,7 @@ watch(
     camera.viewDurationMs.value,
     camera.scrollY.value,
     controller.storedDeckLanes.value,
+    controller.storedMasterLanes.value,
     controller.storedLaneHeights.value,
     controller.storedWaveformHeights.value,
     controller.clipSelection.value,
@@ -744,8 +734,8 @@ watch(
     controller.deckMenu.value,
     resetPreview.value,
     editStore.editMode,
-    sessionStore.mutedDecks,
-    sessionStore.soloDecks,
+    sessionStore.disabledDecks,
+    sessionStore.soloedDeck,
     DECK_ORDER.map((id) => controller.accentFor(id))
   ],
   scheduleRender
@@ -836,15 +826,21 @@ watch(
   color: var(--color-accent-cyan);
 }
 
-.lane-menu__radio {
-  margin-left: auto;
-  width: 1em;
-  text-align: center;
-  color: var(--color-muted);
+/* Still clickable, and it does record the change: only the audio ignores it
+   while a solo is up. */
+.lane-menu__item--no-effect {
+  opacity: 0.45;
 }
 
-.lane-menu__item:hover .lane-menu__radio {
-  color: var(--color-accent-cyan);
+/* The click is refused outright, so it says so the way the column picker does. */
+.lane-menu__item--refused {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.lane-menu__item--refused:hover {
+  background: none;
+  color: var(--color-text);
 }
 
 .lane-menu__item--sub {

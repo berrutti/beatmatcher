@@ -11,7 +11,7 @@ import {
   type StoredLaneHeights
 } from '@renderer/utils/laneHeights';
 import { DECK_LANE_KEYS } from '@renderer/utils/types';
-import type { DeckLaneKey } from '@renderer/utils/laneSelection';
+import type { DeckLaneKey } from '@renderer/utils/types';
 
 function makeRandom(seed: number): () => number {
   let state = seed >>> 0;
