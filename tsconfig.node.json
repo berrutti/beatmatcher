@@ -6,16 +6,7 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "paths": {
-      "@core/*": ["./session-core/pkg/*"]
-    },
     "types": ["node"]
   },
-  "include": [
-    "vite.tauri.config.ts",
-    "vite.web.config.ts",
-    "vitest.config.ts",
-    "vitest.setup.ts",
-    "tests/**/*.ts"
-  ]
+  "include": ["vite.tauri.config.ts", "vite.web.config.ts", "tests/**/*.ts"]
 }
