@@ -6,7 +6,7 @@ const BACKGROUND_G = 10;
 const BACKGROUND_B = 10;
 
 // Log-compress each spectral band independently so all frequency ranges are visible.
-// Bass naturally dominates by energy, so it gets a smaller multiplier; highs get a
+// Bass naturally dominates by energy, so it gets a smaller multiplier. Highs get a
 // larger one so hi-hats and presence reach a comparable brightness.
 const LOG_MUL: [number, number, number] = [10, 25, 75];
 
@@ -53,11 +53,8 @@ function barVerticalExtent(
   };
 }
 
-// The y of the tallest bar actually present across the whole waveform,
-// rather than the theoretical amplitude=1 max, which real tracks never
-// reach after the per-column averaging and sqrt compression above. Used to
-// size a playhead line that touches the waveform's real top edge instead of
-// floating above it.
+// The tallest bar actually drawn, not the amplitude=1 max no real track reaches
+// after averaging and the sqrt curve, so a playhead line touches the waveform.
 export function maxBarTop(peaks: Float32Array, cw: number, ch: number, ampScale: number): number {
   const numPoints = (peaks.length / 4) | 0;
   let maxAvgAmp = 0;

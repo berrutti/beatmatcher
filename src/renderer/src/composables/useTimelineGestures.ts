@@ -1,19 +1,9 @@
-// The interaction layer. On pointer-down it hit-tests the scene (engine +
-// precedence table), picks the gesture for that hit + modifiers, and drives the
-// drag, emitting semantic Intents (the controller reacts). In-progress visuals
-// (draw line, clip ghost, nudge/filter previews, filter-resize box) are exposed
-// as overlay SceneItems so the renderer draws them like everything else.
-//
-// All the per-gesture behaviour ported from the old monolith lives here, but as
-// small, named pieces keyed off the hit target instead of one giant switch.
-
 import type { SceneItem, ViewContext, Hit, Point } from '@renderer/utils/timelineEngine';
 import { hitScene } from '@renderer/utils/timelineEngine';
-import { hitPriority } from '@renderer/utils/timelineHits';
+import { hitPriority, type HitTarget } from '@renderer/utils/timelineHits';
 import { LABEL_W } from '@renderer/utils/timelineDraw';
 import {
   drawValueGesturePreview,
-  drawNudgeGesturePreview,
   drawPaintGesturePreview,
   drawClipGhosts
 } from '@renderer/utils/timelineDraw';
@@ -42,25 +32,24 @@ import type {
   Clip,
   LanePoint,
   DeckLanes,
-  FilterActiveSpan,
-  NudgeSpan
+  FilterActiveSpan
 } from '@renderer/utils/types';
+import { isEditableLaneKey } from '@renderer/utils/types';
+import { clampLaneHeight, clampWaveformHeight } from '@renderer/utils/laneHeights';
 import type { BpmContext, IntentHandler } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
 
 import type { SessionEvent } from '@renderer/utils/types';
-import { MASTER_ROW_ID } from '@renderer/utils/types';
 
 const MIN_VIEW_MS = 200;
 
 const DRAG_THRESHOLD_PX = 3;
 const EDGE_SNAP_PX = 8;
+const LANE_MENU_GAP_PX = 6;
 
-// Bounds for the draggable lane and waveform strip heights, in pixels.
-const MIN_LANE_HEIGHT_PX = 10;
-const MAX_LANE_HEIGHT_PX = 240;
-const MIN_WAVEFORM_HEIGHT_PX = 40;
-const MAX_WAVEFORM_HEIGHT_PX = 240;
+// The label column and the separators are click targets of their own: a
+// right-click there is not a request for the deck menu.
+const DECK_MENU_TARGETS: readonly HitTarget[] = ['lane', 'clip', 'clipBand', 'filterRegion'];
 
 type Camera = ReturnType<typeof useTimelineView>;
 
@@ -73,22 +62,26 @@ export type GestureDeps = {
   getClips: () => Clip[];
   getEvents: () => SessionEvent[];
   getDeckLanes: () => Record<string, DeckLanes>;
-  laneHeight: () => number;
-  waveformHeight: () => number;
+  laneHeightFor: (deck: string, lane: EditableLaneKey) => number;
+  waveformHeightFor: (deck: string) => number;
   isEditMode: () => boolean;
   durationMs: () => number;
-  nudgeDirectionAt: (deck: string, y: number, rowTop: number) => 1 | -1;
-  nudgeSensitivity: () => number;
   accentFor: (deck: string) => string;
   requestRender: () => void;
   setCursor: (cursor: string) => void;
 };
 
-// The drag in progress. Each variant carries just what its move/up needs.
 type ActiveGesture =
   | { kind: 'track-pan'; startView: { start: number; duration: number } }
-  | { kind: 'lane-resize'; startY: number; startHeight: number; height: number }
-  | { kind: 'waveform-resize'; startY: number; startHeight: number; height: number }
+  | {
+      kind: 'lane-resize';
+      deck: string;
+      lane: EditableLaneKey;
+      startY: number;
+      startHeight: number;
+      height: number;
+    }
+  | { kind: 'waveform-resize'; deck: string; startY: number; startHeight: number; height: number }
   | {
       kind: 'overview';
       mode: 'move' | 'resize-left' | 'resize-right';
@@ -107,14 +100,6 @@ type ActiveGesture =
       // Refreshed per mousemove so the per-frame overlay draw stays WASM-free.
       normalized: LanePoint[];
       pending: { ms: number; y: number } | null;
-    }
-  | {
-      kind: 'nudge-paint';
-      deck: string;
-      rowTop: number;
-      direction: 1 | -1;
-      startMs: number;
-      currentMs: number;
     }
   | {
       kind: 'filter-paint';
@@ -164,6 +149,12 @@ export function useTimelineGestures(deps: GestureDeps) {
   const fracAtClientLocalX = (x: number, viewContext: ViewContext) =>
     clampFrac((x - LABEL_W) / (viewContext.trackW || 1));
 
+  function laneAnchor(data: unknown): number | null {
+    if (typeof data !== 'object' || data === null || !('top' in data)) return null;
+    const { top } = data;
+    return typeof top === 'number' ? top : null;
+  }
+
   function pointFrom(event: MouseEvent, rect: DOMRect): Point {
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
@@ -188,6 +179,9 @@ export function useTimelineGestures(deps: GestureDeps) {
   function onMouseDown(event: MouseEvent, rect: DOMRect): void {
     const viewContext = deps.getVc();
     if (viewContext.trackW <= 0) return;
+    // The right button belongs to onContextMenu; arming here would rubber-band
+    // a selection under the menu it opens.
+    if (event.button !== 0) return;
     const point = pointFrom(event, rect);
     const hit = hitAt(point);
     startClientX = event.clientX;
@@ -202,7 +196,6 @@ export function useTimelineGestures(deps: GestureDeps) {
         if (!overview) return;
         const { part, frac: grabFrac } = overview;
         if (part === 'outside') {
-          // Recenter immediately, then drag as move.
           const total = deps.durationMs() || 1;
           deps.emit({
             type: 'view.set',
@@ -220,9 +213,14 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'laneSeparator': {
-        const laneHeight = deps.laneHeight();
+        const lane = hit.data;
+        const deck = hit.deck;
+        if (!deck || !isEditableLaneKey(lane)) return;
+        const laneHeight = deps.laneHeightFor(deck, lane);
         active = {
           kind: 'lane-resize',
+          deck,
+          lane,
           startY: point.y,
           startHeight: laneHeight,
           height: laneHeight
@@ -230,25 +228,46 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'waveformSeparator': {
-        const waveformHeight = deps.waveformHeight();
+        const deck = hit.deck;
+        if (!deck) return;
+        const waveformHeight = deps.waveformHeightFor(deck);
         active = {
           kind: 'waveform-resize',
+          deck,
           startY: point.y,
           startHeight: waveformHeight,
           height: waveformHeight
         };
         return;
       }
-      case 'laneDropdown':
+      case 'deckLabel': {
+        if (!hit.deck) return;
+        const anchor = laneAnchor(hit.data);
         deps.emit({
-          type: 'lane.openDropdown',
-          deck: hit.deck!,
-          clientX: event.clientX,
-          clientY: event.clientY
+          type: 'menu.deck',
+          deck: hit.deck,
+          clientX: rect.left + LABEL_W + LANE_MENU_GAP_PX,
+          clientY: anchor === null ? event.clientY : rect.top + anchor,
+          bpm: null,
+          split: null,
+          lane: null
         });
         return;
+      }
+      case 'laneDropdown': {
+        if (!hit.deck) return;
+        const anchor = laneAnchor(hit.data);
+        deps.emit({
+          type: 'lane.openDropdown',
+          deck: hit.deck,
+          lane: isEditableLaneKey(hit.part) ? hit.part : null,
+          clientX: rect.left + LABEL_W + LANE_MENU_GAP_PX,
+          clientY: anchor === null ? event.clientY : rect.top + anchor
+        });
+        return;
+      }
       case 'filterRegion': {
-        // Editable while playing, like clips; the commit stops playback on drop.
+        // Editable while playing, like clips. The commit stops playback on drop.
         const span = hit.data as FilterActiveSpan;
         if (hit.part === 'start' || hit.part === 'end') {
           active = {
@@ -273,14 +292,8 @@ export function useTimelineGestures(deps: GestureDeps) {
       case 'clip': {
         if (!deps.isEditMode()) break;
         const { block, rowTop } = hit.data as { block: TransportBlock; rowTop: number };
-        // Shift+drag paints a nudge over the deck row, even on top of a clip
-        // (otherwise a loaded waveform would block the gesture entirely).
-        if (event.shiftKey) {
-          armNudge(hit.deck!, rowTop, viewContext, point);
-          return;
-        }
         // Cmd/Ctrl+drag draws a marquee even over clips (a plain press would
-        // grab the block); without a drag the click toggles the block instead.
+        // grab the block). Without a drag the click toggles the block instead.
         if (event.metaKey || event.ctrlKey) {
           active = { kind: 'marquee', additive: true, start: point, current: point };
           return;
@@ -324,11 +337,7 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       }
       case 'clipBand': {
-        if (deps.isEditMode() && event.shiftKey) {
-          armNudge(hit.deck!, (hit.data as { rowTop: number }).rowTop, viewContext, point);
-          return;
-        }
-        // Dragging empty band space in edit mode rubber-band selects; panning
+        // Dragging empty band space in edit mode rubber-band selects. Panning
         // stays available via wheel, the overview, and outside edit mode.
         if (deps.isEditMode()) {
           active = {
@@ -342,7 +351,6 @@ export function useTimelineGestures(deps: GestureDeps) {
         break;
       }
     }
-    // Anything not handled above falls through to a view pan (drag empty space).
     active = { kind: 'track-pan', startView: deps.camera.currentView() };
   }
 
@@ -364,12 +372,17 @@ export function useTimelineGestures(deps: GestureDeps) {
         return;
       case 'lane-resize': {
         active.height = clampLaneHeight(active.startHeight + (point.y - active.startY));
-        deps.emit({ type: 'lane.resize', height: active.height });
+        deps.emit({
+          type: 'lane.resize',
+          deck: active.deck,
+          lane: active.lane,
+          height: active.height
+        });
         return;
       }
       case 'waveform-resize': {
         active.height = clampWaveformHeight(active.startHeight + (point.y - active.startY));
-        deps.emit({ type: 'waveform.resize', height: active.height });
+        deps.emit({ type: 'waveform.resize', deck: active.deck, height: active.height });
         return;
       }
       case 'overview': {
@@ -397,10 +410,6 @@ export function useTimelineGestures(deps: GestureDeps) {
         deps.requestRender();
         return;
       }
-      case 'nudge-paint':
-        active.currentMs = clampMs(viewContext.xToMs(point.x), deps.durationMs());
-        deps.requestRender();
-        return;
       case 'filter-paint':
         active.currentMs = clampMs(viewContext.xToMs(point.x), deps.durationMs());
         deps.requestRender();
@@ -448,10 +457,15 @@ export function useTimelineGestures(deps: GestureDeps) {
     if (!gesture) return;
     switch (gesture.kind) {
       case 'lane-resize':
-        deps.emit({ type: 'lane.resize', height: gesture.height });
+        deps.emit({
+          type: 'lane.resize',
+          deck: gesture.deck,
+          lane: gesture.lane,
+          height: gesture.height
+        });
         break;
       case 'waveform-resize':
-        deps.emit({ type: 'waveform.resize', height: gesture.height });
+        deps.emit({ type: 'waveform.resize', deck: gesture.deck, height: gesture.height });
         break;
       case 'lane-draw':
         if (gesture.samples.length > 0) {
@@ -473,16 +487,6 @@ export function useTimelineGestures(deps: GestureDeps) {
           });
           dragged = true;
         }
-        break;
-      case 'nudge-paint':
-        deps.emit({
-          type: 'nudge.paint',
-          deck: gesture.deck,
-          t0: Math.min(gesture.startMs, gesture.currentMs),
-          t1: Math.max(gesture.startMs, gesture.currentMs),
-          direction: gesture.direction
-        });
-        dragged = true;
         break;
       case 'filter-paint':
         deps.emit({
@@ -548,6 +552,19 @@ export function useTimelineGestures(deps: GestureDeps) {
     deps.requestRender();
   }
 
+  // The span's grab bar is only its top strip, so the rest of the lane stays
+  // drawable; a plain click anywhere inside it still selects it.
+  function activeFilterSpanAt(
+    hit: Hit,
+    ms: number
+  ): { deck: string; span: FilterActiveSpan } | null {
+    if (hit.target !== 'lane' || hit.part !== 'filter' || !hit.deck) return null;
+    const span = deps
+      .getDeckLanes()
+      [hit.deck]?.filterActive.find((active) => ms >= active.startMs && ms <= active.endMs);
+    return span ? { deck: hit.deck, span } : null;
+  }
+
   function onClick(event: MouseEvent, rect: DOMRect): void {
     if (dragged) {
       dragged = false;
@@ -567,7 +584,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       const additive = deps.isEditMode() && (event.metaKey || event.ctrlKey);
       deps.emit({ type: 'clip.select', block, ms, additive });
       deps.emit({ type: 'filterRegion.clearSelection' });
-      // Cmd/Ctrl-click only edits the selection; moving the playhead too would
+      // Cmd/Ctrl-click only edits the selection. Moving the playhead too would
       // make assembling a multi-selection jumpy.
       if (!additive) deps.emit({ type: 'seek', ms });
       return;
@@ -582,7 +599,13 @@ export function useTimelineGestures(deps: GestureDeps) {
       return;
     }
     if (hit.target === 'laneDropdown' || hit.target === 'overview') return;
-    // lane / clipBand background: seek and clear selections.
+    const span = activeFilterSpanAt(hit, ms);
+    if (span) {
+      deps.emit({ type: 'clip.clearSelection' });
+      deps.emit({ type: 'filterRegion.select', deck: span.deck, span: span.span });
+      deps.emit({ type: 'seek', ms });
+      return;
+    }
     deps.emit({ type: 'clip.clearSelection' });
     deps.emit({ type: 'filterRegion.clearSelection' });
     deps.emit({ type: 'seek', ms });
@@ -592,12 +615,12 @@ export function useTimelineGestures(deps: GestureDeps) {
     const point = pointFrom(event, rect);
     const hit = hitAt(point);
     if (!hit) return;
-    if (hit.target === 'laneSeparator') {
-      deps.emit({ type: 'lane.resizeReset' });
+    if (hit.target === 'laneSeparator' && hit.deck && isEditableLaneKey(hit.data)) {
+      deps.emit({ type: 'lane.resizeReset', deck: hit.deck, lane: hit.data });
       return;
     }
-    if (hit.target === 'waveformSeparator') {
-      deps.emit({ type: 'waveform.resizeReset' });
+    if (hit.target === 'waveformSeparator' && hit.deck) {
+      deps.emit({ type: 'waveform.resizeReset', deck: hit.deck });
       return;
     }
     if (hit.target === 'clip' && deps.isEditMode()) {
@@ -616,10 +639,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
   }
 
-  // The BPM context for a "Set BPM" menu item: the non-loop clip under `ms` on
-  // `deck` that has a known grid, with the tempo currently playing there (track
-  // bpm scaled by the segment's effective rate). Null when no such clip exists,
-  // so the menu item only appears over a pitchable clip.
+  // Null unless a pitchable clip sits under `ms`, so the menu item appears only
+  // where it would work.
   function bpmContextAt(deck: string, ms: number): BpmContext | null {
     for (const clip of deps.getClips()) {
       if (clip.deck !== deck || clip.loop) continue;
@@ -657,13 +678,17 @@ export function useTimelineGestures(deps: GestureDeps) {
       });
       return;
     }
-    if (hit.deck && hit.deck !== MASTER_ROW_ID) {
+    if (hit.deck && DECK_MENU_TARGETS.some((target) => target === hit.target)) {
+      const laneKey = hit.target === 'lane' ? hit.part : null;
       deps.emit({
         type: 'menu.deck',
         deck: hit.deck,
+        lane:
+          laneKey && isEditableLaneKey(laneKey)
+            ? { key: laneKey, ms: deps.getVc().xToMs(point.x) }
+            : null,
         clientX: event.clientX,
         clientY: event.clientY,
-        nudge: hit.target === 'nudgeSpan' ? (hit.data as NudgeSpan) : null,
         bpm: hit.target === 'clip' ? bpmContextAt(hit.deck, deps.getVc().xToMs(point.x)) : null,
         split:
           hit.target === 'clip'
@@ -684,7 +709,7 @@ export function useTimelineGestures(deps: GestureDeps) {
       event.preventDefault();
       deps.camera.zoomAt(fracAtClientLocalX(point.x, viewContext), event.deltaY);
     } else if (deps.camera.maxScrollY() > 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
-      // Vertical scroll is owned by the native scroll container; don't
+      // Vertical scroll is owned by the native scroll container. Don't
       // preventDefault so the browser scrolls it and fires its scroll event.
     } else {
       event.preventDefault();
@@ -710,24 +735,6 @@ export function useTimelineGestures(deps: GestureDeps) {
             gesture.normalized,
             formatLaneValue(laneSpec(gesture.lane, gesture.deck), cursor.value),
             cursor.ms,
-            msToX,
-            viewContext.canvasW
-          )
-        )
-      ];
-    }
-    if (active.kind === 'nudge-paint') {
-      const gesture = active;
-      return [
-        overlay((ctx) =>
-          drawNudgeGesturePreview(
-            ctx,
-            Math.min(gesture.startMs, gesture.currentMs),
-            Math.max(gesture.startMs, gesture.currentMs),
-            gesture.direction * deps.nudgeSensitivity(),
-            gesture.rowTop,
-            deps.waveformHeight(),
-            gesture.currentMs,
             msToX,
             viewContext.canvasW
           )
@@ -788,7 +795,7 @@ export function useTimelineGestures(deps: GestureDeps) {
               ghostSpan(clip, { kind, deltaMs: gesture.deltaMs, targetMs: gesture.targetMs })
             ),
             gesture.rowTop,
-            deps.waveformHeight(),
+            deps.waveformHeightFor(gesture.block.deck),
             deps.accentFor(gesture.block.deck),
             `${deltaSec > 0 ? '+' : ''}${deltaSec.toFixed(2)}s`,
             gesture.block.startMs + (kind === 'move' ? gesture.deltaMs : 0),
@@ -801,38 +808,23 @@ export function useTimelineGestures(deps: GestureDeps) {
     return [];
   }
 
-  function cursorFor(point: Point, shiftKey = false): string {
+  function cursorFor(point: Point): string {
     const hit = hitAt(point);
     if (!hit) return '';
     if (hit.target === 'laneSeparator' || hit.target === 'waveformSeparator') return 'row-resize';
     if (hit.target === 'overview')
       return hit.part === 'resize-left' || hit.part === 'resize-right' ? 'ew-resize' : 'grab';
-    // Shift over the waveform paints a nudge, so show the same draw cursor the
-    // lanes use rather than the move/trim cursor.
     if (hit.target === 'clip' || hit.target === 'clipBand') {
       if (!deps.isEditMode()) return '';
-      if (shiftKey) return 'crosshair';
       if (hit.target === 'clip')
         return hit.part === 'start' || hit.part === 'end' ? 'ew-resize' : 'grab';
       // Empty band space rubber-band selects in edit mode.
       return 'crosshair';
     }
     if (hit.target === 'filterRegion') return hit.part === 'body' ? 'grab' : 'ew-resize';
-    if (hit.target === 'laneDropdown') return 'pointer';
+    if (hit.target === 'laneDropdown' || hit.target === 'deckLabel') return 'pointer';
     if (hit.target === 'lane') return 'crosshair';
     return '';
-  }
-
-  function armNudge(deck: string, rowTop: number, viewContext: ViewContext, point: Point): void {
-    const ms = viewContext.xToMs(point.x);
-    active = {
-      kind: 'nudge-paint',
-      deck,
-      rowTop,
-      direction: deps.nudgeDirectionAt(deck, point.y, rowTop),
-      startMs: ms,
-      currentMs: ms
-    };
   }
 
   function armClip(
@@ -868,10 +860,8 @@ export function useTimelineGestures(deps: GestureDeps) {
     };
   }
 
-  // Edge magnetism (NOT beat snapping): within a few pixels an edge locks onto a
-  // neighbour boundary or the block's own original position, so placing a clip
-  // "touching" or "back where it was" by eye is sample-exact. Mirrors the old
-  // component's updateClipGesture.
+  // Edge magnetism, not beat snapping: an edge locks onto a neighbour or its own
+  // original position, so placing a clip by eye is sample-exact.
   function updateClip(gesture: Extract<ActiveGesture, { kind: 'clip' }>, pointerMs: number): void {
     const { block, snapMs } = gesture;
     if (!gesture.edge) {
@@ -945,14 +935,6 @@ function snapToEdges(value: number, candidates: number[], toleranceMs: number): 
     }
   }
   return best;
-}
-
-function clampLaneHeight(height: number): number {
-  return Math.min(MAX_LANE_HEIGHT_PX, Math.max(MIN_LANE_HEIGHT_PX, height));
-}
-
-function clampWaveformHeight(height: number): number {
-  return Math.min(MAX_WAVEFORM_HEIGHT_PX, Math.max(MIN_WAVEFORM_HEIGHT_PX, height));
 }
 
 function overviewDrag(

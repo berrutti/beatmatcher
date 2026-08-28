@@ -1,7 +1,8 @@
 <template>
   <div class="dropdown" ref="rootEl">
     <button class="dropdown__trigger" @click="open = !open">
-      {{ label }} <span class="dropdown__chevron">▾</span>
+      {{ label }}
+      <span class="dropdown__chevron" :class="{ 'dropdown__chevron--open': open }">▾</span>
     </button>
     <div v-if="open" class="dropdown__menu">
       <button
@@ -76,8 +77,19 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick, true));
 }
 
 .dropdown__chevron {
-  font-size: 8px;
-  opacity: 0.7;
+  /* inline-block so the open-state rotation applies at all. */
+  display: inline-block;
+  font-size: 1.4em;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+.dropdown__chevron--open {
+  transform: rotate(180deg);
+}
+
+.dropdown__trigger:hover .dropdown__chevron {
+  opacity: 1;
 }
 
 .dropdown__menu {

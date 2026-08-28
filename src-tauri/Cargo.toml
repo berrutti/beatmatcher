@@ -1,6 +1,6 @@
 [package]
 name = "beatmatcher"
-version = "8.1.0"
+version = "8.3.0"
 description = "DJ software for live mixing and session editing. Play on your keyboard or MIDI controller"
 authors = ["berrutti"]
 edition = "2021"
@@ -21,6 +21,7 @@ path = "src/bin/compare_session.rs"
 tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 session-core = { path = "../session-core" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

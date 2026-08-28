@@ -7,6 +7,7 @@ import { useSettingsStore } from '@renderer/stores/settings';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useBrowseStore } from '@renderer/stores/browse';
+import { anyModalOpen } from '@renderer/utils/modalStack';
 import { commands, resolveKey, type Command } from '@renderer/keybindings';
 
 export const shiftHeld = ref(false);
@@ -101,7 +102,7 @@ export function useKeyboard() {
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (settings.isOpen) return;
+    if (anyModalOpen.value) return;
 
     if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -133,9 +134,8 @@ export function useKeyboard() {
       }
     }
 
-    // Spacebar toggles the edit deck's transport. Edit mode only: in
-    // performance mode space must never touch playback, and session mode has
-    // its own handler in Session.vue (the playhead state lives there).
+    // Edit mode only: performance mode keeps space off playback, and session
+    // mode handles it where the playhead state lives.
     if (appMode.mode === 'edit' && !isTyping(e) && e.code === 'Space' && !e.repeat) {
       e.preventDefault();
       store.decks.E?.togglePlay().catch(() => {});
@@ -162,7 +162,7 @@ export function useKeyboard() {
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
     // Space is now just a modifier: while it's held, a deck key toggles that
-    // channel's CUE; on its own a deck key selects it into the swarm.
+    // channel's CUE. On its own a deck key selects it into the swarm.
     if (e.code === 'Space') {
       e.preventDefault();
       spaceHeld.value = true;
@@ -172,9 +172,9 @@ export function useKeyboard() {
     const digitDeck = DIGIT_DECK[e.code];
     if (digitDeck) {
       if (spaceHeld.value) {
-        mixer.setCueActive(digitDeck, !mixer.cueActive[digitDeck]);
+        mixer.swarmSetCue(digitDeck, !mixer.cueActive[digitDeck]);
       } else if (e.shiftKey) {
-        mixer.toggleParam(digitDeck, FILTER_ACTIVE);
+        mixer.swarmToggleParam(digitDeck, FILTER_ACTIVE);
       } else if (mixer.activeDecks.includes(digitDeck)) {
         mixer.setSwarmMode(true);
         mixer.setSwarmChannel(digitDeck, true);
@@ -192,7 +192,7 @@ export function useKeyboard() {
   }
 
   function onKeyUp(e: KeyboardEvent) {
-    if (settings.isOpen) return;
+    if (anyModalOpen.value) return;
 
     if (e.key === 'Shift') {
       shiftHeld.value = false;
@@ -204,10 +204,8 @@ export function useKeyboard() {
       return;
     }
 
-    // Releasing a deck key always deselects it from the swarm, even if the app
-    // mode changed or focus moved to a text input while it was held, so swarm
-    // selection never gets stuck on. (A key that toggled CUE leaves swarmSelected
-    // untouched, so this is a no-op for it.)
+    // Unconditional, so a mode change or a focus move while the key was held
+    // cannot strand the selection.
     const swarmDeck = DIGIT_DECK[e.code];
     if (swarmDeck) {
       if (mixer.swarmSelected[swarmDeck]) {

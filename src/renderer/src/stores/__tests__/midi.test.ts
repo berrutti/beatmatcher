@@ -41,8 +41,6 @@ describe('the MIDI devices', () => {
     for (const key of Object.keys(stored)) delete stored[key];
   });
 
-  // Settings mounting twice before the first registration resolves used to leave a
-  // leaked listener behind, and every message was counted twice.
   it('registers one listener when two starts overlap', async () => {
     const unlisten = vi.fn();
     mockedListen.mockImplementation(
@@ -109,7 +107,6 @@ describe('the MIDI devices', () => {
     expect(stored.midiDeckAssignments).toEqual({ 'XDJ-1000': 'D' });
   });
 
-  // Unplugging a player mid-set must not be a reconfiguration.
   it('re-pushes a remembered assignment when the same device comes back', async () => {
     stored.midiDeckAssignments = { 'XDJ-1000': 'C' };
     listed.push(player);

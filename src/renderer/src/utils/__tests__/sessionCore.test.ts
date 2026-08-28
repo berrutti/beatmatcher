@@ -1,4 +1,4 @@
-// Marshalling-layer tests for the sessionCore WASM wrappers; edit-op semantics
+// Marshalling-layer tests for the sessionCore WASM wrappers. Edit-op semantics
 // are covered by the Rust suite in session-core.
 
 import { describe, it, expect } from 'vitest';
@@ -17,7 +17,6 @@ import {
   decimateSteps,
   filterActiveAt,
   toggleFilterActiveRange,
-  deleteNudgeRange,
   relocateEventPaths,
   editConstants,
   currentBeat
@@ -26,6 +25,25 @@ import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 
 const CLASSIC = 'classic-3band';
+
+// The rate range only bounds the rate lane, so a gain splice takes the lane's own.
+function spliceGain(events: SessionEvent[]) {
+  const rate = laneSpecs(CLASSIC).rate;
+  return spliceLaneEvents(
+    events,
+    'gain',
+    CLASSIC,
+    'A',
+    5000,
+    8000,
+    [
+      { ms: 5000, value: 0.4 },
+      { ms: 6000, value: 0.4 }
+    ],
+    rate.min,
+    rate.max
+  );
+}
 const ISOLATOR = 'isolator-3band';
 
 function simpleSession(): SessionEvent[] {
@@ -60,7 +78,6 @@ describe('buildTimeline', () => {
     expect(built.loadedSpans[0].trackName).toBe('name:/tracks/one.mp3');
     expect(built.deckLanes['A'].gain.length).toBeGreaterThan(1);
     expect(built.masterLanes.gain[0].ms).toBe(0);
-    expect(built.deckNudges['A']).toEqual([]);
   });
 
   it('prefers the collection grid and falls back to recorded values', () => {
@@ -166,10 +183,7 @@ describe('lane edit wrappers', () => {
     const events: SessionEvent[] = [
       { elapsed_ms: 1000, type: 'set_param', deck: 'A', slot: 'fader', param: 'gain', value: 0.8 }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const gains = out
       .filter((event) => event.type === 'set_param' && event.slot === 'fader')
       .map((event) => event.value);
@@ -200,10 +214,7 @@ describe('lane edit wrappers', () => {
         frame: 882000
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const untouched = out.find((event) => event.elapsed_ms === 20000);
     expect(untouched?.frame).toBe(882000);
   });
@@ -220,10 +231,7 @@ describe('lane edit wrappers', () => {
         frame: 44100
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const created = out.filter((event) => event.elapsed_ms >= 5000 && event.elapsed_ms <= 8000);
     expect(created.length).toBeGreaterThan(0);
     for (const event of created) expect(event.frame).toBeUndefined();
@@ -237,11 +245,6 @@ describe('lane edit wrappers', () => {
 });
 
 describe('reference-preserving no-ops', () => {
-  it('deleteNudgeRange returns the input reference when nothing matches', () => {
-    const events = simpleSession();
-    expect(deleteNudgeRange(events, 'A', 1000, 2000)).toBe(events);
-  });
-
   it('relocateEventPaths returns the input reference for an unmapped set', () => {
     const events = simpleSession();
     expect(relocateEventPaths(events, { '/never/there.mp3': '/new.mp3' })).toBe(events);
@@ -279,17 +282,11 @@ describe('shared constants', () => {
     }
   });
 
-  it('carries the display metadata the timeline draws lanes from', () => {
+  it('names a unit for every lane, which is what the value means', () => {
     const specs = laneSpecs(CLASSIC);
     for (const key of ALL_LANE_KEYS) {
-      expect(specs[key].shortLabel, `no short label for ${key}`).toBeTruthy();
-      expect(specs[key].laneGroup).toBeGreaterThanOrEqual(0);
+      expect(specs[key].unit, `no unit for ${key}`).toBeTruthy();
     }
-    expect(new Set(ALL_LANE_KEYS.map((key) => specs[key].shortLabel)).size).toBe(
-      ALL_LANE_KEYS.length
-    );
-    expect(specs.eqLow.laneGroup).toBe(specs.eqHigh.laneGroup);
-    expect(specs.gain.laneGroup).not.toBe(specs.filter.laneGroup);
   });
 
   it('the eq lane range is the same one the mixer constants publish', () => {
@@ -300,8 +297,6 @@ describe('shared constants', () => {
     }
   });
 
-  // The timeline draws and clamps against these, so a session recorded on the
-  // isolator must not be drawn with the classic mixer's dB range.
   it('lane specs follow the mixer they are asked for', () => {
     for (const key of ['eqLow', 'eqMid', 'eqHigh'] as const) {
       const isolator = laneSpecFor(key, ISOLATOR);
@@ -341,8 +336,6 @@ describe('shared constants', () => {
     }
   });
 
-  // Falling back keeps a build that dropped a mixer usable, and matches what
-  // the engine loads for the same unknown id.
   it('falls back to the classic mixer for an unknown id', () => {
     expect(mixerParams('no-such-mixer')).toEqual(mixerParams('classic-3band'));
   });

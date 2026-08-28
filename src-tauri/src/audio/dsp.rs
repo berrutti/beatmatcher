@@ -43,10 +43,8 @@ impl Biquad {
         y
     }
 
-    // Replace the filter coefficients while preserving the delay-line state so
-    // there is no discontinuity click on a live signal. Do NOT call this when
-    // transitioning into identity (the dead zone): identity delay lines must be
-    // zeroed, not carried over from an active filter.
+    // Carries the delay lines over, or a live signal clicks. Not for the dead zone:
+    // identity delay lines are zeroed, never carried over from an active filter.
     #[inline]
     pub(crate) fn set_coefficients(&mut self, src: Self) {
         let d1 = self.delay1;
@@ -56,159 +54,125 @@ impl Biquad {
         self.delay2 = d2;
     }
 
+    /// Solved in f64 and narrowed once. An optimiser may reorder equivalent f32 maths into a
+    /// form that rounds differently, and a resonant cascade grows that last bit over a sweep.
+    fn normalized(b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64) -> Self {
+        Self {
+            b0: (b0 / a0) as f32,
+            b1: (b1 / a0) as f32,
+            b2: (b2 / a0) as f32,
+            a1: (a1 / a0) as f32,
+            a2: (a2 / a0) as f32,
+            delay1: 0.0,
+            delay2: 0.0,
+        }
+    }
+
     pub(crate) fn low_shelf(sr: f32, freq: f32, db: f32) -> Self {
         if db == 0.0 {
             return Self::identity();
         }
-        let a = 10.0f32.powf(db / 40.0);
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let a = 10.0f64.powf(f64::from(db) / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
         let cos_w = w0.cos();
         // S = 1 (unity shelf slope) → alpha = sin(w0) / sqrt(2)
-        let alpha = w0.sin() / 2.0_f32.sqrt();
+        let alpha = w0.sin() / 2.0_f64.sqrt();
         let k = 2.0 * a.sqrt() * alpha;
 
-        let b0 = a * ((a + 1.0) - (a - 1.0) * cos_w + k);
-        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w);
-        let b2 = a * ((a + 1.0) - (a - 1.0) * cos_w - k);
-        let a0 = (a + 1.0) + (a - 1.0) * cos_w + k;
-        let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_w);
-        let a2 = (a + 1.0) + (a - 1.0) * cos_w - k;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            a * ((a + 1.0) - (a - 1.0) * cos_w + k),
+            2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w),
+            a * ((a + 1.0) - (a - 1.0) * cos_w - k),
+            (a + 1.0) + (a - 1.0) * cos_w + k,
+            -2.0 * ((a - 1.0) + (a + 1.0) * cos_w),
+            (a + 1.0) + (a - 1.0) * cos_w - k,
+        )
     }
 
     pub(crate) fn peaking(sr: f32, freq: f32, q: f32, db: f32) -> Self {
         if db == 0.0 {
             return Self::identity();
         }
-        let a = 10.0f32.powf(db / 40.0);
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
-        let alpha = w0.sin() / (2.0 * q);
+        let a = 10.0f64.powf(f64::from(db) / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
+        let alpha = w0.sin() / (2.0 * f64::from(q));
         let cos_w = w0.cos();
 
-        let b0 = 1.0 + alpha * a;
-        let b1 = -2.0 * cos_w;
-        let b2 = 1.0 - alpha * a;
-        let a0 = 1.0 + alpha / a;
-        let a1 = -2.0 * cos_w;
-        let a2 = 1.0 - alpha / a;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            1.0 + alpha * a,
+            -2.0 * cos_w,
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * cos_w,
+            1.0 - alpha / a,
+        )
     }
 
     pub(crate) fn low_pass(sr: f32, freq: f32, q: f32) -> Self {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
         let cos_w = w0.cos();
-        let alpha = w0.sin() / (2.0 * q);
+        let alpha = w0.sin() / (2.0 * f64::from(q));
 
-        let b0 = (1.0 - cos_w) / 2.0;
-        let b1 = 1.0 - cos_w;
-        let b2 = (1.0 - cos_w) / 2.0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            (1.0 - cos_w) / 2.0,
+            1.0 - cos_w,
+            (1.0 - cos_w) / 2.0,
+            1.0 + alpha,
+            -2.0 * cos_w,
+            1.0 - alpha,
+        )
     }
 
     pub(crate) fn high_pass(sr: f32, freq: f32, q: f32) -> Self {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
         let cos_w = w0.cos();
-        let alpha = w0.sin() / (2.0 * q);
+        let alpha = w0.sin() / (2.0 * f64::from(q));
 
-        let b0 = (1.0 + cos_w) / 2.0;
-        let b1 = -(1.0 + cos_w);
-        let b2 = (1.0 + cos_w) / 2.0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            (1.0 + cos_w) / 2.0,
+            -(1.0 + cos_w),
+            (1.0 + cos_w) / 2.0,
+            1.0 + alpha,
+            -2.0 * cos_w,
+            1.0 - alpha,
+        )
     }
 
     // Flat magnitude, phase only. A Linkwitz-Riley split sums to this, so a band skipping
     // one crossover needs the matching allpass to stay aligned with the ones that did not.
     pub(crate) fn all_pass(sr: f32, freq: f32, q: f32) -> Self {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
         let cos_w = w0.cos();
-        let alpha = w0.sin() / (2.0 * q);
+        let alpha = w0.sin() / (2.0 * f64::from(q));
 
-        let b0 = 1.0 - alpha;
-        let b1 = -2.0 * cos_w;
-        let b2 = 1.0 + alpha;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            1.0 - alpha,
+            -2.0 * cos_w,
+            1.0 + alpha,
+            1.0 + alpha,
+            -2.0 * cos_w,
+            1.0 - alpha,
+        )
     }
 
     pub(crate) fn high_shelf(sr: f32, freq: f32, db: f32) -> Self {
         if db == 0.0 {
             return Self::identity();
         }
-        let a = 10.0f32.powf(db / 40.0);
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let a = 10.0f64.powf(f64::from(db) / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
         let cos_w = w0.cos();
-        let alpha = w0.sin() / 2.0_f32.sqrt();
+        let alpha = w0.sin() / 2.0_f64.sqrt();
         let k = 2.0 * a.sqrt() * alpha;
 
-        let b0 = a * ((a + 1.0) + (a - 1.0) * cos_w + k);
-        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w);
-        let b2 = a * ((a + 1.0) + (a - 1.0) * cos_w - k);
-        let a0 = (a + 1.0) - (a - 1.0) * cos_w + k;
-        let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_w);
-        let a2 = (a + 1.0) - (a - 1.0) * cos_w - k;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            delay1: 0.0,
-            delay2: 0.0,
-        }
+        Self::normalized(
+            a * ((a + 1.0) + (a - 1.0) * cos_w + k),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w),
+            a * ((a + 1.0) + (a - 1.0) * cos_w - k),
+            (a + 1.0) - (a - 1.0) * cos_w + k,
+            2.0 * ((a - 1.0) - (a + 1.0) * cos_w),
+            (a + 1.0) - (a - 1.0) * cos_w - k,
+        )
     }
 }
 
@@ -217,7 +181,7 @@ const EQ_MID_PEAK_HZ: f32 = 1000.0;
 const EQ_MID_Q: f32 = 0.4;
 const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
 
-pub(crate) struct EqState {
+pub(crate) struct Equalizer {
     sample_rate: f32,
     low_stage1: [Biquad; 2],
     low_stage2: [Biquad; 2],
@@ -226,7 +190,7 @@ pub(crate) struct EqState {
     high_stage2: [Biquad; 2],
 }
 
-impl EqState {
+impl Equalizer {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
@@ -273,15 +237,7 @@ impl EqState {
     }
 }
 
-// HPF/LPF filter
-//   v = 0:  bypass (small dead zone around center)
-//   v < 0:  LPF, cutoff sweeps from 20 kHz down to 20 Hz as v -> -1
-//   v > 0:  HPF, cutoff sweeps from 20 Hz up to 20 kHz as v -> +1
-//
-// Serial signal path.
-// Fixed Q for clean, musical filtering.
-// Current_v is smoothed per-sample; coefficients are refreshed every
-// FILTER_COEF_REFRESH samples to keep the DSP inner loop tight.
+// Negative sweeps the lowpass down from 20 kHz, positive the highpass up from 20 Hz.
 
 const FILTER_MIN_FREQ_HZ: f32 = 20.0;
 const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
@@ -298,10 +254,10 @@ const FILTER_ENTRY_WIDTH: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
 // Crossfade time for bypass toggle. The filter output is crossfaded with the
 // dry signal so the knob position never sweeps during a bypass transition.
-const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
+pub(crate) const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
 // Coefficients are refreshed every N samples (knob is already smoothed per-sample).
 // Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
-const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
+pub(crate) const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
 // Beyond this sweep fraction (0..1) the output gain fades linearly to 0 so the
 // extreme position reaches -infinity regardless of biquad rolloff slope.
 const FILTER_KILL_START: f32 = 0.80;
@@ -316,7 +272,7 @@ fn resonant_peak(q: f32) -> f32 {
     q / (1.0 - 1.0 / (4.0 * q * q)).sqrt()
 }
 
-pub(crate) struct FilterState {
+pub(crate) struct Filter {
     sample_rate: f32,
     target_knob: f32,
     current_knob: f32,
@@ -327,14 +283,14 @@ pub(crate) struct FilterState {
     filters_b: [Biquad; 2],
     makeup: f32,
     // Dry/wet crossfade: 0.0 = fully filtered, 1.0 = fully dry (bypassed).
-    // The filter always runs at its set position; bypass is a gain crossfade,
+    // The filter always runs at its set position. Bypass is a gain crossfade,
     // never a frequency sweep.
     crossfade: f32,
     crossfade_target: f32,
     crossfade_coeff: f32,
 }
 
-impl FilterState {
+impl Filter {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let smoothing_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_SMOOTHING_TAU_SEC)).exp();
         let crossfade_coeff = 1.0 - (-1.0 / (sample_rate * FILTER_CROSSFADE_TAU_SEC)).exp();
@@ -355,6 +311,7 @@ impl FilterState {
 
     pub(crate) fn set_knob(&mut self, v: f32) {
         self.target_knob = v.clamp(-1.0, 1.0);
+        self.coeff_refresh_counter = 0;
     }
 
     pub(crate) fn set_active(&mut self, active: bool) {
@@ -398,7 +355,8 @@ impl FilterState {
 
     #[inline]
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        self.current_knob += (self.target_knob - self.current_knob) * self.smoothing_coeff;
+        self.current_knob =
+            super::unit::approach(self.current_knob, self.target_knob, self.smoothing_coeff);
 
         if self.coeff_refresh_counter == 0 {
             self.update_filters();
@@ -426,7 +384,8 @@ impl FilterState {
         let l_filtered = self.filters_b[0].process(self.filters_a[0].process(l)) * gain;
         let r_filtered = self.filters_b[1].process(self.filters_a[1].process(r)) * gain;
 
-        self.crossfade += (self.crossfade_target - self.crossfade) * self.crossfade_coeff;
+        self.crossfade =
+            super::unit::approach(self.crossfade, self.crossfade_target, self.crossfade_coeff);
         let entry = ((abs_knob - FILTER_CENTER_DEAD_ZONE) / FILTER_ENTRY_WIDTH).clamp(0.0, 1.0);
         let wet = (1.0 - self.crossfade) * entry;
         (
@@ -436,9 +395,28 @@ impl FilterState {
     }
 }
 
+/// The master stage over a whole block: gain, then the limiter, in place. Both the
+/// callback and the offline render run this same pass over their mix buffer.
+pub(crate) fn master_block(limiter: Option<&mut Limiter>, gain: f32, mix: &mut [f32]) {
+    match limiter {
+        Some(limiter) => {
+            for frame in mix.chunks_exact_mut(2) {
+                let (l, r) = limiter.process(frame[0] * gain, frame[1] * gain);
+                frame[0] = l;
+                frame[1] = r;
+            }
+        }
+        None => {
+            for sample in mix.iter_mut() {
+                *sample = (*sample * gain).clamp(-1.0, 1.0);
+            }
+        }
+    }
+}
+
 /// Every output path ends here, so the live and offline chains cannot drift apart.
 #[inline]
-pub(crate) fn master_output(limiter: Option<&mut LimiterState>, l: f32, r: f32) -> (f32, f32) {
+pub(crate) fn master_output(limiter: Option<&mut Limiter>, l: f32, r: f32) -> (f32, f32) {
     match limiter {
         Some(limiter) => limiter.process(l, r),
         None => (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)),
@@ -447,12 +425,12 @@ pub(crate) fn master_output(limiter: Option<&mut LimiterState>, l: f32, r: f32) 
 
 // True-peak brickwall: instantaneous attack (no sample exceeds THRESHOLD), ~150ms release.
 
-pub(crate) struct LimiterState {
+pub(crate) struct Limiter {
     pub(crate) gain_reduction: f32,
     release_coeff: f32,
 }
 
-impl LimiterState {
+impl Limiter {
     pub(crate) const THRESHOLD: f32 = 0.99;
     const RELEASE_TAU_SEC: f32 = 0.150;
 
@@ -477,12 +455,52 @@ impl LimiterState {
         if target_gr < self.gain_reduction {
             self.gain_reduction = target_gr;
         } else {
-            self.gain_reduction += (target_gr - self.gain_reduction) * self.release_coeff;
+            self.gain_reduction =
+                super::unit::approach(self.gain_reduction, target_gr, self.release_coeff);
         }
         (
             (l * self.gain_reduction).clamp(-1.0, 1.0),
             (r * self.gain_reduction).clamp(-1.0, 1.0),
         )
+    }
+}
+
+#[cfg(test)]
+mod coefficient_refresh_phase {
+    use super::*;
+
+    fn swept(pre_roll: u32) -> Vec<f32> {
+        let mut filter = Filter::new(44_100.0);
+        filter.set_active(true);
+        for _ in 0..80_000 {
+            filter.process(0.0, 0.0);
+        }
+        for _ in 0..pre_roll {
+            filter.process(0.0, 0.0);
+        }
+        let mut out = Vec::new();
+        for step in 0..8 {
+            filter.set_knob(0.05 + 0.03 * step as f32);
+            for frame in 0..600 {
+                let x = ((frame + step * 600) as f32 * 0.01).sin();
+                let (l, _) = filter.process(x, x);
+                out.push(l);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_sweep_does_not_depend_on_how_long_the_filter_has_been_running() {
+        let reference = swept(0);
+        for pre_roll in 1..8 {
+            let other = swept(pre_roll);
+            let differing = reference.iter().zip(&other).filter(|(a, b)| a != b).count();
+            assert_eq!(
+                differing, 0,
+                "a pre-roll of {pre_roll} samples changed the sweep"
+            );
+        }
     }
 }
 
@@ -508,8 +526,6 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate).sin())
             .collect()
     }
-
-    // --- Biquad ---
 
     #[test]
     fn identity_biquad_passes_impulse_through() {
@@ -541,8 +557,6 @@ mod tests {
         assert_eq!(bq.delay2, 0.25);
         assert_eq!(bq.b0, lpf.b0);
     }
-
-    // --- Biquad filter correctness ---
 
     #[test]
     fn low_pass_attenuates_above_cutoff() {
@@ -587,14 +601,9 @@ mod tests {
         );
     }
 
-    // --- FilterState (regression for the clipping bug) ---
-
-    // Before the fix, FilterState at knob=0 placed a 20 Hz HPF whose IIR delay
-    // lines accumulated state that caused per-sample outputs exceeding 1.0 on
-    // transients. Now it uses identity, which has L1 norm = 1.
     #[test]
     fn filter_center_impulse_never_clips() {
-        let mut state = FilterState::new(44100.0);
+        let mut state = Filter::new(44100.0);
         let (l, r) = state.process(1.0, 1.0);
         assert!(l <= 1.0 + 1e-5 && r <= 1.0 + 1e-5, "l={} r={}", l, r);
         for _ in 0..32 {
@@ -606,7 +615,7 @@ mod tests {
     #[test]
     fn filter_center_full_scale_sine_never_clips() {
         let sr = 44100.0f32;
-        let mut state = FilterState::new(sr);
+        let mut state = Filter::new(sr);
         for (i, &s) in sine_wave(1000.0, sr, 4096).iter().enumerate() {
             let (l, r) = state.process(s, s);
             assert!(l.abs() <= 1.0 + 1e-5, "clipped at sample {}: l={}", i, l);
@@ -618,7 +627,7 @@ mod tests {
     fn filter_center_multiple_frequencies_never_clip() {
         let sr = 44100.0f32;
         for &freq in &[40.0f32, 200.0, 1000.0, 8000.0, 15000.0] {
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             for (i, &s) in sine_wave(freq, sr, 4096).iter().enumerate() {
                 let (l, _r) = state.process(s, s);
                 assert!(
@@ -677,7 +686,7 @@ mod tests {
         for step in 0..=40 {
             let knob = -1.0 + step as f32 / 20.0;
             let hz = filter_worst_hz(knob);
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             state.set_active(true);
             state.set_knob(knob);
             let mut peak = 0.0f32;
@@ -701,7 +710,7 @@ mod tests {
         let hz = 60.0f32;
         let natural_step = (std::f32::consts::TAU * hz / sr).sin();
         let sine = |frame: usize| (std::f32::consts::TAU * hz * frame as f32 / sr).sin();
-        let mut state = FilterState::new(sr);
+        let mut state = Filter::new(sr);
         state.set_active(true);
         state.set_knob(0.2);
 
@@ -751,7 +760,7 @@ mod tests {
                 SHORTEST_GESTURE_SEC + random() * (LONGEST_GESTURE_SEC - SHORTEST_GESTURE_SEC);
             let frames = (sr * gesture_sec) as usize;
             let sine = |frame: usize| (std::f32::consts::TAU * hz * frame as f32 / sr).sin();
-            let mut state = FilterState::new(sr);
+            let mut state = Filter::new(sr);
             state.set_active(true);
             state.set_knob(from);
 
@@ -774,12 +783,10 @@ mod tests {
         }
     }
 
-    // --- EqState ---
-
     #[test]
     fn eq_at_zero_db_is_transparent() {
         let sr = 44100.0f32;
-        let mut eq = EqState::new(sr);
+        let mut eq = Equalizer::new(sr);
         for &s in sine_wave(1000.0, sr, 1024).iter() {
             let (l, _r) = eq.process(s, s);
             assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
@@ -798,10 +805,10 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 8000.0 * i as f32 / sr).sin())
             .collect();
 
-        let mut flat = EqState::new(sr);
+        let mut flat = Equalizer::new(sr);
         let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
 
-        let mut cut = EqState::new(sr);
+        let mut cut = Equalizer::new(sr);
         cut.set_high(-12.0);
         let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
 
@@ -822,10 +829,10 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin())
             .collect();
 
-        let mut flat = EqState::new(sr);
+        let mut flat = Equalizer::new(sr);
         let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
 
-        let mut cut = EqState::new(sr);
+        let mut cut = Equalizer::new(sr);
         cut.set_low(-12.0);
         let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
 
@@ -839,11 +846,9 @@ mod tests {
         );
     }
 
-    // --- LimiterState ---
-
     #[test]
     fn limiter_no_reduction_below_threshold() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         let (l, r) = lim.process(0.5, -0.3);
         assert!((l - 0.5).abs() < 1e-5, "l should be unchanged");
         assert!((r + 0.3).abs() < 1e-5, "r should be unchanged");
@@ -852,20 +857,19 @@ mod tests {
 
     #[test]
     fn limiter_instantaneous_attack_prevents_clipping() {
-        let mut lim = LimiterState::new(44100.0);
-        // First sample is loud. Must be limited in the same sample, not the next one.
+        let mut lim = Limiter::new(44100.0);
         let (l, r) = lim.process(2.0, 1.5);
         assert!(l.abs() <= 1.0, "l={l} exceeds 1.0");
         assert!(r.abs() <= 1.0, "r={r} exceeds 1.0");
         assert!(
-            (l - LimiterState::THRESHOLD).abs() < 1e-4,
+            (l - Limiter::THRESHOLD).abs() < 1e-4,
             "peak should be at threshold"
         );
     }
 
     #[test]
     fn limiter_brickwall_over_many_samples() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         let samples = [2.0f32, 1.5, 0.3, 1.8, -2.2, 0.8, 1.1, -1.05, 0.0, 1.6];
         for &s in &samples {
             let (l, r) = lim.process(s, -s * 0.7);
@@ -876,7 +880,7 @@ mod tests {
 
     #[test]
     fn limiter_releases_after_loud_burst() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         lim.process(3.0, 0.0);
         let gr_after_burst = lim.gain_reduction;
         assert!(
@@ -894,8 +898,50 @@ mod tests {
     }
 
     #[test]
+    fn the_filter_knob_settles_on_the_same_value_from_either_side() {
+        let settled = |start: f32| {
+            let mut filter = Filter::new(44100.0);
+            filter.set_knob(start);
+            for _ in 0..44100 {
+                filter.process(0.0, 0.0);
+            }
+            filter.set_knob(0.5);
+            for _ in 0..44100 {
+                filter.process(0.0, 0.0);
+            }
+            filter.current_knob
+        };
+        assert_eq!(settled(-1.0), settled(1.0));
+    }
+
+    #[test]
+    fn a_bypassed_filter_passes_the_dry_signal_unchanged() {
+        let mut filter = Filter::new(44100.0);
+        filter.set_knob(0.5);
+        filter.set_active(true);
+        for _ in 0..44100 {
+            filter.process(0.25, -0.25);
+        }
+        filter.set_active(false);
+        for _ in 0..(44100 * 2) {
+            filter.process(0.25, -0.25);
+        }
+        assert_eq!(filter.process(0.3, -0.4), (0.3, -0.4));
+    }
+
+    #[test]
+    fn a_released_limiter_returns_to_exactly_unity() {
+        let mut lim = Limiter::new(44100.0);
+        lim.process(3.0, 3.0);
+        for _ in 0..(44100 * 4) {
+            lim.process(0.0, 0.0);
+        }
+        assert_eq!(lim.gain_reduction, 1.0);
+    }
+
+    #[test]
     fn limiter_gain_reduction_stable_on_steady_signal() {
-        let mut lim = LimiterState::new(44100.0);
+        let mut lim = Limiter::new(44100.0);
         for _ in 0..1000 {
             lim.process(1.5, 0.0);
         }
@@ -909,7 +955,7 @@ mod tests {
 }
 
 // Identity tests. The property tests above still pass after a change to a Q, a
-// shelf frequency, or a reordered cascade; these pin the actual output.
+// shelf frequency, or a reordered cascade. These pin the actual output.
 #[cfg(test)]
 mod identity {
     use super::*;
@@ -956,7 +1002,7 @@ mod identity {
     }
 
     fn eq_probes() -> Vec<f32> {
-        let mut eq = EqState::new(SAMPLE_RATE);
+        let mut eq = Equalizer::new(SAMPLE_RATE);
         eq.set_low(6.0);
         eq.set_mid(-8.0);
         eq.set_high(3.0);
@@ -966,7 +1012,7 @@ mod identity {
     // Swept, not fixed: the knob smoothing, coefficient refresh and kill-gain
     // ramp only run while the knob is moving.
     fn filter_probes() -> Vec<f32> {
-        let mut filter = FilterState::new(SAMPLE_RATE);
+        let mut filter = Filter::new(SAMPLE_RATE);
         filter.set_active(true);
         let mut frame = 0usize;
         probe(|l, r| {
@@ -977,7 +1023,7 @@ mod identity {
     }
 
     fn limiter_probes() -> Vec<f32> {
-        let mut limiter = LimiterState::new(SAMPLE_RATE);
+        let mut limiter = Limiter::new(SAMPLE_RATE);
         let mut frame = 0usize;
         probe(|l, r| {
             let boost = if (FRAMES / 3..FRAMES / 2).contains(&frame) {
@@ -992,96 +1038,82 @@ mod identity {
 
     #[rustfmt::skip]
     const EXPECTED_EQ: &[f32] = &[
-        -2.672801912e-1, 4.593356848e-1, -3.725598380e-2, -4.196695983e-1,
-        1.208134592e-1, 2.411441356e-1, 2.271278203e-2, 3.183583915e-1,
-        2.303895205e-1, 4.260113239e-1, -2.639633715e-1, -4.099877179e-2,
-        2.332159281e-1, 2.598359883e-1, -1.492358148e-1, 1.026818752e-1,
-        4.079803824e-1, -1.939572394e-1, 4.020574987e-1, 2.229078710e-1,
-        5.408157110e-1, 2.583176792e-1, -6.220184267e-2, 3.504433930e-1,
-        5.834364891e-1, 2.522757947e-1, 3.819344044e-1, 4.356383085e-1,
-        -1.164105386e-1, 3.443693221e-1, 6.957352757e-1, -5.202770233e-1,
-        -2.487626374e-1, 3.527850807e-1, -3.361545801e-1, 5.375764370e-1,
-        -4.841346294e-2, 4.384179413e-1, -2.171876431e-1, -4.379880428e-1,
-        -2.719421983e-1, 5.747131705e-1, -3.542903066e-1, 2.982466221e-1,
-        3.401397765e-1, 4.098565280e-1, 1.335864514e-1, 3.936891258e-1,
-        -1.770126820e-1, 1.101755649e-1, -4.605134949e-2, 3.754656613e-1,
-        3.960167766e-1, 4.448432326e-1, 1.589553654e-1, -5.938205719e-1,
-        -2.785788774e-1, -2.360838354e-1, -7.050324231e-2, 8.473712206e-2,
-        1.837446988e-1, -8.268839121e-2, 3.766070586e-3, -3.738295436e-1,
-        -2.435549200e-1, 6.596841216e-1, 1.941982061e-1, 1.599377990e-1,
-        5.479906797e-1, -8.527469635e-2, -2.239497304e-1, 2.501289845e-1,
-        -2.334518433e-1, -6.923208237e-1, 2.363508195e-1, -2.286707908e-1,
-        8.191981912e-1, -6.429304481e-1, -4.579300284e-1, -1.051228307e-2,
-        -2.922110558e-1, -2.574790642e-2, 6.361593306e-2, 4.918230176e-1,
-        4.798528850e-1, 1.432533562e-1, -1.627066135e-1, -3.348079324e-2,
-        -4.448823035e-1, -3.996755183e-2, -1.942113340e-1, 2.606572509e-1,
-        3.230783343e-2, 4.009339958e-2, -7.709110379e-1, 3.742244244e-1,
-        -4.105801880e-1, -1.336861849e-1, -8.345796168e-2, -5.721709132e-2,
-        3.655659854e-1, -4.698076844e-1, -6.786015034e-1, 2.255944312e-1,
-        3.810105920e-1, -5.779450387e-2, -6.122059822e-1, 1.143168285e-1,
-        -6.168531179e-1, -4.264423847e-1, 1.667549014e-1, -3.931438029e-1,
-        -2.653994858e-1, 2.894300818e-1, 8.414694667e-2, 5.003638268e-1,
-        -3.312206268e-1, 6.116352677e-1, 7.722671032e-1, -6.148427725e-1,
-        -1.651841849e-1, 4.627656043e-1, -2.475629300e-1, -2.161644697e-1,
-        2.331183702e-1, 4.536537528e-1, 4.082171023e-1, 3.329514861e-1,
-        3.762441278e-1, 2.967011929e-2, -1.990038157e-1, -4.663297832e-1,
-        1.335901916e-1, -2.458026409e-1, 6.261838675e-1, -7.167561054e-1,
-        -4.929068089e-1, 7.193861604e-1, -3.665972352e-1, -2.730312943e-1,
-        -3.934606314e-1, 3.216216862e-1, -4.513016343e-2, 7.001420856e-1,
-        -5.711373687e-1, 2.935391366e-1, -8.487974107e-2, -3.551476002e-1,
-        3.019623458e-1, -5.657370016e-2, 4.645871222e-1, -1.844502091e-1,
-        1.856991053e-1, -8.334764838e-2, 9.941054881e-2, -4.191124439e-1,
-        2.643807232e-1, -4.186331630e-1, -1.599213183e-1, -1.983188093e-1,
-        3.682218492e-2, -9.008228779e-2, 7.181882858e-3, -8.033190668e-2,
-        -3.543400764e-1, -6.204452366e-3, 2.286418229e-1, -8.282564580e-2,
-        -1.612312496e-1, 2.441443801e-1,
+        -2.672801316e-1, 4.593355656e-1, -3.726890683e-2, -4.196850955e-1,
+        1.208602637e-1, 2.411809564e-1, 2.271541953e-2, 3.183543980e-1,
+        2.303746343e-1, 4.259868860e-1, -2.640019655e-1, -4.104354978e-2,
+        2.332944572e-1, 2.599276602e-1, -1.492637098e-1, 1.026549339e-1,
+        4.080123901e-1, -1.939231753e-1, 4.020324647e-1, 2.228890210e-1,
+        5.407449603e-1, 2.582729757e-1, -6.219656020e-2, 3.504483104e-1,
+        5.833734274e-1, 2.522146106e-1, 3.818815053e-1, 4.355834126e-1,
+        -1.164730340e-1, 3.443146944e-1, 6.957521439e-1, -5.202608705e-1,
+        -2.487288713e-1, 3.528073728e-1, -3.361644447e-1, 5.375606418e-1,
+        -4.845426232e-2, 4.383772314e-1, -2.172189206e-1, -4.380227327e-1,
+        -2.719285190e-1, 5.747136474e-1, -3.542581797e-1, 2.982886136e-1,
+        3.401522040e-1, 4.098726213e-1, 1.336056292e-1, 3.937143385e-1,
+        -1.769902259e-1, 1.102022529e-1, -4.605298862e-2, 3.754657507e-1,
+        3.959478736e-1, 4.447689652e-1, 1.589464247e-1, -5.938336849e-1,
+        -2.786172032e-1, -2.361189127e-1, -7.047908008e-2, 8.475690335e-2,
+        1.837246865e-1, -8.270978183e-2, 3.779116552e-3, -3.738029003e-1,
+        -2.435001582e-1, 6.597428918e-1, 1.942592710e-1, 1.599933505e-1,
+        5.480293036e-1, -8.524333686e-2, -2.239445299e-1, 2.501299977e-1,
+        -2.333959788e-1, -6.922489405e-1, 2.364087701e-1, -2.286149114e-1,
+        8.192615509e-1, -6.428797841e-1, -4.579114616e-1, -1.049317792e-2,
+        -2.921657562e-1, -2.570690960e-2, 6.366635114e-2, 4.918781519e-1,
+        4.799149036e-1, 1.433235705e-1, -1.627466679e-1, -3.351861984e-2,
+        -4.448723197e-1, -3.996409848e-2, -1.942261457e-1, 2.606243491e-1,
+        3.230100498e-2, 4.009176791e-2, -7.708870173e-1, 3.742616177e-1,
+        -4.105474055e-1, -1.336518228e-1, -8.347012848e-2, -5.722479522e-2,
+        3.655713797e-1, -4.697908759e-1, -6.785975099e-1, 2.255985290e-1,
+        3.810511529e-1, -5.775634944e-2, -6.121293306e-1, 1.143875867e-1,
+        -6.168357134e-1, -4.264205098e-1, 1.667537987e-1, -3.931484818e-1,
+        -2.654018700e-1, 2.894315422e-1, 8.412844688e-2, 5.003609061e-1,
+        -3.312286139e-1, 6.116205454e-1, 7.722440362e-1, -6.148669720e-1,
+        -1.651830524e-1, 4.627619982e-1, -2.475141138e-1, -2.161183655e-1,
+        2.331306487e-1, 4.536720514e-1, 4.082947373e-1, 3.330346346e-1,
+        3.762929738e-1, 2.971366048e-2, -1.989849806e-1, -4.663156867e-1,
+        1.336277276e-1, -2.457723320e-1, 6.262287498e-1, -7.167210579e-1,
+        -4.929295778e-1, 7.193487287e-1, -3.666267097e-1, -2.730633020e-1,
+        -3.934163451e-1, 3.216511607e-1, -4.512065649e-2, 7.001493573e-1,
+        -5.711629391e-1, 2.935220897e-1, -8.490790427e-2, -3.551824987e-1,
+        3.019878864e-1, -5.654896051e-2, 4.644807577e-1, -1.845764816e-1,
+        1.856894940e-1, -8.335237205e-2, 9.939108789e-2, -4.191378057e-1,
+        2.642998099e-1, -4.187245965e-1, -1.599487662e-1, -1.983449310e-1,
+        3.688427433e-2, -9.002367407e-2, 7.186941803e-3, -8.031918108e-2,
+        -3.543225527e-1, -6.193388253e-3, 2.286755741e-1, -8.280418813e-2,
+        -1.612436175e-1, 2.441374958e-1,
     ];
 
     #[rustfmt::skip]
     const EXPECTED_FILTER: &[f32] = &[
-        -2.390008569e-1, 4.107360840e-1, -5.393578112e-2, -3.787913322e-1,
-        1.148596406e-1, 2.643350959e-1, 1.704293936e-1, 3.851973712e-1,
-        1.929397285e-1, 3.682322502e-1, -2.479301393e-1, -1.459030360e-1,
-        2.233161479e-1, 3.085779548e-1, -1.991903633e-1, -5.258113891e-2,
-        2.827291787e-1, -1.941110566e-2, 2.333846092e-1, 1.849579513e-1,
-        2.518873811e-1, 2.390856743e-1, 2.078615688e-2, 2.322865129e-1,
-        3.035451472e-1, 2.241833657e-1, 1.710699946e-1, 2.510573864e-1,
-        -1.063671261e-1, 1.127645522e-1, 2.294631153e-1, -1.867587566e-1,
-        -9.337446094e-2, 1.354653835e-1, -1.450302005e-1, 1.581830382e-1,
-        4.503925517e-2, 2.249642313e-1, 1.409328729e-2, -1.379725337e-1,
-        -1.148145497e-1, 1.672126055e-1, -6.092323363e-2, 1.148921698e-1,
-        7.857815921e-2, 1.521856785e-1, 2.457335964e-2, 1.280554533e-1,
-        -1.046603769e-1, -2.038645744e-2, 3.679289296e-2, 1.363310665e-1,
-        8.867676556e-2, 1.430531442e-1, 7.027553022e-2, -1.290417016e-1,
-        -5.326759443e-2, -7.688391954e-2, -4.984419793e-4, 3.461273015e-2,
-        -1.476891711e-2, -6.440655887e-2, -6.913225353e-2, -1.435296088e-1,
-        -1.487194896e-1, 3.819450736e-2, 1.412918419e-2, 2.109184116e-2,
-        1.543891430e-1, 6.110650674e-2, -2.329817563e-1, -1.582662612e-1,
-        -1.236121953e-1, -2.095370889e-1, -8.379723877e-2, -9.530526400e-2,
-        2.261012793e-3, -1.924462765e-1, -2.332431674e-1, -1.647243798e-1,
-        -1.564071476e-1, -2.119701952e-1, 6.396692991e-2, 1.333293021e-1,
-        -4.278868809e-2, -2.724905685e-2, 9.190837294e-2, -3.080812469e-2,
-        1.190198734e-1, 4.614865035e-2, 8.873917162e-2, 1.886469126e-1,
-        3.620712459e-2, 7.047310472e-2, -4.954776764e-1, 2.602601647e-1,
-        -3.018047214e-1, -1.979867816e-1, -2.703056931e-1, -2.598474622e-1,
-        3.047610521e-1, -2.968972325e-1, -3.899347782e-1, 1.288103461e-1,
-        3.816831708e-1, 1.365909129e-1, -4.073510170e-1, 5.990144610e-2,
-        -3.650510013e-1, -4.610029161e-1, 3.016918898e-1, -1.785205454e-1,
-        -2.046041936e-1, 1.874401420e-1, -1.577393264e-1, 2.782109380e-1,
-        -2.690242529e-1, 4.398821294e-1, 4.453959465e-1, -4.328653812e-1,
-        -1.177528426e-1, 3.509778380e-1, -2.882046103e-1, -3.161724508e-1,
-        1.347891390e-1, 3.917140365e-1, 3.104566038e-1, 3.903178871e-1,
-        2.783094943e-1, 1.445505917e-1, -4.857312143e-2, -2.801694274e-1,
-        3.074542037e-4, -1.751447320e-1, 3.594020605e-1, -2.784583569e-1,
-        -2.823804319e-1, 3.074039519e-1, -1.109221950e-1, -8.632538468e-2,
-        -5.524119735e-2, 2.567976117e-1, -6.930411607e-2, 2.996577024e-1,
-        -2.508986294e-1, 3.323195130e-2, -2.918217331e-2, -1.689103991e-1,
-        1.174597889e-1, -1.151192933e-2, 2.855313420e-1, 1.972979121e-2,
-        2.017346919e-1, 7.033336163e-2, 4.450906068e-2, -1.396940053e-1,
-        -1.452449411e-1, -3.044017255e-1, -7.435798645e-2, -3.079995327e-2,
-        1.267509758e-1, 1.345119625e-1, 7.836415619e-2, 1.121155731e-2,
-        -1.157617792e-1, 3.014750034e-2, -7.453708351e-2, -8.478327841e-2,
-        -3.130339086e-2, 7.391124219e-2,
+        -2.3900086e-1, 4.1073608e-1, -5.3773385e-2, -3.7897918e-1, 1.14993e-1, 2.6481003e-1,
+        1.703645e-1, 3.853445e-1, 1.9287166e-1, 3.678383e-1, -2.4762104e-1, -1.4551827e-1,
+        2.2356635e-1, 3.0885965e-1, -1.987054e-1, -5.219383e-2, 2.8244856e-1, -1.9541327e-2,
+        2.336366e-1, 1.8515253e-1, 2.5175297e-1, 2.3904517e-1, 2.083377e-2, 2.3234016e-1,
+        3.035066e-1, 2.240779e-1, 1.7113067e-1, 2.5114554e-1, -1.0640578e-1, 1.127155e-1,
+        2.2947471e-1, -1.867512e-1, -9.335261e-2, 1.3547577e-1, -1.4502983e-1, 1.5817752e-1,
+        4.4995937e-2, 2.2493283e-1, 1.4185967e-2, -1.3786554e-1, -1.148517e-1, 1.6709988e-1,
+        -6.0954727e-2, 1.1496327e-1, 7.868039e-2, 1.5232351e-1, 2.4576481e-2, 1.2806702e-1,
+        -1.0465256e-1, -2.0468993e-2, 3.67889e-2, 1.3628359e-1, 8.873594e-2, 1.4328706e-1,
+        6.992728e-2, -1.2964292e-1, -5.2889485e-2, -7.63029e-2, -4.4813193e-4, 3.4869965e-2,
+        -1.5070373e-2, -6.4622775e-2, -6.8850465e-2, -1.4340244e-1, -1.4831945e-1, 3.8684152e-2,
+        1.3466023e-2, 2.0203717e-2, 1.5388864e-1, 6.0777154e-2, -2.3385982e-1, -1.5863554e-1,
+        -1.2338738e-1, -2.0873858e-1, -8.299588e-2, -9.4702676e-2, 2.2546425e-3, -1.9279113e-1,
+        -2.3323752e-1, -1.6462044e-1, -1.5723753e-1, -2.1227634e-1, 6.5344915e-2, 1.3303834e-1,
+        -4.207961e-2, -2.7307961e-2, 9.132732e-2, -3.202663e-2, 1.2074692e-1, 4.4119246e-2,
+        8.901907e-2, 1.8973932e-1, 3.6611352e-2, 7.017813e-2, -4.9547768e-1, 2.6026016e-1,
+        -3.0180472e-1, -1.9798678e-1, -2.703057e-1, -2.5984746e-1, 3.0476105e-1, -2.9689723e-1,
+        -3.8993478e-1, 1.2881035e-1, 3.816981e-1, 1.3657752e-1, -4.07259e-1, 5.99364e-2,
+        -3.6504382e-1, -4.6093518e-1, 3.0171752e-1, -1.7840406e-1, -2.0453526e-1, 1.8751413e-1,
+        -1.5772861e-1, 2.782624e-1, -2.6883718e-1, 4.3968898e-1, 4.450286e-1, -4.3250492e-1,
+        -1.17774926e-1, 3.5103494e-1, -2.8811234e-1, -3.1618124e-1, 1.3478956e-1, 3.9144447e-1,
+        3.100561e-1, 3.8946524e-1, 2.7848703e-1, 1.4473598e-1, -4.8811097e-2, -2.8024596e-1,
+        3.7625508e-4, -1.74797e-1, 3.5875973e-1, -2.7824154e-1, -2.825716e-1, 3.0744308e-1,
+        -1.1065855e-1, -8.5957065e-2, -5.523883e-2, 2.5662157e-1, -6.912453e-2, 2.9932147e-1,
+        -2.5124815e-1, 3.326053e-2, -2.8367572e-2, -1.6786465e-1, 1.170634e-1, -1.1673854e-2,
+        2.8435925e-1, 1.9082686e-2, 2.0167722e-1, 6.942606e-2, 4.4250492e-2, -1.4029334e-1,
+        -1.454945e-1, -3.034289e-1, -7.414156e-2, -3.1050649e-2, 1.277407e-1, 1.3420306e-1,
+        7.836442e-2, 1.1202082e-2, -1.14798605e-1, 3.1137697e-2, -7.433204e-2, -8.333906e-2,
+        -3.1131253e-2, 7.3595084e-2,
     ];
 
     #[rustfmt::skip]

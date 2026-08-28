@@ -3,11 +3,6 @@ use super::dsp::Biquad;
 const BAND_BASS_HZ: f32 = 250.0;
 const BAND_MID_HZ: f32 = 2_000.0;
 
-// Downmix to mono and split into bass/mid/high via two Butterworth lowpass filters.
-// Bass:  signal below BAND_BASS_HZ
-// Mid:   signal between BAND_BASS_HZ and BAND_MID_HZ
-// High:  signal above BAND_MID_HZ
-// Returns three mono buffers, one sample per input frame.
 pub fn compute_spectral_bands(
     samples: &[f32],
     channels: usize,
@@ -44,53 +39,23 @@ pub fn compute_spectral_bands(
     (bass, mid, high)
 }
 
-// Compute per-pixel spectral color data for the region [start_sec, end_sec].
-// Returns a flat Vec of length num_points * 4: [r, g, b, amplitude, ...] per pixel.
-//
-// Design choices (each one tuned from experiment. Revisit together if any
-// change):
-//
-// Bar height uses RMS energy (sqrt of mean square) rather than peak amplitude.
-// Peak saturates: for any well-mastered track, nearly every bin contains a
-// sample near |1.0|, so peak-based heights collapse to a nearly-uniform tall
-// block and the waveform loses all shape. RMS tracks sustained energy and
-// preserves the visible envelope (quiet passages stay small, transients stand
-// out).
-//
-// Each colour channel is driven by its own band's RMS energy directly, scaled
-// by the per-band normalization. We deliberately do NOT renormalize r/g/b to
-// sum-to-1: that ties every bin to unit chroma, which washes contrast out
-// because typical mixes hold near-constant bass/mid/high ratios across the
-// track. Letting the channels ride with band energy means quiet moments look
-// dim and bass hits visibly redden.
-//
-// No perceptual gamma on brightness (previously max_amp.powf(0.4)): gamma
-// compression of that shape makes quiet and loud look similar and is the main
-// reason the display looked flat. A small linear boost (BAND_DISPLAY_BOOST,
-// AMP_DISPLAY_BOOST) compensates for the fact that RMS is numerically smaller
-// than the peak-based scales the bands were normalized against.
-// No pre-boost: storing raw normalized RMS allows the JS display layer to apply
-// a sqrt curve that spreads the full dynamic range across screen height. A
-// pre-boost here clips mastered music (raw RMS ~0.4-0.6) to 1.0, which kills
-// height variation when the JS aggregates many bins for wide zoom levels.
+// RMS rather than peak: mastered music puts a near-|1.0| sample in almost every bin, so
+// peak heights collapse to a flat block. Channels ride band energy un-normalised, and the
+// amplitude is stored raw so the sqrt curve in the frontend has range left to spread.
 const AMP_DISPLAY_BOOST: f32 = 1.0;
 const BAND_DISPLAY_BOOST: f32 = 1.0;
 
-#[allow(clippy::too_many_arguments)]
 pub fn compute_spectral_waveform_region(
     samples: &[f32],
     channels: usize,
-    bass: &[f32],
-    mid: &[f32],
-    high: &[f32],
+    bands: &super::SpectralBands,
     sample_rate: u32,
-    bass_scale: f32,
-    mid_scale: f32,
-    high_scale: f32,
     start_sec: f64,
     end_sec: f64,
     num_points: usize,
 ) -> Vec<f32> {
+    let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
+    let (bass_scale, mid_scale, high_scale) = (bands.bass_scale, bands.mid_scale, bands.high_scale);
     if bass.is_empty() || num_points == 0 {
         return vec![0.0; num_points * 4];
     }
@@ -149,31 +114,6 @@ pub fn compute_spectral_waveform_region(
     result
 }
 
-pub fn compute_amplitude_waveform(samples: &[f32], channels: usize, num_points: usize) -> Vec<f32> {
-    if samples.is_empty() || channels == 0 || num_points == 0 {
-        return vec![0.0; num_points];
-    }
-    let total_frames = samples.len() / channels;
-    let frames_per_point = total_frames as f64 / num_points as f64;
-    let mut result = Vec::with_capacity(num_points);
-    for point_index in 0..num_points {
-        let bin_start = (point_index as f64 * frames_per_point) as usize;
-        let bin_end = ((point_index + 1) as f64 * frames_per_point) as usize;
-        let bin_end = bin_end.min(total_frames).max(bin_start + 1);
-        let sample_count = ((bin_end - bin_start) * channels) as f32;
-        let sum_of_squares: f32 = samples[bin_start * channels..bin_end * channels]
-            .iter()
-            .map(|sample| sample * sample)
-            .sum();
-        result.push((sum_of_squares / sample_count).sqrt().min(1.0));
-    }
-    result
-}
-
-// RMS amplitude over the frame sub-range [start_frame, end_frame), binned into
-// num_points. Used for zoom-driven LOD: fetch only the visible track region at
-// roughly one point per on-screen pixel, so detail scales with zoom regardless
-// of track length.
 pub fn compute_amplitude_region(
     samples: &[f32],
     channels: usize,
@@ -213,7 +153,7 @@ pub fn compute_amplitude_region(
 }
 
 // Isolate kick drum energy for onset detection. Bass drum fundamentals sit
-// between 60-150 Hz; cutting above 150 Hz removes mid/snare content that
+// between 60-150 Hz. Cutting above 150 Hz removes mid/snare content that
 // would create false beat intervals.
 
 const BPM_LOWPASS_HZ: f32 = 150.0;
@@ -434,11 +374,6 @@ mod tests {
             .collect()
     }
 
-    // Requesting a region that extends past the track's actual length (as the
-    // zoom-LOD padding in Timeline.vue does near a clip's end) must not compress
-    // real audio to fill every bin. The signal should land at the bin matching
-    // its true proportional position within the *requested* (unclamped) span,
-    // not within the clamped-to-track-length span.
     #[test]
     fn compute_amplitude_region_does_not_compress_past_track_end() {
         let total_frames = 100;
@@ -451,14 +386,11 @@ mod tests {
         // happens when zoom padding overshoots the end of the track.
         let result = compute_amplitude_region(&samples, 1, 0, 200, 10);
 
-        // Correct proportional position: 40/200 = 0.20 -> bin 2, 50/200 = 0.25 -> bin 2.
         assert!(
             result[2] > 0.5,
             "expected loud bin at index 2, got {:?}",
             result
         );
-        // Buggy (pre-fix) behavior compresses the real track into bins 4-5
-        // (40/100 -> bin 4, 50/100 -> bin 5); those must stay silent here.
         assert!(
             result[4] < 0.1,
             "index 4 should be silent, got {:?}",
@@ -470,8 +402,6 @@ mod tests {
             result
         );
     }
-
-    // --- interval_to_bpm ---
 
     #[test]
     fn interval_to_bpm_zero_is_none() {
@@ -494,8 +424,6 @@ mod tests {
         assert!((bpm - 128.0).abs() < 1.0, "expected ~128 BPM, got {}", bpm);
     }
 
-    // --- find_peaks ---
-
     #[test]
     fn find_peaks_detects_isolated_spikes() {
         let mut signal = vec![0.0f32; 1000];
@@ -515,8 +443,6 @@ mod tests {
         assert_eq!(peaks.len(), 1);
         assert_eq!(peaks[0], 100);
     }
-
-    // --- detect_silence_end ---
 
     #[test]
     fn detect_silence_end_all_zeros_returns_zero() {
@@ -547,11 +473,8 @@ mod tests {
         );
     }
 
-    // --- detect_bpm ---
     //
-    // When two clusters have equal vote counts, the one whose BPM is closer to an
-    // integer should win. This covers cases where syncopated bass patterns create
-    // spurious fractional-BPM clusters that compete with the true integer BPM.
+    // Syncopated bass makes spurious fractional-BPM clusters that tie with the real one.
 
     #[test]
     fn detect_bpm_prefers_integer_bpm_over_fractional() {

@@ -1,12 +1,5 @@
-// Each resizable column holds a unitless positive "share" rather than a
-// pixel width. A column's displayed width is always its share divided by
-// the sum of every visible resizable column's share - so the visible
-// resizable columns always exactly fill whatever space they're given, by
-// construction. Rendering turns a fraction into a CSS `calc()` expression
-// against the space left over after the fixed columns (see Browser.vue), so
-// the browser's own layout engine re-divides that space on every window
-// resize with no JS involved; only an actual share change (a drag, or a
-// column being hidden/shown) needs to run any of this.
+// A share is unitless: a column's width is its share over the sum of the visible
+// ones, so they fill the space given to them whatever it is.
 export function shareFractions<F extends string>(
   fields: F[],
   getShare: (field: F) => number
@@ -29,14 +22,8 @@ type ResizeShareDeltaOptions<F extends string> = {
   minPx: number;
 };
 
-// Dragging the handle between `field` and `neighbor` moves share from one to
-// the other, keeping their combined share (and therefore every other
-// column's own share of the total) exactly constant - a resize can only
-// ever trade width with the one column immediately next to it. `deltaPx` is
-// the pixel movement since the *last* call (not since the drag started) and
-// `getShare` should read the current live share, so each call is a small,
-// self-contained step applied on top of whatever the previous call left
-// behind - nothing needs to be snapshotted at drag start.
+// `deltaPx` is movement since the last call, not since the drag started, so a
+// drag needs nothing snapshotted up front.
 export function resizeShareDelta<F extends string>(
   options: ResizeShareDeltaOptions<F>
 ): { field: number; neighbor: number } {

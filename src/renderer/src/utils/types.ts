@@ -29,25 +29,25 @@ export type SessionEvent = {
   bpm?: number;
   playback_rate?: number;
   duration?: number;
-  // Output frames since capture began; absent on synthesized events.
+  // Output frames since capture began. Absent on synthesized events.
   frame?: number;
 };
 
 // Master-scope lanes have no deck row, so they are excluded from the per-deck
 // picker and offered on the master row instead.
-export const EDITABLE_DECK_LANE_KEYS = [
+export const DECK_LANE_KEYS = [
   'gain',
   'filter',
   'rate',
   'eqLow',
   'eqMid',
-  'eqHigh'
+  'eqHigh',
+  'jog'
 ] as const;
-// The wheel lane plots recorded gestures rather than a mixer param, so it has no
-// entry in the manifest's lane specs and never reaches the splice path.
-export const DECK_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, 'jog'] as const;
 export const MASTER_LANE_KEYS = ['masterGain', 'xfader'] as const;
-export const ALL_LANE_KEYS = [...EDITABLE_DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
+export const ALL_LANE_KEYS = [...DECK_LANE_KEYS, ...MASTER_LANE_KEYS] as const;
+
+export type DeckLaneKey = (typeof DECK_LANE_KEYS)[number];
 
 export type MasterLaneKey = (typeof MASTER_LANE_KEYS)[number];
 
@@ -70,9 +70,12 @@ export function isMasterLaneKey(key: string): key is MasterLaneKey {
 
 export type EditableLaneKey = (typeof ALL_LANE_KEYS)[number];
 
-// A user-draggable unit on the timeline: one regular play segment, or one run
-// of loop iterations (which always moves as a whole). Derived from buildClips
-// output, so every field reflects what the listener actually heard.
+export function isEditableLaneKey(key: unknown): key is EditableLaneKey {
+  return typeof key === 'string' && ALL_LANE_KEYS.some((lane) => lane === key);
+}
+
+// Derived from buildClips output, so every field reflects what the listener
+// actually heard. Loop iterations always move as a whole.
 export type TransportBlock = {
   deck: string;
   blockId: number;
@@ -92,11 +95,12 @@ export type WaveSegment = {
 };
 
 export type Clip = {
-  // Clips emitted together form one editable unit: loop iterations share a blockId; a regular play segment is a block of its own.
+  // Clips emitted together form one editable unit: loop iterations share a blockId. A regular play segment is a block of its own.
   blockId: number;
-  // Recorded beat grid in effect when the clip started; null bpm = draw no beats.
+  // Recorded beat grid in effect when the clip started. Null bpm = draw no beats.
   bpm: number | null;
-  // Constant-rate pieces of the clip (rate*nudge), each mapping a track-time window to a wall-time window. Drawing the waveform and beats per segment is  what keeps them stretched/compressed correctly across rate changes.
+  // Drawing the waveform and beats per segment is what keeps them
+  // stretched/compressed correctly across rate changes.
   waveSegments: WaveSegment[];
   beatOffsetSec: number | null;
   deck: string;
@@ -121,8 +125,6 @@ export type LanePoint = { ms: number; value: number };
 
 export type FilterActiveSpan = { startMs: number; endMs: number };
 
-export type NudgeSpan = { startMs: number; endMs: number; percent: number };
-
 export type DeckLanes = {
   gain: LanePoint[];
   eqLow: LanePoint[];
@@ -139,4 +141,14 @@ export type MasterLanes = {
   gain: LanePoint[];
   // Empty for a session recorded on a mixer with no crossfader.
   xfader: LanePoint[];
+};
+
+export type Recoverable = {
+  id: string;
+  kind: 'recording' | 'render';
+  startedAt: number;
+  suggestedName: string;
+  audioPath: string | null;
+  audioBytes: number;
+  logPath: string | null;
 };

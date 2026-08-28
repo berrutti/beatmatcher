@@ -1,6 +1,5 @@
-// `initSessionCore()` must be awaited once at app startup before any of the
-// (synchronous) functions below are called; wasm-bindgen exports are sync only
-// after the module has initialized.
+// Everything below is synchronous only once `initSessionCore()` has resolved,
+// which the app awaits at startup.
 
 import init, {
   buildTimeline as wasmBuildTimeline,
@@ -14,13 +13,13 @@ import init, {
   normalizeGestureSamples as wasmNormalize,
   decimateSteps as wasmDecimate,
   spliceLaneEvents as wasmSplice,
+  resetLaneFrom as wasmResetLaneFrom,
+  laneMoveSpan as wasmLaneMoveSpan,
   filterActiveAt as wasmFilterActiveAt,
   toggleFilterActiveRange as wasmToggleFilter,
   deleteFilterActiveSpan as wasmDeleteFilterSpan,
   resizeFilterActiveSpan as wasmResizeFilterSpan,
   moveFilterActiveSpan as wasmMoveFilterSpan,
-  paintNudgeRange as wasmPaintNudge,
-  deleteNudgeRange as wasmDeleteNudge,
   setRateAt as wasmSetRateAt,
   setRateSpan as wasmSetRateSpan,
   relocateEventPaths as wasmRelocate,
@@ -38,7 +37,6 @@ import type {
   LoadedSpan,
   DeckLanes,
   MasterLanes,
-  NudgeSpan,
   LanePoint,
   EditableLaneKey,
   TransportBlock
@@ -62,10 +60,8 @@ const parse = <T>(json: string): T => JSON.parse(json) as T;
 type RawClip = Omit<Clip, 'trackName'>;
 type RawLoadedSpan = Omit<LoadedSpan, 'trackName'>;
 
-// Clips, loaded spans, and automation lanes in a single boundary crossing: the
-// editor needs all of them on every event change, so deriving them together
-// serializes the event list once instead of once per builder. Track display
-// names are still resolved here (the Rust core returns paths only).
+// One boundary crossing for all three, so an event change serializes the list
+// once rather than once per builder.
 export function buildTimeline(
   events: SessionEvent[],
   durationMs: number,
@@ -77,7 +73,6 @@ export function buildTimeline(
   loadedSpans: LoadedSpan[];
   deckLanes: Record<string, DeckLanes>;
   masterLanes: MasterLanes;
-  deckNudges: Record<string, NudgeSpan[]>;
   deckJog: Record<string, LanePoint[]>;
 } {
   const raw = parse<{
@@ -85,16 +80,11 @@ export function buildTimeline(
     loadedSpans: RawLoadedSpan[];
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
-    deckNudges: Record<string, NudgeSpan[]>;
     deckJog: Record<string, LanePoint[]>;
   }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
   return {
-    // The beat grid (bpm + offset) is a property of the track, not of the
-    // recording, so it is looked up by path from the track's saved grid (the
-    // same source the edit view draws from). This keeps the session beats
-    // aligned with the edit view for every clip, including older recordings
-    // whose events never captured the offset. Recorded values stay as a
-    // fallback for tracks missing from the collection.
+    // The grid belongs to the track, not the recording, so it is looked up by path.
+    // Recorded values are the fallback for a track missing from the collection.
     clips: raw.clips.map((clip) => {
       const grid = gridForPath(clip.trackPath);
       return {
@@ -110,7 +100,6 @@ export function buildTimeline(
     })),
     deckLanes: raw.deckLanes,
     masterLanes: raw.masterLanes,
-    deckNudges: raw.deckNudges,
     deckJog: raw.deckJog
   };
 }
@@ -138,7 +127,7 @@ export function blockBounds(
   block: TransportBlock
 ): BlockBounds | null {
   // The Rust side has no JSON form for an open-ended (Infinity) right bound, so
-  // it sends null; restore Infinity here.
+  // it sends null. Restore Infinity here.
   const raw = parse<{
     minStartMs: number;
     maxEndMs: number | null;
@@ -187,12 +176,10 @@ export type LaneSpec = {
   max: number;
   defaultValue: number;
   epsilon: number;
-  shortLabel: string;
-  laneGroup: number;
   unit: LaneUnit;
 };
 
-type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio';
+type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio' | 'percent';
 
 const laneSpecCache = new Map<string, Record<EditableLaneKey, LaneSpec>>();
 
@@ -209,8 +196,6 @@ export function laneSpecs(mixerId: string): Record<EditableLaneKey, LaneSpec> {
 export type MixerParamSpec = {
   slot: string;
   param: string;
-  label: string;
-  shortLabel: string;
   min: number;
   max: number;
   defaultValue: number;
@@ -258,10 +243,8 @@ export function trimTransportBlock(
   return result;
 }
 
-// Splits a block into two at splitMs, gaplessly (a stop immediately followed
-// by a play, the right part resuming exactly the audio it already played). A
-// no-op (returns the same events reference) if splitMs is within minBlockMs of
-// either edge.
+// Returns the same reference when `splitMs` is within `minBlockMs` of an edge,
+// so a caller can skip a no-op by identity.
 export function splitTransportBlock(
   events: SessionEvent[],
   clips: Clip[],
@@ -274,9 +257,7 @@ export function splitTransportBlock(
   return result.length === events.length ? events : result;
 }
 
-// A range covering a whole block deletes it, an edge range trims it, and an
-// interior range splits the block (the right part keeps playing exactly the
-// audio it played before).
+// One edit for every range: applied singly a delete, a trim and a split fight.
 export function deleteTransportRanges(
   events: SessionEvent[],
   clips: Clip[],
@@ -297,8 +278,8 @@ export function spliceLaneEvents(
   t0: number,
   t1: number,
   points: LanePoint[],
-  rateMin = 0.92,
-  rateMax = 1.08
+  rateMin: number,
+  rateMax: number
 ): SessionEvent[] {
   return parse(
     wasmSplice(
@@ -312,6 +293,39 @@ export function spliceLaneEvents(
       rateMin,
       rateMax
     )
+  );
+}
+
+export type ResetExtent = 'toEnd' | 'untilHere' | 'thisMove';
+
+export type LaneMoveSpan = { startMs: number; endMs: number };
+
+export function laneMoveSpan(
+  events: SessionEvent[],
+  laneKey: EditableLaneKey,
+  mixerId: string,
+  deck: string,
+  ms: number,
+  rateMin: number,
+  rateMax: number
+): LaneMoveSpan | null {
+  return parse(
+    wasmLaneMoveSpan(JSON.stringify(events), laneKey, mixerId, deck, ms, rateMin, rateMax)
+  );
+}
+
+export function resetLaneFrom(
+  events: SessionEvent[],
+  laneKey: EditableLaneKey,
+  mixerId: string,
+  deck: string,
+  ms: number,
+  extent: ResetExtent,
+  rateMin: number,
+  rateMax: number
+): SessionEvent[] {
+  return parse(
+    wasmResetLaneFrom(JSON.stringify(events), laneKey, mixerId, deck, ms, extent, rateMin, rateMax)
   );
 }
 
@@ -367,29 +381,6 @@ export function moveFilterActiveSpan(
   return parse(
     wasmMoveFilterSpan(JSON.stringify(events), deck, startMs, endMs, deltaMs, durationMs)
   );
-}
-
-export function paintNudgeRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number,
-  percent: number
-): SessionEvent[] {
-  return parse(wasmPaintNudge(JSON.stringify(events), deck, t0, t1, percent));
-}
-
-// No-op (Rust sends null) returns the input reference so callers can skip it.
-export function deleteNudgeRange(
-  events: SessionEvent[],
-  deck: string,
-  t0: number,
-  t1: number
-): SessionEvent[] {
-  const edited = parse<SessionEvent[] | null>(
-    wasmDeleteNudge(JSON.stringify(events), deck, t0, t1)
-  );
-  return edited ?? events;
 }
 
 export function setRateAt(

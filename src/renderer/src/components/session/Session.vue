@@ -8,12 +8,29 @@
     @cancel="discardModalOpen = false"
   />
 
-  <SessionLoadingModal
+  <ProgressModal
     :open="session.isLoading"
-    :phase="session.loadProgress?.phase ?? 'parsing'"
+    :title="$t('session.loadingTitle')"
+    :body="$t('session.loadingBody')"
+    :label="loadLabel"
     :fraction="session.loadedFraction"
-    :loaded-tracks="session.loadProgress?.loadedTracks ?? 0"
-    :total-tracks="session.loadProgress?.totalTracks ?? 0"
+    :determinate="loadIsMeasured"
+    :counts="loadCounts"
+  />
+
+  <ProgressModal
+    :open="session.renderProgress !== null"
+    :title="$t('session.renderingTitle')"
+    :body="$t('session.renderingBody')"
+    :label="
+      session.renderProgress?.writing
+        ? $t('session.renderingPhaseWriting')
+        : $t('session.renderingPhaseRendering')
+    "
+    :fraction="session.renderProgress?.fraction ?? 0"
+    :determinate="!session.renderProgress?.writing"
+    :cancel-label="session.renderProgress?.writing ? '' : $t('modal.cancel')"
+    @cancel="onCancelRender"
   />
 
   <div class="session" v-bind="$attrs">
@@ -48,7 +65,6 @@
           :playhead-ms="playheadMs"
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
-          :deck-nudges="deckNudges"
           :deck-jog="deckJog"
           :waveforms="session.waveforms"
           @seek="onSeek"
@@ -65,14 +81,6 @@
       >
         {{ session.isPlaying ? '⏸︎' : '▶︎' }}
       </button>
-      <button
-        class="session__btn session__btn--transport"
-        :class="{ 'session__btn--active': editStore.editMode }"
-        v-tooltip="$t('session.edit')"
-        @click="editStore.toggleEditMode()"
-      >
-        ✎
-      </button>
       <span class="session__duration">
         {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
       </span>
@@ -85,7 +93,7 @@
           :disabled="!editStore.dirty"
           @click="editStore.save()"
         >
-          {{ $t('session.save') }}
+          {{ $t('modal.save') }}
         </button>
         <button class="session__btn session__btn--render" @click="editStore.saveAs()">
           {{ $t('session.saveAs') }}
@@ -112,20 +120,23 @@
 
 <script setup lang="ts">
 defineOptions({ inheritAttrs: false });
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { storeToRefs } from 'pinia';
-import { useSessionStore } from '@renderer/stores/session';
+import {
+  useSessionStore,
+  SESSION_LOAD_PHASE_KEYS,
+  sessionLoadIsMeasured
+} from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
 import { useCollectionStore } from '@renderer/stores/collection';
-import { useMixerStore } from '@renderer/stores/mixer';
 import { useSettingsStore } from '@renderer/stores/settings';
 import { useSessionTimeline } from '@renderer/composables/useSessionTimeline';
 import SessionTimeline from '@renderer/components/session/Timeline.vue';
 import Modal from '@renderer/components/modals/Modal.vue';
-import SessionLoadingModal from '@renderer/components/modals/SessionLoadingModal.vue';
+import ProgressModal from '@renderer/components/modals/ProgressModal.vue';
 import { formatMs, dateStamp } from '@renderer/utils/time';
 import { basename } from '@renderer/utils/path';
 
@@ -133,18 +144,32 @@ const { t } = useI18n();
 const session = useSessionStore();
 const editStore = useSessionEditStore();
 const collection = useCollectionStore();
-const mixer = useMixerStore();
 const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog } = useSessionTimeline(
+const { clips, loadedSpans, deckLanes, masterLanes, deckJog } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path),
   (path) => {
     const saved = collection.getSaved(path);
-    return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
+    if (saved === null || saved.bpm === null) return null;
+    return { bpm: saved.bpm, beatOffsetSec: saved.beatOffset };
   }
 );
+
+const loadPhase = computed(() => session.loadProgress?.phase ?? 'parsing');
+const loadIsMeasured = computed(() => sessionLoadIsMeasured(loadPhase.value));
+const loadLabel = computed(() => t(SESSION_LOAD_PHASE_KEYS[loadPhase.value]));
+const loadCounts = computed(() => {
+  const total = session.loadProgress?.totalTracks ?? 0;
+  return loadIsMeasured.value && total > 0
+    ? t('session.loadingTracks', { loaded: session.loadProgress?.loadedTracks ?? 0, total })
+    : '';
+});
+
+async function onCancelRender(): Promise<void> {
+  await session.cancelRender();
+}
 
 const isFileDragOver = ref(false);
 const isRendering = ref<boolean>(false);
@@ -153,9 +178,8 @@ let rafId = 0;
 let playStartWall = 0;
 let unlistenDrop: UnlistenFn | null = null;
 
-// OS file drops are handled by Tauri's native drag-drop, not HTML5 DnD
-// (dragDropEnabled is on, and File.path no longer exists in Tauri v2), so the
-// absolute path comes from the webview drag-drop event.
+// Tauri v2 dropped File.path, so an absolute path only arrives on the webview's
+// own drag-drop event, not through HTML5 DnD.
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown);
   unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -180,13 +204,24 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   );
 }
 
-// Spacebar toggles transport, like the edit view. preventDefault also stops a
-// focused button from being activated by the same keypress.
+// Only while nothing is focused, so Tab still walks the controls once a user has
+// reached them with the keyboard.
+function isBodyFocused(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
+
+// preventDefault stops a focused button taking the same keypress, and stops the
+// browser moving focus on Tab.
 function onKeyDown(e: KeyboardEvent) {
-  if (e.code !== 'Space' || e.repeat) return;
-  if (!session.session || settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) {
+  if (e.repeat) return;
+  if (settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) return;
+  if (e.code === 'Tab') {
+    if (!isBodyFocused()) return;
+    e.preventDefault();
+    editStore.toggleEditMode();
     return;
   }
+  if (e.code !== 'Space' || !session.session) return;
   e.preventDefault();
   onTransport().catch(() => {});
 }
@@ -229,7 +264,7 @@ async function onSeek(ms: number) {
 
 async function onRender(useFlac: boolean) {
   if (!session.session || isRendering.value) return;
-  const outputPath = await mixer.pickRenderOutputPath(
+  const outputPath = await session.pickRenderOutputPath(
     useFlac,
     t('files.defaultName', { date: dateStamp() })
   );
@@ -237,7 +272,7 @@ async function onRender(useFlac: boolean) {
   isRendering.value = true;
   try {
     await editStore.flushSync();
-    await mixer.renderSession(session.session.path, outputPath, useFlac);
+    await session.renderSession(session.session.path, outputPath, useFlac);
   } finally {
     isRendering.value = false;
   }
@@ -407,11 +442,20 @@ onUnmounted(() => {
   cursor: default;
 }
 
-.session__btn--transport:hover:not(:disabled),
+.session__btn--transport:hover:not(:disabled):not(.session__btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
+
 .session__btn--active {
-  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
   border-color: var(--color-accent-cyan);
   color: var(--color-accent-cyan);
+}
+
+.session__btn--active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .session__duration {
@@ -443,9 +487,9 @@ onUnmounted(() => {
 }
 
 .session__btn--render:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
-  border-color: var(--color-accent-cyan);
-  color: var(--color-accent-cyan);
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .session__btn--render:disabled {
@@ -454,7 +498,8 @@ onUnmounted(() => {
 }
 
 .session__btn--eject:hover {
+  border-color: var(--color-border-hover);
   color: var(--color-text);
-  border-color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 </style>

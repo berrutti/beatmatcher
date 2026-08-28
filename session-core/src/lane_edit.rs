@@ -1,9 +1,3 @@
-// Automation-lane editing: draw/clear value gestures (gain/eq/filter/rate),
-// toggle the filter on/off over a range, paint/delete nudge spans, and relocate
-// track paths. A faithful port of the frontend's sessionEditOps.ts. The TS
-// LaneSpec carried closures; here it is an enum (EditableLane) with a resolved
-// LaneSpec and matching/value/make logic in methods.
-
 use crate::event::SessionEvent;
 use crate::param::{MixerManifest, ParamDescriptor, ParamScope};
 use crate::timeline::{LanePoint, DEFAULT_RATE};
@@ -23,15 +17,17 @@ pub const FILTER_DEAD_ZONE: f64 = 0.05;
 // has no descriptor to read these from.
 const RATE_MIN: f64 = 0.92;
 const RATE_MAX: f64 = 1.08;
-const RATE_SHORT_LABEL: &str = "RT";
-const RATE_LANE_GROUP: u8 = 2;
 const RATE_UNIT: &str = "ratio";
+const NUDGE_UNIT: &str = "percent";
+
+// What a hand can usefully draw. A wheel spike can exceed it, and the lane clips
+// it: a range wide enough for the worst recorded gesture leaves a nudge invisible.
+const NUDGE_MIN_PCT: f64 = -16.0;
+const NUDGE_MAX_PCT: f64 = 16.0;
 
 /// How the editor labels a lane. `unit` is what the value means, so a gesture
 /// readout cannot print dB for a mixer whose eq is a 0-1 kill.
 pub struct LaneDisplay {
-    pub short_label: &'static str,
-    pub lane_group: u8,
     pub unit: &'static str,
 }
 
@@ -43,15 +39,17 @@ pub enum EditableLane {
     EqHigh,
     Filter,
     Rate,
+    Jog,
     MasterGain,
     Xfader,
 }
 
 impl EditableLane {
-    pub const ALL: [EditableLane; 8] = [
+    pub const ALL: [EditableLane; 9] = [
         Self::Gain,
         Self::Filter,
         Self::Rate,
+        Self::Jog,
         Self::EqLow,
         Self::EqMid,
         Self::EqHigh,
@@ -67,6 +65,7 @@ impl EditableLane {
             Self::EqHigh => "eqHigh",
             Self::Filter => "filter",
             Self::Rate => "rate",
+            Self::Jog => "jog",
             Self::MasterGain => "masterGain",
             Self::Xfader => "xfader",
         }
@@ -76,7 +75,7 @@ impl EditableLane {
         Self::ALL.into_iter().find(|lane| lane.key() == key)
     }
 
-    // None for Rate, which is transport rather than a mixer param.
+    // None for the transport lanes, which are not mixer params.
     pub fn slot_param(&self) -> Option<(&'static str, &'static str)> {
         Some(match self {
             Self::Gain => ("fader", "gain"),
@@ -86,7 +85,7 @@ impl EditableLane {
             Self::Filter => ("filter", "value"),
             Self::MasterGain => ("gain", "gain"),
             Self::Xfader => ("xfader", "position"),
-            Self::Rate => return None,
+            Self::Rate | Self::Jog => return None,
         })
     }
 
@@ -112,18 +111,19 @@ impl EditableLane {
         }
     }
 
-    // Rate is transport, so it has no descriptor to carry its display metadata.
     pub fn display(&self, mixer: &'static MixerManifest) -> LaneDisplay {
-        match self.descriptor(mixer).or_else(|| self.canonical_descriptor()) {
+        match self
+            .descriptor(mixer)
+            .or_else(|| self.canonical_descriptor())
+        {
             Some(descriptor) => LaneDisplay {
-                short_label: descriptor.short_label,
-                lane_group: descriptor.lane_group,
                 unit: descriptor.unit.id(),
             },
             None => LaneDisplay {
-                short_label: RATE_SHORT_LABEL,
-                lane_group: RATE_LANE_GROUP,
-                unit: RATE_UNIT,
+                unit: match self {
+                    Self::Jog => NUDGE_UNIT,
+                    _ => RATE_UNIT,
+                },
             },
         }
     }
@@ -143,11 +143,11 @@ fn lane_epsilon(lane: EditableLane) -> f64 {
     match lane {
         EditableLane::EqLow | EditableLane::EqMid | EditableLane::EqHigh => 0.25,
         EditableLane::Rate => 0.0005,
+        EditableLane::Jog => 0.1,
         _ => 0.01,
     }
 }
 
-/// Rate is transport, not a mixer param, so it needs no manifest to resolve.
 pub fn rate_lane_spec(rate_min: Option<f64>, rate_max: Option<f64>) -> LaneSpec {
     LaneSpec {
         lane: EditableLane::Rate,
@@ -158,15 +158,31 @@ pub fn rate_lane_spec(rate_min: Option<f64>, rate_max: Option<f64>) -> LaneSpec 
     }
 }
 
+fn jog_lane_spec() -> LaneSpec {
+    LaneSpec {
+        lane: EditableLane::Jog,
+        min: NUDGE_MIN_PCT,
+        max: NUDGE_MAX_PCT,
+        default_value: 0.0,
+        epsilon: lane_epsilon(EditableLane::Jog),
+    }
+}
+
 pub fn lane_spec_for(
     lane: EditableLane,
     mixer: &'static MixerManifest,
     rate_min: Option<f64>,
     rate_max: Option<f64>,
 ) -> LaneSpec {
-    // Rate is the only lane without a descriptor of its own.
+    if lane == EditableLane::Jog {
+        return jog_lane_spec();
+    }
+    // Rate is the only remaining lane without a descriptor of its own.
     // `every_mixer_lane_resolves_to_a_descriptor` stops a mixer lane landing here.
-    let Some(descriptor) = lane.descriptor(mixer).or_else(|| lane.canonical_descriptor()) else {
+    let Some(descriptor) = lane
+        .descriptor(mixer)
+        .or_else(|| lane.canonical_descriptor())
+    else {
         return rate_lane_spec(rate_min, rate_max);
     };
     LaneSpec {
@@ -179,16 +195,14 @@ pub fn lane_spec_for(
 }
 
 impl LaneSpec {
-    fn snap(&self, value: f64) -> f64 {
-        if self.lane == EditableLane::Filter && value.abs() <= FILTER_DEAD_ZONE {
-            0.0
-        } else {
-            value
-        }
+    // The decimation tolerance, not the filter's dead zone: a knob nudged a
+    // little is inaudible but still a recorded move a reset should reach.
+    pub fn is_default(&self, value: f64) -> bool {
+        (value - self.default_value).abs() <= self.epsilon
     }
 
     pub fn clamp_value(&self, value: f64) -> f64 {
-        self.snap(self.max.min(self.min.max(value)))
+        self.max.min(self.min.max(value))
     }
 
     fn event_deck<'a>(&self, deck: &'a str) -> Option<&'a str> {
@@ -199,17 +213,27 @@ impl LaneSpec {
     }
 
     fn matches(&self, event: &SessionEvent, deck: &str) -> bool {
-        if self.lane == EditableLane::Rate {
-            return event.event_type == "set_playback_rate"
-                && event.deck.as_deref() == Some(deck);
+        match self.lane {
+            // Both, because the lane plots one summed deviation: a drawn curve
+            // replaces the wheel gesture rather than having to cancel it.
+            EditableLane::Jog => {
+                matches!(event.event_type.as_str(), "set_nudge" | "jog")
+                    && event.deck.as_deref() == Some(deck)
+            }
+            EditableLane::Rate => {
+                event.event_type == "set_playback_rate" && event.deck.as_deref() == Some(deck)
+            }
+            _ => match self.lane.slot_param() {
+                Some((slot, param)) => event.is_param(self.event_deck(deck), slot, param),
+                None => false,
+            },
         }
-        let Some((slot, param)) = self.lane.slot_param() else {
-            return false;
-        };
-        event.is_param(self.event_deck(deck), slot, param)
     }
 
     fn value_at(&self, event: &SessionEvent, deck: &str) -> Option<f64> {
+        if self.lane == EditableLane::Jog {
+            return self.matches(event, deck).then_some(event.percent)?;
+        }
         if self.lane == EditableLane::Rate {
             let deck_ok = event.deck.as_deref() == Some(deck);
             if event.event_type == "set_playback_rate" && deck_ok {
@@ -225,6 +249,12 @@ impl LaneSpec {
     }
 
     fn make_event(&self, ms: f64, value: f64, deck: &str) -> SessionEvent {
+        if self.lane == EditableLane::Jog {
+            return SessionEvent {
+                percent: Some(value),
+                ..SessionEvent::at(ms, "set_nudge", deck)
+            };
+        }
         if self.lane == EditableLane::Rate {
             return SessionEvent {
                 rate: Some(value),
@@ -239,12 +269,7 @@ impl LaneSpec {
     }
 }
 
-fn sort_by_ms(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events.sort_by(crate::sim::event_sim_order);
-    events
-}
-
-// A drag can scrub back and forth over the same time range; the last value
+// A drag can scrub back and forth over the same time range. The last value
 // written at each timestamp is the one the user ended on.
 pub fn normalize_gesture_samples(samples: &[LanePoint]) -> Vec<LanePoint> {
     let mut by_ms: HashMap<u64, f64> = HashMap::new();
@@ -279,12 +304,7 @@ pub fn decimate_steps(points: &[LanePoint], epsilon: f64) -> Vec<LanePoint> {
     out
 }
 
-pub fn original_value_at(
-    events: &[SessionEvent],
-    spec: &LaneSpec,
-    deck: &str,
-    ms: f64,
-) -> f64 {
+pub fn original_value_at(events: &[SessionEvent], spec: &LaneSpec, deck: &str, ms: f64) -> f64 {
     for event in events.iter().rev() {
         if event.elapsed_ms > ms {
             continue;
@@ -296,9 +316,6 @@ pub fn original_value_at(
     spec.default_value
 }
 
-// Replaces this lane's events inside [range_start_ms, range_end_ms] with the
-// drawn points and restores the original value at range_end_ms, so everything
-// after the gesture sounds unchanged.
 pub fn splice_lane_events(
     events: &[SessionEvent],
     spec: &LaneSpec,
@@ -323,7 +340,7 @@ pub fn splice_lane_events(
 
     // Sorted first because `points` arrives from a public API and a drag can scrub
     // backwards. The restore check has to compare against the temporally last value.
-    let mut inserted: Vec<SessionEvent> = sort_by_ms(
+    let mut inserted: Vec<SessionEvent> = crate::sim::sorted_by_sim_order(
         points
             .iter()
             .map(|point| spec.make_event(point.ms, spec.clamp_value(point.value), deck))
@@ -337,19 +354,114 @@ pub fn splice_lane_events(
     }
 
     kept.append(&mut inserted);
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Insert (or replace) a single set_playback_rate point for `deck` at `ms`. The
-// rate lane is a step function, so one inserted point holds until the next
-// existing change. Backs the editor's "Set BPM" (right-click a clip), which
-// converts a target BPM to rate = target_bpm / track_bpm before calling here.
-pub fn set_rate_at(
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResetExtent {
+    ToEnd,
+    UntilHere,
+    ThisMove,
+}
+
+// The excursion around `ms`, bounded by the crossings either side rather than by
+// the neighbouring events: a recorded curve changes on every frame it was moved,
+// so stopping at the neighbours would flatten a millisecond.
+pub fn lane_move_span(
     events: &[SessionEvent],
+    spec: &LaneSpec,
     deck: &str,
     ms: f64,
-    rate: f64,
+) -> Option<(f64, f64)> {
+    if spec.is_default(original_value_at(events, spec, deck, ms)) {
+        return None;
+    }
+    let lane = lane_values(events, spec, deck);
+    let runs = side_runs(&lane, spec);
+    let here = runs
+        .iter()
+        .rposition(|run| lane[run.0].0 <= ms && run.2 != 0)
+        .unwrap_or(0);
+
+    // The run's own events, inclusive: bounding it by the event after it would
+    // miss the last one whenever the crossing was recorded on the same
+    // millisecond, and the move on the other side begins at its own first event.
+    Some((lane[runs[here].0].0.min(ms), lane[runs[here].1].0))
+}
+
+// (first index, last index, side) for each run of values on one side of the
+// default: above it, below it, or on it.
+fn side_runs(lane: &[(f64, f64)], spec: &LaneSpec) -> Vec<(usize, usize, i8)> {
+    let mut runs: Vec<(usize, usize, i8)> = Vec::new();
+    for (idx, (_, value)) in lane.iter().enumerate() {
+        let side = if spec.is_default(*value) {
+            0
+        } else if *value > spec.default_value {
+            1
+        } else {
+            -1
+        };
+        match runs.last_mut() {
+            Some(run) if run.2 == side => run.1 = idx,
+            _ => runs.push((idx, idx, side)),
+        }
+    }
+    runs
+}
+
+pub fn reset_lane_from(
+    events: &[SessionEvent],
+    spec: &LaneSpec,
+    deck: &str,
+    ms: f64,
+    extent: ResetExtent,
 ) -> Vec<SessionEvent> {
+    let span = lane_move_span(events, spec, deck, ms);
+    if extent == ResetExtent::ThisMove && span.is_none() {
+        return events.to_vec();
+    }
+    let (move_start, move_end) = span.unwrap_or((ms, ms));
+
+    let drops = |at: f64| match extent {
+        ResetExtent::ToEnd => at >= ms,
+        ResetExtent::UntilHere => at <= ms,
+        ResetExtent::ThisMove => at >= move_start && at <= move_end,
+    };
+
+    let mut kept: Vec<SessionEvent> = events
+        .iter()
+        .filter(|event| !(spec.matches(event, deck) && drops(event.elapsed_ms)))
+        .cloned()
+        .collect();
+    // Nothing to hold before the first event: the lane starts at its default.
+    if extent != ResetExtent::UntilHere {
+        let at = if extent == ResetExtent::ThisMove {
+            move_start
+        } else {
+            ms
+        };
+        if !spec.is_default(original_value_at(&kept, spec, deck, at)) {
+            kept.push(spec.make_event(at, spec.default_value, deck));
+        }
+    }
+    crate::sim::sorted_by_sim_order(kept)
+}
+
+fn lane_values(events: &[SessionEvent], spec: &LaneSpec, deck: &str) -> Vec<(f64, f64)> {
+    let mut values: Vec<(f64, f64)> = events
+        .iter()
+        .filter(|event| spec.matches(event, deck))
+        .filter_map(|event| {
+            spec.value_at(event, deck)
+                .map(|value| (event.elapsed_ms, value))
+        })
+        .collect();
+    values.sort_by(|first, second| first.0.partial_cmp(&second.0).unwrap_or(Ordering::Equal));
+    values
+}
+
+// The rate lane is a step function, so one inserted point holds until the next change.
+pub fn set_rate_at(events: &[SessionEvent], deck: &str, ms: f64, rate: f64) -> Vec<SessionEvent> {
     let mut kept: Vec<SessionEvent> = events
         .iter()
         .filter(|event| {
@@ -363,14 +475,10 @@ pub fn set_rate_at(
         rate: Some(rate),
         ..SessionEvent::at(ms, "set_playback_rate", deck)
     });
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Set one uniform rate over the whole clip span [start_ms, end_ms]: drop the
-// deck's rate changes inside it, open with `rate` at start_ms, and restore the
-// pre-edit rate at end_ms so playback after the clip is unchanged. Backs the
-// editor's "Set BPM (whole clip)". Unlike splice_lane_events the rate is NOT
-// clamped to the lane's display range, since the user typed an explicit BPM.
+// The rate is not clamped to the lane's display range: the user typed a BPM.
 pub fn set_rate_span(
     events: &[SessionEvent],
     deck: &str,
@@ -403,12 +511,9 @@ pub fn set_rate_span(
             ..SessionEvent::at(end_ms, "set_playback_rate", deck)
         });
     }
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Scans backwards for the last event of `event_type` for `deck` at or before
-// `ms` (or strictly before, if `!inclusive`) and returns the field `get`
-// extracts from it, or `default` if none is found.
 fn last_value_at<T: Copy>(
     events: &[SessionEvent],
     ms: f64,
@@ -435,12 +540,7 @@ fn last_value_at<T: Copy>(
     default
 }
 
-pub fn filter_active_at(
-    events: &[SessionEvent],
-    deck: &str,
-    ms: f64,
-    inclusive: bool,
-) -> bool {
+pub fn filter_active_at(events: &[SessionEvent], deck: &str, ms: f64, inclusive: bool) -> bool {
     last_value_at(
         events,
         ms,
@@ -451,26 +551,6 @@ pub fn filter_active_at(
     )
 }
 
-pub fn nudge_value_at(
-    events: &[SessionEvent],
-    deck: &str,
-    ms: f64,
-    inclusive: bool,
-) -> f64 {
-    last_value_at(
-        events,
-        ms,
-        inclusive,
-        |event| event.event_type == "set_nudge" && event.deck.as_deref() == Some(deck),
-        |event| event.percent,
-        0.0,
-    )
-}
-
-// Replaces every `event_type` event for `deck` in [range_start_ms,
-// range_end_ms] with an opener at range_start_ms
-// carrying `new_value`, and (if it differs) a restorer at range_end_ms carrying
-// `restore_value`. Shared by toggle_filter_active_range and paint_nudge_range.
 fn replace_range_with_opener_and_restore<T: PartialEq + Copy>(
     events: &[SessionEvent],
     matches: impl Fn(&SessionEvent) -> bool,
@@ -494,12 +574,9 @@ fn replace_range_with_opener_and_restore<T: PartialEq + Copy>(
     }
 
     kept.append(&mut inserted);
-    sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Shift+drag on the filter lane: toggles filter on/off over [range_start_ms,
-// range_end_ms], restoring
-// the original state at range_end_ms.
 pub fn toggle_filter_active_range(
     events: &[SessionEvent],
     deck: &str,
@@ -515,58 +592,17 @@ pub fn toggle_filter_active_range(
         events,
         |event| event.is_param(Some(deck), "filter", "active"),
         |ms, value: bool| {
-            SessionEvent::param(ms, Some(deck), "filter", "active", if value { 1.0 } else { 0.0 })
+            SessionEvent::param(
+                ms,
+                Some(deck),
+                "filter",
+                "active",
+                if value { 1.0 } else { 0.0 },
+            )
         },
         (range_start_ms, range_end_ms),
         (want, restore),
     )
-}
-
-// Shift+drag paints a nudge over [range_start_ms, range_end_ms]; the recorded
-// value at range_end_ms is restored.
-pub fn paint_nudge_range(
-    events: &[SessionEvent],
-    deck: &str,
-    range_start_ms: f64,
-    range_end_ms: f64,
-    percent: f64,
-) -> Vec<SessionEvent> {
-    if range_end_ms - range_start_ms < MIN_GESTURE_MS {
-        return events.to_vec();
-    }
-    let restore = nudge_value_at(events, deck, range_end_ms, true);
-    replace_range_with_opener_and_restore(
-        events,
-        |event| event.event_type == "set_nudge" && event.deck.as_deref() == Some(deck),
-        |ms, value| SessionEvent {
-            percent: Some(value),
-            ..SessionEvent::at(ms, "set_nudge", deck)
-        },
-        (range_start_ms, range_end_ms),
-        (percent, restore),
-    )
-}
-
-// Removes every set_nudge for the deck in [range_start_ms, range_end_ms] except a non-zero opener at
-// range_end_ms (the adjacent span's start). None = nothing matched (no-op for callers).
-pub fn delete_nudge_range(
-    events: &[SessionEvent],
-    deck: &str,
-    range_start_ms: f64,
-    range_end_ms: f64,
-) -> Option<Vec<SessionEvent>> {
-    let in_range = |event: &SessionEvent| {
-        event.event_type == "set_nudge"
-            && event.deck.as_deref() == Some(deck)
-            && event.elapsed_ms >= range_start_ms
-            && event.elapsed_ms <= range_end_ms
-            && !((event.elapsed_ms - range_end_ms).abs() <= FILTER_SPAN_EPS_MS
-                && event.percent != Some(0.0))
-    };
-    if !events.iter().any(in_range) {
-        return None;
-    }
-    Some(events.iter().filter(|event| !in_range(event)).cloned().collect())
 }
 
 const FILTER_SPAN_EPS_MS: f64 = 1.0;
@@ -575,9 +611,7 @@ fn is_set_filter_active_event(event: &SessionEvent, deck: &str) -> bool {
     event.is_param(Some(deck), "filter", "active")
 }
 
-// Delete a filter-active span: drop its opening (active=true at start_ms) and,
-// if present, its closing (active=false at end_ms). A span that ran to the end
-// of the session has no closing event. Filter is off across the gap afterwards.
+// A span that ran to the end of the session has no closing event to drop.
 pub fn delete_filter_active_span(
     events: &[SessionEvent],
     deck: &str,
@@ -592,18 +626,16 @@ pub fn delete_filter_active_span(
             }
             let opener = event.value == Some(1.0)
                 && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
-            let closer = event.value == Some(0.0)
-                && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+            let closer =
+                event.value == Some(0.0) && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
             !(opener || closer)
         })
         .cloned()
         .collect()
 }
 
-// Stretch one edge of a filter-active span [start_ms, end_ms] to new_ms, clamped
-// so it keeps at least MIN_GESTURE_MS and never crosses the neighbouring filter
-// event. Moving the "start" edge relocates the opener; moving "end" relocates the
-// closer (or, for a span that ran to the session end, inserts one to close it).
+// A span that ran to the session end has no closer, so moving that edge in
+// inserts one rather than relocating it.
 pub fn resize_filter_active_span(
     events: &[SessionEvent],
     deck: &str,
@@ -647,10 +679,9 @@ pub fn resize_filter_active_span(
                 }
             })
             .collect();
-        return sort_by_ms(out);
+        return crate::sim::sorted_by_sim_order(out);
     }
 
-    // edge == "end"
     let next = fa_ms
         .iter()
         .copied()
@@ -683,19 +714,20 @@ pub fn resize_filter_active_span(
                 }
             })
             .collect();
-        sort_by_ms(out)
+        crate::sim::sorted_by_sim_order(out)
     } else {
         let mut out = events.to_vec();
-        out.push(SessionEvent::param(clamped, Some(deck), "filter", "active", 0.0));
-        sort_by_ms(out)
+        out.push(SessionEvent::param(
+            clamped,
+            Some(deck),
+            "filter",
+            "active",
+            0.0,
+        ));
+        crate::sim::sorted_by_sim_order(out)
     }
 }
 
-// Slide a whole filter-active span [start_ms, end_ms] by delta_ms, shifting its
-// opener (active=true) and closer (active=false) together. Clamped so the span
-// stays within the gap between its neighbouring filter events and inside
-// [0, duration_ms]. A span with no closer (ran to session end) only shifts its
-// opener.
 pub fn move_filter_active_span(
     events: &[SessionEvent],
     deck: &str,
@@ -738,10 +770,10 @@ pub fn move_filter_active_span(
         .iter()
         .map(|event| {
             if is_set_filter_active_event(event, deck) {
-                let opener =
-                    event.value == Some(1.0) && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
-                let closer =
-                    event.value == Some(0.0) && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
+                let opener = event.value == Some(1.0)
+                    && (event.elapsed_ms - start_ms).abs() <= FILTER_SPAN_EPS_MS;
+                let closer = event.value == Some(0.0)
+                    && (event.elapsed_ms - end_ms).abs() <= FILTER_SPAN_EPS_MS;
                 if opener || closer {
                     return SessionEvent {
                         elapsed_ms: event.elapsed_ms + delta,
@@ -752,11 +784,10 @@ pub fn move_filter_active_span(
             event.clone()
         })
         .collect();
-    sort_by_ms(out)
+    crate::sim::sorted_by_sim_order(out)
 }
 
-// Rewrites event track paths after the user relocates missing files.
-// None = no event carries a mapped path (no-op for callers).
+// None = no event carries a mapped path, so callers can keep their input.
 pub fn relocate_event_paths(
     events: &[SessionEvent],
     mapping: &HashMap<String, String>,
@@ -792,14 +823,16 @@ mod tests {
     use super::*;
     use crate::param::CLASSIC_3BAND;
 
-    // Nothing forces a new variant into `ALL`, and everything lane-driven
-    // iterates it, so a missing one would silently have no spec and no lane.
     #[test]
     fn all_lanes_round_trip_through_their_key() {
         let mut seen = Vec::new();
         for lane in EditableLane::ALL {
             let key = lane.key();
-            assert_eq!(EditableLane::from_key(key), Some(lane), "round trip for {key}");
+            assert_eq!(
+                EditableLane::from_key(key),
+                Some(lane),
+                "round trip for {key}"
+            );
             assert!(!seen.contains(&key), "duplicate lane key {key}");
             seen.push(key);
         }
@@ -820,18 +853,21 @@ mod tests {
         original_value_at(events, &spec, "A", ms)
     }
 
-
-    // `points` can arrive unordered, and taking the last one in input order for the
-    // restore check let a later-in-time drawn value leak past range_end_ms.
     #[test]
     fn splice_restores_value_when_points_are_unordered() {
         let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
         let events = vec![spec.make_event(0.0, 0.7, "A")];
-        // Temporally last point is (500, 0.97); last in input order is (100, 0.7),
+        // Temporally last point is (500, 0.97). Last in input order is (100, 0.7),
         // which equals the value to restore.
         let points = vec![
-            LanePoint { ms: 500.0, value: 0.97 },
-            LanePoint { ms: 100.0, value: 0.7 },
+            LanePoint {
+                ms: 500.0,
+                value: 0.97,
+            },
+            LanePoint {
+                ms: 100.0,
+                value: 0.7,
+            },
         ];
         let after = splice_lane_events(&events, &spec, "A", 0.0, 1000.0, &points);
         // The gain lane stores f32, so compare with tolerance rather than exactly.
@@ -856,12 +892,9 @@ mod tests {
         ];
         let out = set_rate_at(&events, "A", 3000.0, 0.98);
         let spec = rate_lane_spec(Some(0.92), Some(1.08));
-        // Inserted value holds from 3000 until the existing change at 8000.
         assert!((original_value_at(&out, &spec, "A", 3000.0) - 0.98).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.98).abs() < 1e-9);
-        // The later change survives (not "to clip end" semantics).
         assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.05).abs() < 1e-9);
-        // Earlier value is untouched.
         assert!((original_value_at(&out, &spec, "A", 2999.0) - 1.0).abs() < 1e-9);
     }
 
@@ -878,16 +911,12 @@ mod tests {
                 ..make_event(5000.0, "set_playback_rate", "A")
             },
         ];
-        // Clip span [2000, 8000]; set whole clip to rate 0.97.
         let out = set_rate_span(&events, "A", 2000.0, 8000.0, 0.97);
         let spec = rate_lane_spec(Some(0.92), Some(1.08));
-        // Uniform across the clip (the 1.04 mid-clip change is gone).
         assert!((original_value_at(&out, &spec, "A", 2000.0) - 0.97).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 5000.0) - 0.97).abs() < 1e-9);
         assert!((original_value_at(&out, &spec, "A", 7999.0) - 0.97).abs() < 1e-9);
-        // After the clip the pre-edit rate (1.04, in force at clip end) is restored.
         assert!((original_value_at(&out, &spec, "A", 8000.0) - 1.04).abs() < 1e-9);
-        // Before the clip is untouched.
         assert!((original_value_at(&out, &spec, "A", 1000.0) - 1.0).abs() < 1e-9);
     }
 
@@ -912,11 +941,8 @@ mod tests {
         let events = vec![SessionEvent::param(1000.0, Some("A"), "fader", "gain", 0.8)];
         let points = vec![lane_point(5000.0, 0.4), lane_point(6000.0, 0.4)];
         let out = splice_lane_events(&events, &spec, "A", 5000.0, 8000.0, &points);
-        // before the gesture: original 0.8
         assert!((gain_at(&out, 3000.0) - 0.8).abs() < 1e-6);
-        // inside: 0.4
         assert!((gain_at(&out, 5500.0) - 0.4).abs() < 1e-6);
-        // restored to 0.8 at range_end_ms
         assert!((gain_at(&out, 9000.0) - 0.8).abs() < 1e-6);
     }
 
@@ -924,22 +950,249 @@ mod tests {
     fn splice_rejects_too_short_gesture() {
         let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
         let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
-        let out = splice_lane_events(&events, &spec, "A", 1000.0, 1020.0, &[lane_point(1000.0, 0.5)]);
+        let out = splice_lane_events(
+            &events,
+            &spec,
+            "A",
+            1000.0,
+            1020.0,
+            &[lane_point(1000.0, 0.5)],
+        );
         assert_eq!(out.len(), events.len());
     }
 
     #[test]
-    fn filter_dead_zone_snaps_to_zero() {
+    fn a_drawn_filter_value_keeps_its_shape_through_the_dead_zone() {
         let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
-        assert_eq!(spec.clamp_value(0.03), 0.0);
+        assert!((spec.clamp_value(0.03) - 0.03).abs() < 1e-9);
         assert!((spec.clamp_value(0.5) - 0.5).abs() < 1e-9);
-        assert_eq!(spec.clamp_value(2.0), 1.0); // clamped to max then not in dead zone
+        assert_eq!(spec.clamp_value(2.0), 1.0);
+    }
+
+    #[test]
+    fn reset_lane_from_returns_the_lane_to_its_default() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            4000.0,
+            &[lane_point(1000.0, 0.5), lane_point(4000.0, 0.5)],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 3000.0, ResetExtent::ToEnd);
+
+        assert_eq!(original_value_at(&out, &spec, "A", 2000.0), 0.5);
+        assert_eq!(
+            original_value_at(&out, &spec, "A", 3000.0),
+            spec.default_value
+        );
+        assert_eq!(
+            original_value_at(&out, &spec, "A", 9000.0),
+            spec.default_value
+        );
+    }
+
+    #[test]
+    fn reset_lane_to_end_wipes_later_moves_even_from_a_flat_stretch() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.5),
+                lane_point(3000.0, 0.0),
+                lane_point(6000.0, 0.9),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 4000.0, ResetExtent::ToEnd);
+
+        assert!((original_value_at(&out, &spec, "A", 2000.0) - 0.5).abs() < 1e-6);
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 7000.0)));
+    }
+
+    #[test]
+    fn reset_lane_until_here_wipes_earlier_moves_and_keeps_the_rest() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.5),
+                lane_point(3000.0, 0.8),
+                lane_point(6000.0, 0.9),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 4000.0, ResetExtent::UntilHere);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 2000.0)));
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 4000.0)));
+        assert!((original_value_at(&out, &spec, "A", 7000.0) - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reset_lane_this_move_does_nothing_where_the_lane_is_already_at_its_default() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            4000.0,
+            &[lane_point(1000.0, 0.5), lane_point(4000.0, 0.5)],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 9000.0, ResetExtent::ThisMove);
+
+        assert_eq!(out.len(), events.len());
+    }
+
+    #[test]
+    fn reset_lane_this_move_flattens_the_whole_excursion_around_the_click() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.0),
+                lane_point(2000.0, 0.5),
+                lane_point(4000.0, 0.8),
+                lane_point(6000.0, 0.0),
+                lane_point(7000.0, 0.7),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 4500.0, ResetExtent::ThisMove);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 2500.0)));
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 5000.0)));
+        assert!((original_value_at(&out, &spec, "A", 7500.0) - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reset_lane_this_move_reaches_a_move_too_small_to_be_audible() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.0),
+                lane_point(2000.0, -0.03),
+                lane_point(3000.0, 0.0),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 2500.0, ResetExtent::ThisMove);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 2500.0)));
+    }
+
+    #[test]
+    fn reset_lane_this_move_takes_a_drop_recorded_on_the_same_millisecond() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = vec![
+            SessionEvent::param(1000.0, Some("A"), "filter", "value", 0.3),
+            SessionEvent::param(4000.0, Some("A"), "filter", "value", 0.9),
+            SessionEvent::param(4000.0, Some("A"), "filter", "value", 0.0),
+        ];
+
+        let out = reset_lane_from(&events, &spec, "A", 2000.0, ResetExtent::ThisMove);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 4000.0)));
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 9000.0)));
+    }
+
+    #[test]
+    fn reset_lane_this_move_stops_at_a_crossing_no_event_landed_on() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.0),
+                lane_point(2000.0, 0.8),
+                lane_point(4000.0, 0.02),
+                lane_point(4100.0, -0.6),
+                lane_point(6000.0, -0.9),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 3000.0, ResetExtent::ThisMove);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 3000.0)));
+        assert!((original_value_at(&out, &spec, "A", 5000.0) + 0.6).abs() < 1e-6);
+        assert!((original_value_at(&out, &spec, "A", 7000.0) + 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reset_lane_this_move_stops_where_the_curve_crosses_the_default() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.0),
+                lane_point(1500.0, -0.4),
+                lane_point(1600.0, 0.0),
+                lane_point(1700.0, 0.5),
+                lane_point(4000.0, 0.9),
+                lane_point(6000.0, 0.0),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 3000.0, ResetExtent::ThisMove);
+
+        assert!((original_value_at(&out, &spec, "A", 1550.0) + 0.4).abs() < 1e-6);
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 4000.0)));
+    }
+
+    #[test]
+    fn reset_lane_this_move_leaves_a_later_excursion_alone() {
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let events = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            9000.0,
+            &[
+                lane_point(1000.0, 0.0),
+                lane_point(2000.0, -0.5),
+                lane_point(3000.0, 0.0),
+                lane_point(5000.0, -0.9),
+            ],
+        );
+
+        let out = reset_lane_from(&events, &spec, "A", 2500.0, ResetExtent::ThisMove);
+
+        assert!(spec.is_default(original_value_at(&out, &spec, "A", 2500.0)));
+        assert!((original_value_at(&out, &spec, "A", 6000.0) + 0.9).abs() < 1e-6);
     }
 
     #[test]
     fn toggle_filter_active_pairs_into_span() {
         let out = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // was off -> turns on at range_start_ms, restores to off at range_end_ms
         assert!(filter_active_at(&out, "A", 2000.0, true));
         assert!(!filter_active_at(&out, "A", 5000.0, true));
     }
@@ -965,7 +1218,8 @@ mod tests {
     fn resize_filter_active_span_start_clamps_to_min_gesture() {
         let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
         // Dragging the start past the end is clamped to keep at least MIN_GESTURE_MS.
-        let out = resize_filter_active_span(&events, "A", 1000.0, 4000.0, "start", 9000.0, 10_000.0);
+        let out =
+            resize_filter_active_span(&events, "A", 1000.0, 4000.0, "start", 9000.0, 10_000.0);
         let opener = out
             .iter()
             .find(|event| event.is_param(Some("A"), "filter", "active") && event.value == Some(1.0))
@@ -977,8 +1231,15 @@ mod tests {
     fn resize_open_filter_span_inserts_closer() {
         // A span with no closing event (ran to session end) gets one when its
         // end edge is dragged in.
-        let events = vec![SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0)];
-        let out = resize_filter_active_span(&events, "A", 1000.0, 10_000.0, "end", 5000.0, 10_000.0);
+        let events = vec![SessionEvent::param(
+            1000.0,
+            Some("A"),
+            "filter",
+            "active",
+            1.0,
+        )];
+        let out =
+            resize_filter_active_span(&events, "A", 1000.0, 10_000.0, "end", 5000.0, 10_000.0);
         assert!(filter_active_at(&out, "A", 3000.0, true));
         assert!(!filter_active_at(&out, "A", 6000.0, true));
     }
@@ -986,8 +1247,13 @@ mod tests {
     #[test]
     fn move_filter_active_span_slides_both_edges() {
         let mut events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // The drawn cutoff curve (set_filter) must NOT move with the span.
-        events.push(SessionEvent::param(2000.0, Some("A"), "filter", "value", 0.5));
+        events.push(SessionEvent::param(
+            2000.0,
+            Some("A"),
+            "filter",
+            "value",
+            0.5,
+        ));
         let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 2000.0, 10_000.0);
         assert!(!filter_active_at(&out, "A", 2000.0, true)); // old start now off
         assert!(filter_active_at(&out, "A", 5000.0, true)); // shifted +2000
@@ -1002,7 +1268,6 @@ mod tests {
     #[test]
     fn move_filter_active_span_clamps_to_session_end() {
         let events = toggle_filter_active_range(&[], "A", 1000.0, 4000.0);
-        // Dragging far right is clamped so the end never passes duration_ms.
         let out = move_filter_active_span(&events, "A", 1000.0, 4000.0, 100_000.0, 10_000.0);
         let close = out
             .iter()
@@ -1012,43 +1277,83 @@ mod tests {
     }
 
     #[test]
-    fn paint_nudge_range_inserts_open_and_restore() {
-        let out = paint_nudge_range(&[], "A", 1000.0, 1500.0, 8.0);
-        assert!((nudge_value_at(&out, "A", 1200.0, true) - 8.0).abs() < 1e-9);
-        assert_eq!(nudge_value_at(&out, "A", 2000.0, true), 0.0);
-    }
-
-    #[test]
-    fn delete_nudge_range_keeps_adjacent_opener_at_t1() {
+    fn drawing_the_jog_lane_clears_the_wheel_gesture_it_covers() {
         let events = vec![
             SessionEvent {
                 percent: Some(5.0),
-                ..make_event(1000.0, "set_nudge", "A")
+                ..make_event(1100.0, "set_nudge", "A")
             },
             SessionEvent {
-                percent: Some(0.0),
-                ..make_event(2000.0, "set_nudge", "A")
+                ticks: Some(12.0),
+                ..make_event(1200.0, "jog", "A")
             },
             SessionEvent {
-                percent: Some(-5.0),
-                ..make_event(2000.0, "set_nudge", "A")
+                ticks: Some(-4.0),
+                ..make_event(1300.0, "jog", "A")
+            },
+            SessionEvent {
+                ticks: Some(9.0),
+                ..make_event(4000.0, "jog", "A")
             },
         ];
-        // Delete [1000, 2000]: removes the opener at 1000 and the closing zero at
-        // 2000, but keeps the non-zero opener at 2000.
-        let out = delete_nudge_range(&events, "A", 1000.0, 2000.0).unwrap();
-        let remaining: Vec<f64> = out
+        let out = splice_lane_events(
+            &events,
+            &jog_lane_spec(),
+            "A",
+            1000.0,
+            2000.0,
+            &[lane_point(1000.0, -3.0), lane_point(1500.0, 7.0)],
+        );
+        let in_range: Vec<&str> = out
             .iter()
-            .filter(|event| event.event_type == "set_nudge")
-            .map(|event| event.percent.unwrap())
+            .filter(|event| event.elapsed_ms >= 1000.0 && event.elapsed_ms < 2000.0)
+            .map(|event| event.event_type.as_str())
             .collect();
-        assert_eq!(remaining, vec![-5.0]);
+        assert!(!in_range.contains(&"jog"), "got {in_range:?}");
+        // The wheel outside the drawn range is untouched.
+        assert!(out
+            .iter()
+            .any(|event| event.event_type == "jog" && event.elapsed_ms == 4000.0));
     }
 
     #[test]
-    fn delete_nudge_range_noop_when_nothing_matches() {
-        let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 0.5)];
-        assert!(delete_nudge_range(&events, "A", 1000.0, 2000.0).is_none());
+    fn the_jog_lane_cannot_author_a_deviation_beyond_its_musical_range() {
+        let spec = jog_lane_spec();
+        assert_eq!(spec.max, 16.0);
+        assert_eq!(spec.min, -16.0);
+
+        let out = splice_lane_events(
+            &[],
+            &spec,
+            "A",
+            1000.0,
+            2000.0,
+            &[lane_point(1000.0, 60.0), lane_point(1500.0, -60.0)],
+        );
+        let drawn: Vec<f64> = out
+            .iter()
+            .filter(|event| event.event_type == "set_nudge" && event.elapsed_ms < 2000.0)
+            .map(|event| event.percent.expect("a nudge carries a percent"))
+            .collect();
+        assert_eq!(drawn, vec![16.0, -16.0]);
+    }
+
+    #[test]
+    fn the_jog_lane_writes_what_was_drawn_rather_than_a_difference() {
+        let out = splice_lane_events(
+            &[],
+            &jog_lane_spec(),
+            "A",
+            1000.0,
+            2000.0,
+            &[lane_point(1000.0, -3.0), lane_point(1500.0, 7.0)],
+        );
+        let drawn: Vec<f64> = out
+            .iter()
+            .filter(|event| event.event_type == "set_nudge" && event.elapsed_ms < 2000.0)
+            .map(|event| event.percent.expect("a nudge carries a percent"))
+            .collect();
+        assert_eq!(drawn, vec![-3.0, 7.0]);
     }
 
     #[test]
@@ -1076,7 +1381,11 @@ mod tests {
 
     #[test]
     fn normalize_gesture_keeps_last_value_per_ms_and_sorts() {
-        let samples = vec![lane_point(200.0, 0.1), lane_point(100.0, 0.9), lane_point(200.0, 0.5)];
+        let samples = vec![
+            lane_point(200.0, 0.1),
+            lane_point(100.0, 0.9),
+            lane_point(200.0, 0.5),
+        ];
         let out = normalize_gesture_samples(&samples);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].ms, 100.0);
@@ -1086,9 +1395,12 @@ mod tests {
 
     #[test]
     fn decimate_drops_steps_below_epsilon() {
-        let points = vec![lane_point(0.0, 0.0), lane_point(1.0, 0.005), lane_point(2.0, 0.5)];
+        let points = vec![
+            lane_point(0.0, 0.0),
+            lane_point(1.0, 0.005),
+            lane_point(2.0, 0.5),
+        ];
         let out = decimate_steps(&points, 0.01);
-        // middle point (delta 0.005 < eps) dropped; first + last kept.
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].value, 0.0);
         assert_eq!(out[1].value, 0.5);
@@ -1107,8 +1419,6 @@ mod tests {
     }
 }
 
-// Randomised sweep over splice_lane_events' contract: the lane value after range_end_ms
-// is identical before and after a splice, for any gesture in any input order.
 #[cfg(test)]
 mod fuzz {
     use super::*;
@@ -1121,24 +1431,117 @@ mod fuzz {
         *seed
     }
 
+    fn wheel_event(seed: &mut u64, ms: f64, deck: &str) -> SessionEvent {
+        SessionEvent {
+            ticks: Some((rng(seed) % 41) as f64 - 20.0),
+            ..SessionEvent::at(ms, "jog", deck)
+        }
+    }
+
+    #[test]
+    fn a_jog_splice_clears_the_wheel_inside_the_range_and_nothing_outside_it() {
+        let mut seed = 0x0DDB_A11B_ADC0_FFEE;
+        let spec = jog_lane_spec();
+
+        for _ in 0..2000 {
+            let count = (rng(&mut seed) % 8) as usize;
+            let events: Vec<SessionEvent> = (0..count)
+                .map(|_| {
+                    let ms = (rng(&mut seed) % 10_000) as f64;
+                    match rng(&mut seed) % 3 {
+                        0 => wheel_event(&mut seed, ms, "A"),
+                        1 => SessionEvent {
+                            percent: Some((rng(&mut seed) % 41) as f64 - 20.0),
+                            ..SessionEvent::at(ms, "set_nudge", "A")
+                        },
+                        _ => wheel_event(&mut seed, ms, "B"),
+                    }
+                })
+                .collect();
+            let events = crate::sim::sorted_by_sim_order(events);
+
+            let first = (rng(&mut seed) % 10_000) as f64;
+            let second = (rng(&mut seed) % 10_000) as f64;
+            let (start, end) = if first <= second {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            if end - start < MIN_GESTURE_MS {
+                continue;
+            }
+
+            let points = vec![
+                LanePoint {
+                    ms: start,
+                    value: 3.0,
+                },
+                LanePoint {
+                    ms: end,
+                    value: -2.0,
+                },
+            ];
+            let after = splice_lane_events(&events, &spec, "A", start, end, &points);
+
+            for event in &after {
+                let inside = event.elapsed_ms >= start && event.elapsed_ms <= end;
+                assert!(
+                    !(inside && event.event_type == "jog" && event.deck.as_deref() == Some("A")),
+                    "a wheel event survived at {} in [{start},{end}]",
+                    event.elapsed_ms
+                );
+            }
+
+            let survives = |original: &SessionEvent| {
+                after.iter().any(|event| {
+                    event.event_type == original.event_type
+                        && event.elapsed_ms == original.elapsed_ms
+                        && event.deck == original.deck
+                        && event.ticks == original.ticks
+                        && event.percent == original.percent
+                })
+            };
+
+            for original in events
+                .iter()
+                .filter(|event| event.elapsed_ms < start || event.elapsed_ms > end)
+            {
+                assert!(
+                    survives(original),
+                    "an event outside [{start},{end}] was dropped"
+                );
+            }
+
+            for original in events
+                .iter()
+                .filter(|event| event.deck.as_deref() == Some("B"))
+            {
+                assert!(survives(original), "another deck's wheel was cleared");
+            }
+        }
+    }
+
     #[test]
     fn splice_preserves_lane_value_after_the_edited_range() {
         let mut seed = 0xDEADBEEF12345678u64;
-        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
         let deck = "A";
         let mut violations = 0u32;
         let mut examples: Vec<String> = Vec::new();
 
-        for _ in 0..4000 {
+        for round in 0..4000 {
+            let lane = EditableLane::ALL[round % EditableLane::ALL.len()];
+            let spec = lane_spec_for(lane, &CLASSIC_3BAND, None, None);
+            let pick = |seed: &mut u64| {
+                spec.min + (rng(seed) % 101) as f64 / 100.0 * (spec.max - spec.min)
+            };
             let n = (rng(&mut seed) % 6) as usize;
             let mut events: Vec<SessionEvent> = (0..n)
                 .map(|_| {
                     let ms = (rng(&mut seed) % 10_000) as f64;
-                    let value = (rng(&mut seed) % 100) as f64 / 100.0;
-                    spec.make_event(ms, value, deck)
+                    spec.make_event(ms, pick(&mut seed), deck)
                 })
                 .collect();
-            events = sort_by_ms(events);
+            events = crate::sim::sorted_by_sim_order(events);
 
             let first = (rng(&mut seed) % 10_000) as f64;
             let second = (rng(&mut seed) % 10_000) as f64;
@@ -1154,12 +1557,11 @@ mod fuzz {
                 .map(|_| LanePoint {
                     ms: range_start
                         + (rng(&mut seed) % ((range_end - range_start).max(1.0) as u64 + 1)) as f64,
-                    value: (rng(&mut seed) % 100) as f64 / 100.0,
+                    value: pick(&mut seed),
                 })
                 .collect();
 
-            let after =
-                splice_lane_events(&events, &spec, deck, range_start, range_end, &points);
+            let after = splice_lane_events(&events, &spec, deck, range_start, range_end, &points);
 
             for pair in after.windows(2) {
                 assert!(
@@ -1168,14 +1570,19 @@ mod fuzz {
                 );
             }
 
-            for probe in [range_end + 0.001, range_end + 1.0, range_end + 500.0, 10_500.0] {
+            for probe in [
+                range_end + 0.001,
+                range_end + 1.0,
+                range_end + 500.0,
+                10_500.0,
+            ] {
                 let before_value = original_value_at(&events, &spec, deck, probe);
                 let after_value = original_value_at(&after, &spec, deck, probe);
                 if (before_value - after_value).abs() > 1e-9 {
                     violations += 1;
                     if examples.len() < 3 {
                         examples.push(format!(
-                            "range=[{range_start},{range_end}] probe={probe} before={before_value} after={after_value}"
+                            "{lane:?} range=[{range_start},{range_end}] probe={probe} before={before_value} after={after_value}"
                         ));
                     }
                     break;
@@ -1186,6 +1593,9 @@ mod fuzz {
         for example in &examples {
             println!("   {example}");
         }
-        assert_eq!(violations, 0, "splice changed values after the edited range");
+        assert_eq!(
+            violations, 0,
+            "splice changed values after the edited range"
+        );
     }
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
 import type { DeckId } from '@renderer/utils/types';
-import { LABEL_W, type LaneKey } from '@renderer/utils/timelineDraw';
+import { LABEL_W } from '@renderer/utils/timelineDraw';
+import type { DeckLaneKey } from '@renderer/utils/types';
 import type { MasterLaneKey } from '@renderer/utils/types';
 
 // Tag the row-divider item so we can locate it in the composed scene.
@@ -41,28 +42,31 @@ function input(overlays: SceneItem[], masterLane: MasterLaneKey = 'masterGain'):
     loadedSpans: [],
     deckLanes: {},
     masterLanes: { gain: [], xfader: [] },
-    deckNudges: {},
     deckJog: {},
     waveforms: new Map(),
     playheadMs: 0,
     durationMs: 1000,
     editMode: false,
-    laneFor: () => 'filter' as LaneKey,
-    masterLane,
-    laneHeight: 64,
-    waveformHeight: 80,
+    lanesFor: () => ['filter'] as DeckLaneKey[],
+    masterLanesFor: () => [masterLane],
+    laneHeightFor: () => 64,
+    waveformHeightFor: () => 80,
+    openLaneFor: () => null,
+    badgeAlphaFor: () => 0,
+    menuOpenFor: () => false,
+    resetPreview: null,
     accentFor: () => '#ffffff',
+    laneLabel: (key: string) => key.toUpperCase(),
+    deckLabel: (deck: string) => `DECK ${deck}`,
+    badgeLabel: () => 'MUTE',
     audibleFor: () => true,
     soloFor: () => false,
-    mutedFor: () => false,
     clipSelection: [],
     filterSelection: null,
     overlays
   };
 }
 
-// The master row is the only way to reach a master-scope lane, so its label column opens
-// the picker and its track area reports the lane under the same target a deck row uses.
 describe('the master row', () => {
   function hitsAt(items: SceneItem[], x: number, y: number) {
     return items.map((item) => item.hitTest?.({ x, y }, vc) ?? null).filter((hit) => hit !== null);
@@ -73,10 +77,9 @@ describe('the master row', () => {
   it('opens the lane picker from its label column', () => {
     const { items } = buildScene(input([]));
 
-    expect(hitsAt(items, 4, insideMasterRow)).toContainEqual({
-      target: 'laneDropdown',
-      deck: 'master'
-    });
+    expect(hitsAt(items, 4, insideMasterRow)).toContainEqual(
+      expect.objectContaining({ target: 'laneDropdown', deck: 'master' })
+    );
   });
 
   it('reports the lane on display, not a fixed one', () => {
@@ -93,26 +96,23 @@ describe('the master row', () => {
   });
 });
 
-// The wheel lane is a read-only view of recorded gestures, so it must not put a
-// 'lane' hit on the surface: that is the target the draw/splice gesture arms on.
 describe('the jog lane', () => {
   function jogInput(): SceneInput {
     return {
       ...input([]),
       editMode: true,
-      laneFor: () => 'jog' as LaneKey,
+      lanesFor: () => ['jog'] as DeckLaneKey[],
       deckJog: {
         A: [
           { ms: 0, value: 0 },
           { ms: 500, value: 30 },
           { ms: 520, value: 0 }
         ]
-      },
-      deckNudges: { A: [{ startMs: 100, endMs: 300, percent: 4 }] }
+      }
     };
   }
 
-  it('reports no lane hit anywhere on its surface', () => {
+  it('reports a lane hit across its surface, so the shared draw gesture arms', () => {
     const { items, rows } = buildScene(jogInput());
     const lane = rows[0].lanes[0];
     const y = lane.top + lane.height / 2;
@@ -121,7 +121,9 @@ describe('the jog lane', () => {
       .map((item) => item.hitTest?.({ x: LABEL_W + 10, y }, vc) ?? null)
       .filter((hit) => hit !== null);
 
-    expect(hits.every((hit) => hit?.target !== 'lane')).toBe(true);
+    const laneHit = hits.find((hit) => hit?.target === 'lane');
+    expect(laneHit?.part).toBe('jog');
+    expect(laneHit?.deck).toBe('A');
   });
 
   it('still opens the lane picker from the label column', () => {
@@ -132,7 +134,7 @@ describe('the jog lane', () => {
       .map((item) => item.hitTest?.({ x: 4, y: lane.top + lane.height / 2 }, vc) ?? null)
       .filter((hit) => hit !== null);
 
-    expect(hits).toContainEqual({ target: 'laneDropdown', deck: 'A' });
+    expect(hits).toContainEqual(expect.objectContaining({ target: 'laneDropdown', deck: 'A' }));
   });
 });
 
@@ -150,5 +152,37 @@ describe('buildScene z-order', () => {
 
     expect(overlayIdx).toBeGreaterThanOrEqual(0);
     expect(dividerIdx).toBeGreaterThan(overlayIdx);
+  });
+});
+
+describe('the master row sizes like any other', () => {
+  it('takes each lane height from storage and pushes the deck rows below the stack', () => {
+    const stacked: SceneInput = {
+      ...input([]),
+      masterLanesFor: () => ['masterGain', 'xfader'],
+      laneHeightFor: () => 70
+    };
+
+    const { rows } = buildScene(stacked);
+
+    expect(rows[0].top).toBe(16 + 70 * 2);
+  });
+
+  it('offers a separator under each master lane, so either can be dragged', () => {
+    const stacked: SceneInput = {
+      ...input([]),
+      masterLanesFor: () => ['masterGain', 'xfader'],
+      laneHeightFor: () => 70
+    };
+
+    const { items } = buildScene(stacked);
+    const separatorAt = (y: number) =>
+      items
+        .map((item) => item.hitTest?.({ x: 200, y }, vc) ?? null)
+        .find((hit) => hit?.target === 'laneSeparator');
+
+    expect(separatorAt(16 + 70)?.deck).toBe('master');
+    expect(separatorAt(16 + 70)?.data).toBe('masterGain');
+    expect(separatorAt(16 + 140)?.data).toBe('xfader');
   });
 });

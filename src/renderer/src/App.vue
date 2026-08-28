@@ -2,7 +2,10 @@
   <div class="app">
     <AppBar />
     <TopStrip />
-    <SettingsModal v-if="settingsStore.isOpen" />
+    <Transition name="modal-fade">
+      <SettingsModal v-if="settingsStore.isOpen" />
+    </Transition>
+    <RecoveryModal />
     <UpdatePrompt />
     <ConfirmModal
       :open="quitModalOpen"
@@ -15,6 +18,7 @@
     <EditView v-if="appMode.mode === 'edit'" class="app__view" :deck="decksStore.deckE" />
     <Performance v-else-if="appMode.mode === 'performance'" class="app__view" />
     <Session v-else-if="appMode.mode === 'session'" class="app__view" />
+    <SaveProgress />
     <Tooltip />
   </div>
 </template>
@@ -32,6 +36,8 @@ import { useMidiStore } from '@renderer/stores/midi';
 import { useBrowseStore } from '@renderer/stores/browse';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useRecoveryStore } from '@renderer/stores/recovery';
+import { installKeyboardNav } from '@renderer/utils/keyboardNav';
 import { useKeyboard } from '@renderer/composables/useKeyboard';
 import AppBar from '@renderer/components/AppBar.vue';
 import TopStrip from '@renderer/components/TopStrip.vue';
@@ -39,8 +45,10 @@ import EditView from '@renderer/components/deck/EditView.vue';
 import Performance from '@renderer/components/performance/Performance.vue';
 import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
+import SaveProgress from '@renderer/components/SaveProgress.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import UpdatePrompt from '@renderer/components/modals/UpdatePrompt.vue';
+import RecoveryModal from '@renderer/components/modals/RecoveryModal.vue';
 import Tooltip from '@renderer/components/Tooltip.vue';
 
 const { t } = useI18n();
@@ -95,11 +103,16 @@ function handleQuitRequested(): void {
   quitModalOpen.value = true;
 }
 
+let stopKeyboardNav: (() => void) | null = null;
 let unlistenClose: (() => void) | null = null;
 let unlistenQuit: (() => void) | null = null;
 
 onMounted(async () => {
+  stopKeyboardNav = installKeyboardNav();
   settingsStore.init();
+  // Anything the last run left unfinished is offered back before the user can do
+  // anything else, or it is silently lost the next time a recording starts.
+  await useRecoveryStore().refresh();
   // The updater endpoint and signing key only exist for packaged release
   // builds, so checking during dev would always fail and is skipped.
   if (import.meta.env.PROD) updaterStore.checkForUpdate();
@@ -113,6 +126,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopKeyboardNav?.();
   decksStore.destroy();
   unlistenClose?.();
   unlistenQuit?.();

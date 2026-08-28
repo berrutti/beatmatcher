@@ -1,11 +1,4 @@
-// Timeline derivation: turns the event stream into the editor's visual model.
-// `build_clips` produces the per-deck playing segments (one clip per loop
-// iteration) and the loaded-track spans; `build_lanes` produces the automation
-// lanes (gain/eq/filter/rate) plus filter-active and nudge spans.
-//
-// This is a faithful port of the frontend's useSessionTimeline.ts so the editor
-// can run the SAME derivation via WASM instead of a divergent TS copy. Track
-// display names are intentionally NOT derived here: the path is returned and the
+// A clip's display name is deliberately not derived here: the path comes back and the
 // frontend maps it to a collection title.
 
 use crate::event::SessionEvent;
@@ -20,7 +13,7 @@ pub struct LoopRegion {
 }
 
 // Clips emitted together form one editable unit: loop iterations share a
-// block_id; a regular play segment is a block of its own.
+// block_id. A regular play segment is a block of its own.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
@@ -120,8 +113,8 @@ fn make_deck_state() -> DeckState {
 fn advance_position(deck: &mut DeckState, ms: f64) {
     let playing = deck.clip_start_ms.is_some() || deck.loop_active;
     if playing && ms > deck.pos_mark_ms {
-        let mut pos =
-            deck.track_pos_sec + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.jog_hold_factor;
+        let mut pos = deck.track_pos_sec
+            + ((ms - deck.pos_mark_ms) / 1000.0) * deck.rate * deck.jog_hold_factor;
         if deck.loop_active {
             if let (Some(ls), Some(le)) = (deck.loop_start_sec, deck.loop_end_sec) {
                 let duration = le - ls;
@@ -139,15 +132,11 @@ fn advance_position(deck: &mut DeckState, ms: f64) {
 // clip's wall span into constant-rate wave segments. Call after any change to
 // `deck.rate` or `deck.jog_hold_factor`.
 fn record_eff_rate(deck: &mut DeckState, ms: f64) {
-    deck.eff_rate_changes.push((ms, deck.rate * deck.jog_hold_factor));
+    deck.eff_rate_changes
+        .push((ms, deck.rate * deck.jog_hold_factor));
     deck.rate_changes.push((ms, deck.rate));
 }
 
-
-// Slice [clip_start_ms, clip_end_ms] at each rate change inside it, integrating
-// the track position forward at each piece's effective rate. The piece track
-// deltas sum to the same end position advance_position produced, so the segments
-// tile the clip exactly.
 fn wave_segments_for(
     changes: &[(f64, f64)],
     clip_start_ms: f64,
@@ -190,7 +179,6 @@ fn wave_segments_for(
     }
     segs
 }
-
 
 fn start_clip(deck: &mut DeckState, ms: f64) {
     deck.clip_start_ms = Some(ms);
@@ -243,8 +231,6 @@ fn finalize_clip(
                 let loop_rate = deck.clip_rate;
                 let block_id = allocate();
                 let mut iter_start = deck.loop_engaged_ms.unwrap();
-                // The first iteration starts at the wrapped entry position, which may
-                // be inside the region; every later iteration runs the full loop.
                 let mut iter_track_start_sec = deck.loop_entry_sec.unwrap_or(loop_start_sec);
                 while iter_start < end_ms {
                     let iter_dur_ms = ((loop_end_sec - iter_track_start_sec) / loop_rate) * 1000.0;
@@ -252,8 +238,6 @@ fn finalize_clip(
                         break;
                     }
                     let iter_end = (iter_start + iter_dur_ms).min(end_ms);
-                    // One segment per iteration: the loop runs at a constant rate,
-                    // so the iteration's track window maps linearly to its wall window.
                     let iter_track_end =
                         iter_track_start_sec + ((iter_end - iter_start) / 1000.0) * loop_rate;
                     out.push(Clip {
@@ -337,9 +321,7 @@ fn finalize_loaded_span(
     deck.load_span_path = None;
 }
 
-// Shared sequence for all loop-exit events: track_pos_sec already holds the
-// in-loop position (advance_position wraps while the loop is active), so just
-// finalize the loop iterations as clips and start a new regular clip.
+// advance_position wraps while the loop is active, so track_pos_sec already holds the in-loop position.
 fn exit_loop_and_continue(
     deck: &mut DeckState,
     deck_id: &str,
@@ -350,7 +332,6 @@ fn exit_loop_and_continue(
     finalize_clip(deck, deck_id, ms, clips, next_block_id);
     start_clip(deck, ms);
 }
-
 
 struct JogRateCurve {
     // (wall_ms, effective_rate).
@@ -363,7 +344,7 @@ struct JogRateCurve {
 /// below a millisecond of audio at any speed the wheel reaches.
 const JOG_CURVE_STEP_MS: f64 = 5.0;
 
-/// Past this many time constants an impulse has delivered over 99% of its travel; the
+/// Past this many time constants an impulse has delivered over 99% of its travel. The
 /// remainder is folded into the last step so the curve still integrates exactly.
 const SETTLE_TAIL_TAUS: f64 = 5.0;
 
@@ -382,7 +363,6 @@ struct JogRateStep {
     rate_delta: f64,
 }
 
-/// The wheel's contribution to the effective rate, as steps on a fixed grid.
 fn jog_rate_steps(impulses: &[JogImpulse], step_ms: f64) -> Vec<JogRateStep> {
     if impulses.is_empty() || step_ms <= 0.0 {
         return Vec::new();
@@ -492,64 +472,67 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
     let mut next_block_id: u32 = 0;
     let mut jog_rotation_speed = crate::JogRotationSpeed::default();
 
-    for ev in events {
-        if ev.event_type == "set_jog_rotation_speed" {
-            jog_rotation_speed = crate::JogRotationSpeed::from_str_or_33(
-                ev.speed.as_deref().unwrap_or_default(),
-            );
+    for event in events {
+        if event.event_type == "set_jog_rotation_speed" {
+            jog_rotation_speed =
+                crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
             continue;
         }
-        let Some(deck_id) = ev.deck.as_deref() else {
+        let Some(deck_id) = event.deck.as_deref() else {
             continue;
         };
         let deck = deck_states
             .entry(deck_id.to_string())
             .or_insert_with(make_deck_state);
-        advance_position(deck, ev.elapsed_ms);
+        advance_position(deck, event.elapsed_ms);
 
-        match ev.event_type.as_str() {
+        match event.event_type.as_str() {
             "deck_snapshot" => {
-                deck.path = ev.path.clone();
-                deck.rate = ev.playback_rate.unwrap_or(1.0);
-                if let Some(bpm) = ev.bpm {
+                deck.path = event.path.clone();
+                deck.rate = event.playback_rate.unwrap_or(1.0);
+                if let Some(bpm) = event.bpm {
                     deck.bpm = Some(bpm);
                 }
-                record_eff_rate(deck, ev.elapsed_ms);
-                deck.track_pos_sec = ev.position_sec.unwrap_or(0.0);
-                // loop start = cue_point by invariant; deck_snapshot logs
-                // cue_point_sec, not loop_start_sec.
-                let loop_on = ev.loop_active == Some(true);
-                deck.loop_start_sec = if loop_on { ev.cue_point_sec } else { None };
-                deck.loop_end_sec = if loop_on { ev.loop_end_sec } else { None };
+                record_eff_rate(deck, event.elapsed_ms);
+                deck.track_pos_sec = event.position_sec.unwrap_or(0.0);
+                let loop_on = event.loop_active == Some(true);
+                deck.loop_start_sec = if loop_on { event.cue_point_sec } else { None };
+                deck.loop_end_sec = if loop_on { event.loop_end_sec } else { None };
                 if deck.path.is_some() && deck.load_span_start_ms.is_none() {
                     deck.load_span_start_ms = Some(0.0);
                     deck.load_span_path = deck.path.clone();
                 }
-                if ev.is_playing == Some(true) {
+                if event.is_playing == Some(true) {
                     if loop_on && deck.loop_start_sec.is_some() && deck.loop_end_sec.is_some() {
-                        engage_loop(deck, ev.elapsed_ms);
+                        engage_loop(deck, event.elapsed_ms);
                     } else {
-                        start_clip(deck, ev.elapsed_ms);
+                        start_clip(deck, event.elapsed_ms);
                     }
                 }
             }
 
             "load_track" => {
-                finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                finalize_loaded_span(deck, deck_id, ev.elapsed_ms, &mut loaded_spans);
-                deck.path = ev.path.clone();
-                deck.load_span_start_ms = Some(ev.elapsed_ms);
+                finalize_clip(
+                    deck,
+                    deck_id,
+                    event.elapsed_ms,
+                    &mut clips,
+                    &mut next_block_id,
+                );
+                finalize_loaded_span(deck, deck_id, event.elapsed_ms, &mut loaded_spans);
+                deck.path = event.path.clone();
+                deck.load_span_start_ms = Some(event.elapsed_ms);
                 deck.load_span_path = deck.path.clone();
                 deck.track_pos_sec = 0.0;
                 // The engine fully resets the deck on load (playback_rate = 1.0 in
-                // load_track), and the sim mirrors it; recorded sessions re-seed the
+                // load_track), and the sim mirrors it. Recorded sessions re-seed the
                 // rate right after, but an edited stream may not.
                 deck.rate = 1.0;
                 deck.jog_hold_factor = 1.0;
                 // A freshly loaded track has no grid until set_beat_grid/analyze.
                 deck.bpm = None;
                 deck.beat_offset_sec = 0.0;
-                record_eff_rate(deck, ev.elapsed_ms);
+                record_eff_rate(deck, event.elapsed_ms);
                 deck.loop_start_sec = None;
                 deck.loop_end_sec = None;
                 deck.loop_active = false;
@@ -557,8 +540,14 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             }
 
             "eject_track" => {
-                finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                finalize_loaded_span(deck, deck_id, ev.elapsed_ms, &mut loaded_spans);
+                finalize_clip(
+                    deck,
+                    deck_id,
+                    event.elapsed_ms,
+                    &mut clips,
+                    &mut next_block_id,
+                );
+                finalize_loaded_span(deck, deck_id, event.elapsed_ms, &mut loaded_spans);
                 deck.path = None;
                 deck.track_pos_sec = 0.0;
                 deck.loop_active = false;
@@ -566,68 +555,90 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             }
 
             "play" => {
-                // Edits synthesize play-with-sec; the engine teleports on it
+                // Edits synthesize play-with-sec. The engine teleports on it
                 // even while playing, so an open clip splits like a seek.
-                if let Some(sec) = ev.sec {
+                if let Some(sec) = event.sec {
                     if deck.clip_start_ms.is_some() && !deck.loop_active {
-                        finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                        finalize_clip(
+                            deck,
+                            deck_id,
+                            event.elapsed_ms,
+                            &mut clips,
+                            &mut next_block_id,
+                        );
                         deck.track_pos_sec = sec;
-                        start_clip(deck, ev.elapsed_ms);
+                        start_clip(deck, event.elapsed_ms);
                     } else {
                         deck.track_pos_sec = sec;
                     }
                 }
                 if deck.clip_start_ms.is_none() && !deck.loop_active {
-                    start_clip(deck, ev.elapsed_ms);
+                    start_clip(deck, event.elapsed_ms);
                 }
             }
 
             "cue_preview_start" => {
-                // Rust jumps the deck to the cue point; mirror it so the clip's
+                // Rust jumps the deck to the cue point. Mirror it so the clip's
                 // track_start_sec doesn't depend on earlier position side effects.
-                if let Some(cp) = ev.cue_point_sec {
+                if let Some(cp) = event.cue_point_sec {
                     deck.track_pos_sec = cp;
                 }
                 if deck.clip_start_ms.is_none() && !deck.loop_active {
-                    start_clip(deck, ev.elapsed_ms);
+                    start_clip(deck, event.elapsed_ms);
                 }
             }
 
-            "stop" | "stopped_at_cue" | "stop_at_cue" | "cue_set_and_stop" => {
-                // cue_set_and_stop: user pressed CUE while playing, stops and
-                // moves cue to current position.
-                finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                if let Some(cp) = ev.cue_point_sec {
+            "stop" | "stopped_at_cue" => {
+                finalize_clip(
+                    deck,
+                    deck_id,
+                    event.elapsed_ms,
+                    &mut clips,
+                    &mut next_block_id,
+                );
+                if let Some(cp) = event.cue_point_sec {
                     deck.track_pos_sec = cp;
                 }
             }
 
             "cue_preview_end" => {
-                finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                if let Some(cp) = ev.cue_point_sec {
+                finalize_clip(
+                    deck,
+                    deck_id,
+                    event.elapsed_ms,
+                    &mut clips,
+                    &mut next_block_id,
+                );
+                if let Some(cp) = event.cue_point_sec {
                     deck.track_pos_sec = cp;
                 }
             }
 
             // cue_move fires when the user presses CUE while stopped and away
-            // from the cue point; the deck is not playing, so no clip to
+            // from the cue point. The deck is not playing, so no clip to
             // finalize. Rust also clears any active loop region.
             "cue_move" => {
                 deck.loop_start_sec = None;
                 deck.loop_end_sec = None;
                 deck.loop_active = false;
                 deck.loop_engaged_ms = None;
-                if let Some(cp) = ev.cue_point_sec {
+                if let Some(cp) = event.cue_point_sec {
                     deck.track_pos_sec = cp;
                 }
             }
 
             "seek" => {
-                if let Some(sec) = ev.sec {
+                if let Some(sec) = event.sec {
                     if deck.clip_start_ms.is_some() && !deck.loop_active {
-                        finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                        finalize_clip(
+                            deck,
+                            deck_id,
+                            event.elapsed_ms,
+                            &mut clips,
+                            &mut next_block_id,
+                        );
                         deck.track_pos_sec = sec;
-                        start_clip(deck, ev.elapsed_ms);
+                        start_clip(deck, event.elapsed_ms);
                     } else {
                         deck.track_pos_sec = sec;
                     }
@@ -635,31 +646,31 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             }
 
             "set_playback_rate" => {
-                if let Some(rate) = ev.rate {
+                if let Some(rate) = event.rate {
                     // Same floor as the sim and the engine.
                     deck.rate = rate.max(0.1);
-                    record_eff_rate(deck, ev.elapsed_ms);
+                    record_eff_rate(deck, event.elapsed_ms);
                 }
             }
 
             "set_nudge" => {
-                if let Some(percent) = ev.percent {
+                if let Some(percent) = event.percent {
                     deck.jog_hold_factor = (1.0 + percent / 100.0).max(crate::JOG_FACTOR_MIN);
-                    record_eff_rate(deck, ev.elapsed_ms);
+                    record_eff_rate(deck, event.elapsed_ms);
                 }
             }
 
-            // A stopped platter scrubs the full travel; a playing one bends, so its
+            // A stopped platter scrubs the full travel. A playing one bends, so its
             // share is recorded rate-free and scaled back up where it is consumed.
             "jog" => {
-                if let Some(ticks) = ev.ticks {
+                if let Some(ticks) = event.ticks {
                     let playing = deck.clip_start_ms.is_some() || deck.loop_active;
                     let travel = ticks * jog_rotation_speed.sec_per_tick();
                     if playing {
                         let bend = travel / crate::JOG_PAUSED_MULTIPLIER;
                         deck.track_pos_sec += deck.rate * bend;
                         deck.jog_impulses.push(JogImpulse {
-                            ms: ev.elapsed_ms,
+                            ms: event.elapsed_ms,
                             travel_sec: bend,
                         });
                     } else {
@@ -669,10 +680,10 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             }
 
             "set_beat_grid" => {
-                if let Some(bpm) = ev.bpm {
+                if let Some(bpm) = event.bpm {
                     deck.bpm = Some(bpm);
                 }
-                if let Some(off) = ev.beat_offset_sec {
+                if let Some(off) = event.beat_offset_sec {
                     deck.beat_offset_sec = off;
                 }
             }
@@ -680,22 +691,28 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             "loop_out" => {
                 // start_sec is the loop start (= cue_point in Rust at the moment
                 // loop_out fires).
-                deck.loop_start_sec = ev.start_sec;
-                deck.loop_end_sec = ev.end_sec;
+                deck.loop_start_sec = event.start_sec;
+                deck.loop_end_sec = event.end_sec;
                 if deck.loop_start_sec.is_some() && deck.loop_end_sec.is_some() {
-                    finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
-                    engage_loop(deck, ev.elapsed_ms);
+                    finalize_clip(
+                        deck,
+                        deck_id,
+                        event.elapsed_ms,
+                        &mut clips,
+                        &mut next_block_id,
+                    );
+                    engage_loop(deck, event.elapsed_ms);
                 }
             }
 
             "loop_in" => {
-                // loop_in always clears the loop region in Rust; if we were
+                // loop_in always clears the loop region in Rust. If we were
                 // looping, exit first.
                 if deck.loop_active {
                     exit_loop_and_continue(
                         deck,
                         deck_id,
-                        ev.elapsed_ms,
+                        event.elapsed_ms,
                         &mut clips,
                         &mut next_block_id,
                     );
@@ -710,7 +727,7 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
                     exit_loop_and_continue(
                         deck,
                         deck_id,
-                        ev.elapsed_ms,
+                        event.elapsed_ms,
                         &mut clips,
                         &mut next_block_id,
                     );
@@ -720,9 +737,15 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
             // The engine jumps the playhead back to the loop start on reloop.
             "reloop" if !deck.loop_active => {
                 if let (Some(loop_start_sec), Some(_)) = (deck.loop_start_sec, deck.loop_end_sec) {
-                    finalize_clip(deck, deck_id, ev.elapsed_ms, &mut clips, &mut next_block_id);
+                    finalize_clip(
+                        deck,
+                        deck_id,
+                        event.elapsed_ms,
+                        &mut clips,
+                        &mut next_block_id,
+                    );
                     deck.track_pos_sec = loop_start_sec;
-                    engage_loop(deck, ev.elapsed_ms);
+                    engage_loop(deck, event.elapsed_ms);
                 }
             }
 
@@ -780,7 +803,7 @@ const MIN_RATE_RANGE_PCT: f64 = 8.0;
 // The selectable lane ranges, derived from the caller's pitch-range options
 // (the frontend's `PITCH_RANGE_OPTIONS`, passed across the WASM boundary so the
 // values live in exactly one place). Options below the drawing floor are
-// dropped; the smallest surviving step is the default range.
+// dropped. The smallest surviving step is the default range.
 fn rate_steps_pct(pitch_options: &[f64]) -> Vec<f64> {
     let mut steps: Vec<f64> = pitch_options
         .iter()
@@ -818,14 +841,6 @@ pub struct FilterActiveSpan {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NudgeSpan {
-    pub start_ms: f64,
-    pub end_ms: f64,
-    pub percent: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DeckLanes {
     pub gain: Vec<LanePoint>,
     pub eq_low: Vec<LanePoint>,
@@ -851,7 +866,6 @@ pub struct MasterLanes {
 pub struct LanesBuild {
     pub deck_lanes: BTreeMap<String, DeckLanes>,
     pub master_lanes: MasterLanes,
-    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -861,19 +875,18 @@ pub struct TimelineBuild {
     pub loaded_spans: Vec<LoadedSpan>,
     pub deck_lanes: BTreeMap<String, DeckLanes>,
     pub master_lanes: MasterLanes,
-    pub deck_nudges: BTreeMap<String, Vec<NudgeSpan>>,
     pub deck_jog: BTreeMap<String, Vec<LanePoint>>,
 }
 
 // Clips and lanes from one event list. The editor needs both on every event
-// change; deriving them together lets callers cross the WASM boundary once
+// change. Deriving them together lets callers cross the WASM boundary once
 // instead of serializing the event list twice.
 pub fn build_timeline(
     events: &[SessionEvent],
     duration_ms: f64,
     pitch_options: &[f64],
 ) -> TimelineBuild {
-    // build_clips assumes ordered input; playback sorts the same way.
+    // build_clips assumes ordered input. Playback sorts the same way.
     let mut sorted: Vec<SessionEvent> = events.to_vec();
     sorted.sort_by(crate::sim::event_sim_order);
     let clips = build_clips(&sorted);
@@ -883,8 +896,23 @@ pub fn build_timeline(
         loaded_spans: clips.loaded_spans,
         deck_lanes: lanes.deck_lanes,
         master_lanes: lanes.master_lanes,
-        deck_nudges: lanes.deck_nudges,
         deck_jog: clips.deck_jog,
+    }
+}
+
+/// Everything `build_lanes` accumulates for one deck. Four parallel maps kept the same
+/// keys in step by hand, and a deck present in one but not another was an unwrap away.
+struct DeckAccum {
+    lanes: DeckLanes,
+    filter_active_since_ms: Option<f64>,
+}
+
+impl DeckAccum {
+    fn new() -> Self {
+        Self {
+            lanes: make_deck_lanes(),
+            filter_active_since_ms: None,
+        }
     }
 }
 
@@ -934,10 +962,7 @@ fn extend_to_end(points: &mut Vec<LanePoint>, duration_ms: f64) {
 }
 
 pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f64]) -> LanesBuild {
-    let mut deck_lanes: BTreeMap<String, DeckLanes> = BTreeMap::new();
-    let mut filter_active_since_ms: BTreeMap<String, Option<f64>> = BTreeMap::new();
-    let mut nudge_since: BTreeMap<String, Option<(f64, f64)>> = BTreeMap::new();
-    let mut deck_nudges: BTreeMap<String, Vec<NudgeSpan>> = BTreeMap::new();
+    let mut decks: BTreeMap<String, DeckAccum> = BTreeMap::new();
     let mut master_lanes = MasterLanes {
         gain: vec![LanePoint {
             ms: 0.0,
@@ -950,200 +975,116 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     };
 
     // Seed a deck's lanes (and span trackers) the first time any event names it.
-    fn ensure_deck(
-        id: &str,
-        deck_lanes: &mut BTreeMap<String, DeckLanes>,
-        filter_active_since_ms: &mut BTreeMap<String, Option<f64>>,
-        nudge_since: &mut BTreeMap<String, Option<(f64, f64)>>,
-        deck_nudges: &mut BTreeMap<String, Vec<NudgeSpan>>,
-    ) {
-        if !deck_lanes.contains_key(id) {
-            deck_lanes.insert(id.to_string(), make_deck_lanes());
-            filter_active_since_ms.insert(id.to_string(), None);
-            nudge_since.insert(id.to_string(), None);
-            deck_nudges.insert(id.to_string(), Vec::new());
-        }
-    }
+    for event in events {
+        let deck_id = event.deck.as_deref();
+        match event.event_type.as_str() {
+            "set_param" => {
+                match (
+                    deck_id,
+                    event.slot.as_deref(),
+                    event.param.as_deref(),
+                    event.value,
+                ) {
+                    (Some(id), Some("fader"), Some("gain"), Some(value)) => {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        deck.lanes.gain.push(LanePoint {
+                            ms: event.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
 
-    for ev in events {
-        let deck_id = ev.deck.as_deref();
-        match ev.event_type.as_str() {
-            "set_param" => match (deck_id, ev.slot.as_deref(), ev.param.as_deref(), ev.value) {
-                (Some(id), Some("fader"), Some("gain"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().gain.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                (Some(id), Some("eq"), Some(band), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let auto = deck_lanes.get_mut(id).unwrap();
-                    let lane = match band {
-                        "low" => &mut auto.eq_low,
-                        "mid" => &mut auto.eq_mid,
-                        _ => &mut auto.eq_high,
-                    };
-                    lane.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                (Some(id), Some("filter"), Some("value"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().filter.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                (Some(id), Some("filter"), Some("active"), Some(value)) => {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let active = value != 0.0;
-                    let since = filter_active_since_ms.get_mut(id).unwrap();
-                    if active && since.is_none() {
-                        *since = Some(ev.elapsed_ms);
-                    } else if !active {
-                        if let Some(start) = *since {
-                            deck_lanes
-                                .get_mut(id)
-                                .unwrap()
-                                .filter_active
-                                .push(FilterActiveSpan {
-                                    start_ms: start,
-                                    end_ms: ev.elapsed_ms,
-                                });
-                            *since = None;
+                    (Some(id), Some("eq"), Some(band), Some(value)) => {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let auto = &mut deck.lanes;
+                        let lane = match band {
+                            "low" => Some(&mut auto.eq_low),
+                            "mid" => Some(&mut auto.eq_mid),
+                            "high" => Some(&mut auto.eq_high),
+                            _ => None,
+                        };
+                        if let Some(lane) = lane {
+                            lane.push(LanePoint {
+                                ms: event.elapsed_ms,
+                                value: value as f64,
+                            });
                         }
                     }
+
+                    (Some(id), Some("filter"), Some("value"), Some(value)) => {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        deck.lanes.filter.push(LanePoint {
+                            ms: event.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
+
+                    (Some(id), Some("filter"), Some("active"), Some(value)) => {
+                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let active = value != 0.0;
+                        let since = &mut deck.filter_active_since_ms;
+                        if active && since.is_none() {
+                            *since = Some(event.elapsed_ms);
+                        } else if !active {
+                            if let Some(start) = *since {
+                                deck.lanes.filter_active.push(FilterActiveSpan {
+                                    start_ms: start,
+                                    end_ms: event.elapsed_ms,
+                                });
+                                *since = None;
+                            }
+                        }
+                    }
+
+                    (None, Some("gain"), Some("gain"), Some(value)) => {
+                        master_lanes.gain.push(LanePoint {
+                            ms: event.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
+
+                    (None, Some("xfader"), Some("position"), Some(value)) => {
+                        master_lanes.xfader.push(LanePoint {
+                            ms: event.elapsed_ms,
+                            value: value as f64,
+                        });
+                    }
+
+                    _ => {}
                 }
-
-                (None, Some("gain"), Some("gain"), Some(value)) => {
-                    master_lanes.gain.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                (None, Some("xfader"), Some("position"), Some(value)) => {
-                    master_lanes.xfader.push(LanePoint {
-                        ms: ev.elapsed_ms,
-                        value: value as f64,
-                    });
-                }
-
-                _ => {}
-            },
-
-
+            }
 
             "deck_snapshot" => {
-                if let (Some(id), Some(rate)) = (deck_id, ev.playback_rate) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().rate.push(LanePoint {
-                        ms: ev.elapsed_ms,
+                if let (Some(id), Some(rate)) = (deck_id, event.playback_rate) {
+                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    deck.lanes.rate.push(LanePoint {
+                        ms: event.elapsed_ms,
                         value: rate,
                     });
                 }
             }
 
             "set_playback_rate" => {
-                if let (Some(id), Some(rate)) = (deck_id, ev.rate) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    deck_lanes.get_mut(id).unwrap().rate.push(LanePoint {
-                        ms: ev.elapsed_ms,
+                if let (Some(id), Some(rate)) = (deck_id, event.rate) {
+                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    deck.lanes.rate.push(LanePoint {
+                        ms: event.elapsed_ms,
                         value: rate,
                     });
                 }
             }
 
-
-            // A nudge interval runs from the first non-zero `percent` event to
-            // the following `percent: 0` event for that deck (mirrors
-            // filter-active pairing).
-            "set_nudge" => {
-                if let (Some(id), Some(percent)) = (deck_id, ev.percent) {
-                    ensure_deck(
-                        id,
-                        &mut deck_lanes,
-                        &mut filter_active_since_ms,
-                        &mut nudge_since,
-                        &mut deck_nudges,
-                    );
-                    let since = nudge_since.get_mut(id).unwrap();
-                    if percent != 0.0 {
-                        match since {
-                            None => *since = Some((ev.elapsed_ms, percent)),
-                            Some((_start, p)) => *p = percent,
-                        }
-                    } else if let Some((start, p)) = *since {
-                        deck_nudges.get_mut(id).unwrap().push(NudgeSpan {
-                            start_ms: start,
-                            end_ms: ev.elapsed_ms,
-                            percent: p,
-                        });
-                        *since = None;
-                    }
-                }
-            }
-
-
             _ => {}
         }
     }
 
-    for (deck_id, auto) in deck_lanes.iter_mut() {
-        if let Some(Some(since)) = filter_active_since_ms.get(deck_id) {
-            auto.filter_active.push(FilterActiveSpan {
-                start_ms: *since,
+    for deck in decks.values_mut() {
+        if let Some(since) = deck.filter_active_since_ms {
+            deck.lanes.filter_active.push(FilterActiveSpan {
+                start_ms: since,
                 end_ms: duration_ms,
             });
         }
-        if let Some(Some((start, percent))) = nudge_since.get(deck_id) {
-            deck_nudges.get_mut(deck_id).unwrap().push(NudgeSpan {
-                start_ms: *start,
-                end_ms: duration_ms,
-                percent: *percent,
-            });
-        }
+        let auto = &mut deck.lanes;
         extend_to_end(&mut auto.gain, duration_ms);
         extend_to_end(&mut auto.eq_low, duration_ms);
         extend_to_end(&mut auto.eq_mid, duration_ms);
@@ -1155,21 +1096,26 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
     extend_to_end(&mut master_lanes.xfader, duration_ms);
 
     let mut max_rate_deviation_pct = 0.0f64;
-    for auto in deck_lanes.values() {
-        for p in &auto.rate {
+    for deck in decks.values() {
+        for p in &deck.lanes.rate {
             max_rate_deviation_pct = max_rate_deviation_pct.max((p.value - 1.0).abs() * 100.0);
         }
     }
     let range_pct = rate_range_pct_for(max_rate_deviation_pct, &rate_steps_pct(pitch_options));
-    for auto in deck_lanes.values_mut() {
+    for deck in decks.values_mut() {
+        let auto = &mut deck.lanes;
         auto.rate_min = 1.0 - range_pct / 100.0;
         auto.rate_max = 1.0 + range_pct / 100.0;
+    }
+
+    let mut deck_lanes = BTreeMap::new();
+    for (id, deck) in decks {
+        deck_lanes.insert(id, deck.lanes);
     }
 
     LanesBuild {
         deck_lanes,
         master_lanes,
-        deck_nudges,
     }
 }
 
@@ -1181,7 +1127,7 @@ mod tests {
     // their expected lane ranges to (8% -> +/-0.08, 10% -> +/-0.10, etc.).
     const PITCH_OPTS: [f64; 6] = [6.0, 8.0, 10.0, 16.0, 50.0, 100.0];
 
-    fn ev(event_type: &str, elapsed_ms: f64, deck: Option<&str>) -> SessionEvent {
+    fn event(event_type: &str, elapsed_ms: f64, deck: Option<&str>) -> SessionEvent {
         SessionEvent {
             event_type: event_type.to_string(),
             elapsed_ms,
@@ -1190,8 +1136,6 @@ mod tests {
         }
     }
 
-    // The WASM boundary is JSON-in/JSON-out; the TS wrapper expects camelCase
-    // keys, including the top-level `loadedSpans` field.
     #[test]
     fn clips_build_serializes_loaded_spans_as_camel_case() {
         let json = serde_json::to_value(ClipsBuild {
@@ -1210,28 +1154,27 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
             SessionEvent {
                 bpm: Some(120.0),
                 beat_offset_sec: Some(0.1),
-                ..ev("set_beat_grid", 50.0, Some("A"))
+                ..event("set_beat_grid", 50.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 rate: Some(2.0),
-                ..ev("set_playback_rate", 3000.0, Some("A"))
+                ..event("set_playback_rate", 3000.0, Some("A"))
             },
             SessionEvent {
                 percent: Some(50.0),
-                ..ev("set_nudge", 4000.0, Some("A"))
+                ..event("set_nudge", 4000.0, Some("A"))
             },
-            ev("stop", 5000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
         let c = &clips[0];
-        // Grid captured at clip start rides on the clip.
         assert_eq!(c.bpm, Some(120.0));
         assert_eq!(c.beat_offset_sec, Some(0.1));
         // Three constant-rate pieces: 1x, then 2x, then 2x*1.5=3x effective.
@@ -1244,7 +1187,6 @@ mod tests {
         assert!(approx(segs[1].track_start_sec, 2.0) && approx(segs[1].track_end_sec, 4.0));
         assert!(approx(segs[2].wall_start_ms, 4000.0) && approx(segs[2].wall_end_ms, 5000.0));
         assert!(approx(segs[2].track_start_sec, 4.0) && approx(segs[2].track_end_sec, 7.0));
-        // Segments tile the clip with no gaps and cover the full track advance.
         assert!(approx(segs[0].track_end_sec, segs[1].track_start_sec));
         assert!(approx(segs[1].track_end_sec, segs[2].track_start_sec));
     }
@@ -1254,12 +1196,12 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/tracks/song.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 cue_point_sec: Some(4.0),
-                ..ev("stop", 5000.0, Some("A"))
+                ..event("stop", 5000.0, Some("A"))
             },
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
@@ -1278,11 +1220,11 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 100.0, Some("A")),
-            ev("play", 200.0, Some("A")),
-            ev("stop", 500.0, Some("A")),
+            event("play", 100.0, Some("A")),
+            event("play", 200.0, Some("A")),
+            event("stop", 500.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
@@ -1294,10 +1236,10 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 500.0, Some("A")),
-            ev("recording_stop", 3000.0, Some("A")),
+            event("play", 500.0, Some("A")),
+            event("recording_stop", 3000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
@@ -1309,14 +1251,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev("play", 3000.0, Some("A"))
+                ..event("play", 3000.0, Some("A"))
             },
-            ev("stop", 5000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1333,14 +1275,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 sec: Some(10.0),
-                ..ev("seek", 2000.0, Some("A"))
+                ..event("seek", 2000.0, Some("A"))
             },
-            ev("stop", 4000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1357,20 +1299,20 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 sec: Some(4.0),
-                ..ev("seek", 1000.0, Some("A"))
+                ..event("seek", 1000.0, Some("A"))
             },
             SessionEvent {
                 start_sec: Some(4.0),
                 end_sec: Some(6.0),
-                ..ev("loop_out", 3000.0, Some("A"))
+                ..event("loop_out", 3000.0, Some("A"))
             },
-            ev("exit_loop", 9000.0, Some("A")),
-            ev("stop", 11000.0, Some("A")),
+            event("exit_loop", 9000.0, Some("A")),
+            event("stop", 11000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let loop_clips: Vec<&Clip> = clips.iter().filter(|c| c.track_start_sec == 4.0).collect();
@@ -1382,20 +1324,20 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 sec: Some(1.0),
-                ..ev("seek", 1000.0, Some("A"))
+                ..event("seek", 1000.0, Some("A"))
             },
             SessionEvent {
                 start_sec: Some(2.0),
                 end_sec: Some(4.0),
-                ..ev("loop_out", 4000.0, Some("A"))
+                ..event("loop_out", 4000.0, Some("A"))
             },
-            ev("exit_loop", 8000.0, Some("A")),
-            ev("stop", 9000.0, Some("A")),
+            event("exit_loop", 8000.0, Some("A")),
+            event("stop", 9000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let loop_dur_ms = ((4.0 - 2.0) / 1.0) * 1000.0;
@@ -1412,16 +1354,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(2.0),
-                ..ev("loop_out", 0.0, Some("A"))
+                ..event("loop_out", 0.0, Some("A"))
             },
-            ev("exit_loop", 5000.0, Some("A")),
-            ev("stop", 6000.0, Some("A")),
+            event("exit_loop", 5000.0, Some("A")),
+            event("stop", 6000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let loop_clips: Vec<&Clip> = clips
@@ -1437,16 +1379,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(1.0),
                 end_sec: Some(3.0),
-                ..ev("loop_out", 0.0, Some("A"))
+                ..event("loop_out", 0.0, Some("A"))
             },
-            ev("loop_in", 6000.0, Some("A")),
-            ev("stop", 9000.0, Some("A")),
+            event("loop_in", 6000.0, Some("A")),
+            event("stop", 9000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let post = clips.iter().find(|c| c.session_start_ms == 6000.0);
@@ -1459,18 +1401,18 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(2.0),
-                ..ev("loop_out", 0.0, Some("A"))
+                ..event("loop_out", 0.0, Some("A"))
             },
-            ev("exit_loop", 4000.0, Some("A")),
-            ev("reloop", 5000.0, Some("A")),
-            ev("exit_loop", 7000.0, Some("A")),
-            ev("stop", 8000.0, Some("A")),
+            event("exit_loop", 4000.0, Some("A")),
+            event("reloop", 5000.0, Some("A")),
+            event("exit_loop", 7000.0, Some("A")),
+            event("stop", 8000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let reloop_clips = clips
@@ -1495,9 +1437,9 @@ mod tests {
                 loop_active: Some(true),
                 loop_end_sec: Some(6.0),
                 playback_rate: Some(1.0),
-                ..ev("deck_snapshot", 0.0, Some("A"))
+                ..event("deck_snapshot", 0.0, Some("A"))
             },
-            ev("stop", 4000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let loop_clips = clips.iter().filter(|c| c.track_start_sec == 4.0).count();
@@ -1514,9 +1456,9 @@ mod tests {
                 is_playing: Some(true),
                 loop_active: Some(false),
                 playback_rate: Some(1.0),
-                ..ev("deck_snapshot", 0.0, Some("A"))
+                ..event("deck_snapshot", 0.0, Some("A"))
             },
-            ev("stop", 2000.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
@@ -1530,15 +1472,15 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 path: Some("/t/b.mp3".to_string()),
-                ..ev("load_track", 3000.0, Some("A"))
+                ..event("load_track", 3000.0, Some("A"))
             },
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 6000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 6000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1551,9 +1493,9 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("eject_track", 5000.0, Some("A")),
+            event("eject_track", 5000.0, Some("A")),
         ];
         let ClipsBuild { loaded_spans, .. } = build_clips(&events);
         assert_eq!(loaded_spans.len(), 1);
@@ -1569,9 +1511,9 @@ mod tests {
                 position_sec: Some(0.0),
                 is_playing: Some(false),
                 playback_rate: Some(1.0),
-                ..ev("deck_snapshot", 0.0, Some("A"))
+                ..event("deck_snapshot", 0.0, Some("A"))
             },
-            ev("eject_track", 3000.0, Some("A")),
+            event("eject_track", 3000.0, Some("A")),
         ];
         let ClipsBuild { loaded_spans, .. } = build_clips(&events);
         assert_eq!(loaded_spans.len(), 1);
@@ -1583,12 +1525,12 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
-            ev("play", 6000.0, Some("A")),
-            ev("stop", 8000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
+            event("play", 6000.0, Some("A")),
+            event("stop", 8000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1600,16 +1542,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 rate: Some(1.5),
-                ..ev("set_playback_rate", 3000.0, Some("A"))
+                ..event("set_playback_rate", 3000.0, Some("A"))
             },
-            ev("stop", 5000.0, Some("A")),
-            ev("play", 6000.0, Some("A")),
-            ev("stop", 7000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
+            event("play", 6000.0, Some("A")),
+            event("stop", 7000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - (2.0 + 2.0 * 1.5)).abs() < 1e-6);
@@ -1620,20 +1562,20 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 percent: Some(4.0),
-                ..ev("set_nudge", 2000.0, Some("A"))
+                ..event("set_nudge", 2000.0, Some("A"))
             },
             SessionEvent {
                 percent: Some(0.0),
-                ..ev("set_nudge", 3000.0, Some("A"))
+                ..event("set_nudge", 3000.0, Some("A"))
             },
-            ev("stop", 4000.0, Some("A")),
-            ev("play", 5000.0, Some("A")),
-            ev("stop", 6000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
+            event("play", 5000.0, Some("A")),
+            event("stop", 6000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - 3.04).abs() < 1e-6);
@@ -1644,20 +1586,20 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
             SessionEvent {
                 rate: Some(1.5),
-                ..ev("set_playback_rate", 100.0, Some("A"))
+                ..event("set_playback_rate", 100.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 2000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
             SessionEvent {
                 path: Some("/t/b.mp3".to_string()),
-                ..ev("load_track", 3000.0, Some("A"))
+                ..event("load_track", 3000.0, Some("A"))
             },
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 6000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 6000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1673,16 +1615,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
-            ev("stop", 2000.0, Some("A")),
+            event("play", 0.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
             SessionEvent {
                 rate: Some(1.5),
-                ..ev("set_playback_rate", 3000.0, Some("A"))
+                ..event("set_playback_rate", 3000.0, Some("A"))
             },
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - 2.0).abs() < 1e-6);
@@ -1694,16 +1636,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
             SessionEvent {
                 cue_point_sec: Some(0.0),
-                ..ev("cue_preview_start", 1000.0, Some("A"))
+                ..event("cue_preview_start", 1000.0, Some("A"))
             },
-            ev("play", 1500.0, Some("A")),
-            ev("stop", 3000.0, Some("A")),
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
+            event("play", 1500.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -1716,18 +1658,18 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
             SessionEvent {
                 cue_point_sec: Some(5.0),
-                ..ev("cue_preview_start", 1000.0, Some("A"))
+                ..event("cue_preview_start", 1000.0, Some("A"))
             },
             SessionEvent {
                 cue_point_sec: Some(5.0),
-                ..ev("cue_preview_end", 2000.0, Some("A"))
+                ..event("cue_preview_end", 2000.0, Some("A"))
             },
-            ev("play", 3000.0, Some("A")),
-            ev("stop", 4000.0, Some("A")),
+            event("play", 3000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let last = clips.last().unwrap();
@@ -1739,15 +1681,15 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(6.0),
-                ..ev("loop_out", 7000.0, Some("A"))
+                ..event("loop_out", 7000.0, Some("A"))
             },
-            ev("stop", 8000.0, Some("A")),
+            event("stop", 8000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let first = clips.iter().find(|c| c.session_start_ms == 7000.0).unwrap();
@@ -1766,23 +1708,22 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(6.0),
-                ..ev("loop_out", 7000.0, Some("A"))
+                ..event("loop_out", 7000.0, Some("A"))
             },
-            ev("exit_loop", 9000.0, Some("A")),
-            ev("stop", 10000.0, Some("A")),
-            ev("play", 11000.0, Some("A")),
-            ev("stop", 12000.0, Some("A")),
+            event("exit_loop", 9000.0, Some("A")),
+            event("stop", 10000.0, Some("A")),
+            event("play", 11000.0, Some("A")),
+            event("stop", 12000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let last = clips.last().unwrap();
         assert_eq!(last.session_start_ms, 11000.0);
-        // entry wrapped to 1.0, +2s in loop = 3.0 at exit, +1s to stop = 4.0
         assert!((last.track_start_sec - 4.0).abs() < 1e-6);
     }
 
@@ -1791,17 +1732,17 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
-            ev("play", 0.0, Some("A")),
+            event("play", 0.0, Some("A")),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(2.0),
-                ..ev("loop_out", 3000.0, Some("A"))
+                ..event("loop_out", 3000.0, Some("A"))
             },
-            ev("exit_loop", 3500.0, Some("A")),
-            ev("reloop", 4000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
+            event("exit_loop", 3500.0, Some("A")),
+            event("reloop", 4000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let relooped = clips.iter().find(|c| c.session_start_ms == 4000.0).unwrap();
@@ -1819,9 +1760,9 @@ mod tests {
                 loop_active: Some(true),
                 loop_end_sec: Some(6.0),
                 playback_rate: Some(1.0),
-                ..ev("deck_snapshot", 0.0, Some("A"))
+                ..event("deck_snapshot", 0.0, Some("A"))
             },
-            ev("stop", 4000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[0].track_start_sec - 5.0).abs() < 1e-6);
@@ -1834,16 +1775,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("A"))
+                ..event("load_track", 0.0, Some("A"))
             },
             SessionEvent {
                 path: Some("/t/b.mp3".to_string()),
-                ..ev("load_track", 0.0, Some("B"))
+                ..event("load_track", 0.0, Some("B"))
             },
-            ev("play", 0.0, Some("A")),
-            ev("play", 1000.0, Some("B")),
-            ev("stop", 3000.0, Some("A")),
-            ev("stop", 5000.0, Some("B")),
+            event("play", 0.0, Some("A")),
+            event("play", 1000.0, Some("B")),
+            event("stop", 3000.0, Some("A")),
+            event("stop", 5000.0, Some("B")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let deck_a: Vec<&Clip> = clips.iter().filter(|c| c.deck == "A").collect();
@@ -1882,8 +1823,14 @@ mod tests {
     #[test]
     fn a_session_with_no_crossfader_move_reads_centre_throughout() {
         let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
-        assert_eq!(master_lanes.xfader.first().map(|point| point.value), Some(0.0));
-        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(10_000.0));
+        assert_eq!(
+            master_lanes.xfader.first().map(|point| point.value),
+            Some(0.0)
+        );
+        assert_eq!(
+            master_lanes.xfader.last().map(|point| point.ms),
+            Some(10_000.0)
+        );
     }
 
     #[test]
@@ -1896,7 +1843,10 @@ mod tests {
         assert_eq!(master_lanes.xfader[1].value, -1.0);
         assert_eq!(master_lanes.xfader[1].ms, 1500.0);
         assert_eq!(master_lanes.xfader[2].value, 1.0);
-        assert_eq!(master_lanes.xfader.last().map(|point| point.ms), Some(5000.0));
+        assert_eq!(
+            master_lanes.xfader.last().map(|point| point.ms),
+            Some(5000.0)
+        );
     }
 
     #[test]
@@ -1999,7 +1949,13 @@ mod tests {
 
     #[test]
     fn closes_unfinished_filter_span_at_session_end() {
-        let events = vec![SessionEvent::param(7000.0, Some("A"), "filter", "active", 1.0)];
+        let events = vec![SessionEvent::param(
+            7000.0,
+            Some("A"),
+            "filter",
+            "active",
+            1.0,
+        )];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
             deck_lanes["A"].filter_active,
@@ -2011,116 +1967,10 @@ mod tests {
     }
 
     #[test]
-    fn pairs_nudge_percent_with_following_zero() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(8.0),
-                ..ev("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..ev("set_nudge", 1500.0, Some("A"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 1500.0,
-                percent: 8.0
-            }]
-        );
-    }
-
-    #[test]
-    fn keeps_original_start_when_percent_changes_mid_interval() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(4.0),
-                ..ev("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(8.0),
-                ..ev("set_nudge", 1200.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..ev("set_nudge", 1500.0, Some("A"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 1500.0,
-                percent: 8.0
-            }]
-        );
-    }
-
-    #[test]
-    fn closes_unfinished_nudge_span_at_session_end() {
-        let events = vec![SessionEvent {
-            percent: Some(6.0),
-            ..ev("set_nudge", 9000.0, Some("A"))
-        }];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 9000.0,
-                end_ms: 10_000.0,
-                percent: 6.0
-            }]
-        );
-    }
-
-    #[test]
-    fn keeps_nudge_spans_independent_across_decks() {
-        let events = vec![
-            SessionEvent {
-                percent: Some(5.0),
-                ..ev("set_nudge", 1000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(-5.0),
-                ..ev("set_nudge", 2000.0, Some("B"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..ev("set_nudge", 3000.0, Some("A"))
-            },
-            SessionEvent {
-                percent: Some(0.0),
-                ..ev("set_nudge", 4000.0, Some("B"))
-            },
-        ];
-        let LanesBuild { deck_nudges, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
-        assert_eq!(
-            deck_nudges["A"],
-            vec![NudgeSpan {
-                start_ms: 1000.0,
-                end_ms: 3000.0,
-                percent: 5.0
-            }]
-        );
-        assert_eq!(
-            deck_nudges["B"],
-            vec![NudgeSpan {
-                start_ms: 2000.0,
-                end_ms: 4000.0,
-                percent: -5.0
-            }]
-        );
-    }
-
-    #[test]
     fn rate_lane_seeds_at_one_and_appends_points() {
         let events = vec![SessionEvent {
             rate: Some(1.05),
-            ..ev("set_playback_rate", 2000.0, Some("A"))
+            ..event("set_playback_rate", 2000.0, Some("A"))
         }];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
         assert_eq!(
@@ -2149,7 +1999,7 @@ mod tests {
             position_sec: Some(0.0),
             is_playing: Some(false),
             playback_rate: Some(0.96),
-            ..ev("deck_snapshot", 0.0, Some("A"))
+            ..event("deck_snapshot", 0.0, Some("A"))
         }];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert_eq!(
@@ -2176,7 +2026,7 @@ mod tests {
         let events = vec![
             SessionEvent {
                 rate: Some(1.09),
-                ..ev("set_playback_rate", 100.0, Some("A"))
+                ..event("set_playback_rate", 100.0, Some("A"))
             },
             SessionEvent::param(200.0, Some("B"), "fader", "gain", 0.5),
         ];
@@ -2199,7 +2049,7 @@ mod tests {
     fn rate_range_clamps_to_widest_step_for_extreme_rates() {
         let events = vec![SessionEvent {
             rate: Some(3.0),
-            ..ev("set_playback_rate", 0.0, Some("A"))
+            ..event("set_playback_rate", 0.0, Some("A"))
         }];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
         assert!((deck_lanes["A"].rate_min - 0.0).abs() < 1e-9);
@@ -2210,20 +2060,23 @@ mod tests {
     fn rate_range_pct_for_matches_steps() {
         assert_eq!(rate_range_pct_for(0.0, &rate_steps_pct(&PITCH_OPTS)), 8.0);
         assert_eq!(rate_range_pct_for(9.0, &rate_steps_pct(&PITCH_OPTS)), 10.0);
-        assert_eq!(rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)), 100.0);
+        assert_eq!(
+            rate_range_pct_for(200.0, &rate_steps_pct(&PITCH_OPTS)),
+            100.0
+        );
     }
 
     fn jog(elapsed_ms: f64, deck: &str, ticks: f64) -> SessionEvent {
         SessionEvent {
             ticks: Some(ticks),
-            ..ev("jog", elapsed_ms, Some(deck))
+            ..event("jog", elapsed_ms, Some(deck))
         }
     }
 
     fn loaded(deck: &str) -> SessionEvent {
         SessionEvent {
             path: Some("/t/a.mp3".to_string()),
-            ..ev("load_track", 0.0, Some(deck))
+            ..event("load_track", 0.0, Some(deck))
         }
     }
 
@@ -2235,8 +2088,8 @@ mod tests {
         let events = vec![
             loaded("A"),
             jog(500.0, "A", 1000.0),
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 2000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 1);
@@ -2247,11 +2100,11 @@ mod tests {
     fn jog_while_playing_bends_the_position_by_a_hundredth_of_the_scrub() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             jog(2000.0, "A", 1000.0),
-            ev("stop", 3000.0, Some("A")),
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert_eq!(clips.len(), 2);
@@ -2264,11 +2117,11 @@ mod tests {
             loaded("A"),
             SessionEvent {
                 speed: Some("rpm45".to_string()),
-                ..ev("set_jog_rotation_speed", 100.0, None)
+                ..event("set_jog_rotation_speed", 100.0, None)
             },
             jog(500.0, "A", 1000.0),
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 2000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&at_45);
         let expected = 2.0 * (100.0 / 3.0) / 45.0;
@@ -2279,33 +2132,31 @@ mod tests {
     fn jog_reverses_the_position_on_negative_ticks() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 3000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
             jog(3500.0, "A", -500.0),
-            ev("play", 4000.0, Some("A")),
-            ev("stop", 5000.0, Some("A")),
+            event("play", 4000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - 1.0).abs() < 1e-9);
     }
 
-    // Both land on one axis because the engine adds them, so a gesture on top of a
-    // held nudge has to read as the sum and not as either one alone.
     #[test]
     fn the_wheel_curve_sums_a_gesture_onto_the_nudge_under_it() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 percent: Some(4.0),
-                ..ev("set_nudge", 1500.0, Some("A"))
+                ..event("set_nudge", 1500.0, Some("A"))
             },
             jog(2000.0, "A", 500.0),
             SessionEvent {
                 percent: Some(0.0),
-                ..ev("set_nudge", 4000.0, Some("A"))
+                ..event("set_nudge", 4000.0, Some("A"))
             },
-            ev("stop", 5000.0, Some("A")),
+            event("stop", 5000.0, Some("A")),
         ];
         let curve = &build_clips(&events).deck_jog["A"];
         let at = |ms: f64| {
@@ -2322,15 +2173,13 @@ mod tests {
         assert!((at(4500.0) - 0.0).abs() < 1e-9);
     }
 
-    // The lane draws the wheel's contribution to playback speed, which a stopped
-    // platter has none of: it repositions instead.
     #[test]
     fn the_wheel_curve_covers_playing_decks_only() {
         let scrubbed_then_played = vec![
             loaded("A"),
             jog(500.0, "A", 100.0),
-            ev("play", 1000.0, Some("A")),
-            ev("stop", 3000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
         ];
         let ClipsBuild { deck_jog, .. } = build_clips(&scrubbed_then_played);
         assert!(deck_jog["A"].iter().all(|point| point.value == 0.0));
@@ -2342,17 +2191,17 @@ mod tests {
             loaded("A"),
             SessionEvent {
                 rate: Some(2.0),
-                ..ev("set_playback_rate", 500.0, Some("A"))
+                ..event("set_playback_rate", 500.0, Some("A"))
             },
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             jog(2000.0, "A", 100.0),
-            ev("stop", 3000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
         ];
         let at_normal_rate = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             jog(2000.0, "A", 100.0),
-            ev("stop", 3000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
         ];
         let peak = |events: &[SessionEvent]| {
             build_clips(events).deck_jog["A"]
@@ -2363,21 +2212,20 @@ mod tests {
         assert!((peak(&at_double_rate) - peak(&at_normal_rate)).abs() < 1e-9);
     }
 
-    // The wheel speeds the deck up, so the audio under a gesture is stretched over
-    // less wall time, exactly as a nudge stretches it.
     #[test]
     fn a_jog_compresses_the_waveform_across_its_settle() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             jog(2000.0, "A", 1000.0),
-            ev("stop", 3000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let segs = &clips[0].wave_segments;
 
         let rate_of = |seg: &WaveSeg| {
-            (seg.track_end_sec - seg.track_start_sec) / ((seg.wall_end_ms - seg.wall_start_ms) / 1000.0)
+            (seg.track_end_sec - seg.track_start_sec)
+                / ((seg.wall_end_ms - seg.wall_start_ms) / 1000.0)
         };
         let during = segs
             .iter()
@@ -2392,15 +2240,13 @@ mod tests {
         assert!((rate_of(before) - 1.0).abs() < 1e-9);
     }
 
-    // Every segment starts where the previous ended: the wheel stretches the audio
-    // rather than skipping any of it.
     #[test]
     fn wave_segments_stay_contiguous_across_a_jog() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             jog(2000.0, "A", 1000.0),
-            ev("stop", 3000.0, Some("A")),
+            event("stop", 3000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         let segs = &clips[0].wave_segments;
@@ -2410,28 +2256,32 @@ mod tests {
             assert!((pair[0].wall_end_ms - pair[1].wall_start_ms).abs() < 1e-12);
         }
         let total = segs.last().unwrap().track_end_sec - segs[0].track_start_sec;
-        assert!((total - (2.0 + 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 / crate::JOG_PAUSED_MULTIPLIER)).abs() < 1e-9);
+        assert!(
+            (total
+                - (2.0
+                    + 1000.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 / crate::JOG_PAUSED_MULTIPLIER))
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
     fn nudge_floors_the_factor_the_way_the_engine_does() {
         let events = vec![
             loaded("A"),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 percent: Some(-200.0),
-                ..ev("set_nudge", 1000.0, Some("A"))
+                ..event("set_nudge", 1000.0, Some("A"))
             },
-            ev("stop", 2000.0, Some("A")),
-            ev("play", 3000.0, Some("A")),
-            ev("stop", 4000.0, Some("A")),
+            event("stop", 2000.0, Some("A")),
+            event("play", 3000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
         ];
         let ClipsBuild { clips, .. } = build_clips(&events);
         assert!((clips[1].track_start_sec - crate::JOG_FACTOR_MIN).abs() < 1e-9);
     }
 
-    // build_clips is the editor's position model and the sim is the engine's, so a
-    // jog that moves one and not the other silently shifts synthesized play events.
     #[test]
     fn build_clips_position_matches_the_sim_across_jogs() {
         const SAMPLE_RATE: u32 = 44100;
@@ -2441,29 +2291,32 @@ mod tests {
                 is_playing: Some(false),
                 playback_rate: Some(1.0),
                 position_sec: Some(0.0),
-                ..ev("deck_snapshot", 0.0, Some("A"))
+                ..event("deck_snapshot", 0.0, Some("A"))
             },
             jog(200.0, "A", 800.0),
-            ev("play", 1000.0, Some("A")),
+            event("play", 1000.0, Some("A")),
             SessionEvent {
                 rate: Some(1.06),
-                ..ev("set_playback_rate", 1500.0, Some("A"))
+                ..event("set_playback_rate", 1500.0, Some("A"))
             },
             jog(2000.0, "A", 1500.0),
             SessionEvent {
                 percent: Some(3.0),
-                ..ev("set_nudge", 2500.0, Some("A"))
+                ..event("set_nudge", 2500.0, Some("A"))
             },
             jog(3000.0, "A", -900.0),
-            ev("stop", 4000.0, Some("A")),
-            ev("play", 5000.0, Some("A")),
-            ev("stop", 6000.0, Some("A")),
+            event("stop", 4000.0, Some("A")),
+            event("play", 5000.0, Some("A")),
+            event("stop", 6000.0, Some("A")),
         ];
 
         let mut cache = crate::sim::SampleCache::new();
         cache.insert(
             "/t/a.mp3".to_string(),
-            (std::sync::Arc::new(vec![0.0; SAMPLE_RATE as usize * 120]), 1),
+            (
+                std::sync::Arc::new(vec![0.0; SAMPLE_RATE as usize * 120]),
+                1,
+            ),
         );
         // A stopped deck reports its last committed position for any ms, so the sim
         // has to be asked at the resume and not after the session has run out.
@@ -2471,8 +2324,8 @@ mod tests {
         for event in events.iter().filter(|e| e.elapsed_ms <= 5000.0) {
             crate::sim::sim_apply_event(event, &mut state, &cache, SAMPLE_RATE);
         }
-        let sim_sec =
-            crate::sim::sim_pos(&state.decks["A"], 5000.0, f64::from(SAMPLE_RATE)) / f64::from(SAMPLE_RATE);
+        let sim_sec = crate::sim::sim_pos(&state.decks["A"], 5000.0, f64::from(SAMPLE_RATE))
+            / f64::from(SAMPLE_RATE);
 
         let ClipsBuild { clips, .. } = build_clips(&events);
         let resumed = clips.last().unwrap();
@@ -2483,8 +2336,6 @@ mod tests {
         );
     }
 
-
-
     fn total_travel(steps: &[JogRateStep]) -> f64 {
         steps
             .iter()
@@ -2494,7 +2345,13 @@ mod tests {
 
     #[test]
     fn steps_deliver_exactly_the_impulse_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 1000.0, travel_sec: 0.031 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 1000.0,
+                travel_sec: 0.031,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         assert!((total_travel(&steps) - 0.031).abs() < 1e-12);
     }
 
@@ -2512,15 +2369,26 @@ mod tests {
 
     #[test]
     fn a_reverse_gesture_delivers_negative_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: -0.02 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: -0.02,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         assert!((total_travel(&steps) + 0.02).abs() < 1e-12);
         assert!(steps.iter().all(|step| step.rate_delta <= 0.0));
     }
 
-    // The filter is a decay, so the deck is bent hardest the instant the wheel moves.
     #[test]
     fn the_first_step_carries_the_most_travel() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.05 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.05,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         let peak = steps
             .iter()
             .map(|step| step.rate_delta)
@@ -2532,8 +2400,14 @@ mod tests {
     fn steps_land_on_a_shared_grid_so_gestures_can_be_summed() {
         let steps = jog_rate_steps(
             &[
-                JogImpulse { ms: 102.0, travel_sec: 0.01 },
-                JogImpulse { ms: 104.0, travel_sec: 0.01 },
+                JogImpulse {
+                    ms: 102.0,
+                    travel_sec: 0.01,
+                },
+                JogImpulse {
+                    ms: 104.0,
+                    travel_sec: 0.01,
+                },
             ],
             JOG_CURVE_STEP_MS,
         );
@@ -2549,12 +2423,25 @@ mod tests {
     #[test]
     fn no_wheel_movement_is_no_steps() {
         assert!(jog_rate_steps(&[], JOG_CURVE_STEP_MS).is_empty());
-        assert!(jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.0 }], JOG_CURVE_STEP_MS).is_empty());
+        assert!(jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.0
+            }],
+            JOG_CURVE_STEP_MS
+        )
+        .is_empty());
     }
 
     #[test]
     fn the_settle_is_bounded_so_one_flick_cannot_span_a_session() {
-        let steps = jog_rate_steps(&[JogImpulse { ms: 0.0, travel_sec: 0.01 }], JOG_CURVE_STEP_MS);
+        let steps = jog_rate_steps(
+            &[JogImpulse {
+                ms: 0.0,
+                travel_sec: 0.01,
+            }],
+            JOG_CURVE_STEP_MS,
+        );
         let end = steps.last().unwrap().end_ms;
         assert!(end <= crate::JOG_FILTER_TAU_SEC * SETTLE_TAIL_TAUS * 1000.0 + JOG_CURVE_STEP_MS);
     }

@@ -317,7 +317,7 @@ function drawLoopRegion(
   drawLoopRegionOverlay(ctx, rect, y0, stripH, active);
 }
 
-// A stroke's anti-aliased edge would shimmer as position scrolls; a pixel-aligned fill can't.
+// A stroke's anti-aliased edge would shimmer as position scrolls. A pixel-aligned fill can't.
 function fillPixelLine(
   ctx: CanvasRenderingContext2D,
   centerX: number,
@@ -456,7 +456,7 @@ function drawStripSeparators(
 function draw() {
   const canvas = canvasEl.value;
   if (!canvas) return;
-  // Catches DPR changes too, not just CSS size (ResizeObserver misses those); no-ops if unchanged.
+  // Catches DPR changes too, not just CSS size (ResizeObserver misses those). No-ops if unchanged.
   resizeCanvas(canvas);
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -498,13 +498,10 @@ function draw() {
       continue;
     }
 
-    // rate > 1 means pitched up: audio advances faster than real time, so the
-    // waveform appears compressed horizontally (fewer audio seconds fit in the
-    // fixed real-time window). Divide all audio-time offsets by rate to convert
-    // to real-time screen coordinates.
+    // Audio-time offsets divide by rate to reach screen coordinates: pitched up,
+    // fewer audio seconds fit the fixed real-time window.
     const rate = Math.max(0.1, src.getRate());
     const scaleX = w / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
-    // Snap to physical pixel boundary to eliminate sub-pixel shimmer
     const txRaw = w / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleX;
     const tx = Math.round(txRaw * dpr) / dpr;
 
@@ -540,7 +537,6 @@ function resizeCanvas(canvas: HTMLCanvasElement) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.scale(dpr, dpr);
-  // Force offscreen rebuild at new size
   for (const s of states) {
     s.lastBuiltMain = 0;
     s.lastBuiltDpr = 0;

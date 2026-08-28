@@ -1,8 +1,3 @@
-// The session event model: the raw deserialized .bms event and its typed
-// command form. The three interpreters (scrub simulation, live playback,
-// offline render) all match exhaustively on `SessionCommand`, so adding a
-// variant forces a compile error in each until its behavior is decided.
-
 use crate::param::ParamScope;
 
 // Serializes back to the same shape the frontend writes to .bms: only the
@@ -70,7 +65,12 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_size_frames: Option<u32>,
+    pub buffer_size_frames: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limiter_enabled: Option<bool>,
+    /// The device rate `frame` counts in, so a render at another rate can scale it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
     /// Output frames since capture began: which buffer the command landed in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<u64>,
@@ -227,7 +227,7 @@ pub enum SessionCommand<'a> {
         deck: &'a str,
         sec: f64,
     },
-    // Only this axis is string-addressed; transport stays one variant per
+    // Only this axis is string-addressed. Transport stays one variant per
     // command so the three interpreters fail to compile when one is added.
     SetParam {
         scope: ParamScope,
@@ -297,6 +297,136 @@ pub enum SessionCommand<'a> {
 }
 
 impl<'a> SessionCommand<'a> {
+    /// The event type and payload that record this command. Derived here so a
+    /// recorder cannot write something other than what was applied.
+    pub fn to_event(&self) -> (&'static str, serde_json::Value) {
+        use SessionCommand::*;
+        let deck = self.deck_id();
+        let mut payload = serde_json::Map::new();
+        if let Some(deck) = deck {
+            payload.insert("deck".into(), serde_json::json!(deck));
+        }
+        let mut put = |key: &str, value: serde_json::Value| {
+            payload.insert(key.into(), value);
+        };
+        let event_type = match *self {
+            DeckSnapshot {
+                path,
+                position_sec,
+                cue_point_sec,
+                bpm,
+                playback_rate,
+                loop_active,
+                loop_end_sec,
+                is_playing,
+                ..
+            } => {
+                put("path", serde_json::json!(path));
+                put("position_sec", serde_json::json!(position_sec));
+                put("cue_point_sec", serde_json::json!(cue_point_sec));
+                put("bpm", serde_json::json!(bpm));
+                put("playback_rate", serde_json::json!(playback_rate));
+                put("loop_active", serde_json::json!(loop_active));
+                put("loop_end_sec", serde_json::json!(loop_end_sec));
+                put("is_playing", serde_json::json!(is_playing));
+                "deck_snapshot"
+            }
+            LoadTrack {
+                path,
+                beat_offset_sec,
+                ..
+            } => {
+                put("path", serde_json::json!(path));
+                put("beat_offset_sec", serde_json::json!(beat_offset_sec));
+                "load_track"
+            }
+            EjectTrack { .. } => "eject_track",
+            Play { sec, .. } => {
+                if let Some(sec) = sec {
+                    put("sec", serde_json::json!(sec));
+                }
+                "play"
+            }
+            Stop { .. } => "stop",
+            StopAtCue { cue_point_sec, .. } => {
+                put("cue_point_sec", serde_json::json!(cue_point_sec));
+                "stopped_at_cue"
+            }
+            Seek { sec, .. } => {
+                put("sec", serde_json::json!(sec));
+                "seek"
+            }
+            SetParam {
+                slot,
+                param,
+                value,
+                scope,
+                ..
+            } => {
+                put("slot", serde_json::json!(slot));
+                put("param", serde_json::json!(param));
+                put("value", serde_json::json!(value));
+                let _ = scope;
+                "set_param"
+            }
+            SetXfaderAssign { assign, .. } => {
+                put("assign", serde_json::json!(assign.as_str()));
+                "set_xfader_assign"
+            }
+            SetFaderCurve { curve } => {
+                put("curve", serde_json::json!(curve.as_str()));
+                "set_fader_curve"
+            }
+            Jog { ticks, .. } => {
+                put("ticks", serde_json::json!(ticks));
+                "jog"
+            }
+            SetJogRotationSpeed { speed } => {
+                put("speed", serde_json::json!(speed.as_str()));
+                "set_jog_rotation_speed"
+            }
+            SetPlaybackRate { rate, .. } => {
+                put("rate", serde_json::json!(rate));
+                "set_playback_rate"
+            }
+            SetNudge { percent, .. } => {
+                put("percent", serde_json::json!(percent));
+                "set_nudge"
+            }
+            SetBeatGrid {
+                bpm,
+                beat_offset_sec,
+                ..
+            } => {
+                put("bpm", serde_json::json!(bpm));
+                put("beat_offset_sec", serde_json::json!(beat_offset_sec));
+                "set_beat_grid"
+            }
+            LoopIn { cue_sec, .. } => {
+                put("cue_sec", serde_json::json!(cue_sec));
+                "loop_in"
+            }
+            LoopOut {
+                start_sec, end_sec, ..
+            } => {
+                put("start_sec", serde_json::json!(start_sec));
+                put("end_sec", serde_json::json!(end_sec));
+                "loop_out"
+            }
+            ExitLoop { .. } => "exit_loop",
+            Reloop { .. } => "reloop",
+            CuePreviewStart { cue_point_sec, .. } => {
+                put("cue_point_sec", serde_json::json!(cue_point_sec));
+                "cue_preview_start"
+            }
+            CuePreviewEnd { cue_point_sec, .. } => {
+                put("cue_point_sec", serde_json::json!(cue_point_sec));
+                "cue_preview_end"
+            }
+        };
+        (event_type, serde_json::Value::Object(payload))
+    }
+
     // The deck a command targets, or None for commands that act on the master strip.
     pub fn deck_id(&self) -> Option<&'a str> {
         use SessionCommand::*;
@@ -355,7 +485,7 @@ impl SessionEvent {
                 sec: self.sec,
             },
             "stop" => Stop { deck: deck? },
-            "stopped_at_cue" | "stop_at_cue" => StopAtCue {
+            "stopped_at_cue" => StopAtCue {
                 deck: deck?,
                 cue_point_sec: self.cue_point_sec,
             },
@@ -437,7 +567,6 @@ mod tests {
         }
     }
 
-    // The exact shapes read out of a real session recorded before manifests.
     #[test]
     fn the_v1_vocabulary_ports_onto_classic_slots() {
         let mut events = vec![
@@ -471,7 +600,11 @@ mod tests {
         assert_eq!(events[3].value, Some(1.0));
 
         for event in &events {
-            assert!(event.command().is_some(), "{:?} still does not replay", event);
+            assert!(
+                event.command().is_some(),
+                "{:?} still does not replay",
+                event
+            );
         }
     }
 
@@ -548,8 +681,6 @@ mod tests {
         assert_eq!(events[2].event_type, "set_volume");
     }
 
-    // Master gain is the one v1 event with no deck. Skipping it lost the master fader
-    // automation on load, unrecoverable once the session was saved at the current version.
     #[test]
     fn the_v1_master_gain_ports_onto_the_master_slot() {
         let mut events = vec![SessionEvent {
@@ -574,8 +705,6 @@ mod tests {
         assert_eq!(events[0].event_type, "set_volume");
     }
 
-    // A writer is free to emit the key with a null, and porting reads the scope off the
-    // deck alone, so the two spellings of "no deck" have to port the same way.
     #[test]
     fn an_explicit_null_deck_reads_as_no_deck() {
         let mut events: Vec<SessionEvent> = serde_json::from_str(
@@ -638,7 +767,6 @@ mod tests {
             "play",
             "stop",
             "stopped_at_cue",
-            "stop_at_cue",
             "seek",
             "set_playback_rate",
             "set_nudge",
@@ -676,24 +804,20 @@ mod tests {
     }
 
     #[test]
-    fn stop_at_cue_aliases_map_to_same_command() {
-        let stopped_alias = SessionEvent {
-            cue_point_sec: Some(1.5),
-            ..make_event("stopped_at_cue")
-        };
-        let stop_alias = SessionEvent {
-            cue_point_sec: Some(1.5),
-            ..make_event("stop_at_cue")
-        };
-        assert_eq!(stopped_alias.command(), stop_alias.command());
-    }
-
-    #[test]
     fn missing_required_fields_convert_to_none() {
         assert!(make_event("seek").command().is_none(), "seek without sec");
-        assert!(make_event("set_param").command().is_none(), "set_param w/o slot");
-        assert!(make_event("deck_snapshot").command().is_none(), "snapshot w/o path");
-        assert!(make_event("load_track").command().is_none(), "load_track w/o path");
+        assert!(
+            make_event("set_param").command().is_none(),
+            "set_param w/o slot"
+        );
+        assert!(
+            make_event("deck_snapshot").command().is_none(),
+            "snapshot w/o path"
+        );
+        assert!(
+            make_event("load_track").command().is_none(),
+            "load_track w/o path"
+        );
         let no_deck = SessionEvent {
             deck: None,
             ..Default::default()
@@ -741,6 +865,93 @@ mod tests {
                 }
                 other => panic!("unexpected: {other:?}"),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod command_events {
+    use super::*;
+
+    fn round_trip(command: SessionCommand<'_>) -> Option<SessionCommand<'static>> {
+        let (event_type, payload) = command.to_event();
+        let mut object = match payload {
+            serde_json::Value::Object(fields) => fields,
+            _ => panic!("a command's payload is an object"),
+        };
+        object.insert("type".into(), serde_json::json!(event_type));
+        object.insert("elapsed_ms".into(), serde_json::json!(0.0));
+        let event: SessionEvent =
+            serde_json::from_value(serde_json::Value::Object(object)).expect("parses back");
+        // Leaked so the borrowed command can outlive the event it came from,
+        // which only a test needs to do.
+        Box::leak(Box::new(event)).command()
+    }
+
+    #[test]
+    fn a_logged_command_reads_back_as_the_command_that_was_applied() {
+        let deck = "A";
+        for command in [
+            SessionCommand::Play { deck, sec: None },
+            SessionCommand::Play {
+                deck,
+                sec: Some(12.5),
+            },
+            SessionCommand::Stop { deck },
+            SessionCommand::StopAtCue {
+                deck,
+                cue_point_sec: Some(3.25),
+            },
+            SessionCommand::Seek { deck, sec: 7.5 },
+            SessionCommand::SetPlaybackRate { deck, rate: 1.03 },
+            SessionCommand::SetNudge {
+                deck,
+                percent: -4.0,
+            },
+            SessionCommand::EjectTrack { deck },
+            SessionCommand::SetBeatGrid {
+                deck,
+                bpm: Some(128.0),
+                beat_offset_sec: Some(0.25),
+            },
+            SessionCommand::LoopIn {
+                deck,
+                cue_sec: Some(2.0),
+            },
+            SessionCommand::LoopOut {
+                deck,
+                start_sec: Some(2.0),
+                end_sec: Some(6.0),
+            },
+            SessionCommand::ExitLoop { deck },
+            SessionCommand::Reloop { deck },
+            SessionCommand::CuePreviewStart {
+                deck,
+                cue_point_sec: Some(1.5),
+            },
+            SessionCommand::CuePreviewEnd {
+                deck,
+                cue_point_sec: Some(1.5),
+            },
+            SessionCommand::Jog { deck, ticks: 12.0 },
+            SessionCommand::DeckSnapshot {
+                deck,
+                path: "/music/a.mp3",
+                position_sec: Some(12.5),
+                cue_point_sec: Some(1.25),
+                bpm: Some(128.0),
+                playback_rate: Some(0.98),
+                loop_active: Some(true),
+                loop_end_sec: Some(20.0),
+                is_playing: true,
+            },
+            SessionCommand::LoadTrack {
+                deck,
+                path: "/music/b.mp3",
+                beat_offset_sec: Some(0.5),
+            },
+        ] {
+            assert_eq!(round_trip(command), Some(command), "{command:?}");
         }
     }
 }

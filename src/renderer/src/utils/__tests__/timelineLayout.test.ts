@@ -60,13 +60,25 @@ describe('computeRowLayout', () => {
 
   it('uses a custom waveform height for the strip and the lane offset', () => {
     const rows = computeRowLayout(
-      [{ deckId: 'A', laneHeights: [{ key: 'filter', height: 64 }] }],
-      0,
-      120
+      [{ deckId: 'A', waveformHeight: 120, laneHeights: [{ key: 'filter', height: 64 }] }],
+      0
     );
     expect(rows[0].waveformHeight).toBe(120);
     expect(rows[0].lanes[0].top).toBe(120); // lane sits directly below the waveform
     expect(rows[0].height).toBe(120 + 64);
+  });
+
+  it('sizes each deck waveform on its own, so one resize moves one deck', () => {
+    const rows = computeRowLayout(
+      [
+        { deckId: 'A', waveformHeight: 120, laneHeights: [] },
+        { deckId: 'B', waveformHeight: 40, laneHeights: [] }
+      ],
+      0
+    );
+    expect(rows[0].waveformHeight).toBe(120);
+    expect(rows[1].waveformHeight).toBe(40);
+    expect(rows[1].top).toBe(120);
   });
 });
 
@@ -122,7 +134,7 @@ describe('selectionSpansFor', () => {
 });
 
 describe('bpmRegionSpanAt', () => {
-  // 128 bpm grid; segments at rate 1.0 (128.0), 1.0002 (128.0 displayed),
+  // 128 bpm grid. Segments at rate 1.0 (128.0), 1.0002 (128.0 displayed),
   // then 1.05 (134.4): the first two read as one region at 0.1 precision.
   const seg = (wallStartMs: number, wallEndMs: number, rate: number) => ({
     wallStartMs,
@@ -185,7 +197,6 @@ describe('marqueeTargets', () => {
   const blocksFor = (deck: string) => byDeck[deck] ?? [];
 
   it('clips the rect time range to each touched block on crossed decks', () => {
-    // x 45..65 = ms 4500..6500 over deck A only: block 1 whole, block 2 partial.
     expect(marqueeTargets(rows, blocksFor, { x0: 45, x1: 65, y0: 10, y1: 60 }, xToMs)).toEqual([
       { deck: 'A', startMs: 5000, endMs: 6000 },
       { deck: 'A', startMs: 6000, endMs: 6500 }

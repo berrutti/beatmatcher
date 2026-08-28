@@ -14,8 +14,8 @@
       :open="pendingLoad !== null"
       :title="$t('deck.loadTitle')"
       :body="$t('deck.loadBody')"
-      @confirm="onConfirmLoad"
-      @cancel="pendingLoad = null"
+      @confirm="confirmPendingLoad"
+      @cancel="cancelPendingLoad"
     />
 
     <ConfirmModal
@@ -57,7 +57,7 @@
         <span
           class="deck__compact-track-name"
           :class="{ 'deck__track-name--empty': !props.deck.trackName }"
-          v-tooltip="props.deck.trackName || undefined"
+          v-tooltip.truncated="props.deck.trackName || undefined"
           >{{ props.deck.trackName || $t('deck.notLoaded') }}</span
         >
       </div>
@@ -116,8 +116,9 @@
               <button
                 class="deck__q-btn"
                 :class="{ 'deck__q-btn--on': props.deck.quantized }"
-                :disabled="!props.deck.trackLoaded"
+                :disabled="!props.deck.trackLoaded || !props.deck.hasGrid"
                 :tabindex="-1"
+                v-tooltip="quantizeTooltip"
                 @click="props.deck.toggleQuantized()"
               >
                 Q
@@ -126,7 +127,7 @@
                 class="deck__eject-btn"
                 :disabled="!props.deck.trackLoaded"
                 :tabindex="-1"
-                v-tooltip="$t('deck.ejectTitle')"
+                v-tooltip="props.deck.trackLoaded ? $t('deck.ejectTitle') : undefined"
                 @click="props.deck.requestEject()"
               >
                 ⏏
@@ -141,14 +142,14 @@
                 <p
                   v-if="artistTitle.artist"
                   class="deck__track-line deck__track-line--artist"
-                  v-tooltip="artistTitle.artist"
+                  v-tooltip.truncated="artistTitle.artist"
                 >
                   <span class="deck__track-line-label">{{ $t('deck.artist') }}</span
                   ><span class="deck__track-line-value">{{ artistTitle.artist }}</span>
                 </p>
                 <p
                   class="deck__track-line deck__track-line--track"
-                  v-tooltip="artistTitle.title ?? undefined"
+                  v-tooltip.truncated="artistTitle.title ?? undefined"
                 >
                   <span class="deck__track-line-label">{{ $t('deck.track') }}</span
                   ><span class="deck__track-line-value">{{ artistTitle.title }}</span>
@@ -255,6 +256,8 @@
           :value="-props.deck.pitchOffset"
           orient="vertical"
           :disabled="!props.deck.trackLoaded || props.deck.loading"
+          v-tooltip="props.deck.trackLoaded ? $t('deck.pitchHint') : undefined"
+          v-slider-reset="{ enabled: settingsStore.sliderClickResets, reset: onPitchReset }"
           @input="onSliderInput"
           @dblclick="onPitchDblClick"
         />
@@ -265,11 +268,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { shiftHeld } from '@renderer/composables/useKeyboard';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
-import type { Deck, LoadableTrack } from '@renderer/stores/decks';
+import { useDeckDrop } from '@renderer/composables/useDeckDrop';
+import type { Deck } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { Keybindings } from '@renderer/keybindings';
 import { useCollectionStore } from '@renderer/stores/collection';
@@ -292,6 +296,13 @@ const props = defineProps<{
 
 const keybindings = computed(() => settingsStore.keybindings[props.deck.id as keyof Keybindings]);
 
+// Explains the disablement when the reason is not the empty deck: quantizing
+// snaps to a grid, and a track whose BPM never resolved has none.
+const quantizeTooltip = computed(() => {
+  if (!props.deck.trackLoaded) return undefined;
+  return props.deck.hasGrid ? t('deck.quantizeTitle') : t('deck.quantizeNeedsGrid');
+});
+
 // Track metadata only stores a single combined "Artist - Title" (or "Artist
 // – Title") string, not separate fields, so split it here for display.
 const ARTIST_TITLE_SEPARATOR = /\s[–-]\s/;
@@ -304,15 +315,22 @@ const artistTitle = computed(() => {
 });
 
 // Up is slower, down is faster.
-function onSliderInput(e: Event) {
+async function onSliderInput(event: Event) {
   if (!props.deck.trackLoaded) return;
-  const val = parseFloat((e.target as HTMLInputElement).value);
-  props.deck.setPitchOffset(-val);
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  await props.deck.setPitchOffset(-parseFloat(target.value));
 }
 
-function onPitchDblClick() {
+async function onPitchDblClick() {
   if (!props.deck.trackLoaded) return;
-  props.deck.setPitchOffset(0);
+  await props.deck.setPitchOffset(0);
+}
+
+// The directive's reset returns nothing, so the rejection is caught here rather
+// than left floating.
+function onPitchReset(): void {
+  onPitchDblClick().catch(() => {});
 }
 
 function onNudgeStart(direction: 'back' | 'forward') {
@@ -345,35 +363,16 @@ function onTogglePlay() {
   props.deck.togglePlay();
 }
 
-const pendingLoad = ref<LoadableTrack | null>(null);
-
 const collectionStore = useCollectionStore();
 const { isDragOver: isDragOverCollection } = useCollectionDragOver(
   deckEl,
   () => props.deck.loadedPath
 );
 
-function onCollectionDrop(e: Event) {
-  const { deckId, path } = (e as CustomEvent<{ deckId: string; path: string }>).detail;
-  if (deckId !== props.deck.id) return;
-  if (props.deck.loadedPath === path) return;
-  const loadable = collectionStore.getLoadableTrack(path);
-  if (!loadable) return;
-  if (props.deck.loopPlaying) {
-    pendingLoad.value = loadable;
-    return;
-  }
-  props.deck.loadTrack(loadable);
-}
-
-onMounted(() => window.addEventListener('bm:collection-drop', onCollectionDrop));
-onUnmounted(() => window.removeEventListener('bm:collection-drop', onCollectionDrop));
-
-function onConfirmLoad() {
-  const loadable = pendingLoad.value;
-  pendingLoad.value = null;
-  if (loadable) props.deck.loadTrack(loadable);
-}
+const { pendingLoad, confirmPendingLoad, cancelPendingLoad } = useDeckDrop({
+  deck: () => props.deck,
+  resolve: (path) => collectionStore.getLoadableTrack(path)
+});
 </script>
 
 <style scoped>
@@ -432,6 +431,7 @@ function onConfirmLoad() {
   font-size: 0.8em;
   font-weight: 700;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--deck-accent);
   flex-shrink: 0;
 }
@@ -514,9 +514,18 @@ function onConfirmLoad() {
   flex-shrink: 0;
   line-height: 1;
 }
+.deck__q-btn:hover:not(:disabled):not(.deck__q-btn--on) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
 .deck__q-btn--on {
   color: var(--deck-accent);
   border-color: var(--deck-accent);
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill), transparent);
+}
+.deck__q-btn--on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--deck-accent) var(--toggle-on-fill-hover), transparent);
 }
 .deck__q-btn:disabled {
   opacity: var(--disabled-opacity);
@@ -729,6 +738,7 @@ function onConfirmLoad() {
 }
 
 .deck__slider {
+  --slider-thumb-length: 0.9em;
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
@@ -758,7 +768,7 @@ function onConfirmLoad() {
   -webkit-appearance: none;
   appearance: none;
   width: 1.4em;
-  height: 0.9em;
+  height: var(--slider-thumb-length);
   background:
     repeating-linear-gradient(
       to bottom,

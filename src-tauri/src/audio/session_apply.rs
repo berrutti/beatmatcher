@@ -1,22 +1,14 @@
-// Shared per-deck application of a `SessionCommand` against the real
-// `DeckState`/`ChannelStrip`, used by both the live scheduler
-// (session_playback::apply_event_live) and the offline renderer
-// (offline_render::apply_event). Loading is the one part that differs between
-// the two (pre-decoded cache vs decode-on-demand), so it's injected via
-// `load_samples`. `overshoot_frames` drives `compensate_late_start` for live
-// playback; the offline renderer passes 0.0, which is a no-op.
-
-use super::{ChannelStrip, DeckState};
+use super::{ChannelStrip, Deck};
 use session_core::event::SessionCommand;
 use std::sync::Arc;
 
 // (samples, channels) for a decoded track, returned by the caller-provided loader.
-type LoadedSamples = (Arc<Vec<f32>>, usize);
+pub(crate) type LoadedSamples = (Arc<Vec<f32>>, usize);
 type LoadSamples<'a> = dyn FnMut(&str) -> Result<LoadedSamples, String> + 'a;
 
 pub(crate) fn apply_deck_command(
     cmd: &SessionCommand<'_>,
-    deck: &mut DeckState,
+    deck: &mut Deck,
     strip: &mut ChannelStrip,
     sample_rate: u32,
     overshoot_frames: f64,
@@ -97,11 +89,11 @@ pub(crate) fn apply_deck_command(
                 deck.cue_pos = deck.main_pos;
             }
             deck.is_playing = true;
-            // Only align a deck that actually (re)starts or is repositioned here.
-            // A bare `play` latch on a deck that is ALREADY playing (e.g. pressing
-            // PLAY to latch out of a held cue preview) must not move the playhead:
-            // compensating it forward skips ~one buffer of audio mid-playback,
-            // heard as a single click.
+            // Pressing play during a cue preview latches: the preview ends and the deck keeps
+            // playing from where it reached, rather than snapping back on the next release.
+            deck.is_cueing = false;
+            // A bare `play` latch on an already-playing deck must not be compensated:
+            // skipping a buffer mid-playback is heard as a single click.
             if sec.is_some() || !was_playing {
                 deck.compensate_late_start(overshoot_f);
             }
@@ -124,7 +116,7 @@ pub(crate) fn apply_deck_command(
             let frames = to_frames!(sec);
             deck.main_pos = frames;
             deck.cue_pos = frames;
-            if deck.loop_active && (frames < deck.cue_point || frames >= deck.loop_end) {
+            if deck.outside_loop(frames) {
                 deck.loop_active = false;
             }
             deck.compensate_late_start(overshoot_f);
@@ -140,13 +132,9 @@ pub(crate) fn apply_deck_command(
         }
         SessionCommand::SetParam {
             slot, param, value, ..
-        } => match (slot, param) {
-            ("fader", "gain") => strip.set_gain(value as f32),
-            ("eq", band) => strip.set_eq_band(band, value as f32),
-            ("filter", "value") => strip.set_filter(value as f32),
-            ("filter", "active") => strip.set_filter_active(value != 0.0),
-            _ => {}
-        },
+        } => {
+            strip.set_param(slot, param, value as f32);
+        }
 
         SessionCommand::SetPlaybackRate { rate, .. } => {
             deck.playback_rate = rate.max(0.1);
@@ -187,6 +175,10 @@ pub(crate) fn apply_deck_command(
                 deck.loop_end = to_frames!(end_sec);
             }
             deck.loop_active = true;
+            let length = deck.loop_end - deck.cue_point;
+            if length > 0.0 && deck.main_pos > deck.loop_end {
+                deck.main_pos = deck.cue_point + (deck.main_pos - deck.loop_end) % length;
+            }
         }
 
         SessionCommand::ExitLoop { .. } => {
@@ -233,19 +225,47 @@ pub(crate) fn apply_deck_command(
 // Shared load body for DeckSnapshot and LoadTrack: full reset, then the
 // samples from `load_samples` installed.
 fn load_into(
-    deck: &mut DeckState,
+    deck: &mut Deck,
     path: &str,
     sample_rate: u32,
     load_samples: &mut LoadSamples<'_>,
 ) -> Result<(), String> {
     let (samples, channels) = load_samples(path)?;
-    let total_frames = samples.len() / channels;
-    deck.reset();
-    deck.samples = samples;
-    deck.channels = channels;
-    deck.device_sample_rate = sample_rate;
-    deck.total_frames = total_frames;
-    deck.duration = total_frames as f64 / sample_rate as f64;
-    deck.loaded_path = Some(path.to_string());
+    deck.load(path, samples, channels, sample_rate);
     Ok(())
+}
+
+#[cfg(test)]
+mod seconds_to_frames {
+    use super::*;
+
+    const SR: u32 = 44_100;
+    const TOTAL: usize = 100_000;
+
+    fn seeked_to(sec: f64, total_frames: usize) -> f64 {
+        let mut deck = Deck::empty(SR);
+        deck.total_frames = total_frames;
+        apply_deck_command(
+            &SessionCommand::Seek { deck: "A", sec },
+            &mut deck,
+            &mut ChannelStrip::new(SR as f32),
+            SR,
+            0.0,
+            &mut |path: &str| Err(format!("no load: {path}")),
+        )
+        .expect("seek applies");
+        deck.main_pos
+    }
+
+    #[test]
+    fn a_second_is_the_sample_rate_in_frames() {
+        assert!((seeked_to(1.0, TOTAL) - 44_100.0).abs() < 1e-9);
+        assert!((seeked_to(0.5, TOTAL) - 22_050.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_position_outside_the_track_lands_on_its_edge() {
+        assert_eq!(seeked_to(-5.0, TOTAL), 0.0);
+        assert_eq!(seeked_to(100.0, 44_100), 44_100.0);
+    }
 }

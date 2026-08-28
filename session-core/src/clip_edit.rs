@@ -1,4 +1,3 @@
-
 use crate::event::SessionEvent;
 use crate::timeline::{Clip, LoopRegion};
 use std::cmp::Ordering;
@@ -7,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 pub const MIN_BLOCK_MS: f64 = 100.0;
 const EPS_MS: f64 = 1.0;
 
-// Every event type that changes deck position or play state.
 const TRANSPORT_TYPES: &[&str] = &[
     "deck_snapshot",
     "load_track",
@@ -15,8 +13,6 @@ const TRANSPORT_TYPES: &[&str] = &[
     "play",
     "stop",
     "stopped_at_cue",
-    "stop_at_cue",
-    "cue_set_and_stop",
     "cue_preview_start",
     "cue_preview_end",
     "cue_move",
@@ -114,11 +110,10 @@ pub fn blocks_for_deck(clips: &[Clip], deck: &str) -> Vec<TransportBlock> {
     blocks
 }
 
-// Events that start a block from silence at an explicit position.
 fn start_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     if let Some(region) = &block.loop_region {
         // track_start_sec is the wrapped entry position, which may sit inside the
-        // region; playing from the loop start instead would shift the block.
+        // region. Playing from the loop start instead would shift the block.
         vec![
             SessionEvent {
                 sec: Some(block.track_start_sec),
@@ -149,11 +144,6 @@ fn end_events_for(block: &TransportBlock, ms: f64) -> Vec<SessionEvent> {
     } else {
         vec![SessionEvent::at(ms, "stop", &block.deck)]
     }
-}
-
-fn stable_sort_by_ms(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events.sort_by(crate::sim::event_sim_order);
-    events
 }
 
 struct Neighborhood {
@@ -254,7 +244,8 @@ fn audio_seconds_between(
             if event.elapsed_ms >= upper {
                 break;
             }
-            speed = crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
+            speed =
+                crate::JogRotationSpeed::from_str_or_33(event.speed.as_deref().unwrap_or_default());
             continue;
         }
         if event.deck.as_deref() != Some(deck) {
@@ -286,8 +277,8 @@ fn audio_seconds_between(
         // The deck is playing across this window by construction, so the wheel bends
         // rather than scrubs.
         if is_jog && event.elapsed_ms >= lower {
-            total += rate * event.ticks.unwrap() * speed.sec_per_tick()
-                / crate::JOG_PAUSED_MULTIPLIER;
+            total +=
+                rate * event.ticks.unwrap() * speed.sec_per_tick() / crate::JOG_PAUSED_MULTIPLIER;
         }
     }
     total += ((upper - cursor) / 1000.0) * rate * nudge;
@@ -310,12 +301,10 @@ fn normalize_resume_play(event: &SessionEvent, next: Option<&TransportBlock>) ->
     event.clone()
 }
 
-// A transport event sitting exactly on the block's start boundary. Returns the
-// replacement, or None when the event is consumed (synthesized start takes over).
 fn rewrite_start_boundary(event: &SessionEvent) -> Option<SessionEvent> {
     if event.event_type == "deck_snapshot" {
         // The snapshot also loads the track and seeds rate/cue state, so it must
-        // survive; only its transport effects move with the block.
+        // survive. Only its transport effects move with the block.
         let mut out = event.clone();
         out.is_playing = Some(false);
         out.loop_active = Some(false);
@@ -333,11 +322,8 @@ pub fn block_bounds(
     neighborhood_of(events, clips, block).map(|n| (n.min_start_ms, n.max_end_ms))
 }
 
-// An UNPLAYED track loaded inside the span the moved block now occupies is
-// destroyed: its load_track and the setup config (rate, beat grid) it emitted,
-// up to the next load, are dropped. "Played" is decided from the rendered
-// clips, not from play events, so a cue-preview clip counts. Returns indices
-// into `events`.
+// "Played" is decided from the rendered clips, not from play events, so a
+// cue-preview clip counts.
 fn orphaned_load_events(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -472,7 +458,7 @@ pub fn move_transport_block(
         let ms = event.elapsed_ms;
         if ms < t0 - EPS_MS || ms > t1 + EPS_MS {
             // A stranded transport event (paused-scrub seek) under the moved
-            // block would split it; consume it. normalize_resume_play below
+            // block would split it. Consume it. normalize_resume_play below
             // re-anchors the next block, so nothing downstream depends on it.
             let swept = ms > new_start + EPS_MS
                 && ms < new_end - EPS_MS
@@ -514,7 +500,7 @@ pub fn move_transport_block(
     kept.extend(end_events_for(block, new_end));
 
     MoveResult {
-        events: stable_sort_by_ms(kept),
+        events: crate::sim::sorted_by_sim_order(kept),
         applied_delta_ms: applied,
     }
 }
@@ -531,7 +517,6 @@ pub fn trim_transport_block(
     } else {
         block.end_ms
     };
-    // Loop blocks move as one unit; trimming them is not supported.
     if block.loop_region.is_some() {
         return TrimResult {
             events: events.to_vec(),
@@ -602,7 +587,7 @@ pub fn trim_transport_block(
             }
         }
         return TrimResult {
-            events: stable_sort_by_ms(kept),
+            events: crate::sim::sorted_by_sim_order(kept),
             applied_ms: applied,
         };
     }
@@ -628,7 +613,6 @@ pub fn trim_transport_block(
         {
             continue;
         }
-        // Same sweep as the start edge.
         let swept = event.elapsed_ms > t1 + EPS_MS
             && event.elapsed_ms < applied - EPS_MS
             && event.event_type != "load_track"
@@ -645,16 +629,13 @@ pub fn trim_transport_block(
         }
     }
     TrimResult {
-        events: stable_sort_by_ms(kept),
+        events: crate::sim::sorted_by_sim_order(kept),
         applied_ms: applied,
     }
 }
 
-// The load_track (and the rate/grid it seeded before play) for the block being
-// deleted, but only when no OTHER clip plays from that load, so a shared track
-// stays. Sharing is decided from the rendered clips, not from play events:
-// blocks split off by a seek (or opened by a cue preview) have no play event of
-// their own, and counting plays alone dropped the load out from under them.
+// Sharing is decided from the rendered clips, not from play events: a block split
+// off by a seek has no play event, and counting plays dropped its load.
 fn orphaned_own_load(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -700,13 +681,8 @@ fn orphaned_own_load(
     discarded
 }
 
-// Delete a transport block: drop its play/stop (and any loop) events so the deck
-// is silent across [start_ms, end_ms]. A glued predecessor gets a stop so it
-// doesn't bleed into the gap; a glued successor keeps its own start. A
-// deck_snapshot on the start boundary survives with its transport effects
-// cleared (it also loads the track). The track's load is left in place
-// (this removes the played segment, not the deck's loaded track) and automation
-// is untouched (it lives at wall time).
+// A glued predecessor gains a stop so it cannot bleed into the gap. The load stays and
+// automation is untouched, because this removes a played segment, not the track.
 pub fn delete_transport_block(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -737,7 +713,7 @@ pub fn delete_transport_block(
         if discarded.contains(&idx) {
             continue;
         }
-        // A deck_snapshot on the start boundary loads/seeds the deck; keep it but
+        // A deck_snapshot on the start boundary loads/seeds the deck. Keep it but
         // stop it playing so it no longer opens the block. Own deck only: every
         // deck's snapshot sits at session start, so a block starting at t=0 must
         // not neuter the other decks' snapshots.
@@ -763,7 +739,6 @@ pub fn delete_transport_block(
             kept.push(event.clone());
             continue;
         }
-        // Inside [t0, t1]: the block's own play/stop/loop events. Drop them.
     }
     if prev_glued {
         if let Some(prev) = &prev {
@@ -775,16 +750,11 @@ pub fn delete_transport_block(
             kept.extend(start_events_for(next, t1));
         }
     }
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Silence one block over [start_ms, end_ms] (clamped to the block). Covering
-// the whole block is a full delete; touching an edge is a trim; an interior
-// range splits the block in two, the right part starting exactly on the audio
-// it played before, so a deleted mid-block region never shifts what follows.
-// A remainder shorter than MIN_BLOCK_MS is absorbed into the deletion. Loop
-// blocks re-enter their loop at the exact in-loop position the deck had, so
-// the surviving iterations keep their original phase.
+// The right part starts on the audio it played before, so removing a mid-block region
+// never shifts what follows it.
 pub fn delete_block_range(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -833,17 +803,11 @@ pub fn delete_block_range(
         sec: Some(resume_sec),
         ..SessionEvent::at(range_end, "play", deck)
     });
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
-// Split a block into two independent blocks at `split_ms`, with no gap: a stop
-// immediately followed by a play at the same instant, the right part resuming
-// exactly the audio it already played (same construction as delete_block_range's
-// interior branch, but with nothing removed). A loop block splits into two
-// separate glued engagements of the same loop, the second re-entering at the
-// deck's exact in-loop position, so both halves keep their original phase. A
-// split within MIN_BLOCK_MS of either edge is rejected: it would leave a
-// degenerate sliver on one side.
+// Both halves keep their original phase: the right part resumes exactly the audio it
+// already played, and a loop re-enters at the deck's in-loop position.
 pub fn split_transport_block(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -866,7 +830,7 @@ pub fn split_transport_block(
         let mut resumed = block.clone();
         resumed.track_start_sec = resume_sec;
         kept.extend(start_events_for(&resumed, split_ms));
-        return stable_sort_by_ms(kept);
+        return crate::sim::sorted_by_sim_order(kept);
     }
 
     let resume_sec = (block.track_start_sec
@@ -878,7 +842,7 @@ pub fn split_transport_block(
         sec: Some(resume_sec),
         ..SessionEvent::at(split_ms, "play", deck)
     });
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 // The deck's track position at wall time `ms` inside a looping block, read off
@@ -900,11 +864,8 @@ fn loop_position_at(clips: &[Clip], block: &TransportBlock, ms: f64) -> Option<f
     Some(seg.track_start_sec + frac * (seg.track_end_sec - seg.track_start_sec))
 }
 
-// Range delete on a loop block. Deleting up to the block's start edge drops the
-// engagement and re-engages at the range end; up to the end edge exits the loop
-// at the range start; an interior range does both, splitting the run in two.
-// The re-engagement plays from the deck's exact in-loop position at that time,
-// so surviving iterations keep their original phase.
+// Re-engagement plays from the deck's exact in-loop position, so surviving
+// iterations keep their original phase.
 fn delete_loop_block_range(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -932,7 +893,7 @@ fn delete_loop_block_range(
 
     let mut kept: Vec<SessionEvent> = Vec::new();
     for event in events {
-        // The own-deck snapshot on a dropped start boundary seeds the deck; keep
+        // The own-deck snapshot on a dropped start boundary seeds the deck. Keep
         // it but stop it playing (same rule as the full delete).
         if left_trim
             && event.deck.as_deref() == Some(deck)
@@ -948,8 +909,8 @@ fn delete_loop_block_range(
             kept.push(event.clone());
             continue;
         }
-        let on_dropped_boundary = (left_trim && near(event.elapsed_ms, t0))
-            || (right_trim && near(event.elapsed_ms, t1));
+        let on_dropped_boundary =
+            (left_trim && near(event.elapsed_ms, t0)) || (right_trim && near(event.elapsed_ms, t1));
         if on_dropped_boundary
             && event.event_type != "load_track"
             && event.event_type != "eject_track"
@@ -979,7 +940,7 @@ fn delete_loop_block_range(
         resumed.track_start_sec = sec;
         kept.extend(start_events_for(&resumed, range_end));
     }
-    stable_sort_by_ms(kept)
+    crate::sim::sorted_by_sim_order(kept)
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -990,11 +951,7 @@ pub struct DeleteRange {
     pub end_ms: f64,
 }
 
-// Delete several ranges as one edit. Ranges are applied right-to-left: a
-// delete never moves anything to its left (full deletes and splits leave every
-// other block byte-identical; edge trims only move the trimmed boundary), so
-// blocks for the remaining targets are re-located by span in the rebuilt
-// clips. A range spanning several blocks is clipped to each.
+// Applied right-to-left, because a delete never moves anything to its left.
 pub fn delete_transport_ranges(
     events: &[SessionEvent],
     clips: &[Clip],
@@ -1050,7 +1007,7 @@ mod tests {
         }
     }
 
-    fn ev(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
+    fn event(elapsed_ms: f64, event_type: &str, deck: &str) -> SessionEvent {
         SessionEvent::at(elapsed_ms, event_type, deck)
     }
 
@@ -1065,7 +1022,7 @@ mod tests {
     fn audio_seconds_between_counts_jog_travel() {
         let events = vec![SessionEvent {
             ticks: Some(1000.0),
-            ..ev(500.0, "jog", "A")
+            ..event(500.0, "jog", "A")
         }];
         let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
         assert!((advanced - 1.02).abs() < 1e-9);
@@ -1076,11 +1033,11 @@ mod tests {
         let events = vec![
             SessionEvent {
                 rate: Some(2.0),
-                ..ev(100.0, "set_playback_rate", "A")
+                ..event(100.0, "set_playback_rate", "A")
             },
             SessionEvent {
                 ticks: Some(1000.0),
-                ..ev(500.0, "jog", "A")
+                ..event(500.0, "jog", "A")
             },
         ];
         let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
@@ -1094,12 +1051,12 @@ mod tests {
                 speed: Some("rpm45".to_string()),
                 ..SessionEvent {
                     deck: None,
-                    ..ev(10.0, "set_jog_rotation_speed", "A")
+                    ..event(10.0, "set_jog_rotation_speed", "A")
                 }
             },
             SessionEvent {
                 ticks: Some(1000.0),
-                ..ev(500.0, "jog", "A")
+                ..event(500.0, "jog", "A")
             },
         ];
         let advanced = audio_seconds_between(&events, "A", 0.0, 1000.0, 1.0);
@@ -1111,7 +1068,7 @@ mod tests {
     fn audio_seconds_between_reverses_jog_travel_when_walking_backwards() {
         let events = vec![SessionEvent {
             ticks: Some(1000.0),
-            ..ev(500.0, "jog", "A")
+            ..event(500.0, "jog", "A")
         }];
         let advanced = audio_seconds_between(&events, "A", 1000.0, 0.0, 1.0);
         assert!((advanced + 1.02).abs() < 1e-9);
@@ -1136,10 +1093,10 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1153,17 +1110,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
         let result = move_transport_block(&events, &clips, &block, 1000.0);
         assert_eq!(result.applied_delta_ms, 1000.0);
-        // load stays put; play moves to 2000 (sec 0); stop moves to 6000.
         assert!(find(&result.events, "load_track", 0.0).is_some());
         let play = find(&result.events, "play", 2000.0).unwrap();
         assert_eq!(play.sec, Some(0.0));
@@ -1177,12 +1133,12 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
-            ev(4000.0, "play", "A"),
-            ev(6000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
+            event(4000.0, "play", "A"),
+            event(6000.0, "stop", "A"),
         ];
         let clips = vec![
             clip("A", 1000.0, 3000.0, 0, 0.0),
@@ -1190,14 +1146,14 @@ mod tests {
         ];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
-        // Asking +2000 would overlap the next block at 4000; clamp to +1000.
+        // Asking +2000 would overlap the next block at 4000. Clamp to +1000.
         let result = move_transport_block(&events, &clips, &block, 2000.0);
         assert_eq!(result.applied_delta_ms, 1000.0);
     }
 
     #[test]
     fn move_below_one_ms_is_noop() {
-        let events = vec![ev(1000.0, "play", "A"), ev(5000.0, "stop", "A")];
+        let events = vec![event(1000.0, "play", "A"), event(5000.0, "stop", "A")];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
         let result = move_transport_block(&events, &clips, &block, 0.4);
@@ -1210,10 +1166,10 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1230,10 +1186,10 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1241,7 +1197,6 @@ mod tests {
         let result = trim_transport_block(&events, &clips, &block, Edge::Start, 2000.0);
         assert_eq!(result.applied_ms, 2000.0);
         let play = find(&result.events, "play", 2000.0).unwrap();
-        // 1s of audio elapses between t0=1000 and applied=2000 at rate 1.
         assert!((play.sec.unwrap() - 1.0).abs() < 1e-6);
         assert!(find(&result.events, "play", 1000.0).is_none());
     }
@@ -1254,7 +1209,7 @@ mod tests {
             end_sec: 6.0,
         });
         let clips = vec![c];
-        let events = vec![ev(1000.0, "play", "A"), ev(5000.0, "stop", "A")];
+        let events = vec![event(1000.0, "play", "A"), event(5000.0, "stop", "A")];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
         let result = trim_transport_block(&events, &clips, &block, Edge::Start, 2000.0);
@@ -1267,10 +1222,10 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1279,7 +1234,6 @@ mod tests {
 
         assert!(find(&out, "play", 1000.0).is_none());
         assert!(find(&out, "stop", 5000.0).is_none());
-        // The only block using the load is gone, so the load is dropped too.
         assert!(!out.iter().any(|e| e.event_type == "load_track"));
         let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
         assert!(rebuilt.is_empty());
@@ -1290,18 +1244,20 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
-            ev(6000.0, "play", "A"),
-            ev(8000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
+            event(6000.0, "play", "A"),
+            event(8000.0, "stop", "A"),
         ];
-        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 6000.0, 8000.0, 1, 5.0)];
+        let clips = vec![
+            clip("A", 1000.0, 3000.0, 0, 0.0),
+            clip("A", 6000.0, 8000.0, 1, 5.0),
+        ];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
         let out = delete_transport_block(&events, &clips, &block);
-        // A later block still plays from the same load, so the load survives.
         assert!(out.iter().any(|e| e.event_type == "load_track"));
         let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
         assert_eq!(rebuilt.len(), 1);
@@ -1320,14 +1276,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(2000.0, "stop", "A"),
-            ev(3000.0, "play", "A"),
-            ev(4000.0, "stop", "A"),
-            ev(5000.0, "play", "A"),
-            ev(6000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(2000.0, "stop", "A"),
+            event(3000.0, "play", "A"),
+            event(4000.0, "stop", "A"),
+            event(5000.0, "play", "A"),
+            event(6000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
 
@@ -1348,14 +1304,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
+            event(1000.0, "play", "A"),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev(5000.0, "seek", "A")
+                ..event(5000.0, "seek", "A")
             },
-            ev(9000.0, "stop", "A"),
+            event(9000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
 
@@ -1376,18 +1332,18 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
             SessionEvent {
                 rate: Some(r1),
-                ..ev(1.0, "set_playback_rate", "A")
+                ..event(1.0, "set_playback_rate", "A")
             },
-            ev(10_000.0, "play", "A"),
+            event(10_000.0, "play", "A"),
             SessionEvent {
                 rate: Some(r2),
-                ..ev(60_000.0, "set_playback_rate", "A")
+                ..event(60_000.0, "set_playback_rate", "A")
             },
-            ev(120_000.0, "stop", "A"),
+            event(120_000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         assert_eq!(clips.len(), 1);
@@ -1416,18 +1372,18 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
             SessionEvent {
                 rate: Some(r1),
-                ..ev(1.0, "set_playback_rate", "A")
+                ..event(1.0, "set_playback_rate", "A")
             },
-            ev(10_000.0, "play", "A"),
+            event(10_000.0, "play", "A"),
             SessionEvent {
                 rate: Some(r2),
-                ..ev(60_000.0, "set_playback_rate", "A")
+                ..event(60_000.0, "set_playback_rate", "A")
             },
-            ev(120_000.0, "stop", "A"),
+            event(120_000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1437,16 +1393,14 @@ mod tests {
         assert_eq!(rebuilt.len(), 2);
         assert!((rebuilt[0].session_start_ms - 10_000.0).abs() < 1.0);
         assert!((rebuilt[0].session_end_ms - 30_000.0).abs() < 1.0);
-        // No gap: the right part starts exactly at the split point.
         assert!((rebuilt[1].session_start_ms - 30_000.0).abs() < 1.0);
         assert!((rebuilt[1].session_end_ms - 120_000.0).abs() < 1.0);
-        // 20s of wall time at r1 past the original start.
         assert!((rebuilt[1].track_start_sec - 20.0 * r1).abs() < 1e-6);
     }
 
     #[test]
     fn split_too_close_to_an_edge_is_rejected() {
-        let events = vec![ev(1000.0, "play", "A"), ev(5000.0, "stop", "A")];
+        let events = vec![event(1000.0, "play", "A"), event(5000.0, "stop", "A")];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
@@ -1464,16 +1418,16 @@ mod tests {
         vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(0.0, "play", "A"),
+            event(0.0, "play", "A"),
             SessionEvent {
                 start_sec: Some(0.0),
                 end_sec: Some(2.0),
-                ..ev(2000.0, "loop_out", "A")
+                ..event(2000.0, "loop_out", "A")
             },
-            ev(8000.0, "exit_loop", "A"),
-            ev(10_000.0, "stop", "A"),
+            event(8000.0, "exit_loop", "A"),
+            event(10_000.0, "stop", "A"),
         ]
     }
 
@@ -1569,7 +1523,7 @@ mod tests {
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = loop_block_of(&clips);
 
-        // Delete [5000, 8000]: the loop exits at 5000; the glued tail at 8000
+        // Delete [5000, 8000]: the loop exits at 5000. The glued tail at 8000
         // still plays exactly the audio it played before.
         let out = delete_block_range(&events, &clips, &block, 5000.0, 8000.0);
         let crate::timeline::ClipsBuild { clips: rebuilt, .. } = crate::timeline::build_clips(&out);
@@ -1596,15 +1550,15 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(9000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(9000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
-        // Range touching the start trims it; audio stays aligned in session time.
+        // Range touching the start trims it. Audio stays aligned in session time.
         let out = delete_block_range(&events, &clips, &block, 1000.0, 3000.0);
         let crate::timeline::ClipsBuild { clips: trimmed, .. } = crate::timeline::build_clips(&out);
         assert_eq!(trimmed.len(), 1);
@@ -1622,28 +1576,28 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
             SessionEvent {
                 path: Some("/t/b.mp3".to_string()),
-                ..ev(4000.0, "load_track", "A")
+                ..event(4000.0, "load_track", "A")
             },
             SessionEvent {
                 cue_point_sec: Some(0.0),
-                ..ev(6000.0, "cue_preview_start", "A")
+                ..event(6000.0, "cue_preview_start", "A")
             },
             SessionEvent {
                 cue_point_sec: Some(0.0),
-                ..ev(7000.0, "cue_preview_end", "A")
+                ..event(7000.0, "cue_preview_end", "A")
             },
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = blocks_for_deck(&clips, "A")[0].clone();
 
         // +5000 is clamped by the preview clip at 6000, but the moved span still
-        // sweeps the load at 4000; the previewed track's load must survive.
+        // sweeps the load at 4000. The previewed track's load must survive.
         let result = move_transport_block(&events, &clips, &block, 5000.0);
         assert!(result.applied_delta_ms > 0.0);
         assert!(result
@@ -1660,14 +1614,14 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
+            event(1000.0, "play", "A"),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev(5000.0, "seek", "A")
+                ..event(5000.0, "seek", "A")
             },
-            ev(9000.0, "stop", "A"),
+            event(9000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1690,13 +1644,13 @@ mod tests {
             is_playing: Some(true),
             loop_active: Some(false),
             playback_rate: Some(1.0),
-            ..ev(0.0, "deck_snapshot", deck)
+            ..event(0.0, "deck_snapshot", deck)
         };
         let events = vec![
             snap("A", "/t/a.mp3", 10.0),
             snap("B", "/t/b.mp3", 20.0),
-            ev(30_000.0, "stop", "A"),
-            ev(60_000.0, "stop", "B"),
+            event(30_000.0, "stop", "A"),
+            event(60_000.0, "stop", "B"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1711,18 +1665,17 @@ mod tests {
         assert!((deck_b[0].track_start_sec - 20.0).abs() < 1e-6);
     }
 
-    // The gesture clamp allows dragging an end edge exactly onto next.start_ms.
     #[test]
     fn trim_end_flush_against_next_block_keeps_it() {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
-            ev(7000.0, "play", "A"),
-            ev(9000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
+            event(7000.0, "play", "A"),
+            event(9000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let blocks = blocks_for_deck(&clips, "A");
@@ -1743,19 +1696,18 @@ mod tests {
         assert!((second.track_start_sec - 4.0).abs() < 1e-6);
     }
 
-    // Paused-scrub seeks are logged, so silent gaps contain transport events.
     #[test]
     fn trim_end_over_stray_seek_keeps_audio_continuous() {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev(6000.0, "seek", "A")
+                ..event(6000.0, "seek", "A")
             },
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
@@ -1778,13 +1730,13 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev(6000.0, "seek", "A")
+                ..event(6000.0, "seek", "A")
             },
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
@@ -1809,16 +1761,16 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
             SessionEvent {
                 sec: Some(30.0),
-                ..ev(4000.0, "seek", "A")
+                ..event(4000.0, "seek", "A")
             },
-            ev(6000.0, "play", "A"),
-            ev(8000.0, "stop", "A"),
+            event(6000.0, "play", "A"),
+            event(8000.0, "stop", "A"),
         ];
         let crate::timeline::ClipsBuild { clips, .. } = crate::timeline::build_clips(&events);
         let blocks = blocks_for_deck(&clips, "A");
@@ -1847,19 +1799,22 @@ mod tests {
 
     #[test]
     fn delete_glued_predecessor_gets_a_stop() {
-        // Two back-to-back blocks (no stop between); deleting the second must stop
+        // Two back-to-back blocks (no stop between). Deleting the second must stop
         // the first at the boundary so it doesn't bleed into the gap.
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
-            ev(3000.0, "stop", "A"),
-            ev(3000.0, "play", "A"),
-            ev(5000.0, "stop", "A"),
+            event(1000.0, "play", "A"),
+            event(3000.0, "stop", "A"),
+            event(3000.0, "play", "A"),
+            event(5000.0, "stop", "A"),
         ];
-        let clips = vec![clip("A", 1000.0, 3000.0, 0, 0.0), clip("A", 3000.0, 5000.0, 1, 2.0)];
+        let clips = vec![
+            clip("A", 1000.0, 3000.0, 0, 0.0),
+            clip("A", 3000.0, 5000.0, 1, 2.0),
+        ];
         let block = blocks_for_deck(&clips, "A")[1].clone();
 
         let out = delete_transport_block(&events, &clips, &block);
@@ -1873,22 +1828,22 @@ mod tests {
         let events = vec![
             SessionEvent {
                 path: Some("/t/a.mp3".to_string()),
-                ..ev(0.0, "load_track", "A")
+                ..event(0.0, "load_track", "A")
             },
-            ev(1000.0, "play", "A"),
+            event(1000.0, "play", "A"),
             SessionEvent {
                 slot: Some("fader".to_string()),
                 param: Some("gain".to_string()),
                 value: Some(0.5),
-                ..ev(2000.0, "set_param", "A")
+                ..event(2000.0, "set_param", "A")
             },
             SessionEvent {
                 slot: Some("eq".to_string()),
                 param: Some("low".to_string()),
                 value: Some(-6.0),
-                ..ev(3000.0, "set_param", "A")
+                ..event(3000.0, "set_param", "A")
             },
-            ev(5000.0, "stop", "A"),
+            event(5000.0, "stop", "A"),
         ];
         let clips = vec![clip("A", 1000.0, 5000.0, 0, 0.0)];
         let block = blocks_for_deck(&clips, "A")[0].clone();
@@ -1905,7 +1860,6 @@ mod tests {
         assert_eq!(moved_ms, vec![2000.0, 3000.0]);
         assert!(find(&result.events, "play", 2000.0).is_some());
     }
-
 }
 
 // Randomised sweeps over the edit operations. Block geometry interacts with neighbours,
@@ -2062,7 +2016,8 @@ mod fuzz {
                 2 => {
                     let new_ms =
                         block.end_ms + (rng(&mut seed) % (span as u64 * 2 + 1)) as f64 - span / 2.0;
-                    let out = trim_transport_block(&events, &clips, block, Edge::End, new_ms).events;
+                    let out =
+                        trim_transport_block(&events, &clips, block, Edge::End, new_ms).events;
                     check("trim-end", &out, &mut rep, &format!("new_ms={new_ms}"));
                 }
                 3 => {
@@ -2097,7 +2052,6 @@ mod fuzz {
         );
     }
 
-    // Semantic invariants: an edit must actually do what it claims.
     #[test]
     fn fuzz_clip_edit_ops_have_declared_effect() {
         let mut seed = 0x123456789ABCDEFu64;
@@ -2108,10 +2062,14 @@ mod fuzz {
         for _ in 0..4000 {
             let events = make_session(&mut seed);
             let clips = build_clips(&events).clips;
-            if clips.is_empty() { continue; }
+            if clips.is_empty() {
+                continue;
+            }
             let deck = if rng(&mut seed) % 2 == 0 { "A" } else { "B" };
             let before = blocks_for_deck(&clips, deck);
-            if before.is_empty() { continue; }
+            if before.is_empty() {
+                continue;
+            }
             let block = before[(rng(&mut seed) as usize) % before.len()].clone();
             let span = block.end_ms - block.start_ms;
 
@@ -2125,13 +2083,20 @@ mod fuzz {
                         if examples.len() < 5 {
                             examples.push(format!(
                                 "DELETE: {} blocks -> {} (expected {}) span={span}",
-                                before.len(), after.len(), before.len() - 1));
+                                before.len(),
+                                after.len(),
+                                before.len() - 1
+                            ));
                         }
                     }
                 }
                 1 => {
-                    if span < 2.0 * MIN_BLOCK_MS + 2.0 { continue; }
-                    let split = block.start_ms + MIN_BLOCK_MS + 1.0
+                    if span < 2.0 * MIN_BLOCK_MS + 2.0 {
+                        continue;
+                    }
+                    let split = block.start_ms
+                        + MIN_BLOCK_MS
+                        + 1.0
                         + (rng(&mut seed) % (span - 2.0 * MIN_BLOCK_MS - 1.0) as u64) as f64;
                     split_n += 1;
                     let out = split_transport_block(&events, &clips, &block, split);
@@ -2141,8 +2106,12 @@ mod fuzz {
                         if examples.len() < 5 {
                             examples.push(format!(
                                 "SPLIT at {split} in [{},{}]: {} blocks -> {} (expected {})",
-                                block.start_ms, block.end_ms,
-                                before.len(), after.len(), before.len() + 1));
+                                block.start_ms,
+                                block.end_ms,
+                                before.len(),
+                                after.len(),
+                                before.len() + 1
+                            ));
                         }
                     }
                 }
@@ -2150,17 +2119,25 @@ mod fuzz {
                     let delta = (rng(&mut seed) % 4000) as f64 - 2000.0;
                     move_n += 1;
                     let res = move_transport_block(&events, &clips, &block, delta);
-                    if res.applied_delta_ms.abs() < EPS_MS { continue; }
+                    if res.applied_delta_ms.abs() < EPS_MS {
+                        continue;
+                    }
                     let target = block.start_ms + res.applied_delta_ms;
                     let after = blocks_for_deck(&build_clips(&res.events).clips, deck);
-                    if !after.iter().any(|b| (b.start_ms - target).abs() <= EPS_MS * 2.0) {
+                    if !after
+                        .iter()
+                        .any(|b| (b.start_ms - target).abs() <= EPS_MS * 2.0)
+                    {
                         move_bad += 1;
                         if examples.len() < 5 {
                             let got: Vec<String> =
                                 after.iter().map(|b| format!("{:.0}", b.start_ms)).collect();
                             examples.push(format!(
                                 "MOVE {} by applied={} -> expected start {target}, got [{}]",
-                                block.start_ms, res.applied_delta_ms, got.join(",")));
+                                block.start_ms,
+                                res.applied_delta_ms,
+                                got.join(",")
+                            ));
                         }
                     }
                 }
@@ -2168,7 +2145,9 @@ mod fuzz {
         }
 
         println!("SEMANTIC fuzz: delete {del_bad}/{del_n} | split {split_bad}/{split_n} | move {move_bad}/{move_n}");
-        for e in &examples { println!("   {e}"); }
+        for e in &examples {
+            println!("   {e}");
+        }
         assert_eq!(del_bad + split_bad + move_bad, 0);
     }
 }

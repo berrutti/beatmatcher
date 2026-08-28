@@ -5,7 +5,7 @@ import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { DEFAULT_MIXER_ID, useSettingsStore } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 import { portEvents } from '@renderer/utils/bmsCompatibility';
 import { bmsVersion } from '@renderer/utils/sessionCore';
@@ -26,6 +26,21 @@ export type ParsedSession = {
 };
 
 export type SessionLoadPhase = 'reading' | 'parsing' | 'decoding' | 'indexing' | 'done';
+export type RenderProgress = { fraction: number; writing: boolean };
+
+export const SESSION_LOAD_PHASE_KEYS: Record<SessionLoadPhase, string> = {
+  reading: 'session.loadingPhaseReading',
+  parsing: 'session.loadingPhaseParsing',
+  decoding: 'session.loadingPhaseDecoding',
+  indexing: 'session.loadingPhaseIndexing',
+  done: 'session.loadingPhaseIndexing'
+};
+
+// Only the decode reports increments. Reading, parsing and indexing each take
+// one long step, so a percentage there would sit at 0 and read as a hang.
+export function sessionLoadIsMeasured(phase: SessionLoadPhase): boolean {
+  return phase === 'decoding' || phase === 'done';
+}
 
 export type SessionLoadProgress = {
   path: string;
@@ -50,9 +65,11 @@ export const useSessionStore = defineStore('session', () => {
   const session = ref<ParsedSession | null>(null);
   const isPlaying = ref(false);
   const loadProgress = ref<SessionLoadProgress | null>(null);
-  // Per-track waveform region [startSec, endSec] at some point density. Zoom-
-  // driven LOD (Timeline.vue) refetches a tighter range at higher density as the
-  // user zooms in, so the visible span always renders near one point per pixel.
+  // Null except while a render is in flight, so a stray event from a finished
+  // render cannot reopen the modal.
+  const renderProgress = ref<RenderProgress | null>(null);
+  // Refetched tighter as the user zooms, so the visible span stays near one
+  // point per pixel.
   const waveforms = ref(new Map<string, TrackWaveform>());
   const pendingWaveformPaths = new Set<string>();
   const pendingBasePaths = new Set<string>();
@@ -80,9 +97,7 @@ export const useSessionStore = defineStore('session', () => {
     return { startSec: req.startSec, endSec: req.endSec, amps: new Float32Array(amps) };
   }
 
-  // The coarse, always-resident slice covering a track's whole used extent, so a
-  // pan/zoom to an un-fetched spot still shows a low-detail texture immediately.
-  // Loaded once per extent; the detailed region is layered on top.
+  // Always resident, so a pan to an unfetched spot shows something immediately.
   async function ensureWaveformBase(
     path: string,
     startSec: number,
@@ -98,8 +113,6 @@ export const useSessionStore = defineStore('session', () => {
       const base = await fetchRegion(req, path);
       const prev = waveforms.value.get(path);
       const map = new Map(waveforms.value);
-      // Keep the detail region if we already have one; otherwise show the base
-      // as the detail too so the track renders before any zoom-in fetch.
       map.set(path, prev ? { ...prev, base } : { ...base, base });
       waveforms.value = map;
     } catch (err) {
@@ -127,7 +140,6 @@ export const useSessionStore = defineStore('session', () => {
       const region = await fetchRegion(req, path);
       const prev = waveforms.value.get(path);
       const map = new Map(waveforms.value);
-      // Replace the detail region but keep the coarse base for fallback.
       map.set(path, { ...region, base: prev?.base });
       waveforms.value = map;
     } catch (err) {
@@ -135,7 +147,6 @@ export const useSessionStore = defineStore('session', () => {
     } finally {
       pendingWaveformPaths.delete(path);
     }
-    // Chase the most recent region requested while this fetch was in flight.
     const next = waveformTarget.get(path);
     if (next) {
       waveformTarget.delete(path);
@@ -183,16 +194,22 @@ export const useSessionStore = defineStore('session', () => {
     }
   );
 
-  // Audition-only mute/solo for session playback. Lives in the strip's mute
-  // gain in Rust (independent of replayed fader events) and never affects
-  // the offline render. Solo wins: when any deck is soloed, only soloed decks
-  // are audible regardless of their mute state.
-  const mutedDecks = ref<Set<string>>(new Set());
-  const soloDecks = ref<Set<string>>(new Set());
+  // Audition only: it rides the strip's mute gain in Rust, apart from the
+  // replayed fader events, and the offline render ignores it.
+  // Off rather than on, so a session with nothing set leaves every deck enabled.
+  const disabledDecks = ref<Set<string>>(new Set());
+  // One at a time: soloing a deck releases whichever was soloed before.
+  const soloedDeck = ref<string | null>(null);
 
+  function deckEnabled(deck: string): boolean {
+    return !disabledDecks.value.has(deck);
+  }
+
+  // A solo overrides the switches entirely, the soloed deck's own included: it
+  // plays whether or not it is enabled, and nothing else plays either way.
   function deckAudible(deck: string): boolean {
-    if (soloDecks.value.size > 0) return soloDecks.value.has(deck);
-    return !mutedDecks.value.has(deck);
+    if (soloedDeck.value !== null) return deck === soloedDeck.value;
+    return deckEnabled(deck);
   }
 
   function applyAudibility() {
@@ -201,40 +218,24 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // Mute and solo are mutually exclusive per deck: engaging one releases the
-  // other, so a deck can never be in both lists.
-  function toggleMute(deck: string) {
-    const muted = new Set(mutedDecks.value);
-    const solo = new Set(soloDecks.value);
-    if (muted.has(deck)) {
-      muted.delete(deck);
-    } else {
-      muted.add(deck);
-      solo.delete(deck);
-    }
-    mutedDecks.value = muted;
-    soloDecks.value = solo;
+  // Still recorded while a solo is up, so dropping the solo restores whatever the
+  // switches were left at rather than turning everything back on.
+  function toggleDeckEnabled(deck: string) {
+    const next = new Set(disabledDecks.value);
+    if (!next.delete(deck)) next.add(deck);
+    disabledDecks.value = next;
     applyAudibility();
   }
 
   function toggleSolo(deck: string) {
-    const muted = new Set(mutedDecks.value);
-    const solo = new Set(soloDecks.value);
-    if (solo.has(deck)) {
-      solo.delete(deck);
-    } else {
-      solo.add(deck);
-      muted.delete(deck);
-    }
-    mutedDecks.value = muted;
-    soloDecks.value = solo;
+    soloedDeck.value = soloedDeck.value === deck ? null : deck;
     applyAudibility();
   }
 
   function clearAudibility() {
-    if (mutedDecks.value.size === 0 && soloDecks.value.size === 0) return;
-    mutedDecks.value = new Set();
-    soloDecks.value = new Set();
+    if (disabledDecks.value.size === 0 && soloedDeck.value === null) return;
+    disabledDecks.value = new Set();
+    soloedDeck.value = null;
     applyAudibility();
   }
 
@@ -323,6 +324,10 @@ export const useSessionStore = defineStore('session', () => {
     loadProgress.value = event.payload;
   }).catch(() => {});
 
+  listen<RenderProgress>('render-progress', (event) => {
+    if (renderProgress.value) renderProgress.value = event.payload;
+  }).catch(() => {});
+
   // Every track has to be decoded before the scheduler can place it, so playback is refused
   // over queued: a press that silently starts seconds later reads as a broken button.
   const isLoading = computed(() => loadProgress.value !== null && !loadProgress.value.done);
@@ -366,6 +371,34 @@ export const useSessionStore = defineStore('session', () => {
     await unload();
   }
 
+  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
+    return call('pick_save_path', { format: useFlac ? 'flac' : 'wav', baseName });
+  }
+
+  async function renderSession(
+    sessionPath: string,
+    outputPath: string,
+    useFlac: boolean
+  ): Promise<void> {
+    renderProgress.value = { fraction: 0, writing: false };
+    try {
+      await call('render_session_to_file', {
+        sessionPath,
+        outputPath,
+        useFlac,
+        writeCue: useSettingsStore().recordCue
+      });
+    } finally {
+      renderProgress.value = null;
+    }
+  }
+
+  // The encode cannot be interrupted, so the button is withdrawn once it starts
+  // rather than accepting a press that would do nothing.
+  async function cancelRender(): Promise<void> {
+    await call('cancel_render');
+  }
+
   return {
     session,
     isPlaying,
@@ -377,15 +410,20 @@ export const useSessionStore = defineStore('session', () => {
     hasTrackInfo,
     missingTracks,
     checkMissingTracks,
-    mutedDecks,
-    soloDecks,
+    disabledDecks,
+    soloedDeck,
+    deckEnabled,
     deckAudible,
-    toggleMute,
+    toggleDeckEnabled,
     toggleSolo,
     ensureWaveformRegion,
     ensureWaveformBase,
     openSession,
     openSessionFromPath,
+    renderProgress,
+    renderSession,
+    cancelRender,
+    pickRenderOutputPath,
     play,
     stop,
     unload,

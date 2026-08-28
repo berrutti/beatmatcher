@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  filterRegionItem,
   filterSelectionItem,
   clipBandItem,
+  deckChromeItem,
   blockAtPoint,
   laneSurfaceItem,
-  masterItem,
+  masterChromeItem,
+  masterLaneItem,
   waveformSeparatorItem,
   overviewItem,
   readOverviewHit
@@ -19,7 +22,7 @@ import {
 import type { ViewContext } from '@renderer/utils/timelineEngine';
 import { MASTER_ROW_ID, type Clip } from '@renderer/utils/types';
 
-// ms -> x as identity-ish; pt.x in these tests is given directly in ms units.
+// ms -> x as identity-ish. Pt.x in these tests is given directly in ms units.
 const vc = { msToX: (ms: number) => ms, trackW: 10_000 } as ViewContext;
 
 function clipAt(deck: string, startMs: number, endMs: number, loop = false): Clip {
@@ -40,7 +43,7 @@ function clipAt(deck: string, startMs: number, endMs: number, loop = false): Cli
 }
 
 describe('filterSelectionItem', () => {
-  it('insets the outline so its bottom border clears the row divider', () => {
+  it('frames the tinted band, keeping its bottom border clear of the row divider', () => {
     const lane: SublaneLayout = { key: 'filter', top: 100, height: 80 };
     const rects: { x: number; y: number; w: number; h: number }[] = [];
     const ctx = {
@@ -52,29 +55,31 @@ describe('filterSelectionItem', () => {
     filterSelectionItem(lane, 200, 600).draw(ctx, vc);
 
     expect(rects).toHaveLength(1);
-    const [r] = rects;
+    const [outline] = rects;
     const pad = laneValuePad(lane.height);
-    expect(r.y).toBe(lane.top + pad);
-    expect(r.h).toBe(lane.height - 2 * pad);
-    // The divider is drawn at the lane bottom; the border must stay above it.
-    expect(r.y + r.h).toBeLessThan(lane.top + lane.height);
+    expect(outline.y).toBe(lane.top + pad);
+    expect(outline.h).toBe(lane.height - 2 * pad);
+    expect(outline.y + outline.h).toBeLessThan(lane.top + lane.height);
   });
 });
 
-// The gesture takes the value rect straight from the hit, so an item that reports
-// its frame instead puts drawn points where they are not rendered.
 describe('lane hit-test', () => {
   it('reports the deck lane value area, not its frame', () => {
     const lane: SublaneLayout = { key: 'filter', top: 100, height: 80 };
-    const hit = laneSurfaceItem(lane, 'A', undefined).hitTest({ x: LABEL_W + 10, y: 140 }, vc);
+    const hit = laneSurfaceItem(lane, 'A', undefined, [], new Map(), '#ffffff').hitTest(
+      { x: LABEL_W + 10, y: 140 },
+      vc
+    );
     const pad = laneValuePad(lane.height);
     expect(hit?.target).toBe('lane');
     expect(hit?.data).toEqual({ top: lane.top + pad, height: lane.height - 2 * pad });
   });
 
-  it('reports the master row as a lane so it draws like a deck lane', () => {
-    const masterLanes = { gain: [], xfader: [] };
-    const item = masterItem(200, 20, masterLanes, 'masterGain');
+  it('reports a master lane as a lane so it draws like a deck lane', () => {
+    const item = masterLaneItem(
+      { key: 'masterGain', top: 200, height: 20 },
+      { gain: [], xfader: [] }
+    );
     const hit = item.hitTest({ x: LABEL_W + 10, y: 210 }, vc);
     expect(hit?.target).toBe('lane');
     expect(hit?.deck).toBe(MASTER_ROW_ID);
@@ -85,9 +90,20 @@ describe('lane hit-test', () => {
     });
   });
 
-  it('keeps the master label column on the dropdown', () => {
-    const item = masterItem(200, 20, { gain: [], xfader: [] }, 'xfader');
-    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.target).toBe('laneDropdown');
+  it('names the stacked master lane whose label column was clicked', () => {
+    const item = masterChromeItem(
+      200,
+      40,
+      [
+        { key: 'masterGain', top: 200, height: 20 },
+        { key: 'xfader', top: 220, height: 20 }
+      ],
+      (key) => key,
+      null
+    );
+    expect(item.hitTest({ x: LABEL_W - 5, y: 210 }, vc)?.part).toBe('masterGain');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 230 }, vc)?.part).toBe('xfader');
+    expect(item.hitTest({ x: LABEL_W - 5, y: 230 }, vc)?.target).toBe('laneDropdown');
   });
 });
 
@@ -170,5 +186,55 @@ describe('readOverviewHit', () => {
     expect(readOverviewHit({ target: 'overview', part: 'move', data: 'half' })).toBeNull();
     expect(readOverviewHit({ target: 'overview', part: 'move', data: NaN })).toBeNull();
     expect(readOverviewHit({ target: 'overview', part: 'wobble', data: 0.5 })).toBeNull();
+  });
+});
+
+describe('deckChromeItem label column', () => {
+  const row = {
+    deckId: 'A',
+    top: 100,
+    height: 200,
+    waveformHeight: 80,
+    lanes: [{ key: 'filter', top: 180, height: 120 }]
+  } as unknown as RowLayout;
+  const chrome = {
+    accent: '#fff',
+    audible: true,
+    solo: false,
+    muted: false,
+    deckLabel: 'DECK A',
+    badgeLabel: 'MUTE',
+    badgeAlpha: 0,
+    laneLabel: (key: string) => key.toUpperCase(),
+    openLane: null,
+    menuOpen: false
+  };
+
+  it('opens the deck menu from the label beside the waveform', () => {
+    const hit = deckChromeItem(row, chrome).hitTest({ x: 4, y: 140 }, vc);
+    expect(hit?.target).toBe('deckLabel');
+    expect(hit?.deck).toBe('A');
+    expect(hit?.data).toEqual({ top: row.top });
+  });
+
+  it('leaves the lane label to the lane picker', () => {
+    expect(deckChromeItem(row, chrome).hitTest({ x: 4, y: 240 }, vc)?.target).toBe('laneDropdown');
+  });
+});
+
+describe('a filter-active region shares its lane with the value curve', () => {
+  const lane: SublaneLayout = { key: 'filter', top: 100, height: 90 };
+  const span = { startMs: 1000, endMs: 5000 };
+  const item = filterRegionItem(lane, 'A', span);
+  const midY = lane.top + lane.height / 2;
+
+  it('claims nothing between its edges, so the whole lane stays drawable', () => {
+    expect(item.hitTest({ x: 3000, y: lane.top + 2 }, vc)).toBeNull();
+    expect(item.hitTest({ x: 3000, y: midY }, vc)).toBeNull();
+  });
+
+  it('still trims from either edge at any height', () => {
+    expect(item.hitTest({ x: 1000, y: midY }, vc)?.part).toBe('start');
+    expect(item.hitTest({ x: 5000, y: midY }, vc)?.part).toBe('end');
   });
 });

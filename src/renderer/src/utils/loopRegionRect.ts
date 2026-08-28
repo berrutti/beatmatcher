@@ -1,7 +1,5 @@
-// Shared by every loop-region drawer (mixer/Waveform.vue, EditWaveform.vue,
-// TrackWaveform.vue), which each clamped a region to its visible width the
-// same way. Each caller keeps its own sec-to-px convention and passes it in
-// as `xFor`, so the drawers don't need a shared coordinate system.
+// Each caller keeps its own sec-to-px convention and passes it in as `xFor`, so
+// the drawers need no shared coordinate system.
 export function loopRegionRect(
   xFor: (sec: number) => number,
   region: { startSec: number; endSec: number } | null,
@@ -16,7 +14,7 @@ export function loopRegionRect(
 
 const LOOP_ACTIVE_COLOR = '#ca8a04';
 const LOOP_ARMED_COLOR = '#78716c';
-// Active is a strong overlay (it's live audio right now); armed is a dim hint
+// Active is a strong overlay (it's live audio right now). Armed is a dim hint
 // of what reloop would jump into.
 const LOOP_ACTIVE_FILL_ALPHA = 0.42;
 const LOOP_ARMED_FILL_ALPHA = 0.2;

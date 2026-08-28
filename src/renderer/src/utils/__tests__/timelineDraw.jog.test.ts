@@ -11,29 +11,46 @@ const CENTER_Y = LANE_Y + LANE_H / 2;
 const TRACK_W = CANVAS_W - LABEL_W - 12;
 const VIEW_MS = 2000;
 
-// The frame and the centre line span the whole track; plotted data is one column wide.
+// The frame and the centre line span the whole track. Plotted data is one column wide.
 function valueBars(bars: Bar[]): Bar[] {
   return bars.filter((bar) => bar.w === 1);
 }
 
-function draw(curve: LanePoint[]): Bar[] {
+const SCALE_PCT = 16;
+
+function draw(curve: LanePoint[], scale = SCALE_PCT): Bar[] {
   const bars: Bar[] = [];
   const ctx = {
     fillRect: (x: number, y: number, w: number, h: number) => bars.push({ x, y, w, h }),
     fillText: () => {},
+    save: () => {},
+    restore: () => {},
+    set globalAlpha(_value: number) {},
     set fillStyle(_value: string) {},
     set font(_value: string) {},
     set textAlign(_value: string) {},
     set textBaseline(_value: string) {}
   } as unknown as CanvasRenderingContext2D;
   const xToMs = (x: number) => ((x - LABEL_W) / TRACK_W) * VIEW_MS;
-  drawJogLane(ctx, CANVAS_W, LANE_Y, LANE_H, curve, xToMs);
+  drawJogLane(
+    ctx,
+    CANVAS_W,
+    LANE_Y,
+    LANE_H,
+    curve,
+    xToMs,
+    scale,
+    [],
+    new Map(),
+    () => 0,
+    '#ffffff'
+  );
   return valueBars(bars);
 }
 
 const GESTURE: LanePoint[] = [
   { ms: 0, value: 0 },
-  { ms: 500, value: 20 },
+  { ms: 500, value: SCALE_PCT },
   { ms: 900, value: 0 }
 ];
 
@@ -48,8 +65,15 @@ describe('drawJogLane', () => {
     expect(reverse.every((bar) => bar.y >= CENTER_Y)).toBe(true);
   });
 
-  it('scales the peak to the full half-height', () => {
+  it('plots a value at the scale as the full half-height', () => {
     const tallest = Math.max(...draw(GESTURE).map((bar) => bar.h));
+
+    expect(tallest).toBeCloseTo(LANE_H / 2 - laneValuePad(LANE_H), 9);
+  });
+
+  it('clips a recorded spike past the scale rather than shrinking the rest', () => {
+    const spike = GESTURE.map((point) => ({ ...point, value: point.value * 4 }));
+    const tallest = Math.max(...draw(spike).map((bar) => bar.h));
 
     expect(tallest).toBeCloseTo(LANE_H / 2 - laneValuePad(LANE_H), 9);
   });

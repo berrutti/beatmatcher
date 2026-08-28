@@ -54,6 +54,10 @@ function onTheadRef(el: TemplateRefEl) {
 }
 
 .table__filler {
-  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface);
+  box-shadow: inset 0 -1px 0 var(--color-border);
 }
 </style>

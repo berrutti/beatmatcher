@@ -1,6 +1,10 @@
 import type { SessionEvent, EditableLaneKey, LanePoint } from '@renderer/utils/types';
 import {
   laneSpecs,
+  laneMoveSpan as coreLaneMoveSpan,
+  resetLaneFrom as coreResetLaneFrom,
+  type LaneMoveSpan,
+  type ResetExtent,
   spliceLaneEvents as coreSpliceLaneEvents,
   type LaneSpec
 } from '@renderer/utils/sessionCore';
@@ -16,9 +20,8 @@ export function laneSpecFor(
   return { ...spec, min: opts.rateMin ?? spec.min, max: opts.rateMax ?? spec.max };
 }
 
-// Replaces this lane's events inside [t0, t1] with the drawn points and restores
-// the original value at t1, so everything after the gesture sounds unchanged.
-// Returns a new array; the input and its event objects are never mutated.
+// Restores the original value at t1, so everything after the gesture sounds
+// unchanged.
 export function spliceLaneEvents(
   events: SessionEvent[],
   spec: LaneSpec,
@@ -29,6 +32,27 @@ export function spliceLaneEvents(
   points: LanePoint[]
 ): SessionEvent[] {
   return coreSpliceLaneEvents(events, spec.key, mixerId, deck, t0, t1, points, spec.min, spec.max);
+}
+
+export function resetLaneFrom(
+  events: SessionEvent[],
+  spec: LaneSpec,
+  mixerId: string,
+  deck: string,
+  ms: number,
+  extent: ResetExtent
+): SessionEvent[] {
+  return coreResetLaneFrom(events, spec.key, mixerId, deck, ms, extent, spec.min, spec.max);
+}
+
+export function laneMoveSpan(
+  events: SessionEvent[],
+  spec: LaneSpec,
+  mixerId: string,
+  deck: string,
+  ms: number
+): LaneMoveSpan | null {
+  return coreLaneMoveSpan(events, spec.key, mixerId, deck, ms, spec.min, spec.max);
 }
 
 // Driven by the lane's unit rather than its key: the same eq lane reads in dB
@@ -45,5 +69,7 @@ export function formatLaneValue(spec: LaneSpec, value: number): string {
       return value === 0 ? 'off' : 'on';
     case 'normalized':
       return value.toFixed(2);
+    case 'percent':
+      return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
   }
 }

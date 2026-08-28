@@ -41,7 +41,6 @@ describe('clampView', () => {
   });
 
   it('grows total to at least minViewMs for very short sessions', () => {
-    // 100ms session, asking for the full range: total becomes MIN, so duration = MIN
     expect(clampView(0, 100, 100, MIN)).toEqual({ start: 0, duration: MIN });
   });
 });

@@ -1,10 +1,5 @@
-// Deterministic session simulation: replays the event stream into per-deck and
-// per-strip state, and derives a deck's exact frame position at any time. This
-// is the single source of truth shared by the live scheduler, the scrub
-// snapshots, and (once wired) the frontend timeline via WASM.
-
 use crate::event::{SessionCommand, SessionEvent};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 // -2 dBFS: gives the master bus headroom before the hardware clipping point.
@@ -15,12 +10,9 @@ pub const DEFAULT_MASTER_GAIN: f32 = 0.7943;
 // assume forward motion. The engine floors to this too, or the two disagree.
 pub const JOG_FACTOR_MIN: f64 = 0.1;
 
-// Decoded track samples keyed by path. The simulation only reads each track's
-// frame count (samples / channels); the buffers themselves are the live
-// engine's, passed through unchanged.
+// The simulation only reads each track's frame count, never its samples.
 pub type SampleCache = HashMap<String, (Arc<Vec<f32>>, usize)>;
 
-// Internal simulation state. Not stored long-term.
 #[derive(Clone)]
 pub struct DeckSim {
     pub path: Option<String>,
@@ -29,7 +21,6 @@ pub struct DeckSim {
     pub rate: f64,
     pub jog_hold_factor: f64,
     pub loop_active: bool,
-    pub loop_start: f64,
     pub loop_end: f64,
     pub cue_point: f64,
     pub bpm: Option<f64>,
@@ -51,7 +42,6 @@ impl Default for DeckSim {
             rate: 1.0,
             jog_hold_factor: 1.0,
             loop_active: false,
-            loop_start: 0.0,
             loop_end: 0.0,
             cue_point: 0.0,
             bpm: None,
@@ -64,32 +54,21 @@ impl Default for DeckSim {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct StripSim {
-    pub gain: f32,
-    pub eq_low: f32,
-    pub eq_mid: f32,
-    pub eq_high: f32,
-    pub filter_value: f32,
-    pub filter_active: bool,
+    /// Keyed `"slot/param"`, holding only what the session actually set. A strip starts at
+    /// its manifest defaults, so an absent key means "left alone".
+    pub params: BTreeMap<String, f32>,
     pub xfader_assign: crate::XfaderAssign,
 }
 
-impl Default for StripSim {
-    fn default() -> Self {
-        Self {
-            gain: 1.0,
-            eq_low: 0.0,
-            eq_mid: 0.0,
-            eq_high: 0.0,
-            filter_value: 0.0,
-            filter_active: false,
-            xfader_assign: crate::XfaderAssign::Thru,
-        }
+impl StripSim {
+    /// What the session set this address to, or `None` when it never touched it.
+    pub fn param(&self, slot: &str, param: &str) -> Option<f32> {
+        self.params.get(&format!("{slot}/{param}")).copied()
     }
 }
 
-#[derive(Default)]
 pub struct SimState {
     pub decks: HashMap<String, DeckSim>,
     pub strips: HashMap<String, StripSim>,
@@ -99,8 +78,8 @@ pub struct SimState {
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
-impl SimState {
-    pub fn new() -> Self {
+impl Default for SimState {
+    fn default() -> Self {
         Self {
             decks: HashMap::new(),
             strips: HashMap::new(),
@@ -112,6 +91,12 @@ impl SimState {
     }
 }
 
+impl SimState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct DeckSnap {
     pub path: Option<String>,
@@ -120,7 +105,6 @@ pub struct DeckSnap {
     pub rate: f64,
     pub jog_hold_factor: f64,
     pub loop_active: bool,
-    pub loop_start: f64,
     pub loop_end: f64,
     pub cue_point: f64,
     pub bpm: Option<f64>,
@@ -132,44 +116,16 @@ pub struct DeckSnap {
 }
 
 #[derive(Clone)]
-pub struct StripSnap {
-    pub gain: f32,
-    pub eq_low: f32,
-    pub eq_mid: f32,
-    pub eq_high: f32,
-    pub filter_value: f32,
-    pub filter_active: bool,
-    pub xfader_assign: crate::XfaderAssign,
-}
-
-impl Default for StripSnap {
-    fn default() -> Self {
-        Self {
-            gain: 1.0,
-            eq_low: 0.0,
-            eq_mid: 0.0,
-            eq_high: 0.0,
-            filter_value: 0.0,
-            filter_active: false,
-            xfader_assign: crate::XfaderAssign::Thru,
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct SessionSnapshot {
     pub elapsed_ms: f64,
     pub decks: HashMap<String, DeckSnap>,
-    pub strips: HashMap<String, StripSnap>,
+    pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
     pub xfader_position: f32,
     pub fader_curve: crate::FaderCurve,
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
 
-// Continuous beat count at a playback position, given the track's beat grid.
-// Consumers pick their own cycle length (4-beat phase ring, 16-beat phrase, ...)
-// by taking this value modulo that length. Returns 0.0 for an unknown grid.
 pub fn current_beat(position_sec: f64, beat_offset_sec: f64, bpm: f64) -> f64 {
     if bpm <= 0.0 {
         return 0.0;
@@ -210,9 +166,9 @@ pub fn sim_pos(sim: &DeckSim, ms: f64, sample_rate_f64: f64) -> f64 {
     let elapsed = (ms - sim.play_start_ms).max(0.0) / 1000.0 * sample_rate_f64 * effective_rate;
     let raw = sim.play_start_frame + elapsed + jog_settled(sim, ms);
     // Engine parity: play linearly until loop_end, only then wrap (deck.rs next_pos).
-    if sim.loop_active && sim.loop_end > sim.loop_start && raw >= sim.loop_end {
-        let len = sim.loop_end - sim.loop_start;
-        let wrapped = sim.loop_start + (raw - sim.loop_end).rem_euclid(len);
+    if sim.loop_active && sim.loop_end > sim.cue_point && raw >= sim.loop_end {
+        let len = sim.loop_end - sim.cue_point;
+        let wrapped = sim.cue_point + (raw - sim.loop_end).rem_euclid(len);
         wrapped.clamp(0.0, sim.total_frames)
     } else {
         raw.clamp(0.0, sim.total_frames)
@@ -233,7 +189,6 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
                     rate: d.rate,
                     jog_hold_factor: d.jog_hold_factor,
                     loop_active: d.loop_active,
-                    loop_start: d.loop_start,
                     loop_end: d.loop_end,
                     cue_point: d.cue_point,
                     bpm: d.bpm,
@@ -247,24 +202,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         })
         .collect();
 
-    let strips = snap
-        .strips
-        .iter()
-        .map(|(id, s)| {
-            (
-                id.clone(),
-                StripSim {
-                    gain: s.gain,
-                    eq_low: s.eq_low,
-                    eq_mid: s.eq_mid,
-                    eq_high: s.eq_high,
-                    filter_value: s.filter_value,
-                    filter_active: s.filter_active,
-                    xfader_assign: s.xfader_assign,
-                },
-            )
-        })
-        .collect();
+    let strips = snap.strips.clone();
 
     SimState {
         decks,
@@ -276,7 +214,12 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
     }
 }
 
-pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &SampleCache, sample_rate: u32) {
+pub fn sim_apply_event(
+    event: &SessionEvent,
+    state: &mut SimState,
+    cache: &SampleCache,
+    sample_rate: u32,
+) {
     let sample_rate_f64 = sample_rate as f64;
     let Some(cmd) = event.command() else { return };
 
@@ -305,8 +248,7 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             sim.play_start_ms = 0.0;
             sim.is_playing = is_playing;
             sim.loop_active = loop_active.unwrap_or(false);
-            sim.loop_start = cue_point_sec.map_or(0.0, |sec| sec * sample_rate_f64);
-            sim.cue_point = sim.loop_start;
+            sim.cue_point = cue_point_sec.map_or(0.0, |sec| sec * sample_rate_f64);
             sim.loop_end = loop_end_sec.map_or(0.0, |sec| sec * sample_rate_f64);
             sim.bpm = bpm;
         }
@@ -330,7 +272,6 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             sim.loop_active = false;
             // The live engine fully resets the deck on load: no loop region
             // or nudge survives into the new track.
-            sim.loop_start = pos;
             sim.loop_end = 0.0;
             sim.jog_hold_factor = 1.0;
             sim.cue_point = pos;
@@ -365,8 +306,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             let sim = state.decks.entry(deck.to_string()).or_default();
             commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             sim.play_start_frame = sec * sample_rate_f64;
-            sim.loop_active =
-                sim.loop_active && (sec * sample_rate_f64 >= sim.loop_start) && (sec * sample_rate_f64 < sim.loop_end);
+            sim.loop_active = sim.loop_active
+                && (sec * sample_rate_f64 >= sim.cue_point)
+                && (sec * sample_rate_f64 < sim.loop_end);
         }
         SessionCommand::SetPlaybackRate { deck, rate } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
@@ -412,7 +354,6 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             // anchor and jump to where the deck would be had it never looped.
             commit_pos(sim, event.elapsed_ms, sample_rate_f64);
             if let Some(cue_sec) = cue_sec {
-                sim.loop_start = cue_sec * sample_rate_f64;
                 sim.cue_point = cue_sec * sample_rate_f64;
             }
             sim.loop_end = 0.0;
@@ -425,7 +366,6 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
             if let Some(start_sec) = start_sec {
-                sim.loop_start = start_sec * sample_rate_f64;
                 sim.cue_point = start_sec * sample_rate_f64;
             }
             if let Some(end_sec) = end_sec {
@@ -443,8 +383,8 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
         }
         SessionCommand::Reloop { deck } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            if sim.loop_end > sim.loop_start {
-                sim.play_start_frame = sim.loop_start;
+            if sim.loop_end > sim.cue_point {
+                sim.play_start_frame = sim.cue_point;
                 sim.play_start_ms = event.elapsed_ms;
                 if sim.is_playing {
                     sim.loop_active = true;
@@ -455,41 +395,23 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             state.decks.remove(deck);
         }
         SessionCommand::SetParam {
-            deck, slot, param, value, ..
+            deck,
+            slot,
+            param,
+            value,
+            ..
         } => match (deck, slot, param) {
-            (Some(deck), "fader", "gain") => {
-                state.strips.entry(deck.to_string()).or_default().gain = value as f32;
-            }
-            (Some(deck), "eq", band) => {
-                let strip = state.strips.entry(deck.to_string()).or_default();
-                match band {
-                    "low" => strip.eq_low = value as f32,
-                    "mid" => strip.eq_mid = value as f32,
-                    "high" => strip.eq_high = value as f32,
-                    _ => {}
-                }
-            }
-            (Some(deck), "filter", "value") => {
+            (Some(deck), _, _) => {
                 state
                     .strips
                     .entry(deck.to_string())
                     .or_default()
-                    .filter_value = value as f32;
+                    .params
+                    .insert(format!("{slot}/{param}"), value as f32);
             }
-            (Some(deck), "filter", "active") => {
-                state
-                    .strips
-                    .entry(deck.to_string())
-                    .or_default()
-                    .filter_active = value != 0.0;
-            }
-            (None, "gain", "gain") => {
-                state.master_gain = value as f32;
-            }
-            (None, "xfader", "position") => {
-                state.xfader_position = value as f32;
-            }
-            _ => {}
+            (None, "gain", "gain") => state.master_gain = value as f32,
+            (None, "xfader", "position") => state.xfader_position = value as f32,
+            (None, _, _) => {}
         },
         SessionCommand::SetBeatGrid {
             deck,
@@ -509,7 +431,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             cue_point_sec,
         } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            let cue_frame = cue_point_sec.map(|sec| sec * sample_rate_f64).unwrap_or(sim.cue_point);
+            let cue_frame = cue_point_sec
+                .map(|sec| sec * sample_rate_f64)
+                .unwrap_or(sim.cue_point);
             sim.cue_point = cue_frame;
             sim.play_start_frame = cue_frame;
             sim.play_start_ms = event.elapsed_ms;
@@ -520,7 +444,9 @@ pub fn sim_apply_event(event: &SessionEvent, state: &mut SimState, cache: &Sampl
             cue_point_sec,
         } => {
             let sim = state.decks.entry(deck.to_string()).or_default();
-            let cue_frame = cue_point_sec.map(|sec| sec * sample_rate_f64).unwrap_or(sim.cue_point);
+            let cue_frame = cue_point_sec
+                .map(|sec| sec * sample_rate_f64)
+                .unwrap_or(sim.cue_point);
             sim.play_start_frame = cue_frame;
             sim.play_start_ms = event.elapsed_ms;
             sim.is_playing = false;
@@ -542,7 +468,6 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
                     rate: sim.rate,
                     jog_hold_factor: sim.jog_hold_factor,
                     loop_active: sim.loop_active,
-                    loop_start: sim.loop_start,
                     loop_end: sim.loop_end,
                     cue_point: sim.cue_point,
                     bpm: sim.bpm,
@@ -555,24 +480,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         })
         .collect();
 
-    let strips = state
-        .strips
-        .iter()
-        .map(|(id, s)| {
-            (
-                id.clone(),
-                StripSnap {
-                    gain: s.gain,
-                    eq_low: s.eq_low,
-                    eq_mid: s.eq_mid,
-                    eq_high: s.eq_high,
-                    filter_value: s.filter_value,
-                    filter_active: s.filter_active,
-                    xfader_assign: s.xfader_assign,
-                },
-            )
-        })
-        .collect();
+    let strips = state.strips.clone();
 
     SessionSnapshot {
         elapsed_ms: ms,
@@ -587,7 +495,12 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
 
 // deck_snapshot (initial state) sorts first within its rounded-ms cluster, and
 // at an exactly equal timestamp (only edits synthesize those) transport enders
-// sort before starters; both rules are pinned by tests in this module.
+// sort before starters. Both rules are pinned by tests in this module.
+pub fn sorted_by_sim_order(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    events.sort_by(event_sim_order);
+    events
+}
+
 pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering {
     let bucket = |event: &SessionEvent| event.elapsed_ms.round() as i64;
     let snapshot_rank = |event: &SessionEvent| u8::from(event.event_type != "deck_snapshot");
@@ -602,20 +515,18 @@ pub fn event_sim_order(a: &SessionEvent, b: &SessionEvent) -> std::cmp::Ordering
         .then_with(|| transport_phase(a).cmp(&transport_phase(b)))
 }
 
-fn transport_phase(event: &SessionEvent) -> u8 {
+/// Enders before starters, so a stop and a play sharing an instant leave the deck
+/// stopped rather than started.
+pub fn transport_phase(event: &SessionEvent) -> u8 {
     match event.event_type.as_str() {
-        "stop" | "stopped_at_cue" | "stop_at_cue" | "cue_set_and_stop" | "exit_loop"
-        | "cue_preview_end" => 0,
+        "stop" | "stopped_at_cue" | "exit_loop" | "cue_preview_end" => 0,
         "play" | "loop_out" | "cue_preview_start" | "reloop" => 2,
         _ => 1,
     }
 }
 
-// Build one snapshot per event, capturing state AFTER the event fires.
-// Scrubbing to time T finds the last snapshot with elapsed_ms <= T and loads it.
-// The exact post-event state, so no event is ever missing or double-applied.
-// Events are sorted before simulation so the state machine progresses correctly
-// regardless of order in the source JSON.
+// One snapshot per event, captured after it fires, so a scrub lands on exact state rather
+// than replaying from the last checkpoint.
 pub fn build_snapshots(
     events: &[SessionEvent],
     sample_rate: u32,
@@ -669,7 +580,10 @@ mod tests {
         let mut cache: SampleCache = HashMap::new();
         cache.insert(
             path.to_string(),
-            (Arc::new(vec![0.0f32; seconds * SAMPLE_RATE as usize * 2]), 2),
+            (
+                Arc::new(vec![0.0f32; seconds * SAMPLE_RATE as usize * 2]),
+                2,
+            ),
         );
         cache
     }
@@ -699,7 +613,10 @@ mod tests {
         for event in sorted.iter().filter(|event| event.elapsed_ms <= from_ms) {
             sim_apply_event(event, &mut state, cache, SAMPLE_RATE);
         }
-        state.decks.get(deck).map(|d| sim_pos(d, from_ms, SAMPLE_RATE_F64))
+        state
+            .decks
+            .get(deck)
+            .map(|d| sim_pos(d, from_ms, SAMPLE_RATE_F64))
     }
 
     fn scrub_pos(
@@ -722,7 +639,9 @@ mod tests {
         {
             sim_apply_event(event, &mut sim, cache, SAMPLE_RATE);
         }
-        sim.decks.get(deck).map(|d| sim_pos(d, from_ms, SAMPLE_RATE_F64))
+        sim.decks
+            .get(deck)
+            .map(|d| sim_pos(d, from_ms, SAMPLE_RATE_F64))
     }
 
     fn assert_scrub_matches_playthrough(
@@ -821,7 +740,9 @@ mod tests {
         let mut sorted: Vec<&SessionEvent> = events.iter().collect();
         sorted.sort_by(|a, b| a.elapsed_ms.partial_cmp(&b.elapsed_ms).unwrap());
         for event in sorted.iter().filter(|event| {
-            event.elapsed_ms > snapshot_ms && event.elapsed_ms <= from_ms && event.event_type != "deck_snapshot"
+            event.elapsed_ms > snapshot_ms
+                && event.elapsed_ms <= from_ms
+                && event.event_type != "deck_snapshot"
         }) {
             sim_apply_event(event, &mut sim, cache, SAMPLE_RATE);
         }
@@ -831,13 +752,6 @@ mod tests {
             .unwrap_or((false, None))
     }
 
-    // A clip dragged to the session start collapses its load onto t=0, sharing
-    // that millisecond with the deck_snapshot of a different (unplayed) track.
-    // The live engine reconstructs from the LAST snapshot at/before t=0, so the
-    // event order at t=0 decides the outcome: load_track forces is_playing=false,
-    // play sets it true. If play does not end up last, the deck reconstructs as
-    // "loaded but stopped" and live playback is silent even though the clip
-    // renders. This guards the ordering contract the editor must honour.
     #[test]
     fn collapsed_load_play_at_start_reconstructs_playing() {
         let track1 = "/fake/track1.wav".to_string();
@@ -918,7 +832,10 @@ mod tests {
             total_frames: 1_000_000.0,
             ..Default::default()
         };
-        assert_eq!(sim_pos(&sim, 1000.0, SAMPLE_RATE_F64), SAMPLE_RATE_F64 * 2.0);
+        assert_eq!(
+            sim_pos(&sim, 1000.0, SAMPLE_RATE_F64),
+            SAMPLE_RATE_F64 * 2.0
+        );
     }
 
     #[test]
@@ -955,13 +872,15 @@ mod tests {
             play_start_frame: 0.0,
             rate: 1.0,
             loop_active: true,
-            loop_start: 0.0,
             loop_end: SAMPLE_RATE_F64,
             total_frames: 1_000_000.0,
             ..Default::default()
         };
         let pos = sim_pos(&sim, 1500.0, SAMPLE_RATE_F64);
-        assert!((pos - SAMPLE_RATE_F64 / 2.0).abs() < 1.0, "expected ~22050, got {pos}");
+        assert!(
+            (pos - SAMPLE_RATE_F64 / 2.0).abs() < 1.0,
+            "expected ~22050, got {pos}"
+        );
     }
 
     #[test]
@@ -1003,7 +922,6 @@ mod tests {
             SAMPLE_RATE,
         );
         assert!(!state.decks["A"].is_playing);
-        // 2s × 44100 Hz = 88200 frames.
         assert_eq!(state.decks["A"].play_start_frame, 88200.0);
     }
 
@@ -1061,8 +979,10 @@ mod tests {
         );
         assert_eq!(state.decks["A"].play_start_frame, SAMPLE_RATE_F64);
         assert_eq!(state.decks["A"].rate, 2.0);
-        // At t=2000ms: 44100 + 44100×2 = 132300.
-        assert_eq!(sim_pos(&state.decks["A"], 2000.0, SAMPLE_RATE_F64), 132300.0);
+        assert_eq!(
+            sim_pos(&state.decks["A"], 2000.0, SAMPLE_RATE_F64),
+            132300.0
+        );
     }
 
     #[test]
@@ -1074,7 +994,7 @@ mod tests {
             &HashMap::new(),
             SAMPLE_RATE,
         );
-        assert_eq!(state.strips["A"].gain, 0.5);
+        assert_eq!(state.strips["A"].param("fader", "gain").unwrap_or(1.0), 0.5);
     }
 
     #[test]
@@ -1088,9 +1008,9 @@ mod tests {
                 SAMPLE_RATE,
             );
         }
-        assert_eq!(state.strips["A"].eq_low, -3.0);
-        assert_eq!(state.strips["A"].eq_mid, -6.0);
-        assert_eq!(state.strips["A"].eq_high, -9.0);
+        assert_eq!(state.strips["A"].param("eq", "low").unwrap_or(0.0), -3.0);
+        assert_eq!(state.strips["A"].param("eq", "mid").unwrap_or(0.0), -6.0);
+        assert_eq!(state.strips["A"].param("eq", "high").unwrap_or(0.0), -9.0);
     }
 
     #[test]
@@ -1170,7 +1090,6 @@ mod tests {
                 snaps[i - 1].elapsed_ms,
             );
         }
-        // Correct order: stop at 1000ms, play at 2000ms → last has is_playing=true.
         assert!(snaps
             .last()
             .unwrap()
@@ -1185,7 +1104,11 @@ mod tests {
         let events = vec![SessionEvent::param(3000.0, Some("A"), "eq", "low", -6.0)];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         assert_eq!(
-            snaps[0].strips.get("A").map(|s| s.eq_low).unwrap_or(0.0),
+            snaps[0]
+                .strips
+                .get("A")
+                .and_then(|s| s.param("eq", "low"))
+                .unwrap_or(0.0),
             0.0
         );
         assert_eq!(
@@ -1194,7 +1117,7 @@ mod tests {
                 .unwrap()
                 .strips
                 .get("A")
-                .map(|s| s.eq_low)
+                .and_then(|s| s.param("eq", "low"))
                 .unwrap_or(0.0),
             -6.0
         );
@@ -1231,7 +1154,13 @@ mod tests {
         let snap = &snaps[idx - 1];
         assert_eq!(snap.elapsed_ms, 1000.0);
         assert!(snap.decks.get("A").map(|d| d.is_playing).unwrap_or(false));
-        assert_eq!(snap.strips.get("A").map(|s| s.eq_low).unwrap_or(0.0), 0.0);
+        assert_eq!(
+            snap.strips
+                .get("A")
+                .and_then(|s| s.param("eq", "low"))
+                .unwrap_or(0.0),
+            0.0
+        );
     }
 
     #[test]
@@ -1283,7 +1212,6 @@ mod tests {
         let snaps = build_snapshots(&events, SAMPLE_RATE, &cache);
         let snap = snaps.last().unwrap();
         let sim = sim_state_from_snapshot(snap);
-        // 2s of play at rate=1 from frame 0 → 88200 (well within 441000).
         assert_eq!(sim_pos(&sim.decks["A"], 2000.0, SAMPLE_RATE_F64), 88200.0);
     }
 
@@ -1305,7 +1233,6 @@ mod tests {
 
     #[test]
     fn sim_pos_unit_nudge_unchanged() {
-        // jog_hold_factor = 1.0 must not change the result vs the non-nudge tests.
         let sim = DeckSim {
             is_playing: true,
             play_start_ms: 0.0,
@@ -1335,7 +1262,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Apply +4% nudge at t=1000ms; position at that moment = 44100.
+        // Apply +4% nudge at t=1000ms. Position at that moment = 44100.
         sim_apply_event(
             &SessionEvent {
                 event_type: "set_nudge".to_string(),
@@ -1389,14 +1316,15 @@ mod tests {
         state
     }
 
-    // The engine's one-pole has unity DC gain, so a scrub's total travel is its tick count
-    // and the sim can stay analytic. Pinned against the engine by the deck.rs travel tests.
     #[test]
     fn a_paused_scrub_moves_the_playhead_by_its_tick_count() {
         let state = jogged(false, 1.0, 6.0, "rpm33");
         let expected = 6.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
         let settled = sim_pos(&state.decks["A"], 3000.0, SAMPLE_RATE_F64);
-        assert!((settled - expected).abs() < 1e-6, "settled {settled}, want {expected}");
+        assert!(
+            (settled - expected).abs() < 1e-6,
+            "settled {settled}, want {expected}"
+        );
     }
 
     // A scrub that has already settled has moved the playhead, so an event that then
@@ -1443,29 +1371,39 @@ mod tests {
         assert!((sim_pos(&deck, 2000.0, SAMPLE_RATE_F64) - 12.0 * SAMPLE_RATE_F64).abs() < 1e-3);
     }
 
-    // 45 covers less audio per revolution, so the same tick is worth less.
     #[test]
     fn the_rotation_speed_decides_what_a_tick_is_worth() {
-        let settled = |speed| sim_pos(&jogged(false, 1.0, 6.0, speed).decks["A"], 3000.0, SAMPLE_RATE_F64);
+        let settled = |speed| {
+            sim_pos(
+                &jogged(false, 1.0, 6.0, speed).decks["A"],
+                3000.0,
+                SAMPLE_RATE_F64,
+            )
+        };
         let at_33 = settled("rpm33");
         let at_45 = settled("rpm45");
         assert!(at_45 < at_33 && at_45 > 0.0, "33 {at_33}, 45 {at_45}");
     }
 
-    // A bend on a playing deck is the same travel over the multiplier, scaled by the rate
-    // the deck is running at, which is what `next_pos` does per frame.
     #[test]
     fn a_playing_bend_moves_the_playhead_by_the_scrub_over_the_multiplier() {
         let scrub = 6.0 * crate::JOG_SCRUB_SEC_PER_TICK_AT_33 * SAMPLE_RATE_F64;
         let expected = 1.08 * scrub / crate::JOG_PAUSED_MULTIPLIER;
         // Read well past the settle, against the same deck with an untouched wheel.
-        let at = |ticks| sim_pos(&jogged(true, 1.08, ticks, "rpm33").decks["A"], 4000.0, SAMPLE_RATE_F64);
+        let at = |ticks| {
+            sim_pos(
+                &jogged(true, 1.08, ticks, "rpm33").decks["A"],
+                4000.0,
+                SAMPLE_RATE_F64,
+            )
+        };
         let moved = at(6.0) - at(0.0);
-        assert!((moved - expected).abs() < 1e-6, "moved {moved}, want {expected}");
+        assert!(
+            (moved - expected).abs() < 1e-6,
+            "moved {moved}, want {expected}"
+        );
     }
 
-    // The engine floors this in `set_nudge_percent`, so a sim that does not walks the
-    // playhead backwards and puts the timeline somewhere the render never goes.
     #[test]
     fn a_nudge_below_the_floor_is_floored_the_way_the_engine_floors_it() {
         let mut state = SimState::new();
@@ -1514,7 +1452,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Release nudge at t=1000ms; position = 1000ms * 1.04 * sample_rate.
+        // Release nudge at t=1000ms. Position = 1000ms * 1.04 * sample_rate.
         sim_apply_event(
             &SessionEvent {
                 event_type: "set_nudge".to_string(),
@@ -1560,8 +1498,15 @@ mod tests {
         let snaps = build_snapshots(&events, SAMPLE_RATE, &cache);
         // Last snapshot is after the nudge event: jog_hold_factor should be 1.04.
         let last = snaps.last().unwrap();
-        let jog_hold_factor = last.decks.get("A").map(|d| d.jog_hold_factor).unwrap_or(0.0);
-        assert!((jog_hold_factor - 1.04).abs() < 1e-9, "jog_hold_factor in snapshot: {jog_hold_factor}");
+        let jog_hold_factor = last
+            .decks
+            .get("A")
+            .map(|d| d.jog_hold_factor)
+            .unwrap_or(0.0);
+        assert!(
+            (jog_hold_factor - 1.04).abs() < 1e-9,
+            "jog_hold_factor in snapshot: {jog_hold_factor}"
+        );
 
         // Round-trip: SimState from snapshot should carry nudge through to sim_pos.
         let sim = sim_state_from_snapshot(last);
@@ -1574,12 +1519,6 @@ mod tests {
             "pos={pos}, expected={expected}"
         );
     }
-
-    // Session editing splices new events into the in-memory list and rebuilds
-    // snapshots via update_session_events. These tests assert that snapshots
-    // built from an edited list reflect the edit inside its range and the
-    // original state after it, and that scrubbing stays consistent with
-    // playthrough when rate edits are inserted mid-session.
 
     fn strip_gain_at(events: &[SessionEvent], from_ms: f64, cache: &SampleCache) -> f32 {
         let snaps = build_snapshots(events, SAMPLE_RATE, cache);
@@ -1599,14 +1538,16 @@ mod tests {
         {
             sim_apply_event(event, &mut sim, cache, SAMPLE_RATE);
         }
-        sim.strips.get("A").map(|strip| strip.gain).unwrap_or(1.0)
+        sim.strips
+            .get("A")
+            .and_then(|strip| strip.param("fader", "gain"))
+            .unwrap_or(1.0)
     }
 
     #[test]
     fn edited_volume_applies_inside_range_and_restores_after() {
         let cache: SampleCache = HashMap::new();
-        let vol =
-            |ms: f64, gain: f64| SessionEvent::param(ms, Some("A"), "fader", "gain", gain);
+        let vol = |ms: f64, gain: f64| SessionEvent::param(ms, Some("A"), "fader", "gain", gain);
 
         let original = vec![vol(1000.0, 0.8)];
         // Splice result of drawing 0.4 over [5000, 8000]: inserted points plus
@@ -1665,7 +1606,6 @@ mod tests {
         }
     }
 
-
     // loop_in must commit the current (possibly looped) position before
     // clearing loop state, and reloop must jump back to the loop start and
     // re-arm. A full cycle: loop_in → loop_out → wrap → exit_loop → reloop →
@@ -1714,19 +1654,21 @@ mod tests {
 
         // Stopped at the beat offset until play fires.
         let before_play = playthrough_pos(&events, 2000.0, &cache, "A").unwrap();
-        assert!((before_play - 2.0 * SAMPLE_RATE_F64).abs() < 1.0, "pos={before_play}");
+        assert!(
+            (before_play - 2.0 * SAMPLE_RATE_F64).abs() < 1.0,
+            "pos={before_play}"
+        );
 
         // play without sec resumes from the load position: 2s in + 2s played.
         let after_play = playthrough_pos(&events, 5000.0, &cache, "A").unwrap();
-        assert!((after_play - 4.0 * SAMPLE_RATE_F64).abs() < 1.0, "pos={after_play}");
+        assert!(
+            (after_play - 4.0 * SAMPLE_RATE_F64).abs() < 1.0,
+            "pos={after_play}"
+        );
 
         assert_scrub_matches_playthrough(&events, &cache, 100, "A");
     }
 
-    // The live engine fully resets a deck on load_track (d.reset()), so a loop
-    // region or nudge from the previous track can never survive a load. The
-    // sim must match: a reloop after load_track is a no-op, not a jump back
-    // into the previous track's loop.
     #[test]
     fn load_track_clears_loop_region_and_nudge() {
         let path = "/fake/a.wav";
@@ -1793,8 +1735,8 @@ mod tests {
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
-        assert_eq!(strip.filter_value, -0.5);
-        assert!(strip.filter_active);
+        assert_eq!(strip.param("filter", "value").unwrap_or(0.0), -0.5);
+        assert_eq!(strip.param("filter", "active"), Some(1.0));
     }
 
     #[test]
@@ -1803,11 +1745,17 @@ mod tests {
         // (center/bypass), matching the timeline's DEFAULT_FILTER_VALUE. A stale
         // non-zero default would audibly filter where the drawn curve reads 0
         // (e.g. after stretching an active region back over an un-drawn stretch).
-        let events = vec![SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0)];
+        let events = vec![SessionEvent::param(
+            1000.0,
+            Some("A"),
+            "filter",
+            "active",
+            1.0,
+        )];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let strip = snaps.last().unwrap().strips.get("A").unwrap();
-        assert_eq!(strip.filter_value, 0.0);
-        assert!(strip.filter_active);
+        assert_eq!(strip.param("filter", "value").unwrap_or(0.0), 0.0);
+        assert_eq!(strip.param("filter", "active"), Some(1.0));
     }
 
     #[test]
@@ -1818,7 +1766,6 @@ mod tests {
         assert_eq!(event_sim_order(&stop, &play), std::cmp::Ordering::Greater);
     }
 
-    // Otherwise a shared block boundary reads as a zero-length clip.
     #[test]
     fn exact_equal_ms_orders_enders_before_starters() {
         let play = deck_ev("play", 7000.0, "A");

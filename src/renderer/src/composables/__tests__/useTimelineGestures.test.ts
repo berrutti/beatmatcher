@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { useTimelineGestures, type GestureDeps } from '@renderer/composables/useTimelineGestures';
 import type { SceneItem, Hit, ViewContext } from '@renderer/utils/timelineEngine';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
-import type { Clip } from '@renderer/utils/types';
+import type { Clip, DeckLanes } from '@renderer/utils/types';
+import { LABEL_W } from '@renderer/utils/timelineDraw';
 
 function fakeItem(hit: Hit | null): SceneItem {
   return {
@@ -12,7 +13,7 @@ function fakeItem(hit: Hit | null): SceneItem {
   };
 }
 
-function cursorFor(hit: Hit | null, editMode = true, shiftKey = false): string {
+function cursorFor(hit: Hit | null, editMode = true): string {
   const deps: GestureDeps = {
     camera: {} as GestureDeps['camera'],
     emit: () => {},
@@ -22,17 +23,15 @@ function cursorFor(hit: Hit | null, editMode = true, shiftKey = false): string {
     getClips: () => [],
     getEvents: () => [],
     getDeckLanes: () => ({}),
-    laneHeight: () => 64,
-    waveformHeight: () => 80,
+    laneHeightFor: () => 64,
+    waveformHeightFor: () => 80,
     isEditMode: () => editMode,
     durationMs: () => 1000,
-    nudgeDirectionAt: () => 1,
-    nudgeSensitivity: () => 1,
     accentFor: () => '#ffffff',
     requestRender: () => {},
     setCursor: () => {}
   };
-  return useTimelineGestures(deps).cursorFor({ x: 50, y: 50 }, shiftKey);
+  return useTimelineGestures(deps).cursorFor({ x: 50, y: 50 });
 }
 
 describe('cursorFor', () => {
@@ -45,13 +44,6 @@ describe('cursorFor', () => {
   it('shows no clip cursor outside edit mode', () => {
     expect(cursorFor({ target: 'clip', part: 'body' }, false)).toBe('');
     expect(cursorFor({ target: 'clip', part: 'start' }, false)).toBe('');
-  });
-
-  it('shows the draw cursor when Shift is held over a clip in edit mode (nudge paint)', () => {
-    expect(cursorFor({ target: 'clip', part: 'body' }, true, true)).toBe('crosshair');
-    expect(cursorFor({ target: 'clip', part: 'start' }, true, true)).toBe('crosshair');
-    // Shift outside edit mode still paints nothing.
-    expect(cursorFor({ target: 'clip', part: 'body' }, false, true)).toBe('');
   });
 
   it('shows grab on a filter region body and ew-resize on its edges', () => {
@@ -78,8 +70,14 @@ const VIEW_CONTEXT = {
   scrollViewport: { top: 0, bottom: 1000 }
 } as ViewContext;
 
-function gestureHarness(hit: Hit, clips: Clip[] = [], view = { start: 0, duration: 1000 }) {
+function gestureHarness(
+  hit: Hit,
+  clips: Clip[] = [],
+  view = { start: 0, duration: 1000 },
+  deckLanes: Record<string, DeckLanes> = {}
+) {
   const intents: Intent[] = [];
+  const cursors: string[] = [];
   const deps: GestureDeps = {
     camera: {
       currentView: () => view,
@@ -94,26 +92,30 @@ function gestureHarness(hit: Hit, clips: Clip[] = [], view = { start: 0, duratio
     getVc: () => VIEW_CONTEXT,
     getClips: () => clips,
     getEvents: () => [],
-    getDeckLanes: () => ({}),
-    laneHeight: () => 64,
-    waveformHeight: () => 80,
+    getDeckLanes: () => deckLanes,
+    laneHeightFor: () => 64,
+    waveformHeightFor: () => 80,
     isEditMode: () => true,
     durationMs: () => 1000,
-    nudgeDirectionAt: () => 1,
-    nudgeSensitivity: () => 1,
     accentFor: () => '#ffffff',
     requestRender: () => {},
-    setCursor: () => {}
+    setCursor: (cursor) => cursors.push(cursor)
   };
-  return { gestures: useTimelineGestures(deps), intents };
+  return { gestures: useTimelineGestures(deps), intents, cursors };
 }
 
 const RECT = { left: 0, top: 0 } as DOMRect;
-const mouseAt = (x: number, y: number) => ({ clientX: x, clientY: y }) as MouseEvent;
+const mouseAt = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0 }) as MouseEvent;
+const rightMouseAt = (x: number, y: number) =>
+  ({ clientX: x, clientY: y, button: 2 }) as MouseEvent;
 
 describe('drag detection across a full mousedown/move/up/click sequence', () => {
   it('a vertical-only lane resize does not seek or clear the selection', () => {
-    const { gestures, intents } = gestureHarness({ target: 'laneSeparator' });
+    const { gestures, intents } = gestureHarness({
+      target: 'laneSeparator',
+      deck: 'A',
+      data: 'filter'
+    });
     gestures.onMouseDown(mouseAt(400, 100), RECT);
     gestures.onMouseMove(mouseAt(400, 160), RECT);
     gestures.onMouseUp();
@@ -123,7 +125,7 @@ describe('drag detection across a full mousedown/move/up/click sequence', () => 
   });
 
   it('a vertical-only waveform resize does not seek or clear the selection', () => {
-    const { gestures, intents } = gestureHarness({ target: 'waveformSeparator' });
+    const { gestures, intents } = gestureHarness({ target: 'waveformSeparator', deck: 'A' });
     gestures.onMouseDown(mouseAt(400, 100), RECT);
     gestures.onMouseMove(mouseAt(400, 160), RECT);
     gestures.onMouseUp();
@@ -311,5 +313,154 @@ describe('overview drag grabbed off-centre', () => {
     const last = views[views.length - 1];
     if (last.type !== 'view.set') throw new Error('expected a view.set');
     expect(last.view.start).toBeCloseTo(300, 6);
+  });
+});
+
+describe('the lane picker anchors to the lane, not to the pointer', () => {
+  it('opens beside the label column at the lane top, wherever the click landed', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'laneDropdown',
+      deck: 'A',
+      data: { top: 180, height: 80 }
+    });
+    gestures.onMouseDown(mouseAt(34, 290), { left: 30, top: 50 } as DOMRect);
+
+    const [intent] = intents;
+    expect(intent).toMatchObject({ type: 'lane.openDropdown', deck: 'A' });
+    if (intent.type !== 'lane.openDropdown') throw new Error('wrong intent');
+    expect(intent.clientX).toBeGreaterThan(30 + LABEL_W);
+    expect(intent.clientY).toBe(50 + 180);
+  });
+});
+
+describe('the right button opens menus rather than arming a gesture', () => {
+  it('arms nothing on the clip band, so a right-click cannot rubber-band a selection', () => {
+    const { gestures, intents } = gestureHarness({ target: 'clipBand', deck: 'A', data: {} });
+    gestures.onMouseDown(rightMouseAt(400, 100), RECT);
+    gestures.onMouseMove(mouseAt(600, 140), RECT);
+
+    expect(gestures.overlays()).toEqual([]);
+    expect(intents).toEqual([]);
+  });
+});
+
+describe('the deck label opens the deck menu', () => {
+  it('opens beside the label column at the row top, like the lane picker', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'deckLabel',
+      deck: 'A',
+      data: { top: 120 }
+    });
+    gestures.onMouseDown(mouseAt(34, 200), { left: 30, top: 50 } as DOMRect);
+
+    const [intent] = intents;
+    expect(intent).toMatchObject({ type: 'menu.deck', deck: 'A', bpm: null, split: null });
+    if (intent.type !== 'menu.deck') throw new Error('wrong intent');
+    expect(intent.clientX).toBeGreaterThan(30 + LABEL_W);
+    expect(intent.clientY).toBe(50 + 120);
+  });
+});
+
+describe('clicking an active filter span selects it', () => {
+  function lanesWithSpan(): Record<string, DeckLanes> {
+    return {
+      A: {
+        gain: [],
+        eqLow: [],
+        eqMid: [],
+        eqHigh: [],
+        filter: [],
+        rate: [],
+        rateMin: 0.9,
+        rateMax: 1.1,
+        filterActive: [{ startMs: 200, endMs: 600 }]
+      }
+    };
+  }
+
+  it('selects from anywhere inside the span, not only its grab bar', () => {
+    const { gestures, intents } = gestureHarness(
+      { target: 'lane', deck: 'A', part: 'filter', data: { top: 0, height: 60 } },
+      [],
+      { start: 0, duration: 1000 },
+      lanesWithSpan()
+    );
+    gestures.onClick(mouseAt(400, 30), RECT);
+
+    expect(intents.map((intent) => intent.type)).toContain('filterRegion.select');
+  });
+
+  it('clears the selection when the click lands outside every span', () => {
+    const { gestures, intents } = gestureHarness(
+      { target: 'lane', deck: 'A', part: 'filter', data: { top: 0, height: 60 } },
+      [],
+      { start: 0, duration: 1000 },
+      lanesWithSpan()
+    );
+    gestures.onClick(mouseAt(800, 30), RECT);
+
+    expect(intents.map((intent) => intent.type)).toContain('filterRegion.clearSelection');
+  });
+
+  it('leaves another lane alone', () => {
+    const { gestures, intents } = gestureHarness(
+      { target: 'lane', deck: 'A', part: 'gain', data: { top: 0, height: 60 } },
+      [],
+      { start: 0, duration: 1000 },
+      lanesWithSpan()
+    );
+    gestures.onClick(mouseAt(400, 30), RECT);
+
+    expect(intents.map((intent) => intent.type)).not.toContain('filterRegion.select');
+  });
+});
+
+describe('the right button belongs to the lane, not its chrome', () => {
+  const rightClick = (x: number, y: number) =>
+    ({ clientX: x, clientY: y, button: 2 }) as MouseEvent;
+
+  it('opens no menu from the lane label or its dropdown', () => {
+    for (const target of ['laneDropdown', 'deckLabel'] as const) {
+      const { gestures, intents } = gestureHarness({ target, deck: 'A', data: { top: 100 } });
+      gestures.onContextMenu(rightClick(20, 120), RECT);
+      expect(intents, target).toEqual([]);
+    }
+  });
+
+  it('opens no menu from a separator', () => {
+    for (const target of ['laneSeparator', 'waveformSeparator'] as const) {
+      const { gestures, intents } = gestureHarness({ target, deck: 'A', data: 'filter' });
+      gestures.onContextMenu(rightClick(400, 120), RECT);
+      expect(intents, target).toEqual([]);
+    }
+  });
+
+  it('still opens the deck menu on the lane itself', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'lane',
+      deck: 'A',
+      part: 'filter',
+      data: { top: 0, height: 60 }
+    });
+    gestures.onContextMenu(rightClick(400, 30), RECT);
+
+    expect(intents.map((intent) => intent.type)).toEqual(['menu.deck']);
+  });
+});
+
+describe('the master row has lanes of its own', () => {
+  it('opens the menu on its lane, naming the lane so a reset can reach it', () => {
+    const { gestures, intents } = gestureHarness({
+      target: 'lane',
+      deck: 'master',
+      part: 'masterGain',
+      data: { top: 0, height: 30 }
+    });
+    gestures.onContextMenu({ clientX: 400, clientY: 20, button: 2 } as MouseEvent, RECT);
+
+    const [intent] = intents;
+    expect(intent).toMatchObject({ type: 'menu.deck', deck: 'master' });
+    if (intent.type !== 'menu.deck') throw new Error('wrong intent');
+    expect(intent.lane?.key).toBe('masterGain');
   });
 });

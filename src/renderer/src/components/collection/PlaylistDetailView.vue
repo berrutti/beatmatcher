@@ -4,13 +4,16 @@
       <div v-if="playlistItems.length === 0" class="collection__empty" style="height: 60px">
         {{ $t('browser.emptyPlaylist') }}
       </div>
-      <Table v-else :on-header-contextmenu="onHeaderContextmenu">
+      <Table
+        :class="{ 'collection__table--reordering': playlistDragFromIdx !== null }"
+        v-else
+        :on-header-contextmenu="onHeaderContextmenu"
+      >
         <template #colgroup>
           <col :style="{ width: TABLE_CHROME_WIDTH.playlistGrip + 'px' }" />
           <col :style="{ width: TABLE_CHROME_WIDTH.playlistIdx + 'px' }" />
           <TableColgroup :fields="store.orderedVisibleColumns" :get-width="columnWidth" />
-          <col :style="{ width: TABLE_CHROME_WIDTH.status + 'px' }" />
-          <col :style="{ width: TABLE_CHROME_WIDTH.actions + 'px' }" />
+          <col :style="{ width: actionsColumnWidth + 'px' }" />
           <col :style="{ width: TABLE_CHROME_WIDTH.remove + 'px' }" />
         </template>
         <template #header>
@@ -26,29 +29,35 @@
             :on-resizer-pointer-down="onResizerPointerDown"
             :on-auto-fit-column="autoFitColumn"
           />
-          <TableHeaderCell class="table__header-cell--status"></TableHeaderCell>
           <TableHeaderCell align="right">{{ $t('browser.colDecks') }}</TableHeaderCell>
           <TableHeaderCell></TableHeaderCell>
         </template>
         <tr
-          v-for="(item, idx) in playlistItems"
+          v-for="(item, index) in playlistItems"
           :key="item.path"
           class="collection__row collection__playlist-track"
           :class="{
-            'collection__playlist-track--dragging': playlistDragFromIdx === idx,
+            'collection__playlist-track--dragging': playlistDragFromIdx === index,
             'collection__item--played': mixerStore.playedPaths.has(item.path),
             'collection__item--cursor': isCursor(item.path)
           }"
           :data-row-key="item.path"
-          @pointerdown="onPlaylistTrackPointerDown($event, idx)"
+          :style="rowShiftStyle(index)"
+          @pointerdown="onPlaylistTrackPointerDown($event, index)"
           @dblclick="onTrackDblClickByPath(item.path)"
           @contextmenu.prevent="item.entry && contextMenuEl?.open($event, item.entry.id)"
         >
-          <td class="collection__td">
+          <td
+            class="collection__td collection__playlist-handle"
+            @pointerdown.stop="onGripPointerDown($event, index)"
+          >
             <span class="collection__playlist-grip">⠿</span>
           </td>
-          <td class="collection__td">
-            <span class="collection__playlist-num">{{ idx + 1 }}</span>
+          <td
+            class="collection__td collection__playlist-handle"
+            @pointerdown.stop="onGripPointerDown($event, index)"
+          >
+            <span class="collection__playlist-num">{{ index + 1 }}</span>
           </td>
           <td
             v-for="field in store.orderedVisibleColumns"
@@ -59,6 +68,7 @@
             <template v-if="isMetadataField(field)">
               <span
                 class="collection__meta-value"
+                :class="{ 'collection__meta-value--title': field === 'title' }"
                 v-tooltip="field === 'title' ? item.label : (item.entry?.[field] ?? '-')"
                 >{{ field === 'title' ? item.label : (item.entry?.[field] ?? '-') }}</span
               >
@@ -74,15 +84,6 @@
             <template v-else>
               {{ formatAddedDate(item.addedAt) }}
             </template>
-          </td>
-          <td class="collection__td collection__td--status">
-            <TrackStatusTag
-              :has-error="
-                Boolean(
-                  item.entry && (item.entry.status === 'error' || item.entry.lastAnalysisFailed)
-                )
-              "
-            />
           </td>
           <td class="collection__td collection__td--actions">
             <div class="collection__item-actions">
@@ -104,11 +105,6 @@
           <td class="collection__td"></td>
         </tr>
       </Table>
-      <div
-        v-if="showDropLine"
-        class="collection__drop-line"
-        :style="{ top: `${playlistDropY - 1}px` }"
-      />
     </div>
 
     <div class="collection__add-section">
@@ -175,12 +171,16 @@ import {
   columnCellClass,
   TABLE_CHROME_WIDTH as BASE_TABLE_CHROME_WIDTH
 } from '@renderer/composables/useColumnResize';
+import { startTrackDrag } from '@renderer/composables/useTrackDrag';
+import { reorderShift } from '@renderer/utils/reorderShift';
+import { targetIndexAt } from '@renderer/utils/dropIndex';
 import { useBpmModal } from '@renderer/composables/useBpmModal';
 import { useRowCursor } from '@renderer/composables/useRowCursor';
 import { playlistListId } from '@renderer/stores/browse';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
 import { displayName, formatAddedDate } from '@renderer/utils/trackDisplay';
 import { loadToDeck } from '@renderer/utils/deckDrop';
+import { useDeckButtons } from '@renderer/composables/useDeckButtons';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import Search from '@renderer/components/collection/Search.vue';
 import Buttons from '@renderer/components/collection/Buttons.vue';
@@ -189,7 +189,6 @@ import TableColgroup from '@renderer/components/collection/TableColgroup.vue';
 import TableHeaderCell from '@renderer/components/collection/TableHeaderCell.vue';
 import TableHeaderCells from '@renderer/components/collection/TableHeaderCells.vue';
 import TrackBpmCell from '@renderer/components/collection/TrackBpmCell.vue';
-import TrackStatusTag from '@renderer/components/collection/TrackStatusTag.vue';
 import TrackContextMenu from '@renderer/components/collection/TrackContextMenu.vue';
 import ColumnVisibilityMenu from '@renderer/components/collection/ColumnVisibilityMenu.vue';
 
@@ -206,12 +205,15 @@ const { columnMenuEl, onHeaderContextmenu } = useColumnVisibilityMenuTrigger();
 // Chrome shared with the main table (status/actions/remove) plus the two
 // leading columns unique to the playlist-detail table.
 const TABLE_CHROME_WIDTH = { ...BASE_TABLE_CHROME_WIDTH, playlistIdx: 28, playlistGrip: 20 };
-const PLAYLIST_DETAIL_FIXED_TOTAL =
-  TABLE_CHROME_WIDTH.playlistIdx +
-  TABLE_CHROME_WIDTH.playlistGrip +
-  TABLE_CHROME_WIDTH.status +
-  TABLE_CHROME_WIDTH.actions +
-  TABLE_CHROME_WIDTH.remove;
+const { columnWidth: actionsColumnWidth } = useDeckButtons();
+
+const playlistDetailFixedTotal = computed(
+  () =>
+    TABLE_CHROME_WIDTH.playlistIdx +
+    TABLE_CHROME_WIDTH.playlistGrip +
+    actionsColumnWidth.value +
+    TABLE_CHROME_WIDTH.remove
+);
 
 const playlistDetail = useElementSize();
 const playlistListEl = playlistDetail.el;
@@ -222,7 +224,7 @@ const pinnedColumnsWidth = usePinnedColumnsWidth();
 const playlistDetailAvailableResizableWidth = () =>
   Math.max(
     0,
-    playlistDetailViewportWidth.value - PLAYLIST_DETAIL_FIXED_TOTAL - pinnedColumnsWidth.value
+    playlistDetailViewportWidth.value - playlistDetailFixedTotal.value - pinnedColumnsWidth.value
   );
 
 const {
@@ -300,47 +302,64 @@ function onAddToActivePlaylist(track: CollectionEntry) {
 
 const playlistDragFromIdx = ref<number | null>(null);
 const playlistDropIdx = ref<number | null>(null);
-const playlistDropY = ref(0);
+const playlistRowHeight = ref(0);
 
-const showDropLine = computed((): boolean => {
-  if (playlistDragFromIdx.value === null || playlistDropIdx.value === null) return false;
-  if (playlistDropIdx.value === playlistDragFromIdx.value) return false;
-  if (playlistDropIdx.value === playlistDragFromIdx.value + 1) return false;
-  return true;
-});
+function rowShiftStyle(index: number) {
+  const from = playlistDragFromIdx.value;
+  const drop = playlistDropIdx.value;
+  if (from === null || drop === null) return undefined;
+  const shift = reorderShift(index, from, drop);
+  return shift === 0
+    ? undefined
+    : { transform: `translateY(${shift * playlistRowHeight.value}px)` };
+}
 
-function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
-  if (e.button !== 0) return;
-  if ((e.target as HTMLElement).closest('button')) return;
+function onPlaylistTrackPointerDown(event: PointerEvent, fromIdx: number) {
+  const item = playlistItems.value[fromIdx];
+  if (item?.entry?.status !== 'ready') return;
+  startTrackDrag(store, event, item.path);
+}
 
+function onGripPointerDown(event: PointerEvent, fromIdx: number) {
+  if (event.button !== 0) return;
   const playlist = activePlaylist.value;
   if (!playlist) return;
-  // Unlike AllTracksView's drag-to-deck, this drag is a reorder within the
-  // list itself - dragging a track above the visible area needs the list to
-  // auto-scroll up so it can be dropped at the very top, so the native
-  // WebKit autoscroll (see the comment in onItemPointerDown) is left alone
-  // here rather than suppressed.
+  // A reorder needs WebKit's own autoscroll, or a track cannot be dropped above
+  // the visible area. The drag-to-deck path suppresses it instead.
   playlistDragFromIdx.value = fromIdx;
   playlistDropIdx.value = fromIdx;
 
-  function computeDropIdx(clientY: number): number {
-    const el = playlistListEl.value;
-    if (!el) return fromIdx;
-    const items = el.querySelectorAll<HTMLElement>('.collection__playlist-track');
-    for (let i = 0; i < items.length; i++) {
-      const rect = items[i].getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) {
-        playlistDropY.value = items[i].offsetTop;
-        return i;
-      }
-    }
-    const last = items[items.length - 1];
-    playlistDropY.value = last ? last.offsetTop + last.offsetHeight : 0;
-    return items.length;
+  const listEl = playlistListEl.value;
+  const rows = listEl?.querySelectorAll<HTMLElement>('.collection__playlist-track');
+  const firstRow = rows?.[0];
+  const rowHeight = firstRow ? firstRow.getBoundingClientRect().height : 0;
+  const rowCount = rows ? rows.length : 0;
+  const contentTop = firstRow ? firstRow.offsetTop : 0;
+  playlistRowHeight.value = rowHeight;
+  const grabOffsetY = firstRow
+    ? event.clientY - firstRow.getBoundingClientRect().top - fromIdx * rowHeight
+    : 0;
+
+  function computeTargetIdx(clientY: number): number {
+    if (!listEl || !rows) return fromIdx;
+    const listRect = listEl.getBoundingClientRect();
+    const withinContent = clientY - listRect.top + listEl.scrollTop;
+    return targetIndexAt(withinContent, grabOffsetY, contentTop, rowHeight, rowCount);
   }
 
-  function onMove(ev: PointerEvent) {
-    playlistDropIdx.value = computeDropIdx(ev.clientY);
+  function keepSlotVisible(targetIdx: number) {
+    if (!listEl) return;
+    const slot = contentTop + targetIdx * rowHeight;
+    const top = listEl.scrollTop;
+    const bottom = top + listEl.clientHeight - rowHeight;
+    if (slot < top) listEl.scrollTop = slot;
+    else if (slot > bottom) listEl.scrollTop = slot - listEl.clientHeight + rowHeight;
+  }
+
+  function onMove(event: PointerEvent) {
+    const targetIdx = computeTargetIdx(event.clientY);
+    playlistDropIdx.value = targetIdx;
+    keepSlotVisible(targetIdx);
   }
 
   function resetDrag() {
@@ -351,14 +370,12 @@ function onPlaylistTrackPointerDown(e: PointerEvent, fromIdx: number) {
     playlistDropIdx.value = null;
   }
 
-  function onUp(ev: PointerEvent) {
+  function onUp(event: PointerEvent) {
     const from = playlistDragFromIdx.value;
-    const dropIdx = computeDropIdx(ev.clientY);
+    const targetIdx = computeTargetIdx(event.clientY);
     resetDrag();
-    if (from === null) return;
-    if (dropIdx === from || dropIdx === from + 1) return;
-    const to = dropIdx > from ? dropIdx - 1 : dropIdx;
-    store.moveInPlaylist(playlist?.id ?? null, from, to);
+    if (from === null || targetIdx === from) return;
+    store.moveInPlaylist(playlist?.id ?? null, from, targetIdx);
   }
 
   function onCancel() {

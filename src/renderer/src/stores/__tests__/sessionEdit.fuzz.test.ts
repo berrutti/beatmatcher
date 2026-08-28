@@ -31,7 +31,7 @@ import { useSessionEditStore } from '../sessionEdit';
 import { invoke } from '@tauri-apps/api/core';
 import { DEFAULT_MIXER_ID } from '../settings';
 import type { SessionEvent } from '@renderer/utils/types';
-import { EDITABLE_DECK_LANE_KEYS } from '@renderer/utils/types';
+import { DECK_LANE_KEYS } from '@renderer/utils/types';
 
 // Mirrors MAX_UNDO in sessionEdit.ts.
 const MAX_UNDO = 100;
@@ -77,7 +77,7 @@ async function randomGesture(
   editStore: ReturnType<typeof useSessionEditStore>,
   random: () => number
 ): Promise<void> {
-  const lane = EDITABLE_DECK_LANE_KEYS[Math.floor(random() * EDITABLE_DECK_LANE_KEYS.length)];
+  const lane = DECK_LANE_KEYS[Math.floor(random() * DECK_LANE_KEYS.length)];
   const t0 = Math.floor(random() * 50_000);
   const t1 = t0 + 500 + Math.floor(random() * 5000);
   const samples = [
@@ -132,7 +132,6 @@ describe('undo and redo under fuzzed edit sequences', () => {
       while (editStore.canUndo && guard++ < MAX_UNDO * 2) editStore.undo();
 
       expect(store.session?.events, `seed ${seed}`).toBe(loaded);
-      // Reference-identical to the baseline, so nothing is left to save.
       expect(editStore.dirty, `seed ${seed}`).toBe(false);
     }
   });
@@ -168,7 +167,6 @@ describe('undo and redo under fuzzed edit sequences', () => {
       expect(depth).toBeLessThanOrEqual(MAX_UNDO);
     }
     expect(depth).toBe(MAX_UNDO);
-    // Past the cap the loaded array is gone, so the session cannot come back clean.
     expect(store.session?.events).not.toBe(null);
     expect(editStore.dirty).toBe(true);
   });

@@ -20,17 +20,22 @@
   },
   "topStrip": {
     "rec": "Rec",
+    "finishing": "Guardando…",
+    "savingRecording": "Guardando grabación",
+    "hideProgress": "Ocultar",
+    "savingHint": "Continúa en segundo plano. No afecta la reproducción.",
+    "masterHint": "Volumen master: doble clic para restablecer",
     "fourDecks": "4 decks",
     "twoDecks": "2 decks",
     "waveforms": "Formas de onda",
-    "swarmHint": "Mantén presionados los números",
+    "swarmHint": "Swarm: mantén los números",
     "swarm": "Swarm",
     "vol": "Vol",
     "master": "Master",
     "notConfigured": "No configurado",
     "channel": "Can. {n1}-{n2}",
     "cue": "CUE",
-    "cueMixHint": "CUE/MIX: mezclar señal de escucha con la salida maestra en los auriculares",
+    "cueMixHint": "CUE/MIX: mezclar cue con master en auriculares",
     "mix": "Mix"
   },
   "settings": {
@@ -58,6 +63,11 @@
       "exponential": "Exponencial",
       "linear": "Lineal",
       "logarithmic": "Logarítmica"
+    },
+    "sliderClick": {
+      "title": "Clic en el deslizador",
+      "label": "Haz clic en el tirador de un deslizador para restablecerlo",
+      "hint": "Se aplica a todos los faders, ecualizadores, filtros y controles de pitch. Solo responde el tirador; arrastrar no cambia. El doble clic no hace nada mientras esto está activo."
     },
     "filterStart": {
       "title": "Filtros al iniciar",
@@ -150,7 +160,7 @@
     "colTitle": "Título",
     "colBpm": "BPM",
     "colAdded": "Añadido",
-    "colDecks": "Enviar a deck",
+    "colDecks": "Enviar a",
     "colTracks": "Pistas",
     "colArtist": "Artista",
     "colAlbum": "Álbum",
@@ -166,7 +176,6 @@
     "columnsMenuTitle": "Columnas",
     "columnRequired": "Se requiere al menos una columna",
     "detecting": "Detectando...",
-    "statusError": "Error",
     "statusMissing": "no encontrado",
     "analyze": "Analizar",
     "setBpm": "Fijar BPM",
@@ -189,15 +198,16 @@
     "sendToEdit": "Clic para enviar a Edit",
     "sendToDeck": "Clic para enviar al Deck {deckId}",
     "analyzeFirst": "Analiza esta pista antes de enviarla a un deck",
-    "sameDeck": "No se puede enviar al mismo deck",
-    "analyzeFailedTooltip": "No se pudo analizar esta pista"
+    "sameDeck": "No se puede enviar al mismo deck"
   },
   "search": {
     "placeholder": "Buscar"
   },
   "modal": {
     "cancel": "Cancelar",
-    "confirm": "Confirmar"
+    "confirm": "Confirmar",
+    "save": "Guardar",
+    "discard": "Descartar"
   },
   "bpmModal": {
     "title": "Fijar BPM de la pista",
@@ -212,8 +222,11 @@
     "loadBody": "La reproducción se detendrá y la pista actual será reemplazada.",
     "ejectConfirmTitle": "¿Quitar la pista en reproducción?",
     "ejectConfirmBody": "La reproducción se detendrá y la bandeja quedará vacía.",
-    "label": "DECK {id}",
+    "label": "Deck {id}",
     "ejectTitle": "Quitar pista",
+    "quantizeTitle": "Cuantizar: ajustar cue y loop a la rejilla",
+    "quantizeNeedsGrid": "Cuantizar necesita una rejilla: primero ajusta el BPM",
+    "pitchHint": "Pitch: doble clic para restablecer",
     "notLoaded": "Carga una pista",
     "artist": "Artista:",
     "track": "Pista:",
@@ -230,15 +243,20 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "Ninguna pista cargada"
+    "noTrackLoaded": "Ninguna pista cargada",
+    "loading": "Cargando pista…"
   },
   "mixer": {
     "cue": "CUE",
     "cueHint": "Activar CUE: Espacio + número",
+    "filterToggle": "Activar filtro",
+    "filterHint": "Filtro: doble clic para restablecer",
+    "eqHint": "EQ: doble clic para restablecer",
+    "faderHint": "Volumen del canal: doble clic para restablecer",
     "assignA": "A",
     "assignB": "B",
-    "assignHint": "Asignación del crossfader: A o B, ninguno para omitir",
-    "xfaderHint": "Crossfader. Doble clic para centrar."
+    "assignHint": "Asignar al crossfader: A o B, ninguno para omitir",
+    "xfaderHint": "Crossfader: doble clic para centrar"
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
@@ -257,29 +275,38 @@
     "rendering": "Renderizando...",
     "renderWav": "Renderizar WAV",
     "renderFlac": "Renderizar FLAC",
-    "edit": "Editar sesión",
-    "save": "Guardar",
+    "edit": "Edición",
+    "editHint": "Editar sesión: dibujar carriles, mover clips (Tab)",
     "saveAs": "Guardar como",
     "discardTitle": "Descartar cambios sin guardar?",
     "discardBody": "La sesión tiene cambios sin guardar. Al expulsar se descartarán.",
     "discardConfirm": "Descartar",
     "missingFiles": "Estos archivos de audio no se encontraron. Elige la carpeta que los contiene para restaurar la reproducción:",
     "locate": "Elegir carpeta",
-    "deleteNudge": "Eliminar nudge",
     "deleteFilterRegion": "Eliminar región de filtro",
+    "resetLaneFromHere": "Restablecer {lane} desde aquí",
+    "resetLaneUntilHere": "Restablecer {lane} hasta aquí",
+    "resetLaneThisMove": "Restablecer este movimiento de {lane}",
     "setClipBpm": "Ajustar BPM (todo el clip)…",
     "setBpmFromHere": "Ajustar BPM desde aquí…",
     "splitClip": "Dividir clip aquí",
-    "mute": "Silenciar",
+    "enabled": "Activo",
+    "enabledOverridden": "Un deck en solo anula esto",
+    "disabledBadge": "Off",
     "solo": "Solo",
     "lanesMenu": "Carriles",
+    "lastLane": "Una fila necesita al menos un carril",
     "loadingTitle": "Cargando sesión",
     "loadingBody": "Decodificando pistas. La reproducción empezará cuando todas estén listas.",
     "loadingTracks": "{loaded} de {total} pistas",
     "loadingPhaseReading": "Leyendo el archivo de sesión",
     "loadingPhaseParsing": "Analizando eventos",
     "loadingPhaseDecoding": "Decodificando pistas",
-    "loadingPhaseIndexing": "Construyendo el índice"
+    "loadingPhaseIndexing": "Construyendo el índice",
+    "renderingTitle": "Renderizando mezcla",
+    "renderingBody": "Renderizando la sesión a un archivo de audio.",
+    "renderingPhaseRendering": "Renderizando audio",
+    "renderingPhaseWriting": "Escribiendo archivo"
   },
   "quitModal": {
     "title": "Salir de Beatmatcher?",
@@ -297,5 +324,16 @@
     "install": "Actualizar ahora",
     "error": "No se pudo instalar la actualización. Intentar de nuevo?",
     "retry": "Reintentar"
+  },
+  "recovery": {
+    "title": "Trabajo sin terminar recuperado",
+    "body": "La sesión anterior terminó inesperadamente antes de guardar estos archivos.",
+    "audioFile": "Grabación de audio",
+    "sessionLog": "Registro de sesión (.bms)",
+    "renderFile": "Mezcla renderizada",
+    "remaining": "{count} más en espera",
+    "discardTitle": "¿Descartar estos archivos?",
+    "discardBody": "El audio recuperado y el registro de sesión se eliminarán definitivamente.",
+    "dontAskAgain": "No volver a preguntar"
   }
 }

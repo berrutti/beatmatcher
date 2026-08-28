@@ -3,18 +3,20 @@ import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
-import { DECKS_DISPOSITION } from './decks';
+import { DECKS_DISPOSITION, TWO_DECK_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
+
+const SAVE_POLL_MS = 200;
 
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 type ParamChange = { deck: string; slot: string; param: string; value: number };
 export type XfaderAssign = 'thru' | 'a' | 'b';
 export type XfaderSide = 'a' | 'b';
 
-const LIVE_DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
+const LIVE_DECKS: readonly DeckId[] = DECKS_DISPOSITION;
 
 // How `mixerParams` keys its specs, and how the store keys a deck's values, so a
 // param the manifest gained is reachable without anything here naming it.
@@ -133,7 +135,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const activeDecks = computed<DeckId[]>(() =>
-    deckCount.value === 2 ? ['A', 'B'] : [...DECKS_DISPOSITION]
+    deckCount.value === 2 ? [...TWO_DECK_DISPOSITION] : [...DECKS_DISPOSITION]
   );
 
   const showWaveformStrip = ref(storageGet<boolean>(STORAGE_KEYS.showWaveformStrip, true));
@@ -246,16 +248,21 @@ export const useMixerStore = defineStore('mixer', () => {
     for (const deck of affected) setParam(deck, key, value);
   }
 
-  function isDeckId(id: string): id is DeckId {
-    return Object.prototype.hasOwnProperty.call(params, id);
+  // The clicked deck's resulting state, not each deck's own toggle: a switch has
+  // no delta to carry, and pressing one expects the swarm to match it.
+  function swarmToggleParam(deckId: DeckId, key: string) {
+    const next = paramActive(deckId, key) ? 0 : 1;
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) setParam(deck, key, next);
   }
 
-  // Engine-originated only, and deliberately does not invoke back: Rust never pushes a
-  // value the UI wrote, so anything arriving here is a move the store has not made.
-  function assignFromValue(value: number): XfaderAssign {
-    if (value === 1) return 'a';
-    if (value === 2) return 'b';
-    return 'thru';
+  function swarmSetCue(deckId: DeckId, active: boolean) {
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) setCueActive(deck, active);
+  }
+
+  function isDeckId(id: string): id is DeckId {
+    return Object.prototype.hasOwnProperty.call(params, id);
   }
 
   function applyEngineParam(change: ParamChange): void {
@@ -266,12 +273,7 @@ export const useMixerStore = defineStore('mixer', () => {
       return;
     }
     if (!isDeckId(change.deck)) return;
-    // Neither of these is a manifest param: the assign is categorical and cue is
-    // engine-only routing, so they are the two addresses `params` cannot hold.
-    if (change.slot === 'xfader' && change.param === 'assign') {
-      xfaderAssign[change.deck] = assignFromValue(change.value);
-      return;
-    }
+    // Engine-only routing, so it is the one address `params` cannot hold.
     if (change.slot === 'cue' && change.param === 'active') {
       cueActive[change.deck] = change.value !== 0;
       return;
@@ -282,6 +284,14 @@ export const useMixerStore = defineStore('mixer', () => {
 
   listen<ParamChange[]>('engine-params', (event) => {
     event.payload.forEach(applyEngineParam);
+  });
+
+  function applyEngineAssign(change: { deck: string; assign: XfaderAssign }): void {
+    if (isDeckId(change.deck)) xfaderAssign[change.deck] = change.assign;
+  }
+
+  listen<{ deck: string; assign: XfaderAssign }[]>('engine-assign', (event) => {
+    event.payload.forEach(applyEngineAssign);
   });
 
   function reset(): void {
@@ -378,6 +388,9 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const isRecording = ref(false);
+  // Null when no save is running. A WAV is already on disk when the recording
+  // stops, so only a FLAC encode ever reports a fraction here.
+  const saveProgress = ref<number | null>(null);
   const playedPaths = reactive(new Set<string>());
 
   function markPlayed(path: string): void {
@@ -397,10 +410,40 @@ export const useMixerStore = defineStore('mixer', () => {
     });
   }
 
+  // Polled rather than pushed: the audio layer reports permille into an atomic so
+  // it never needs an app handle to emit with.
+  async function whileReportingSaveProgress<T>(work: () => Promise<T>): Promise<T> {
+    let inFlight = false;
+    // One request at a time, or a slow reply lands on top of a fresher one. A
+    // dropped poll is not worth failing the save over.
+    async function sample(): Promise<void> {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        saveProgress.value = await call('recording_save_progress');
+      } catch {
+        saveProgress.value = null;
+      } finally {
+        inFlight = false;
+      }
+    }
+    const poll = window.setInterval(async () => {
+      await sample();
+    }, SAVE_POLL_MS);
+    try {
+      return await work();
+    } finally {
+      window.clearInterval(poll);
+      saveProgress.value = null;
+    }
+  }
+
   async function stopRecording(): Promise<string> {
-    const tempPath = await call('stop_recording');
-    isRecording.value = false;
-    return tempPath;
+    return whileReportingSaveProgress(async () => {
+      const tempPath = await call('stop_recording');
+      isRecording.value = false;
+      return tempPath;
+    });
   }
 
   async function pickSavePath(baseName: string): Promise<string | null> {
@@ -414,38 +457,20 @@ export const useMixerStore = defineStore('mixer', () => {
     const settings = useSettingsStore();
     if (settings.recordingFormat === 'session') {
       await call('save_bms_only', { src, dest });
-    } else {
-      await call('save_recording', {
+      return;
+    }
+    await whileReportingSaveProgress(() =>
+      call('save_recording', {
         src,
         dest,
         writeBms: settings.recordBms,
         writeCue: settings.recordCue
-      });
-    }
+      })
+    );
   }
 
   async function discardRecording(path: string): Promise<void> {
     await call('discard_recording', { path });
-  }
-
-  async function renderSession(
-    sessionPath: string,
-    outputPath: string,
-    useFlac: boolean
-  ): Promise<void> {
-    await call('render_session_to_file', {
-      sessionPath,
-      outputPath,
-      useFlac,
-      writeCue: useSettingsStore().recordCue
-    });
-  }
-
-  async function pickRenderOutputPath(useFlac: boolean, baseName: string): Promise<string | null> {
-    return call('pick_save_path', {
-      format: useFlac ? 'flac' : 'wav',
-      baseName
-    });
   }
 
   async function setCueOutputDevice(deviceId: string, channelOffset?: number): Promise<void> {
@@ -516,16 +541,16 @@ export const useMixerStore = defineStore('mixer', () => {
     xfaderPosition,
     xfaderAssign,
     isRecording,
+    saveProgress,
     playedPaths,
     markPlayed,
     applyEngineParam,
+    applyEngineAssign,
     discardRecording,
     getDeckLevels,
     getMasterLevel,
     loadOutputDevices,
-    pickRenderOutputPath,
     pickSavePath,
-    renderSession,
     reset,
     saveRecording,
     setCueActive,
@@ -538,6 +563,8 @@ export const useMixerStore = defineStore('mixer', () => {
     setSwarmMode,
     swarmAdjust,
     swarmReset,
+    swarmToggleParam,
+    swarmSetCue,
     setXfaderAssign,
     setXfaderPosition,
     toggleXfaderAssign,

@@ -1,11 +1,7 @@
 <template>
-  <div
-    class="waveform"
-    :class="{ 'waveform--drag-over': props.isDragOver }"
-    :style="{ '--accent': props.accent }"
-  >
+  <div class="waveform" :style="{ '--accent': props.accent }">
     <div v-show="!props.trackData" class="waveform__empty">
-      <span class="waveform__empty-text">{{ $t('editWaveform.noTrackLoaded') }}</span>
+      <span class="waveform__empty-text">{{ $t(emptyTextKey) }}</span>
     </div>
 
     <div v-show="props.trackData" class="waveform__content">
@@ -45,7 +41,7 @@ import { loopRegionRect } from '@renderer/utils/loopRegionRect';
 const props = defineProps<{
   accent: string;
   trackData: TrackData | null;
-  isDragOver: boolean;
+  loading: boolean;
   trackBpm: number | null;
   beatOffset: number;
   cuePoint: number;
@@ -61,6 +57,12 @@ const props = defineProps<{
     numPoints: number
   ) => Promise<ArrayBuffer>;
 }>();
+
+// A track on its way in is not an empty deck: the strip stays blank until the
+// decode lands, which is long enough to read as nothing having happened.
+const emptyTextKey = computed(() =>
+  props.loading ? 'editWaveform.loading' : 'editWaveform.noTrackLoaded'
+);
 
 const emit = defineEmits<{
   setBeatOffset: [sec: number];
@@ -80,9 +82,8 @@ const canvasEl = ref<HTMLCanvasElement | null>(null);
 
 let trackDuration = 0;
 
-// Visible window in seconds. Plain vars (not refs) because they're only read
-// by the rAF canvas draw loop; reactivity would add per-mousemove overhead
-// during drag for no benefit.
+// Plain vars, not refs: only the rAF draw loop reads them, so reactivity would
+// cost a notification per mousemove for nothing.
 let viewStartSec = 0;
 let viewEndSec = 0;
 
@@ -141,9 +142,8 @@ function requiredPtsPerSec(): number {
   const canvas = canvasEl.value;
   const zoomSec = viewEndSec - viewStartSec;
   if (!canvas || zoomSec <= 0) return 0;
-  // Use physical pixels (canvas.width = clientWidth * dpr) so that on Retina
-  // displays, zoom levels that need finer data than the dense LOD provides
-  // correctly fall through to on-demand fetches instead of serving blurry data.
+  // Physical pixels, so a Retina zoom needing more than the dense LOD holds falls
+  // through to a fetch rather than serving it blurred.
   return canvas.width / zoomSec;
 }
 
@@ -264,11 +264,8 @@ function ensureBitmap(canvasW: number, canvasH: number) {
 
   const sameSource = bitmapForPeaks === cachedPeaks;
   const sameSize = bitmapCanvasH === canvasH;
-  // The bitmap is always stretched to the current canvas size at draw time
-  // (see drawWaveform), so it can never visually desync from the live beat
-  // grid. This tolerance only controls how eagerly we recompute it at a
-  // sharper resolution; without it, continuous resizing would rebuild (and
-  // slightly re-quantize) the waveform on every frame, causing it to shimmer.
+  // Without a tolerance a continuous resize rebuilds and re-quantizes the waveform
+  // every frame, which shimmers. The bitmap is stretched to size at draw time anyway.
   const sameResolution =
     bitmapScreenPxPerSec > 0 &&
     Math.abs(bitmapScreenPxPerSec - screenPxPerSec) <= bitmapScreenPxPerSec * 0.15;
@@ -473,9 +470,7 @@ function drawCueMarker(ctx: CanvasRenderingContext2D, width: number, height: num
 
 function rafLoop() {
   applyPendingDrag();
-  // Sync path only: keeps the dense-LOD slice up to date as the user drags
-  // past the current cache range. On-demand fetches (IPC) are reserved for
-  // explicit events so we don't flood the backend during a fast drag.
+  // Sync only: an IPC fetch here would flood the backend during a fast drag.
   ensureCachedFromDense();
   drawWaveform();
   rafId = requestAnimationFrame(rafLoop);
@@ -638,11 +633,6 @@ watch(
   background: #0a0a0a;
   position: relative;
   overflow: hidden;
-}
-
-.waveform--drag-over {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
 }
 
 .waveform__empty {
