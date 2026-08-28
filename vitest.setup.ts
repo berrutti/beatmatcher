@@ -1,6 +1,8 @@
 import { vi } from 'vitest';
 import { config } from '@vue/test-utils';
 import { vTooltip } from '@renderer/directives/tooltip';
+import { vSliderReset } from '@renderer/directives/sliderReset';
+import { vMenuPlacement } from '@renderer/directives/menuPlacement';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { initSync } from '@core/session_core.js';
@@ -19,6 +21,10 @@ vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn().mockResolvedValue(undefined)
 }));
 
-// main.ts registers this on the app; component tests mount without it, so any
-// component carrying v-tooltip warns on every mount.
-config.global.directives = { tooltip: vTooltip };
+// main.ts registers these on the app; component tests mount without it, so any
+// component carrying one of them warns on every mount.
+config.global.directives = {
+  tooltip: vTooltip,
+  'slider-reset': vSliderReset,
+  'menu-placement': vMenuPlacement
+};
