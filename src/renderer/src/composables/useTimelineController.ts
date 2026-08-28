@@ -1,43 +1,50 @@
-// The "parent reacts" half. Owns the timeline's interaction state (lane choice +
-// height, clip/filter selection, menus) and turns each emitted Intent into a
-// store edit, a camera move, or a selection change. The component stays a thin
-// shell that renders the scene and forwards DOM events to the gestures. Nothing
-// here or in the gestures touches the canvas.
+// The "parent reacts" half: intents in, store edits and camera moves out.
+// Nothing here or in the gestures touches the canvas.
 
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
+import { lanesForDeck, lanesForMaster, toggleLane } from '@renderer/utils/laneSelection';
+import {
+  DEFAULT_WAVEFORM_HEIGHT,
+  defaultLaneHeight,
+  laneHeightFor,
+  waveformHeightFor,
+  withLaneHeight,
+  withWaveformHeight,
+  type StoredLaneHeights
+} from '@renderer/utils/laneHeights';
 import { useDecksStore } from '@renderer/stores/decks';
-import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
+import {
+  DECK_ACCENTS,
+  type DeckId,
+  type DeckLaneKey,
+  type EditableLaneKey
+} from '@renderer/utils/types';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { ROW_H, type LaneKey } from '@renderer/utils/timelineDraw';
 import {
   bpmRegionSpanAt,
   mergeSelectionRanges,
   type ClipSelectionRef
 } from '@renderer/utils/timelineLayout';
-import type {
-  Clip,
-  FilterActiveSpan,
-  MasterLaneKey,
-  NudgeSpan,
-  TransportBlock
+import type { Clip, FilterActiveSpan, MasterLaneKey, TransportBlock } from '@renderer/utils/types';
+import {
+  DECK_LANE_KEYS,
+  MASTER_LANE_KEYS,
+  MASTER_ROW_ID,
+  isMasterLaneKey
 } from '@renderer/utils/types';
-import { MASTER_LANE_KEYS } from '@renderer/utils/types';
 import type { BpmContext, Intent } from '@renderer/utils/timelineIntents';
 import type { useTimelineView } from '@renderer/composables/useTimelineView';
-
-const DEFAULT_DECK_LANE: LaneKey = 'filter';
-const DEFAULT_LANE_H = 96;
 
 export type DeckMenu = {
   deck: string;
   x: number;
   y: number;
-  nudge: NudgeSpan | null;
   bpm: BpmContext | null;
   split: { block: TransportBlock; ms: number } | null;
+  lane: { key: EditableLaneKey; ms: number } | null;
 };
-export type LanePicker = { deck: string; x: number; y: number };
+export type LanePicker = { deck: string; lane: EditableLaneKey | null; x: number; y: number };
 export type FilterMenu = { deck: string; span: FilterActiveSpan; x: number; y: number };
 
 export function useTimelineController(opts: {
@@ -49,17 +56,16 @@ export function useTimelineController(opts: {
   const decks = useDecksStore();
   const editStore = useSessionEditStore();
 
-  const selectedDeckLane = ref<Record<string, LaneKey>>(
+  const storedDeckLanes = ref<Record<string, unknown>>(
     storageGet(STORAGE_KEYS.sessionDeckLane, {})
   );
-  const storedMasterLane = storageGet<string>(STORAGE_KEYS.sessionMasterLane, 'masterGain');
-  const selectedMasterLane = ref<MasterLaneKey>(
-    MASTER_LANE_KEYS.find((key) => key === storedMasterLane) ?? 'masterGain'
+  const storedMasterLanes = ref<unknown>(
+    storageGet<unknown>(STORAGE_KEYS.sessionMasterLane, undefined)
   );
-  const storedH = storageGet<number>(STORAGE_KEYS.sessionLaneHeight, DEFAULT_LANE_H);
-  const laneHeight = ref(typeof storedH === 'number' ? storedH : DEFAULT_LANE_H);
-  const storedW = storageGet<number>(STORAGE_KEYS.sessionWaveformHeight, ROW_H);
-  const waveformHeight = ref(typeof storedW === 'number' ? storedW : ROW_H);
+  const storedLaneHeights = ref<StoredLaneHeights>(storageGet(STORAGE_KEYS.sessionLaneHeight, {}));
+  const storedWaveformHeights = ref<StoredLaneHeights>(
+    storageGet(STORAGE_KEYS.sessionWaveformHeight, {})
+  );
 
   const clipSelection = ref<ClipSelectionRef[]>([]);
   const unlockedBlockIds = ref<Set<number>>(new Set());
@@ -69,21 +75,65 @@ export function useTimelineController(opts: {
   const lanePicker = ref<LanePicker | null>(null);
   const filterMenu = ref<FilterMenu | null>(null);
 
-  function laneFor(deck: string): LaneKey {
-    return selectedDeckLane.value[deck] ?? DEFAULT_DECK_LANE;
+  function lanesFor(deck: string): DeckLaneKey[] {
+    return lanesForDeck(storedDeckLanes.value, deck);
   }
 
-  function setMasterLane(lane: MasterLaneKey): void {
-    selectedMasterLane.value = lane;
-    storageSet(STORAGE_KEYS.sessionMasterLane, lane);
-    lanePicker.value = null;
+  function masterLanesFor(): MasterLaneKey[] {
+    return lanesForMaster(storedMasterLanes.value);
+  }
+
+  // Left open, because a stack is built by toggling several in a row.
+  function toggleMasterLane(lane: MasterLaneKey): void {
+    storedMasterLanes.value = toggleLane(MASTER_LANE_KEYS, masterLanesFor(), lane);
+    storageSet(STORAGE_KEYS.sessionMasterLane, storedMasterLanes.value);
     opts.requestRender();
   }
 
-  function setDeckLane(deck: string, lane: LaneKey): void {
-    selectedDeckLane.value = { ...selectedDeckLane.value, [deck]: lane };
-    storageSet(STORAGE_KEYS.sessionDeckLane, selectedDeckLane.value);
-    lanePicker.value = null;
+  function toggleDeckLane(deck: string, lane: DeckLaneKey): void {
+    storedDeckLanes.value = {
+      ...storedDeckLanes.value,
+      [deck]: toggleLane(DECK_LANE_KEYS, lanesFor(deck), lane)
+    };
+    storageSet(STORAGE_KEYS.sessionDeckLane, storedDeckLanes.value);
+    opts.requestRender();
+  }
+
+  // Row-agnostic views of the two selections, for a picker that serves both row
+  // kinds and should not have to know which one it is looking at.
+  function laneKeysForRow(deck: string): readonly EditableLaneKey[] {
+    return deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS;
+  }
+
+  function lanesForRow(deck: string): readonly EditableLaneKey[] {
+    return deck === MASTER_ROW_ID ? masterLanesFor() : lanesFor(deck);
+  }
+
+  function toggleLaneForRow(deck: string, lane: EditableLaneKey): void {
+    if (deck === MASTER_ROW_ID) {
+      if (isMasterLaneKey(lane)) toggleMasterLane(lane);
+      return;
+    }
+    if (!isMasterLaneKey(lane)) toggleDeckLane(deck, lane);
+  }
+
+  function laneHeightOf(deck: string, lane: EditableLaneKey): number {
+    return laneHeightFor(storedLaneHeights.value, deck, lane);
+  }
+
+  function setLaneHeight(deck: string, lane: EditableLaneKey, height: number): void {
+    storedLaneHeights.value = withLaneHeight(storedLaneHeights.value, deck, lane, height);
+    storageSet(STORAGE_KEYS.sessionLaneHeight, storedLaneHeights.value);
+    opts.requestRender();
+  }
+
+  function waveformHeightOf(deck: string): number {
+    return waveformHeightFor(storedWaveformHeights.value, deck);
+  }
+
+  function setWaveformHeight(deck: string, height: number): void {
+    storedWaveformHeights.value = withWaveformHeight(storedWaveformHeights.value, deck, height);
+    storageSet(STORAGE_KEYS.sessionWaveformHeight, storedWaveformHeights.value);
     opts.requestRender();
   }
 
@@ -106,9 +156,6 @@ export function useTimelineController(opts: {
     return span ? { deck: sel.deck, span } : null;
   }
 
-  // A click's selection span: the iteration of an unlocked loop block, the
-  // whole block for a locked loop, or the constant-BPM region under the cursor
-  // for a regular block (which is the whole block when it has one region).
   function clickSelectionRef(block: TransportBlock, ms: number): ClipSelectionRef {
     if (block.loop) {
       if (unlockedBlockIds.value.has(block.blockId)) {
@@ -174,27 +221,24 @@ export function useTimelineController(opts: {
         opts.camera.setViewFromUser(intent.view);
         break;
       case 'lane.openDropdown':
-        lanePicker.value = { deck: intent.deck, x: intent.clientX, y: intent.clientY };
+        lanePicker.value = {
+          deck: intent.deck,
+          lane: intent.lane,
+          x: intent.clientX,
+          y: intent.clientY
+        };
         break;
       case 'lane.resize':
-        laneHeight.value = intent.height;
-        storageSet(STORAGE_KEYS.sessionLaneHeight, laneHeight.value);
-        opts.requestRender();
+        setLaneHeight(intent.deck, intent.lane, intent.height);
         break;
       case 'lane.resizeReset':
-        laneHeight.value = DEFAULT_LANE_H;
-        storageSet(STORAGE_KEYS.sessionLaneHeight, laneHeight.value);
-        opts.requestRender();
+        setLaneHeight(intent.deck, intent.lane, defaultLaneHeight(intent.deck));
         break;
       case 'waveform.resize':
-        waveformHeight.value = intent.height;
-        storageSet(STORAGE_KEYS.sessionWaveformHeight, waveformHeight.value);
-        opts.requestRender();
+        setWaveformHeight(intent.deck, intent.height);
         break;
       case 'waveform.resizeReset':
-        waveformHeight.value = ROW_H;
-        storageSet(STORAGE_KEYS.sessionWaveformHeight, waveformHeight.value);
-        opts.requestRender();
+        setWaveformHeight(intent.deck, DEFAULT_WAVEFORM_HEIGHT);
         break;
       case 'lane.draw':
         await editStore.commitGesture(
@@ -205,9 +249,6 @@ export function useTimelineController(opts: {
           intent.t1,
           { rateMin: intent.rateMin, rateMax: intent.rateMax }
         );
-        break;
-      case 'nudge.paint':
-        await editStore.commitNudgePaint(intent.deck, intent.t0, intent.t1, intent.direction);
         break;
       case 'filter.toggle':
         await editStore.commitFilterActiveToggle(intent.deck, intent.t0, intent.t1);
@@ -258,6 +299,12 @@ export function useTimelineController(opts: {
         clipSelection.value = [];
         opts.requestRender();
         break;
+      case 'lane.reset':
+        await editStore.commitLaneReset(intent.deck, intent.lane, intent.ms, intent.extent, {
+          rateMin: intent.rateMin,
+          rateMax: intent.rateMax
+        });
+        break;
       case 'filterRegion.clearSelection':
         filterSelection.value = null;
         opts.requestRender();
@@ -300,9 +347,9 @@ export function useTimelineController(opts: {
           deck: intent.deck,
           x: intent.clientX,
           y: intent.clientY,
-          nudge: intent.nudge,
           bpm: intent.bpm,
-          split: intent.split
+          split: intent.split,
+          lane: intent.lane
         };
         break;
       case 'menu.filterRegion':
@@ -334,21 +381,25 @@ export function useTimelineController(opts: {
   }
 
   return {
-    // state for the scene + menus
-    selectedDeckLane,
-    laneHeight,
-    waveformHeight,
+    storedDeckLanes,
+    storedLaneHeights,
+    laneHeightOf,
+    storedMasterLanes,
+    storedWaveformHeights,
+    waveformHeightOf,
     clipSelection,
     filterSelection,
     unlockedBlockIds,
     deckMenu,
     lanePicker,
-    selectedMasterLane,
-    setMasterLane,
+    masterLanesFor,
+    toggleMasterLane,
+    laneKeysForRow,
+    lanesForRow,
+    toggleLaneForRow,
     filterMenu,
-    // helpers the component/scene need
-    laneFor,
-    setDeckLane,
+    lanesFor,
+    toggleDeckLane,
     accentFor,
     selectedFilterSpan,
     deleteSelectedFilterSpan,

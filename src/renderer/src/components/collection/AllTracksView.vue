@@ -14,8 +14,7 @@
     <Table v-else :on-header-contextmenu="onHeaderContextmenu" :thead-ref="setSortBarEl">
       <template #colgroup>
         <TableColgroup :fields="store.orderedVisibleColumns" :get-width="columnWidth" />
-        <col :style="{ width: TABLE_CHROME_WIDTH.status + 'px' }" />
-        <col :style="{ width: TABLE_CHROME_WIDTH.actions + 'px' }" />
+        <col :style="{ width: actionsColumnWidth + 'px' }" />
         <col :style="{ width: TABLE_CHROME_WIDTH.remove + 'px' }" />
       </template>
       <template #header>
@@ -35,7 +34,6 @@
             </button>
           </template>
         </TableHeaderCells>
-        <TableHeaderCell class="table__header-cell--status"></TableHeaderCell>
         <TableHeaderCell align="right">{{ $t('browser.colDecks') }}</TableHeaderCell>
         <TableHeaderCell></TableHeaderCell>
       </template>
@@ -82,9 +80,6 @@
           <template v-else>
             {{ formatAddedDate(track.addedAt) }}
           </template>
-        </td>
-        <td class="collection__td collection__td--status">
-          <TrackStatusTag :has-error="track.status === 'error' || track.lastAnalysisFailed" />
         </td>
         <td class="collection__td collection__td--actions">
           <div class="collection__item-actions">
@@ -168,6 +163,7 @@ import { useRowCursor } from '@renderer/composables/useRowCursor';
 import { useColumnVisibilityMenuTrigger } from '@renderer/composables/useColumnVisibilityMenuTrigger';
 import { displayName, formatAddedDate } from '@renderer/utils/trackDisplay';
 import { loadToDeck } from '@renderer/utils/deckDrop';
+import { useDeckButtons } from '@renderer/composables/useDeckButtons';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import Buttons from '@renderer/components/collection/Buttons.vue';
@@ -176,7 +172,6 @@ import TableColgroup from '@renderer/components/collection/TableColgroup.vue';
 import TableHeaderCell from '@renderer/components/collection/TableHeaderCell.vue';
 import TableHeaderCells from '@renderer/components/collection/TableHeaderCells.vue';
 import TrackBpmCell from '@renderer/components/collection/TrackBpmCell.vue';
-import TrackStatusTag from '@renderer/components/collection/TrackStatusTag.vue';
 import TrackContextMenu from '@renderer/components/collection/TrackContextMenu.vue';
 import ColumnVisibilityMenu from '@renderer/components/collection/ColumnVisibilityMenu.vue';
 
@@ -190,8 +185,9 @@ const mixerStore = useMixerStore();
 const contextMenuEl = ref<InstanceType<typeof TrackContextMenu> | null>(null);
 const { columnMenuEl, onHeaderContextmenu } = useColumnVisibilityMenuTrigger();
 
-const MAIN_TABLE_FIXED_TOTAL =
-  TABLE_CHROME_WIDTH.status + TABLE_CHROME_WIDTH.actions + TABLE_CHROME_WIDTH.remove;
+const { columnWidth: actionsColumnWidth } = useDeckButtons();
+
+const mainTableFixedTotal = computed(() => actionsColumnWidth.value + TABLE_CHROME_WIDTH.remove);
 
 const allTracks = useElementSize();
 const allTracksScrollEl = allTracks.el;
@@ -201,7 +197,7 @@ const setAllTracksScrollEl = allTracks.setEl;
 
 const pinnedColumnsWidth = usePinnedColumnsWidth();
 const mainAvailableResizableWidth = () =>
-  Math.max(0, allTracksViewportWidth.value - MAIN_TABLE_FIXED_TOTAL - pinnedColumnsWidth.value);
+  Math.max(0, allTracksViewportWidth.value - mainTableFixedTotal.value - pinnedColumnsWidth.value);
 
 const {
   columnWidth,
@@ -227,9 +223,7 @@ function toggleSort(field: SortField) {
   }
 }
 
-// trackNumber/year/rating are numeric even though they're stored as free-text
-// metadata strings - sorting them lexicographically would put "10" before
-// "9", so they need to be parsed and compared as numbers instead.
+// Stored as free text, so a lexicographic sort would put "10" before "9".
 const NUMERIC_METADATA_FIELDS = ['trackNumber', 'year', 'rating'] as const;
 
 function isNumericMetadataField(field: MetadataField): boolean {
@@ -282,10 +276,8 @@ function onAllTracksScroll() {
   if (allTracksScrollEl.value) allTracksScrollTop.value = allTracksScrollEl.value.scrollTop;
 }
 
-// Dragging a track over the list must not scroll it - that would move the
-// list out from under the cursor mid-drag. overflow-y stays permanently
-// 'auto' (never toggled) so the scrollbar never appears/disappears and the
-// table width never shifts. The scroll action itself is what gets blocked.
+// The scroll is blocked rather than overflow-y toggled, which would show and
+// hide the scrollbar and shift the table width mid-drag.
 function onAllTracksWheel(e: WheelEvent) {
   if (store.draggingPath) e.preventDefault();
 }

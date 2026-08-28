@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hitPriority } from '@renderer/utils/timelineHits';
+import { hitPriority, HIT_TARGETS, HIT_PRECEDENCE } from '@renderer/utils/timelineHits';
 import type { Hit } from '@renderer/utils/timelineEngine';
 
 const at = (target: string, part?: string): Hit => (part ? { target, part } : { target });
@@ -11,12 +11,10 @@ describe('hitPriority', () => {
       'laneDropdown',
       'filterRegion',
       'clip',
-      'nudgeSpan',
       'waveformSeparator',
       'laneSeparator',
       'lane',
-      'clipBand',
-      'tickRow'
+      'clipBand'
     ];
     for (const target of others) {
       expect(beats(at('overview'), at(target)), target).toBe(true);
@@ -32,7 +30,6 @@ describe('hitPriority', () => {
 
   it('keeps the lane separator below the elements that overlap it', () => {
     expect(beats(at('filterRegion', 'body'), at('laneSeparator'))).toBe(true);
-    expect(beats(at('nudgeSpan'), at('laneSeparator'))).toBe(true);
     expect(beats(at('clip', 'body'), at('laneSeparator'))).toBe(true);
   });
 
@@ -40,26 +37,10 @@ describe('hitPriority', () => {
     expect(beats(at('waveformSeparator'), at('clip', 'body'))).toBe(true);
   });
 
-  it('ranks a nudge above the clip body and the lane beneath it', () => {
-    expect(beats(at('nudgeSpan'), at('clip', 'body'))).toBe(true);
-    expect(beats(at('nudgeSpan'), at('lane'))).toBe(true);
-  });
-
-  it('ranks a clip trim edge above a nudge but its body below one', () => {
-    expect(beats(at('clip', 'start'), at('nudgeSpan'))).toBe(true);
-    expect(beats(at('clip', 'end'), at('nudgeSpan'))).toBe(true);
-    expect(beats(at('nudgeSpan'), at('clip', 'body'))).toBe(true);
-  });
-
-  it('ranks a filter region above a nudge by its edges and its body alike', () => {
-    expect(beats(at('filterRegion', 'start'), at('nudgeSpan'))).toBe(true);
-    expect(beats(at('filterRegion', 'end'), at('nudgeSpan'))).toBe(true);
-    expect(beats(at('filterRegion', 'body'), at('nudgeSpan'))).toBe(true);
-  });
-
-  it('leaves the ruler at the back', () => {
-    for (const target of ['clipBand', 'lane', 'laneSeparator']) {
-      expect(beats(at(target), at('tickRow')), target).toBe(true);
+  it('leaves the empty clip band at the back', () => {
+    const above = [at('lane'), at('laneSeparator'), at('clip', 'body'), at('filterRegion', 'body')];
+    for (const hit of above) {
+      expect(beats(hit, at('clipBand')), hit.target).toBe(true);
     }
   });
 
@@ -71,25 +52,37 @@ describe('hitPriority', () => {
   it('scores an unknown target zero so it loses to everything ranked', () => {
     expect(hitPriority(at('nonsense'))).toBe(0);
     expect(hitPriority(at('nonsense', 'body'))).toBe(0);
-    expect(beats(at('tickRow'), at('nonsense'))).toBe(true);
+    expect(beats(at('clipBand'), at('nonsense'))).toBe(true);
+  });
+
+  it('ranks a separator above the lane dropdown it crosses in the label column', () => {
+    expect(beats(at('laneSeparator'), at('laneDropdown'))).toBe(true);
+    expect(beats(at('waveformSeparator'), at('laneDropdown'))).toBe(true);
+  });
+
+  it('ranks every target the timeline emits', () => {
+    for (const target of HIT_TARGETS) {
+      const ranked = HIT_PRECEDENCE.some(
+        (entry) => entry === target || entry.startsWith(`${target}:`)
+      );
+      expect(ranked, target).toBe(true);
+    }
   });
 
   it('gives every ranked entry a distinct priority', () => {
     const ranked = [
       at('overview'),
-      at('laneDropdown'),
       at('filterRegion', 'start'),
       at('filterRegion', 'end'),
       at('clip', 'start'),
       at('clip', 'end'),
       at('filterRegion', 'body'),
-      at('nudgeSpan'),
       at('waveformSeparator'),
       at('clip', 'body'),
       at('laneSeparator'),
+      at('laneDropdown'),
       at('lane'),
-      at('clipBand'),
-      at('tickRow')
+      at('clipBand')
     ];
     const scores = ranked.map(hitPriority);
     expect(new Set(scores).size).toBe(ranked.length);

@@ -1,37 +1,51 @@
-// Listed front to back: earlier wins when several items claim the same point.
-
 import type { Hit } from '@renderer/utils/timelineEngine';
 
-const HIT_PRECEDENCE: readonly string[] = [
+// The engine stays generic over target names, so the vocabulary is pinned here.
+export const HIT_TARGETS = [
   'overview',
   'laneDropdown',
+  'deckLabel',
+  'filterRegion',
+  'clip',
+  'waveformSeparator',
+  'laneSeparator',
+  'lane',
+  'clipBand'
+] as const;
+
+export type HitTarget = (typeof HIT_TARGETS)[number];
+
+// Some targets are ranked only per part, because no item emits them bare.
+export const HIT_PRECEDENCE: readonly (HitTarget | `${HitTarget}:${string}`)[] = [
+  'overview',
   // Resize/trim edges beat the body of their OWN element.
   'filterRegion:start',
   'filterRegion:end',
   'clip:start',
   'clip:end',
-  // Elements you click. They all sit ABOVE the lane separator: a separator can
-  // still be grabbed by moving off the element (it spans the full width), but if
-  // the separator won you could never reach an element overlapping it. The nudge
-  // sits above the waveform (clip body) and the lane limit per the same logic.
+  // Above the lane separator, which spans the full width: if it won, an element
+  // overlapping it could never be reached.
   'filterRegion:body',
-  'nudgeSpan',
-  // The waveform separator sits ON the clip band (clips cover the waveform), so
-  // unlike the lane separator it must beat the clip body to stay grabbable.
+  // Sits on the clip band rather than beside it, so it has to beat the clip body.
   'waveformSeparator',
   'clip:body',
-  // The lane separator sits over the (often empty) lane bottom, so it can sink
-  // below the elements: move off an element to grab it.
+  // Over the lane's own empty bottom, so it can sink below the elements above it.
   'laneSeparator',
+  // Below both separators where they cross the label column, so a drag there
+  // resizes rather than opening the picker.
+  'laneDropdown',
+  'deckLabel',
   'lane',
-  'clipBand',
-  'tickRow'
+  'clipBand'
 ];
 
-const RANK = new Map(HIT_PRECEDENCE.map((key, i) => [key, HIT_PRECEDENCE.length - i]));
+// Plain string keys: a lookup can ask about a target this table does not rank.
+const RANK = new Map<string, number>(
+  HIT_PRECEDENCE.map((key, i) => [key, HIT_PRECEDENCE.length - i])
+);
 
-// Higher number = higher priority (so the engine's `>=` tie-break keeps top-most
-// draw order for equal ranks). Tries `target:part`, then `target`, else 0.
+// Higher number = higher priority, so the engine's `>=` tie-break keeps top-most
+// draw order for equal ranks.
 export function hitPriority(hit: Hit): number {
   if (hit.part) {
     const withPart = RANK.get(`${hit.target}:${hit.part}`);

@@ -9,6 +9,8 @@ import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
 import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
+const SAVE_POLL_MS = 200;
+
 type DeviceInfo = { id: string; name: string; isDefault: boolean; channels: number };
 type ParamChange = { deck: string; slot: string; param: string; value: number };
 export type XfaderAssign = 'thru' | 'a' | 'b';
@@ -246,6 +248,19 @@ export const useMixerStore = defineStore('mixer', () => {
     for (const deck of affected) setParam(deck, key, value);
   }
 
+  // The clicked deck's resulting state, not each deck's own toggle: a switch has
+  // no delta to carry, and pressing one expects the swarm to match it.
+  function swarmToggleParam(deckId: DeckId, key: string) {
+    const next = paramActive(deckId, key) ? 0 : 1;
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) setParam(deck, key, next);
+  }
+
+  function swarmSetCue(deckId: DeckId, active: boolean) {
+    const affected = swarmMode.value ? swarmAffected(deckId) : [deckId];
+    for (const deck of affected) setCueActive(deck, active);
+  }
+
   function isDeckId(id: string): id is DeckId {
     return Object.prototype.hasOwnProperty.call(params, id);
   }
@@ -373,6 +388,9 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   const isRecording = ref(false);
+  // Null when no save is running. A WAV is already on disk when the recording
+  // stops, so only a FLAC encode ever reports a fraction here.
+  const saveProgress = ref<number | null>(null);
   const playedPaths = reactive(new Set<string>());
 
   function markPlayed(path: string): void {
@@ -392,10 +410,40 @@ export const useMixerStore = defineStore('mixer', () => {
     });
   }
 
+  // Polled rather than pushed: the audio layer reports permille into an atomic so
+  // it never needs an app handle to emit with.
+  async function whileReportingSaveProgress<T>(work: () => Promise<T>): Promise<T> {
+    let inFlight = false;
+    // One request at a time, or a slow reply lands on top of a fresher one. A
+    // dropped poll is not worth failing the save over.
+    async function sample(): Promise<void> {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        saveProgress.value = await call('recording_save_progress');
+      } catch {
+        saveProgress.value = null;
+      } finally {
+        inFlight = false;
+      }
+    }
+    const poll = window.setInterval(async () => {
+      await sample();
+    }, SAVE_POLL_MS);
+    try {
+      return await work();
+    } finally {
+      window.clearInterval(poll);
+      saveProgress.value = null;
+    }
+  }
+
   async function stopRecording(): Promise<string> {
-    const tempPath = await call('stop_recording');
-    isRecording.value = false;
-    return tempPath;
+    return whileReportingSaveProgress(async () => {
+      const tempPath = await call('stop_recording');
+      isRecording.value = false;
+      return tempPath;
+    });
   }
 
   async function pickSavePath(baseName: string): Promise<string | null> {
@@ -409,14 +457,16 @@ export const useMixerStore = defineStore('mixer', () => {
     const settings = useSettingsStore();
     if (settings.recordingFormat === 'session') {
       await call('save_bms_only', { src, dest });
-    } else {
-      await call('save_recording', {
+      return;
+    }
+    await whileReportingSaveProgress(() =>
+      call('save_recording', {
         src,
         dest,
         writeBms: settings.recordBms,
         writeCue: settings.recordCue
-      });
-    }
+      })
+    );
   }
 
   async function discardRecording(path: string): Promise<void> {
@@ -491,6 +541,7 @@ export const useMixerStore = defineStore('mixer', () => {
     xfaderPosition,
     xfaderAssign,
     isRecording,
+    saveProgress,
     playedPaths,
     markPlayed,
     applyEngineParam,
@@ -512,6 +563,8 @@ export const useMixerStore = defineStore('mixer', () => {
     setSwarmMode,
     swarmAdjust,
     swarmReset,
+    swarmToggleParam,
+    swarmSetCue,
     setXfaderAssign,
     setXfaderPosition,
     toggleXfaderAssign,

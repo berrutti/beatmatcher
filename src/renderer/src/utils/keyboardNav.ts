@@ -1,9 +1,8 @@
 const KEYBOARD_NAV = 'data-keyboard-nav';
 
-// WKWebView stops matching :focus-visible once the last interaction was a click, which
-// left a trapped dialog moving focus with nothing on screen to show for it. The modality
-// is tracked here instead, so a ring appears on Tab and never on a click or on the
-// programmatic focus a dialog does when it opens.
+// WKWebView stops matching :focus-visible once the last interaction was a click,
+// leaving a trapped dialog moving focus with nothing to show for it. Tracked here
+// so a ring appears on Tab and never on a click or a dialog's own focus call.
 export function installKeyboardNav(): () => void {
   const root = document.documentElement;
 

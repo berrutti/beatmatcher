@@ -1,21 +1,17 @@
-// The semantic vocabulary the timeline emits. Items + gestures never touch the
-// stores. They produce one of these intents and the controller reacts (calls an
-// edit op, moves the camera, updates a selection). This is the seam between "what
-// the user did" and "what the app does about it". The parent-reacts model.
+// What the user did, kept apart from what the app does about it: items and
+// gestures emit these and never touch a store.
 
+import type { ResetExtent } from '@renderer/utils/sessionCore';
 import type { ViewWindow } from '@renderer/utils/timelineView';
 import type { ClipSelectionRef } from '@renderer/utils/timelineLayout';
 import type {
   LanePoint,
   FilterActiveSpan,
-  NudgeSpan,
   EditableLaneKey,
   TransportBlock
 } from '@renderer/utils/types';
 
-// Context for the "Set BPM" menu items: the clicked point, the clip span it
-// falls in, the track's grid bpm (to convert an entered BPM to a rate), and the
-// tempo currently playing there (to prefill the dialog).
+// `trackBpm` converts an entered BPM to a rate; `currentBpm` prefills the dialog.
 export type BpmContext = {
   ms: number;
   clipStartMs: number;
@@ -25,15 +21,19 @@ export type BpmContext = {
 };
 
 export type Intent =
-  // transport / camera
   | { type: 'seek'; ms: number }
   | { type: 'view.set'; view: ViewWindow }
-  | { type: 'lane.openDropdown'; deck: string; clientX: number; clientY: number }
-  | { type: 'lane.resize'; height: number }
-  | { type: 'lane.resizeReset' }
-  | { type: 'waveform.resize'; height: number }
-  | { type: 'waveform.resizeReset' }
-  // automation edits (committed on gesture end)
+  | {
+      type: 'lane.openDropdown';
+      deck: string;
+      lane: EditableLaneKey | null;
+      clientX: number;
+      clientY: number;
+    }
+  | { type: 'lane.resize'; deck: string; lane: EditableLaneKey; height: number }
+  | { type: 'lane.resizeReset'; deck: string; lane: EditableLaneKey }
+  | { type: 'waveform.resize'; deck: string; height: number }
+  | { type: 'waveform.resizeReset'; deck: string }
   | {
       type: 'lane.draw';
       deck: string;
@@ -44,14 +44,12 @@ export type Intent =
       rateMin: number;
       rateMax: number;
     }
-  | { type: 'nudge.paint'; deck: string; t0: number; t1: number; direction: 1 | -1 }
   | { type: 'filter.toggle'; deck: string; t0: number; t1: number }
   | { type: 'clip.move'; block: TransportBlock; deltaMs: number }
   | { type: 'clip.trim'; block: TransportBlock; edge: 'start' | 'end'; newMs: number }
   // A click: the controller resolves it to a span (the BPM region under ms,
   // the iteration of an unlocked loop block, or the whole block).
   | { type: 'clip.select'; block: TransportBlock; ms: number; additive: boolean }
-  // Explicit spans (marquee, whole-block double-click).
   | { type: 'clip.selectRange'; targets: ClipSelectionRef[]; additive: boolean }
   | { type: 'clip.clearSelection' }
   | { type: 'clip.delete'; ranges: ClipSelectionRef[] }
@@ -73,9 +71,18 @@ export type Intent =
       deck: string;
       clientX: number;
       clientY: number;
-      nudge: NudgeSpan | null;
       bpm: BpmContext | null;
       split: { block: TransportBlock; ms: number } | null;
+      lane: { key: EditableLaneKey; ms: number } | null;
+    }
+  | {
+      type: 'lane.reset';
+      deck: string;
+      lane: EditableLaneKey;
+      ms: number;
+      extent: ResetExtent;
+      rateMin: number | undefined;
+      rateMax: number | undefined;
     }
   | {
       type: 'menu.filterRegion';

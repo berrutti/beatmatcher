@@ -68,9 +68,8 @@ export const useSessionStore = defineStore('session', () => {
   // Null except while a render is in flight, so a stray event from a finished
   // render cannot reopen the modal.
   const renderProgress = ref<RenderProgress | null>(null);
-  // Per-track waveform region [startSec, endSec] at some point density. Zoom-
-  // driven LOD (Timeline.vue) refetches a tighter range at higher density as the
-  // user zooms in, so the visible span always renders near one point per pixel.
+  // Refetched tighter as the user zooms, so the visible span stays near one
+  // point per pixel.
   const waveforms = ref(new Map<string, TrackWaveform>());
   const pendingWaveformPaths = new Set<string>();
   const pendingBasePaths = new Set<string>();
@@ -98,9 +97,7 @@ export const useSessionStore = defineStore('session', () => {
     return { startSec: req.startSec, endSec: req.endSec, amps: new Float32Array(amps) };
   }
 
-  // The coarse, always-resident slice covering a track's whole used extent, so a
-  // pan/zoom to an un-fetched spot still shows a low-detail texture immediately.
-  // Loaded once per extent. The detailed region is layered on top.
+  // Always resident, so a pan to an unfetched spot shows something immediately.
   async function ensureWaveformBase(
     path: string,
     startSec: number,
@@ -197,16 +194,22 @@ export const useSessionStore = defineStore('session', () => {
     }
   );
 
-  // Audition-only mute/solo for session playback. Lives in the strip's mute
-  // gain in Rust (independent of replayed fader events) and never affects
-  // the offline render. Solo wins: when any deck is soloed, only soloed decks
-  // are audible regardless of their mute state.
-  const mutedDecks = ref<Set<string>>(new Set());
-  const soloDecks = ref<Set<string>>(new Set());
+  // Audition only: it rides the strip's mute gain in Rust, apart from the
+  // replayed fader events, and the offline render ignores it.
+  // Off rather than on, so a session with nothing set leaves every deck enabled.
+  const disabledDecks = ref<Set<string>>(new Set());
+  // One at a time: soloing a deck releases whichever was soloed before.
+  const soloedDeck = ref<string | null>(null);
 
+  function deckEnabled(deck: string): boolean {
+    return !disabledDecks.value.has(deck);
+  }
+
+  // A solo overrides the switches entirely, the soloed deck's own included: it
+  // plays whether or not it is enabled, and nothing else plays either way.
   function deckAudible(deck: string): boolean {
-    if (soloDecks.value.size > 0) return soloDecks.value.has(deck);
-    return !mutedDecks.value.has(deck);
+    if (soloedDeck.value !== null) return deck === soloedDeck.value;
+    return deckEnabled(deck);
   }
 
   function applyAudibility() {
@@ -215,40 +218,24 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // Mute and solo are mutually exclusive per deck: engaging one releases the
-  // other, so a deck can never be in both lists.
-  function toggleMute(deck: string) {
-    const muted = new Set(mutedDecks.value);
-    const solo = new Set(soloDecks.value);
-    if (muted.has(deck)) {
-      muted.delete(deck);
-    } else {
-      muted.add(deck);
-      solo.delete(deck);
-    }
-    mutedDecks.value = muted;
-    soloDecks.value = solo;
+  // Still recorded while a solo is up, so dropping the solo restores whatever the
+  // switches were left at rather than turning everything back on.
+  function toggleDeckEnabled(deck: string) {
+    const next = new Set(disabledDecks.value);
+    if (!next.delete(deck)) next.add(deck);
+    disabledDecks.value = next;
     applyAudibility();
   }
 
   function toggleSolo(deck: string) {
-    const muted = new Set(mutedDecks.value);
-    const solo = new Set(soloDecks.value);
-    if (solo.has(deck)) {
-      solo.delete(deck);
-    } else {
-      solo.add(deck);
-      muted.delete(deck);
-    }
-    mutedDecks.value = muted;
-    soloDecks.value = solo;
+    soloedDeck.value = soloedDeck.value === deck ? null : deck;
     applyAudibility();
   }
 
   function clearAudibility() {
-    if (mutedDecks.value.size === 0 && soloDecks.value.size === 0) return;
-    mutedDecks.value = new Set();
-    soloDecks.value = new Set();
+    if (disabledDecks.value.size === 0 && soloedDeck.value === null) return;
+    disabledDecks.value = new Set();
+    soloedDeck.value = null;
     applyAudibility();
   }
 
@@ -423,10 +410,11 @@ export const useSessionStore = defineStore('session', () => {
     hasTrackInfo,
     missingTracks,
     checkMissingTracks,
-    mutedDecks,
-    soloDecks,
+    disabledDecks,
+    soloedDeck,
+    deckEnabled,
     deckAudible,
-    toggleMute,
+    toggleDeckEnabled,
     toggleSolo,
     ensureWaveformRegion,
     ensureWaveformBase,

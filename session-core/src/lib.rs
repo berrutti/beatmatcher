@@ -14,11 +14,11 @@ pub use clip_edit::{
 pub use cue::{build_cue_points, CuePoint};
 pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use lane_edit::{
-    decimate_steps, delete_filter_active_span, delete_nudge_range, filter_active_at, lane_spec_for,
-    move_filter_active_span, normalize_gesture_samples, nudge_value_at, original_value_at,
-    paint_nudge_range, rate_lane_spec, relocate_event_paths, resize_filter_active_span,
-    set_rate_at, set_rate_span, splice_lane_events, toggle_filter_active_range, EditableLane,
-    LaneDisplay, LaneSpec, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    decimate_steps, delete_filter_active_span, filter_active_at, lane_move_span, lane_spec_for,
+    move_filter_active_span, normalize_gesture_samples, original_value_at, rate_lane_spec,
+    relocate_event_paths, reset_lane_from, resize_filter_active_span, set_rate_at, set_rate_span,
+    splice_lane_events, toggle_filter_active_range, EditableLane, LaneDisplay, LaneSpec,
+    ResetExtent, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use param::{
     is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
@@ -34,7 +34,7 @@ pub use sim::{
 };
 pub use timeline::{
     build_clips, build_lanes, build_timeline, Clip, ClipsBuild, DeckLanes, FilterActiveSpan,
-    LanePoint, LanesBuild, LoadedSpan, LoopRegion, MasterLanes, NudgeSpan, TimelineBuild, WaveSeg,
+    LanePoint, LanesBuild, LoadedSpan, LoopRegion, MasterLanes, TimelineBuild, WaveSeg,
 };
 
 // WASM boundary for the frontend. Pure compute only: events in as JSON, the
@@ -117,8 +117,8 @@ mod wasm {
         crate::manifest_by_id(id).unwrap_or(&crate::CLASSIC_3BAND)
     }
 
-    /// Every editable lane's spec for one mixer, keyed by lane key. Rate carries
-    /// its default range. A caller with a clip-specific range overrides min/max.
+    /// Rate carries its default range: a caller with a clip-specific one overrides
+    /// min/max rather than reading it from here.
     #[wasm_bindgen(js_name = laneSpecs)]
     pub fn lane_specs(mixer_id: &str) -> String {
         let mixer = resolve_mixer(mixer_id);
@@ -194,8 +194,8 @@ mod wasm {
         .to_string()
     }
 
-    /// Move a block by `delta_ms` (clamped to its neighborhood). Returns
-    /// `{ events, appliedDeltaMs }` JSON.
+    /// Returns `{ events, appliedDeltaMs }`: the delta is clamped to the block's
+    /// neighborhood, so the caller cannot assume it got the one it asked for.
     #[wasm_bindgen(js_name = moveTransportBlock)]
     pub fn move_transport_block(
         events_json: &str,
@@ -210,8 +210,8 @@ mod wasm {
         serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Trim a block's `"start"` or `"end"` edge to `new_ms`. Returns
-    /// `{ events, appliedMs }` JSON.
+    /// Returns `{ events, appliedMs }`: the edge is clamped, so the caller cannot
+    /// assume it landed on `new_ms`.
     #[wasm_bindgen(js_name = trimTransportBlock)]
     pub fn trim_transport_block(
         events_json: &str,
@@ -232,7 +232,6 @@ mod wasm {
         serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Delete a transport block (drop its play/stop). Returns the events JSON.
     #[wasm_bindgen(js_name = deleteTransportBlock)]
     pub fn delete_transport_block(
         events_json: &str,
@@ -245,10 +244,8 @@ mod wasm {
         events_to_json(crate::delete_transport_block(&events, &clips, &block))
     }
 
-    /// Split a block into two at `split_ms`, gaplessly (a stop immediately
-    /// followed by a play, the right part resuming exactly the audio it
-    /// already played). Rejected (no-op) if `split_ms` is within `minBlockMs`
-    /// of either edge. Returns the events JSON.
+    /// Gapless: the right part resumes exactly the audio it already played.
+    /// A no-op if `split_ms` is within `minBlockMs` of either edge.
     #[wasm_bindgen(js_name = splitTransportBlock)]
     pub fn split_transport_block(
         events_json: &str,
@@ -264,9 +261,8 @@ mod wasm {
         ))
     }
 
-    /// Delete several `{ deck, startMs, endMs }` ranges as one edit. A range
-    /// covering a whole block deletes it, an edge range trims, an interior
-    /// range splits the block. Returns the events JSON.
+    /// One edit, because a range covering a whole block deletes it, an edge range
+    /// trims and an interior range splits: applied singly they would fight.
     #[wasm_bindgen(js_name = deleteTransportRanges)]
     pub fn delete_transport_ranges(
         events_json: &str,
@@ -307,7 +303,6 @@ mod wasm {
         serde_json::to_string(&events).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Dedupe gesture samples by ms (last wins) and sort. JSON `LanePoint[]`.
     #[wasm_bindgen(js_name = normalizeGestureSamples)]
     pub fn normalize_gesture_samples(points_json: &str) -> Result<String, JsError> {
         let points = parse_points(points_json)?;
@@ -315,7 +310,6 @@ mod wasm {
         serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Drop points whose value-step from the last kept point is below `epsilon`.
     #[wasm_bindgen(js_name = decimateSteps)]
     pub fn decimate_steps(points_json: &str, epsilon: f64) -> Result<String, JsError> {
         let points = parse_points(points_json)?;
@@ -323,7 +317,6 @@ mod wasm {
         serde_json::to_string(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// The lane's effective value at `ms` (the last point at/before it, else default).
     #[wasm_bindgen(js_name = originalValueAt)]
     pub fn original_value_at(
         events_json: &str,
@@ -339,7 +332,48 @@ mod wasm {
         Ok(crate::original_value_at(&events, &spec, deck, ms))
     }
 
-    /// Replace lane events in [range_start_ms, range_end_ms] with the drawn points. Restore at range_end_ms.
+    /// The span `ResetExtent::ThisMove` would clear, as `{startMs, endMs}`, both
+    /// inclusive. Null when the lane is already at rest there.
+    #[wasm_bindgen(js_name = laneMoveSpan)]
+    pub fn lane_move_span(
+        events_json: &str,
+        lane_key: &str,
+        mixer_id: &str,
+        deck: &str,
+        ms: f64,
+        rate_min: f64,
+        rate_max: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let spec = lane_spec(lane_key, mixer_id, rate_min, rate_max)?;
+        let span = crate::lane_move_span(&events, &spec, deck, ms)
+            .map(|(start, end)| serde_json::json!({ "startMs": start, "endMs": end }));
+        serde_json::to_string(&span).map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = resetLaneFrom)]
+    pub fn reset_lane_from(
+        events_json: &str,
+        lane_key: &str,
+        mixer_id: &str,
+        deck: &str,
+        ms: f64,
+        extent: &str,
+        rate_min: f64,
+        rate_max: f64,
+    ) -> Result<String, JsError> {
+        let events = parse_events(events_json)?;
+        let spec = lane_spec(lane_key, mixer_id, rate_min, rate_max)?;
+        let extent = match extent {
+            "toEnd" => crate::ResetExtent::ToEnd,
+            "untilHere" => crate::ResetExtent::UntilHere,
+            "thisMove" => crate::ResetExtent::ThisMove,
+            other => return Err(JsError::new(&format!("unknown reset extent: {other}"))),
+        };
+        events_to_json(crate::reset_lane_from(&events, &spec, deck, ms, extent))
+    }
+
+    /// Restores at `range_end_ms`, so audio after the gesture is unchanged.
     #[wasm_bindgen(js_name = spliceLaneEvents)]
     #[allow(clippy::too_many_arguments)]
     pub fn splice_lane_events(
@@ -366,8 +400,7 @@ mod wasm {
         ))
     }
 
-    /// Insert (or replace) a single set_playback_rate point for `deck` at `ms`.
-    /// The new rate holds until the next existing change. Returns events JSON.
+    /// The new rate holds until the next existing change.
     #[wasm_bindgen(js_name = setRateAt)]
     pub fn set_rate_at(
         events_json: &str,
@@ -379,8 +412,7 @@ mod wasm {
         events_to_json(crate::set_rate_at(&events, deck, ms, rate))
     }
 
-    /// Set one uniform rate over [start_ms, end_ms], restoring the pre-edit rate
-    /// after. Backs "Set BPM (whole clip)". Returns events JSON.
+    /// Restores the pre-edit rate after the span. Backs "Set BPM (whole clip)".
     #[wasm_bindgen(js_name = setRateSpan)]
     pub fn set_rate_span(
         events_json: &str,
@@ -393,7 +425,6 @@ mod wasm {
         events_to_json(crate::set_rate_span(&events, deck, start_ms, end_ms, rate))
     }
 
-    /// Filter on/off state for `deck` at `ms`.
     #[wasm_bindgen(js_name = filterActiveAt)]
     pub fn filter_active_at(
         events_json: &str,
@@ -405,8 +436,7 @@ mod wasm {
         Ok(crate::filter_active_at(&events, deck, ms, inclusive))
     }
 
-    /// Toggle the filter on/off over [range_start_ms, range_end_ms], restoring the
-    /// original state at range_end_ms.
+    /// Restores the original state at `range_end_ms`.
     #[wasm_bindgen(js_name = toggleFilterActiveRange)]
     pub fn toggle_filter_active_range(
         events_json: &str,
@@ -423,7 +453,6 @@ mod wasm {
         ))
     }
 
-    /// Delete the filter-active span [start_ms, end_ms] (its on/off event pair).
     #[wasm_bindgen(js_name = deleteFilterActiveSpan)]
     pub fn delete_filter_active_span(
         events_json: &str,
@@ -437,7 +466,6 @@ mod wasm {
         ))
     }
 
-    /// Stretch the `start` or `end` edge of the filter-active span to `new_ms`.
     #[wasm_bindgen(js_name = resizeFilterActiveSpan)]
     #[allow(clippy::too_many_arguments)]
     pub fn resize_filter_active_span(
@@ -461,7 +489,6 @@ mod wasm {
         ))
     }
 
-    /// Slide the whole filter-active span [`start_ms`, `end_ms`] by `delta_ms`.
     #[wasm_bindgen(js_name = moveFilterActiveSpan)]
     #[allow(clippy::too_many_arguments)]
     pub fn move_filter_active_span(
@@ -481,55 +508,6 @@ mod wasm {
             delta_ms,
             duration_ms,
         ))
-    }
-
-    /// The nudge percent active for `deck` at `ms` (0 when none).
-    #[wasm_bindgen(js_name = nudgeValueAt)]
-    pub fn nudge_value_at(
-        events_json: &str,
-        deck: &str,
-        ms: f64,
-        inclusive: bool,
-    ) -> Result<f64, JsError> {
-        let events = parse_events(events_json)?;
-        Ok(crate::nudge_value_at(&events, deck, ms, inclusive))
-    }
-
-    /// Paint a nudge `percent` over [range_start_ms, range_end_ms], restoring the
-    /// recorded value at range_end_ms.
-    #[wasm_bindgen(js_name = paintNudgeRange)]
-    pub fn paint_nudge_range(
-        events_json: &str,
-        deck: &str,
-        range_start_ms: f64,
-        range_end_ms: f64,
-        percent: f64,
-    ) -> Result<String, JsError> {
-        let events = parse_events(events_json)?;
-        events_to_json(crate::paint_nudge_range(
-            &events,
-            deck,
-            range_start_ms,
-            range_end_ms,
-            percent,
-        ))
-    }
-
-    /// Remove the nudge span for `deck` in [range_start_ms, range_end_ms] (keeps
-    /// an adjacent opener at range_end_ms). JSON `null` = nothing matched, keep
-    /// the input reference.
-    #[wasm_bindgen(js_name = deleteNudgeRange)]
-    pub fn delete_nudge_range(
-        events_json: &str,
-        deck: &str,
-        range_start_ms: f64,
-        range_end_ms: f64,
-    ) -> Result<String, JsError> {
-        let events = parse_events(events_json)?;
-        match crate::delete_nudge_range(&events, deck, range_start_ms, range_end_ms) {
-            Some(edited) => events_to_json(edited),
-            None => Ok("null".to_string()),
-        }
     }
 
     /// Rewrite event track paths per `mapping` (JSON object old->new path).

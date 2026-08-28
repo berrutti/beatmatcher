@@ -2,7 +2,7 @@
   <div class="deck__bpm-header">
     <div
       class="deck__bpm-value-wrap"
-      :class="{ 'deck__bpm-value-wrap--empty': !props.deck.trackLoaded }"
+      :class="{ 'deck__bpm-value-wrap--empty': !editable }"
       @click="onBpmValueClick"
     >
       <input
@@ -21,15 +21,15 @@
         class="deck__bpm-value-header"
         :class="{ 'deck__bpm-value-header--empty': !props.deck.trackLoaded }"
         :style="{ visibility: editingBpm ? 'hidden' : 'visible' }"
-        >{{ props.deck.targetBpm?.toFixed(2) ?? '--.--' }}</span
+        >{{ displayValue }}</span
       >
     </div>
-    <span class="deck__bpm-unit-header">{{ $t('deck.bpm') }}</span>
+    <span class="deck__bpm-unit-header">{{ showsPitch ? '%' : $t('deck.bpm') }}</span>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import type { Deck } from '@renderer/stores/decks';
 
 const props = defineProps<{
@@ -40,6 +40,20 @@ const editingBpm = ref(false);
 const bpmInputEl = ref<HTMLInputElement | null>(null);
 const bpmInputValue = ref('');
 
+const showsPitch = computed(() => props.deck.trackLoaded && !props.deck.hasGrid);
+const editable = computed(() => props.deck.trackLoaded && props.deck.hasGrid);
+
+const NO_BPM = '--.--';
+
+const displayValue = computed(() => {
+  if (!props.deck.trackLoaded) return NO_BPM;
+  if (showsPitch.value) {
+    const pct = props.deck.pitchOffset;
+    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}`;
+  }
+  return props.deck.targetBpm?.toFixed(2) ?? NO_BPM;
+});
+
 async function startEditingBpm() {
   bpmInputValue.value = props.deck.targetBpm?.toFixed(2) ?? '';
   editingBpm.value = true;
@@ -48,7 +62,7 @@ async function startEditingBpm() {
 }
 
 function onBpmValueClick() {
-  if (!props.deck.trackLoaded) return;
+  if (!editable.value) return;
   startEditingBpm();
 }
 

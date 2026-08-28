@@ -30,6 +30,7 @@ export const LIVE_MIXER_ID = 'classic-3band-v2';
 type Stored = {
   keybindings?: Keybindings;
   limiterEnabled?: boolean;
+  sliderClickResets?: boolean;
   nudgeSensitivity?: number;
   jogRotationSpeed?: JogRotationSpeedOption;
   faderCurve?: FaderCurveOption;
@@ -49,6 +50,9 @@ export type ConflictInfo = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
 export const useSettingsStore = defineStore('settings', () => {
   const keybindings = ref<Keybindings>(structuredClone(DEFAULT_KEYS));
   const limiterEnabled = ref<boolean>(true);
+  // On by default: a fader you can return to full with one click is the reason
+  // it is there. Distracting enough for some that it stays opt-out.
+  const sliderClickResets = ref<boolean>(true);
   const nudgeSensitivity = ref<number>(4);
   const jogRotationSpeed = ref<JogRotationSpeedOption>('rpm33');
   const faderCurve = ref<FaderCurveOption>('linear');
@@ -71,6 +75,7 @@ export const useSettingsStore = defineStore('settings', () => {
   function applyStored(stored: Stored): void {
     if (stored.keybindings) keybindings.value = stored.keybindings;
     limiterEnabled.value = stored.limiterEnabled ?? limiterEnabled.value;
+    sliderClickResets.value = stored.sliderClickResets ?? sliderClickResets.value;
     nudgeSensitivity.value = stored.nudgeSensitivity ?? nudgeSensitivity.value;
     jogRotationSpeed.value = stored.jogRotationSpeed ?? jogRotationSpeed.value;
     faderCurve.value = stored.faderCurve ?? faderCurve.value;
@@ -101,6 +106,7 @@ export const useSettingsStore = defineStore('settings', () => {
     await store.set('v1', {
       keybindings: keybindings.value,
       limiterEnabled: limiterEnabled.value,
+      sliderClickResets: sliderClickResets.value,
       nudgeSensitivity: nudgeSensitivity.value,
       jogRotationSpeed: jogRotationSpeed.value,
       faderCurve: faderCurve.value,
@@ -163,6 +169,11 @@ export const useSettingsStore = defineStore('settings', () => {
     immediate: true
   });
   watch(faderCurve, (v) => call('set_fader_curve', { curve: v }), { immediate: true });
+
+  function setSliderClickResets(enabled: boolean): void {
+    sliderClickResets.value = enabled;
+    trySave();
+  }
 
   function setLimiterEnabled(enabled: boolean): void {
     limiterEnabled.value = enabled;
@@ -237,6 +248,7 @@ export const useSettingsStore = defineStore('settings', () => {
     jogRotationSpeed,
     keybindings,
     limiterEnabled,
+    sliderClickResets,
     nudgeSensitivity,
     pitchRange,
     recordingFormat,
@@ -251,6 +263,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setJogRotationSpeed,
     setKey,
     setLimiterEnabled,
+    setSliderClickResets,
     setNudgeSensitivity,
     setPitchRange,
     setRecordingFormat,

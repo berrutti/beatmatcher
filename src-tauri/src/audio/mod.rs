@@ -39,6 +39,7 @@ use std::sync::{
 
 use analysis::{BPM_MAX, BPM_MIN};
 use recording::{flac_writer_thread, wav_writer_thread, Recording};
+pub(crate) use recording::{save_permille, SAVE_DONE, SAVE_IDLE};
 use stream::{
     best_output_config, build_combined_stream, build_cue_stream, build_stream, find_output_device,
     MasterMonitor as Monitor, SendStream,
@@ -108,7 +109,26 @@ pub struct AppAudio {
     cue_stream: Mutex<Option<SendStream>>,
     pub monitor: MasterMonitor,
     recording: Mutex<Option<Recording>>,
+    // Permille of the save that runs after the last frame is captured. Only the
+    // FLAC encode has one: a WAV is already on disk by then.
+    save_progress: Arc<AtomicU32>,
     mixer: &'static session_core::MixerManifest,
+}
+
+/// Clears the save dial on drop, so an early return cannot strand it mid-permille.
+pub(crate) struct SaveProgress(Arc<AtomicU32>);
+
+impl SaveProgress {
+    /// A copy for whatever thread does the work; the guard keeps its own.
+    pub(crate) fn share(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl Drop for SaveProgress {
+    fn drop(&mut self) {
+        self.0.store(SAVE_IDLE, Ordering::Relaxed);
+    }
 }
 
 impl AppAudio {
@@ -174,6 +194,7 @@ impl AppAudio {
             cue_stream: Mutex::new(None),
             monitor: Monitor::new(),
             recording: Mutex::new(None),
+            save_progress: Arc::new(AtomicU32::new(SAVE_IDLE)),
             mixer: MIXER,
         }
     }
@@ -524,12 +545,32 @@ impl AppAudio {
         let sr = self.device_sample_rate;
         let path_for_thread = temp_path.clone();
         let thread = if use_flac {
-            std::thread::spawn(move || flac_writer_thread(path_for_thread, sr, bit_depth, rx))
+            let progress = Arc::clone(&self.save_progress);
+            std::thread::spawn(move || {
+                flac_writer_thread(path_for_thread, sr, bit_depth, rx, progress)
+            })
         } else {
+            // Streamed straight to disk, so stopping only back-patches the header.
             std::thread::spawn(move || wav_writer_thread(path_for_thread, sr, bit_depth, rx))
         };
         *recording = Some(Recording { thread, temp_path });
         Ok(anchor)
+    }
+
+    /// None when nothing is saving.
+    pub fn save_progress(&self) -> Option<f64> {
+        let permille = self.save_progress.load(Ordering::Relaxed);
+        if permille == SAVE_IDLE {
+            return None;
+        }
+        Some(f64::from(permille) / f64::from(SAVE_DONE))
+    }
+
+    /// Arms the dial and hands out the copy the work reports on. The returned guard
+    /// clears it however the work ends, so no caller has to remember to.
+    pub(crate) fn begin_save(&self) -> SaveProgress {
+        self.save_progress.store(0, Ordering::Relaxed);
+        SaveProgress(Arc::clone(&self.save_progress))
     }
 
     pub fn stop_recording(&self) -> Result<String, String> {

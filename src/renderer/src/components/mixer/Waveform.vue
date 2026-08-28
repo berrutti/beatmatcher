@@ -498,10 +498,8 @@ function draw() {
       continue;
     }
 
-    // rate > 1 means pitched up: audio advances faster than real time, so the
-    // waveform appears compressed horizontally (fewer audio seconds fit in the
-    // fixed real-time window). Divide all audio-time offsets by rate to convert
-    // to real-time screen coordinates.
+    // Audio-time offsets divide by rate to reach screen coordinates: pitched up,
+    // fewer audio seconds fit the fixed real-time window.
     const rate = Math.max(0.1, src.getRate());
     const scaleX = w / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
     const txRaw = w / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleX;

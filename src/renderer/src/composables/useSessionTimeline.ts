@@ -2,14 +2,7 @@ import { computed, type Ref } from 'vue';
 import type { ParsedSession } from '@renderer/stores/session';
 import { buildTimeline } from '@renderer/utils/sessionCore';
 import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
-import type {
-  Clip,
-  LoadedSpan,
-  NudgeSpan,
-  LanePoint,
-  DeckLanes,
-  MasterLanes
-} from '@renderer/utils/types';
+import type { Clip, LoadedSpan, LanePoint, DeckLanes, MasterLanes } from '@renderer/utils/types';
 
 function defaultNameForPath(path: string): string {
   return (
@@ -30,7 +23,6 @@ export function useSessionTimeline(
     loadedSpans: LoadedSpan[];
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
-    deckNudges: Record<string, NudgeSpan[]>;
     deckJog: Record<string, LanePoint[]>;
   }>(() => {
     if (!session.value) {
@@ -39,7 +31,6 @@ export function useSessionTimeline(
         loadedSpans: [],
         deckLanes: {},
         masterLanes: { gain: [], xfader: [] },
-        deckNudges: {},
         deckJog: {}
       };
     }
@@ -56,8 +47,7 @@ export function useSessionTimeline(
   const loadedSpans = computed(() => built.value.loadedSpans);
   const deckLanes = computed(() => built.value.deckLanes);
   const masterLanes = computed(() => built.value.masterLanes);
-  const deckNudges = computed(() => built.value.deckNudges);
   const deckJog = computed(() => built.value.deckJog);
 
-  return { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog };
+  return { clips, loadedSpans, deckLanes, masterLanes, deckJog };
 }

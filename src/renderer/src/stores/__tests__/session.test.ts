@@ -389,3 +389,63 @@ describe('session load phases', () => {
     }
   });
 });
+
+describe('deck audition', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('silences a disabled deck while nothing is soloed', () => {
+    const session = useSessionStore();
+    session.toggleDeckEnabled('A');
+
+    expect(session.deckAudible('A')).toBe(false);
+    expect(session.deckAudible('B')).toBe(true);
+  });
+
+  it('silences every deck but the soloed one', () => {
+    const session = useSessionStore();
+    session.toggleSolo('A');
+
+    expect(session.deckAudible('A')).toBe(true);
+    expect(session.deckAudible('B')).toBe(false);
+  });
+
+  it('releases the previous solo, because only one deck can be soloed', () => {
+    const session = useSessionStore();
+    session.toggleSolo('A');
+    session.toggleSolo('B');
+
+    expect(session.soloedDeck).toBe('B');
+    expect(session.deckAudible('A')).toBe(false);
+    expect(session.deckAudible('B')).toBe(true);
+  });
+
+  it('clears the solo when the soloed deck is soloed again', () => {
+    const session = useSessionStore();
+    session.toggleSolo('A');
+    session.toggleSolo('A');
+
+    expect(session.soloedDeck).toBe(null);
+    expect(session.deckAudible('B')).toBe(true);
+  });
+
+  it('keeps a soloed deck audible even after it is disabled', () => {
+    const session = useSessionStore();
+    session.toggleSolo('A');
+    session.toggleDeckEnabled('A');
+
+    expect(session.deckEnabled('A')).toBe(false);
+    expect(session.deckAudible('A')).toBe(true);
+  });
+
+  it('leaves a deck disabled underneath a solo, so dropping it restores the switch', () => {
+    const session = useSessionStore();
+    session.toggleDeckEnabled('A');
+    session.toggleSolo('B');
+
+    expect(session.deckAudible('A')).toBe(false);
+
+    session.toggleSolo('B');
+    expect(session.deckAudible('A')).toBe(false);
+    expect(session.deckAudible('B')).toBe(true);
+  });
+});

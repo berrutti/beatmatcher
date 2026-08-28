@@ -31,7 +31,7 @@ import { useSessionEditStore } from '../sessionEdit';
 import { invoke } from '@tauri-apps/api/core';
 import { DEFAULT_MIXER_ID } from '../settings';
 import type { SessionEvent } from '@renderer/utils/types';
-import { EDITABLE_DECK_LANE_KEYS } from '@renderer/utils/types';
+import { DECK_LANE_KEYS } from '@renderer/utils/types';
 
 // Mirrors MAX_UNDO in sessionEdit.ts.
 const MAX_UNDO = 100;
@@ -77,7 +77,7 @@ async function randomGesture(
   editStore: ReturnType<typeof useSessionEditStore>,
   random: () => number
 ): Promise<void> {
-  const lane = EDITABLE_DECK_LANE_KEYS[Math.floor(random() * EDITABLE_DECK_LANE_KEYS.length)];
+  const lane = DECK_LANE_KEYS[Math.floor(random() * DECK_LANE_KEYS.length)];
   const t0 = Math.floor(random() * 50_000);
   const t1 = t0 + 500 + Math.floor(random() * 5000);
   const samples = [

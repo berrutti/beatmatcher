@@ -1,7 +1,4 @@
-// The session timeline's camera: the horizontal view window (zoom/pan) plus the
-// vertical scroll of the deck rows, and the canvas-pixel projection (ViewContext)
-// every scene item draws/hit-tests against. All the view math itself lives in
-// timelineView.ts. This owns the state and exposes intent-level actions.
+// The state and the intents; the view maths itself lives in timelineView.ts.
 
 import { ref, watch } from 'vue';
 import {

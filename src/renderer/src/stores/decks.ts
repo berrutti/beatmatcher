@@ -9,6 +9,8 @@ import { DECK_ACCENTS, type DeckId } from '@renderer/utils/types';
 
 export const DECKS_DISPOSITION = ['C', 'A', 'B', 'D'] as const;
 
+export const EDIT_DECK_ID = 'E' as const;
+
 // The pair a two-deck mixer shows. C and D are the outer decks of the four-deck layout, so
 // they are the ones that go, and the remaining two keep their disposition order.
 export const TWO_DECK_DISPOSITION = ['A', 'B'] as const;
@@ -30,16 +32,14 @@ export type TrackData = {
 export type LoadableTrack = {
   path: string;
   name: string;
-  bpm: number;
+  bpm: number | null;
   silenceEnd: number;
   beatOffset: number;
   onBeatOffsetChange: (sec: number) => void;
 };
 
-// Dense LOD points-per-second. Sized to comfortably satisfy zoom >= ~5s on
-// typical canvases (1000-2000px). For a 3-minute track this is ~650 KB
-// of Float32 data. For 10 minutes ~2.1 MB. Anything zoomed deeper than the
-// rate can cover (sub-second zoom levels) falls back to an on-demand fetch.
+// Covers zoom down to ~5s on a 1000-2000px canvas, at ~650 KB of Float32 for a
+// three-minute track. Deeper zoom falls back to an on-demand fetch.
 const DENSE_LOD_PTS_PER_SEC = 250;
 
 type DeckSyncPayload = {
@@ -125,6 +125,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
   let onBeatOffsetChangeCb: ((sec: number) => void) | null = null;
   let bandsReadyUnlisten: (() => void) | null = null;
   let loadGeneration = 0;
+  let pitchGeneration = 0;
 
   async function fetchDenseLodChunked(
     generation: number,
@@ -210,11 +211,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       return state.loopPlaying ? interpolatedPosition() : null;
     },
 
-    // Beat math lives in the engine (session-core), not in the view: this
-    // returns the continuous beat count under the playhead, or null when no
-    // track is loaded. It is NOT gated on playback, so a paused deck keeps the
-    // ring frozen where the playhead sits instead of clearing it. The phase
-    // ring maps this to its own cycle length.
+    // Beat math lives in the engine, not the view. Deliberately not gated on
+    // playback, so a paused deck keeps the ring frozen where the playhead sits.
     get beat(): number | null {
       if (state.trackBpm === null || !state.trackLoaded) return null;
       return coreCurrentBeat(interpolatedPosition(), state.beatOffset, state.trackBpm);
@@ -226,10 +224,15 @@ function createDeck(id: DeckId, accent: string, name: string) {
       return ((beats % 1) + 1) % 1;
     },
 
-    // Playback rate from the pitch fader (targetBpm/trackBpm), 1 when no grid.
-    // Nudge is not included. It is a transient offset applied in the engine.
+    get hasGrid(): boolean {
+      return state.trackBpm !== null;
+    },
+
+    // Nudge is not included: it is a transient offset the engine applies.
     get rate(): number {
-      if (state.trackBpm === null || state.targetBpm === null) return 1;
+      if (state.trackBpm === null || state.targetBpm === null) {
+        return 1 + state.pitchOffset / 100;
+      }
       return state.targetBpm / state.trackBpm;
     },
 
@@ -258,10 +261,20 @@ function createDeck(id: DeckId, accent: string, name: string) {
       call('set_beat_grid', { deck: id, bpm, beatOffsetSec: state.beatOffset });
     },
 
-    setPitchOffset(pct: number) {
-      if (state.trackBpm === null) return;
+    async setPitchOffset(pct: number) {
       const pitchRange = useSettingsStore().pitchRange;
       state.pitchOffset = Math.max(-pitchRange, Math.min(pitchRange, pct));
+      if (state.trackBpm === null) {
+        // A drag outruns the round trip, so an older reply must not land on top
+        // of a newer one.
+        const generation = ++pitchGeneration;
+        const rate = await call('set_pitch_offset', { deck: id, percent: pct });
+        if (generation !== pitchGeneration) return;
+        syncPosition();
+        localRate = rate;
+        state.pitchOffset = (rate - 1) * 100;
+        return;
+      }
       const minBpm = state.trackBpm * (1 - pitchRange / 100);
       const maxBpm = state.trackBpm * (1 + pitchRange / 100);
       // The rate below comes from this bpm, and rounding can cross the range edge.
@@ -289,9 +302,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.trackData = null;
       positionCache = 0;
 
-      // Named before the decode, which takes long enough that a glance at the
-      // deck in between reads the track that was there before. Not loaded until
-      // it returns, so a swap shows the same pending state as an empty deck.
+      // Before the decode, which takes long enough that a glance at the deck in
+      // between would otherwise read the track that was there before.
       state.trackName = data.name;
       state.coverArt = null;
       state.trackLoaded = false;
@@ -332,11 +344,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
       await call('set_playback_rate', { deck: id, rate: 1.0 });
       call('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
 
-      // Spectral bands are computed in the background by Rust. Listen for
-      // bands-ready, then fetch both the low-rate overview and the dense
-      // LOD once bands are available. Fetched in parallel: the overview
-      // lands first (smaller), the dense LOD follows once its pass through
-      // the bands buffers completes.
+      // Fetched in parallel once Rust says the bands are ready: the overview
+      // lands first, the dense LOD after its pass through the band buffers.
       const overviewPoints = Math.min(2000, Math.max(256, Math.ceil(info.duration * 4)));
       const densePoints = Math.max(256, Math.ceil(info.duration * DENSE_LOD_PTS_PER_SEC));
       const gen = loadGeneration;
@@ -361,9 +370,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     setBeatOffset(sec: number) {
       state.beatOffset = sec;
       onBeatOffsetChangeCb?.(sec);
-      if (state.trackBpm !== null) {
-        call('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
-      }
+      call('set_beat_grid', { deck: id, bpm: state.trackBpm, beatOffsetSec: sec });
     },
 
     async setLoopIn() {
@@ -418,9 +425,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
       // --.- still has to interpolate at the rate the engine is actually playing.
       syncPosition();
       localRate = rate;
+      state.pitchOffset = (rate - 1) * 100;
       if (state.trackBpm === null) return;
       state.targetBpm = roundBpm(state.trackBpm * rate);
-      state.pitchOffset = (rate - 1) * 100;
     },
 
     async togglePlay() {

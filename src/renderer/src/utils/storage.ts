@@ -16,6 +16,7 @@ export const STORAGE_KEYS = {
   showWaveformStrip: 'beatmatcher.ui.show-waveform-strip',
   locale: 'beatmatcher.ui.locale',
   sessionDeckLane: 'beatmatcher.ui.session-deck-lane',
+  sessionEditMode: 'beatmatcher.ui.session-edit-mode',
   sessionLaneHeight: 'beatmatcher.ui.session-lane-height',
   sessionMasterLane: 'beatmatcher.ui.session-master-lane',
   sessionWaveformHeight: 'beatmatcher.ui.session-waveform-height',
