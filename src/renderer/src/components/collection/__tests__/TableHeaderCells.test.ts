@@ -20,7 +20,7 @@ function baseProps() {
 describe('TableHeaderCells', () => {
   it('renders one th per field with the label and data-column-field attribute', () => {
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props: baseProps() })
@@ -36,7 +36,7 @@ describe('TableHeaderCells', () => {
 
   it('applies the dragging class only to the field currently being dragged', () => {
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props: { ...baseProps(), draggingColumn: 'artist' } })
@@ -49,7 +49,7 @@ describe('TableHeaderCells', () => {
 
   it('applies the drop-target class only to the field currently targeted', () => {
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props: { ...baseProps(), dropTargetColumn: 'title' } })
@@ -63,7 +63,7 @@ describe('TableHeaderCells', () => {
   it('calls onColumnHeaderPointerDown with the field when the header is pressed', async () => {
     const props = baseProps();
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props })
@@ -77,7 +77,7 @@ describe('TableHeaderCells', () => {
   it('calls onResizerPointerDown and onAutoFitColumn from the resizer handle', async () => {
     const props = baseProps();
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props })
@@ -98,13 +98,15 @@ describe('TableHeaderCells', () => {
       {
         template: `
           <table>
-            <tr>
-              <TableHeaderCells v-bind="props">
-                <template #default="{ field, label }">
-                  <button v-if="field === 'title'" class="sort-btn">{{ label }} sortable</button>
-                </template>
-              </TableHeaderCells>
-            </tr>
+            <thead>
+              <tr>
+                <TableHeaderCells v-bind="props">
+                  <template #default="{ field, label }">
+                    <button v-if="field === 'title'" class="sort-btn">{{ label }} sortable</button>
+                  </template>
+                </TableHeaderCells>
+              </tr>
+            </thead>
           </table>
         `
       },
@@ -125,7 +127,7 @@ describe('TableHeaderCells', () => {
 
   it('omits the resizer handle for a field that is not resizable', () => {
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({
@@ -142,7 +144,7 @@ describe('TableHeaderCells', () => {
     // happy-dom cannot observe clipping, so the guard is structural: the resizer
     // straddles the border and must not nest inside the truncating wrapper.
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props: baseProps() })
@@ -157,7 +159,7 @@ describe('TableHeaderCells', () => {
 
   it('falls back to the default label span when no slot content is provided', () => {
     const wrapper = mount(
-      { template: '<table><tr><TableHeaderCells v-bind="props" /></tr></table>' },
+      { template: '<table><thead><tr><TableHeaderCells v-bind="props" /></tr></thead></table>' },
       {
         global: { components: { TableHeaderCells } },
         data: () => ({ props: baseProps() })
