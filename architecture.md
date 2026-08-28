@@ -49,6 +49,17 @@ Every `#[tauri::command]` lives in `commands.rs`. Where the work belongs to anot
 command is a wrapper that calls into it, so `session_playback` and `midi` keep their internals
 private.
 
+## Calling a command
+
+`tauriCommands.ts` is generated from the `#[tauri::command]` signatures (`yarn generate:commands`,
+verified by `yarn check:commands`). Its `call` wrapper checks the command name, its arguments and
+its return type against the Rust that will receive them, so it is the default.
+
+The generator reads only primitives, `String`, `bool`, `Vec`, `Option` and `HashMap`. A command
+returning a struct comes back as `unknown`, and those take `invoke<T>('name', args)` with `T` a
+hand-written mirror: `DeckSyncPayload`, `TrackInfo`, `LoopOutResult` and the other transport
+commands. Using `invoke` where the generator did type the return throws away the check.
+
 ## Audio signal chain (per deck)
 
 ```mermaid
@@ -168,7 +179,7 @@ stateDiagram-v2
 
 ## Shared session-core crate (Rust + WASM)
 
-The session event model, replay simulation, timeline (clips/lanes), edit operations (clip move/trim/delete, lane automation, filter-region and nudge range edits), and CUE-sheet track-point derivation live in `session-core`, a Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This keeps TypeScript from reimplementing the same simulation/edit logic as the Rust engine, where the two could silently drift out of sync.
+The session event model, replay simulation, timeline (clips/lanes), edit operations (clip move/trim/delete, lane automation and resets, filter-region edits), and CUE-sheet track-point derivation live in `session-core`, a Rust crate shared by the native engine and the frontend. It is built twice from the same source: as a native path-dependency of `src-tauri`, and via `wasm-pack build --target web` into `session-core/pkg` (gitignored, built by `yarn build:wasm`), loaded by the frontend through the `@core` alias. This keeps TypeScript from reimplementing the same simulation/edit logic as the Rust engine, where the two could silently drift out of sync.
 
 ```mermaid
 graph TD
@@ -192,9 +203,9 @@ The timeline is retained-mode over a plain 2D canvas. The scene is a flat list o
 Two orderings run over that list, and they are deliberately not the same one:
 
 - **Draw order** is list order. The scene builder composes it, earlier items paint under later ones.
-- **Hit precedence** is a separate table in `utils/timelineHits.ts`, keyed by `target:part` so a clip's trim edge can outrank a nudge while its body does not. When several items claim a point, the highest-ranked claimer wins, ties broken by draw order.
+- **Hit precedence** is a separate table in `utils/timelineHits.ts`, keyed by `target:part` so a clip's trim edge can outrank a separator while its body does not. When several items claim a point, the highest-ranked claimer wins, ties broken by draw order.
 
-`composables/useTimelineGestures.ts` is the interaction layer. On pointer-down it hit-tests the scene, picks a gesture from the hit plus modifiers, and drives the drag, emitting semantic intents that the controller reacts to. Gesture visuals in progress (the draw line, a clip ghost, nudge and filter previews) are pushed back as overlay `SceneItem`s, so the renderer draws them like anything else.
+`composables/useTimelineGestures.ts` is the interaction layer. On pointer-down it hit-tests the scene, picks a gesture from the hit plus modifiers, and drives the drag, emitting semantic intents that the controller reacts to. Gesture visuals in progress (the draw line, a clip ghost, the filter preview) are pushed back as overlay `SceneItem`s, so the renderer draws them like anything else.
 
 ## Collection column widths
 

@@ -77,7 +77,6 @@ async function mountWithPlaylistTrack() {
         Buttons: true,
         BpmModal: true,
         TrackBpmCell: true,
-        TrackStatusTag: true,
         TrackContextMenu: true,
         ColumnVisibilityMenu: true
       }

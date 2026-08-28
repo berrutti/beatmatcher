@@ -65,7 +65,6 @@
           :playhead-ms="playheadMs"
           :deck-lanes="deckLanes"
           :master-lanes="masterLanes"
-          :deck-nudges="deckNudges"
           :deck-jog="deckJog"
           :waveforms="session.waveforms"
           @seek="onSeek"
@@ -81,14 +80,6 @@
         @click="onTransport"
       >
         {{ session.isPlaying ? '⏸︎' : '▶︎' }}
-      </button>
-      <button
-        class="session__btn session__btn--transport"
-        :class="{ 'session__btn--active': editStore.editMode }"
-        v-tooltip="$t('session.edit')"
-        @click="editStore.toggleEditMode()"
-      >
-        ✎
       </button>
       <span class="session__duration">
         {{ formatMs(playheadMs) }} / {{ formatMs(session.durationMs) }}
@@ -156,12 +147,13 @@ const collection = useCollectionStore();
 const settingsStore = useSettingsStore();
 const { session: sessionRef } = storeToRefs(session);
 
-const { clips, loadedSpans, deckLanes, masterLanes, deckNudges, deckJog } = useSessionTimeline(
+const { clips, loadedSpans, deckLanes, masterLanes, deckJog } = useSessionTimeline(
   sessionRef,
   (path) => collection.getName(path),
   (path) => {
     const saved = collection.getSaved(path);
-    return saved ? { bpm: saved.bpm, beatOffsetSec: saved.beatOffset } : null;
+    if (saved === null || saved.bpm === null) return null;
+    return { bpm: saved.bpm, beatOffsetSec: saved.beatOffset };
   }
 );
 
@@ -186,9 +178,8 @@ let rafId = 0;
 let playStartWall = 0;
 let unlistenDrop: UnlistenFn | null = null;
 
-// OS file drops are handled by Tauri's native drag-drop, not HTML5 DnD
-// (dragDropEnabled is on, and File.path no longer exists in Tauri v2), so the
-// absolute path comes from the webview drag-drop event.
+// Tauri v2 dropped File.path, so an absolute path only arrives on the webview's
+// own drag-drop event, not through HTML5 DnD.
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown);
   unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -213,13 +204,24 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   );
 }
 
-// Spacebar toggles transport, like the edit view. preventDefault also stops a
-// focused button from being activated by the same keypress.
+// Only while nothing is focused, so Tab still walks the controls once a user has
+// reached them with the keyboard.
+function isBodyFocused(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
+
+// preventDefault stops a focused button taking the same keypress, and stops the
+// browser moving focus on Tab.
 function onKeyDown(e: KeyboardEvent) {
-  if (e.code !== 'Space' || e.repeat) return;
-  if (!session.session || settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) {
+  if (e.repeat) return;
+  if (settingsStore.isOpen || discardModalOpen.value || isTypingTarget(e)) return;
+  if (e.code === 'Tab') {
+    if (!isBodyFocused()) return;
+    e.preventDefault();
+    editStore.toggleEditMode();
     return;
   }
+  if (e.code !== 'Space' || !session.session) return;
   e.preventDefault();
   onTransport().catch(() => {});
 }
@@ -440,11 +442,20 @@ onUnmounted(() => {
   cursor: default;
 }
 
-.session__btn--transport:hover:not(:disabled),
+.session__btn--transport:hover:not(:disabled):not(.session__btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
+
 .session__btn--active {
-  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
   border-color: var(--color-accent-cyan);
   color: var(--color-accent-cyan);
+}
+
+.session__btn--active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .session__duration {
@@ -476,9 +487,9 @@ onUnmounted(() => {
 }
 
 .session__btn--render:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
-  border-color: var(--color-accent-cyan);
-  color: var(--color-accent-cyan);
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .session__btn--render:disabled {
@@ -487,7 +498,8 @@ onUnmounted(() => {
 }
 
 .session__btn--eject:hover {
+  border-color: var(--color-border-hover);
   color: var(--color-text);
-  border-color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 </style>

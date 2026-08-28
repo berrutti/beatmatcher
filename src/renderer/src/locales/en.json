@@ -20,17 +20,22 @@
   },
   "topStrip": {
     "rec": "Rec",
+    "finishing": "Saving…",
+    "savingRecording": "Saving recording",
+    "hideProgress": "Hide",
+    "savingHint": "Runs in the background. Playback is unaffected.",
+    "masterHint": "Master volume: double-click to reset",
     "fourDecks": "4 decks",
     "twoDecks": "2 decks",
     "waveforms": "Waveforms",
-    "swarmHint": "Hold number keys",
+    "swarmHint": "Swarm: hold number keys",
     "swarm": "Swarm",
     "vol": "Vol",
     "master": "Master",
     "notConfigured": "Not configured",
     "channel": "Ch {n1}-{n2}",
     "cue": "CUE",
-    "cueMixHint": "CUE/MIX: blend cue signal with master output in headphones",
+    "cueMixHint": "CUE/MIX: blend cue with master in headphones",
     "mix": "Mix"
   },
   "settings": {
@@ -58,6 +63,11 @@
       "exponential": "Exponential",
       "linear": "Linear",
       "logarithmic": "Logarithmic"
+    },
+    "sliderClick": {
+      "title": "Slider click",
+      "label": "Click a slider's handle to return it to its default",
+      "hint": "Applies to every fader, EQ, filter and pitch control. Only the handle responds; dragging is unaffected. Double-click does nothing while this is on."
     },
     "filterStart": {
       "title": "Filters at startup",
@@ -150,7 +160,7 @@
     "colTitle": "Title",
     "colBpm": "BPM",
     "colAdded": "Added",
-    "colDecks": "Send to deck",
+    "colDecks": "Send to",
     "colTracks": "Tracks",
     "colArtist": "Artist",
     "colAlbum": "Album",
@@ -166,7 +176,6 @@
     "columnsMenuTitle": "Columns",
     "columnRequired": "At least one column required",
     "detecting": "Detecting...",
-    "statusError": "Error",
     "statusMissing": "missing",
     "analyze": "Analyze",
     "setBpm": "Set BPM",
@@ -189,8 +198,7 @@
     "sendToEdit": "Click to send to Edit",
     "sendToDeck": "Click to send to Deck {deckId}",
     "analyzeFirst": "Analyze this track before sending it to a deck",
-    "sameDeck": "Cannot send to the same deck",
-    "analyzeFailedTooltip": "Couldn't analyze this track"
+    "sameDeck": "Cannot send to the same deck"
   },
   "search": {
     "placeholder": "Search"
@@ -214,8 +222,11 @@
     "loadBody": "Playback will stop and the current track will be replaced.",
     "ejectConfirmTitle": "Eject the playing track?",
     "ejectConfirmBody": "Playback will stop and the deck will be emptied.",
-    "label": "DECK {id}",
+    "label": "Deck {id}",
     "ejectTitle": "Eject track",
+    "quantizeTitle": "Quantize: snap cue and loop to the beat grid",
+    "quantizeNeedsGrid": "Quantize needs a beat grid: set the BPM first",
+    "pitchHint": "Pitch: double-click to reset",
     "notLoaded": "Load a track",
     "artist": "Artist:",
     "track": "Track:",
@@ -232,15 +243,20 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "No track loaded"
+    "noTrackLoaded": "No track loaded",
+    "loading": "Loading track…"
   },
   "mixer": {
     "cue": "CUE",
     "cueHint": "Toggle CUE: Space + number key",
+    "filterToggle": "Toggle filter",
+    "filterHint": "Filter: double-click to reset",
+    "eqHint": "EQ: double-click to reset",
+    "faderHint": "Channel volume: double-click to reset",
     "assignA": "A",
     "assignB": "B",
-    "assignHint": "Crossfader assign: A or B, neither to bypass",
-    "xfaderHint": "Crossfader. Double-click to centre."
+    "assignHint": "Assign to crossfader: A or B, neither to bypass",
+    "xfaderHint": "Crossfader: double-click to centre"
   },
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",
@@ -259,21 +275,27 @@
     "rendering": "Rendering...",
     "renderWav": "Render WAV",
     "renderFlac": "Render FLAC",
-    "edit": "Edit session",
+    "edit": "Edit",
+    "editHint": "Edit session: draw lanes, move clips (Tab)",
     "saveAs": "Save as",
     "discardTitle": "Discard unsaved edits?",
     "discardBody": "The session has unsaved edits. Ejecting will discard them.",
     "discardConfirm": "Discard",
     "missingFiles": "These audio files are missing. Choose the folder that contains them to restore playback:",
     "locate": "Choose folder",
-    "deleteNudge": "Delete nudge",
     "deleteFilterRegion": "Delete filter region",
+    "resetLaneFromHere": "Reset {lane} from here",
+    "resetLaneUntilHere": "Reset {lane} until here",
+    "resetLaneThisMove": "Reset this {lane} move",
     "setClipBpm": "Set BPM (whole clip)…",
     "setBpmFromHere": "Set BPM from here…",
     "splitClip": "Split clip here",
-    "mute": "Mute",
+    "enabled": "Enabled",
+    "enabledOverridden": "A soloed deck overrides this",
+    "disabledBadge": "Off",
     "solo": "Solo",
     "lanesMenu": "Lanes",
+    "lastLane": "A row needs at least one lane",
     "loadingTitle": "Loading session",
     "loadingBody": "Decoding tracks. Playback starts when every track is ready.",
     "loadingTracks": "{loaded} of {total} tracks",

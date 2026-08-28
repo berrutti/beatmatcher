@@ -21,7 +21,6 @@ struct SessionLogger {
     start_wall: std::time::SystemTime,
     mixer: &'static session_core::MixerManifest,
     events: Vec<serde_json::Value>,
-    pending: Option<String>,
     capture_start: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -52,7 +51,6 @@ impl SessionLogger {
             start_wall: std::time::SystemTime::now(),
             mixer,
             events: Vec::new(),
-            pending: None,
             capture_start,
         }
     }
@@ -80,14 +78,13 @@ impl SessionLogger {
         }
     }
 
-    fn stop(&mut self) {
+    fn finish(mut self) -> Option<String> {
         self.rebase_frames();
         let events = std::mem::take(&mut self.events);
-        self.pending = self.serialize(events);
+        self.serialize(events)
     }
 
-    /// The same file `stop` produces, from a copy, so a journal can be written while the
-    /// recording continues. Rebasing happens on the copy: the live log stays raw until stop.
+    /// Rebased on a copy, so the live log stays raw until it finishes.
     fn snapshot(&self) -> Option<String> {
         let origin = self
             .capture_start
@@ -109,16 +106,13 @@ impl SessionLogger {
         });
         serde_json::to_string_pretty(&log).ok()
     }
-
-    fn take_pending(&mut self) -> Option<String> {
-        self.pending.take()
-    }
 }
 
 /// Owns the session log for a recording: nothing outside here touches the `Option`,
 /// so "is a session being recorded" is answered in one place.
 pub(crate) struct Recorder {
     logger: Arc<Mutex<Option<SessionLogger>>>,
+    pending: Mutex<Option<String>>,
     journal: Mutex<Option<Journal>>,
 }
 
@@ -135,6 +129,7 @@ impl Recorder {
     pub(crate) fn new() -> Self {
         Self {
             logger: Arc::new(Mutex::new(None)),
+            pending: Mutex::new(None),
             journal: Mutex::new(None),
         }
     }
@@ -185,20 +180,20 @@ impl Recorder {
             logger.log_at(anchor.get(), event_type, payload);
         }
         *self.logger.locked() = Some(logger);
+        // A log nobody read belongs to the recording that produced it, never the next one.
+        *self.pending.locked() = None;
     }
 
     pub(crate) fn stop(&self, frame: RenderFrame) {
-        if let Some(logger) = self.logger.locked().as_mut() {
-            logger.log_at(frame.get(), "recording_stop", serde_json::json!({}));
-            logger.stop();
-        }
+        let Some(mut logger) = self.logger.locked().take() else {
+            return;
+        };
+        logger.log_at(frame.get(), "recording_stop", serde_json::json!({}));
+        *self.pending.locked() = logger.finish();
     }
 
     pub(crate) fn take_pending(&self) -> Option<String> {
-        self.logger
-            .locked()
-            .as_mut()
-            .and_then(SessionLogger::take_pending)
+        self.pending.locked().take()
     }
 
     pub(crate) fn log_at(&self, frame: RenderFrame, event_type: &str, payload: serde_json::Value) {
@@ -236,6 +231,53 @@ mod tests {
 
     fn unix_millis(ms: u64) -> std::time::SystemTime {
         std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)
+    }
+
+    fn recorder_with_one_event() -> Recorder {
+        let recorder = Recorder::new();
+        let capture = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        recorder.start(
+            crate::audio::MIXER,
+            capture,
+            RenderFrame::from_master_clock(0),
+            [("recording_start", serde_json::json!({}))],
+        );
+        recorder
+    }
+
+    fn event_types(log: &str) -> Vec<String> {
+        let parsed: serde_json::Value = serde_json::from_str(log).expect("valid JSON");
+        parsed["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_second_stop_cannot_replace_the_finished_recording() {
+        let recorder = recorder_with_one_event();
+        recorder.stop(RenderFrame::from_master_clock(1000));
+        recorder.stop(RenderFrame::from_master_clock(2000));
+
+        let log = recorder.take_pending().expect("a stopped recording");
+        assert_eq!(event_types(&log), vec!["recording_start", "recording_stop"]);
+    }
+
+    #[test]
+    fn a_stopped_recorder_logs_nothing_further() {
+        let recorder = recorder_with_one_event();
+        recorder.stop(RenderFrame::from_master_clock(1000));
+        recorder.log_at(
+            RenderFrame::from_master_clock(1500),
+            "set_nudge",
+            serde_json::json!({ "deck": "A", "percent": 4.0 }),
+        );
+        recorder.stop(RenderFrame::from_master_clock(2000));
+
+        let log = recorder.take_pending().expect("a stopped recording");
+        assert_eq!(event_types(&log), vec!["recording_start", "recording_stop"]);
     }
 
     #[test]
@@ -383,10 +425,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "recording_start", serde_json::json!({}));
-        logger.stop();
-        let pending = logger
-            .take_pending()
-            .expect("stop should produce pending JSON");
+        let pending = logger.finish().expect("finishing produces JSON");
         let parsed: serde_json::Value = serde_json::from_str(&pending).expect("valid JSON");
         assert_eq!(parsed["version"], 2);
         assert!(parsed["startedAt"].as_str().is_some());
@@ -396,13 +435,12 @@ mod tests {
 
     #[test]
     fn session_logger_stamps_the_mixer_it_recorded_on() {
-        let mut logger = SessionLogger::new(
+        let logger = SessionLogger::new(
             &session_core::CLASSIC_3BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
-        logger.stop();
         let parsed: serde_json::Value =
-            serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
+            serde_json::from_str(&logger.finish().expect("finished")).expect("valid JSON");
         assert_eq!(parsed["mixer"]["id"], "classic-3band");
         assert_eq!(
             parsed["mixer"]["hash"],
@@ -416,13 +454,12 @@ mod tests {
 
     #[test]
     fn session_logger_stamps_the_mixer_it_was_given() {
-        let mut logger = SessionLogger::new(
+        let logger = SessionLogger::new(
             &session_core::ISOLATOR_3BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
-        logger.stop();
         let parsed: serde_json::Value =
-            serde_json::from_str(&logger.take_pending().expect("pending")).expect("valid JSON");
+            serde_json::from_str(&logger.finish().expect("finished")).expect("valid JSON");
         assert_eq!(parsed["mixer"]["id"], "isolator-3band");
         assert_eq!(
             parsed["mixer"]["hash"],
@@ -431,25 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn session_logger_take_pending_clears_state() {
-        let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
-            Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        );
-        logger.stop();
-        assert!(logger.take_pending().is_some());
-        assert!(logger.take_pending().is_none());
-    }
-
-    #[test]
-    fn session_logger_stop_clears_events() {
-        let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
-            Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        );
-        logger.log_at(0, "a", serde_json::json!({}));
-        logger.log_at(0, "b", serde_json::json!({}));
-        logger.stop();
-        assert!(logger.events.is_empty());
+    fn a_taken_log_is_not_handed_out_twice() {
+        let recorder = recorder_with_one_event();
+        recorder.stop(RenderFrame::from_master_clock(1000));
+        assert!(recorder.take_pending().is_some());
+        assert!(recorder.take_pending().is_none());
     }
 }

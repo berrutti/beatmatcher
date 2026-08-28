@@ -53,6 +53,11 @@ export default [
               name: '@tauri-apps/api/core',
               importNames: ['invoke'],
               message: 'invoke must only be called from Pinia stores (src/renderer/src/stores/).'
+            },
+            {
+              name: '@renderer/tauriCommands',
+              importNames: ['call'],
+              message: 'call must only be used from Pinia stores (src/renderer/src/stores/).'
             }
           ]
         }

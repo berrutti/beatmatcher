@@ -62,19 +62,31 @@ describe('the mixer under fuzzed swarm drags', () => {
   afterEach(() => {
     wrapper?.unmount();
     wrapper = null;
+    faders = null;
     vi.useRealTimers();
   });
 
   // The component computes each drag as a delta against the dragged deck and only the store
   // clamps. Driven through the real slider so the component's own arithmetic runs.
+  // Resolved once per mount: the faders outlive every drag, and re-querying them
+  // on each of a few thousand iterations is what the loop spends its time on.
+  let faders: HTMLInputElement[] | null = null;
+
+  function faderInputs(): HTMLInputElement[] {
+    if (faders) return faders;
+    const found = (wrapper?.findAll('input.mixer__fader') ?? []).map((fader) => fader.element);
+    const inputs = found.filter((el): el is HTMLInputElement => el instanceof HTMLInputElement);
+    if (inputs.length !== found.length) throw new Error('a fader is not an input');
+    faders = inputs;
+    return inputs;
+  }
+
   function dragFader(index: number, value: number) {
-    const faders = wrapper?.findAll('input.mixer__fader') ?? [];
-    const fader = faders[index];
-    if (!fader) throw new Error(`no fader ${index} of ${faders.length}`);
-    const element = fader.element;
-    if (!(element instanceof HTMLInputElement)) throw new Error('fader is not an input');
-    element.value = String(value);
-    fader.trigger('input');
+    const all = faderInputs();
+    const fader = all[index];
+    if (!fader) throw new Error(`no fader ${index} of ${all.length}`);
+    fader.value = String(value);
+    fader.dispatchEvent(new Event('input'));
   }
 
   it('keeps every channel in range however the group is dragged', async () => {
@@ -83,16 +95,25 @@ describe('the mixer under fuzzed swarm drags', () => {
     store.setSwarmMode(true);
     for (const deck of DECKS) store.setSwarmChannel(deck, random() < 0.6);
 
+    // Collected rather than asserted per deck per step: the same inputs and the
+    // same invariant, without an expect() call per channel per iteration.
+    const outOfRange: string[] = [];
+    const moved = new Set<DeckId>();
     for (let step = 0; step < 1500; step++) {
       dragFader(Math.floor(random() * DECKS.length), random());
       await Promise.resolve();
 
       for (const deck of DECKS) {
-        expect(Number.isFinite(store.paramValue(deck, FADER_GAIN)), `step ${step}`).toBe(true);
-        expect(store.paramValue(deck, FADER_GAIN), `step ${step}`).toBeGreaterThanOrEqual(0);
-        expect(store.paramValue(deck, FADER_GAIN), `step ${step}`).toBeLessThanOrEqual(1);
+        const gain = store.paramValue(deck, FADER_GAIN);
+        if (!Number.isFinite(gain) || gain < 0 || gain > 1) {
+          outOfRange.push(`step ${step} ${deck}: ${gain}`);
+        }
+        if (gain !== 1) moved.add(deck);
       }
     }
+
+    expect(outOfRange).toEqual([]);
+    expect(moved.size, 'no channel ever moved').toBeGreaterThan(0);
   });
 
   it('moves the dragged channel to exactly where it was dropped', async () => {

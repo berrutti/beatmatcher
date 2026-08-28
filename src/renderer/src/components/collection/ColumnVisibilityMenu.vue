@@ -17,8 +17,8 @@
         v-tooltip="isLastVisibleColumn(field) ? $t('browser.columnRequired') : undefined"
         @click="isLastVisibleColumn(field) || store.toggleColumn(field)"
       >
-        <span class="context-menu__checkbox">{{ store.isColumnVisible(field) ? '✓' : '' }}</span>
         <span>{{ COLUMN_LABELS[field] }}</span>
+        <span class="context-menu__checkbox">{{ store.isColumnVisible(field) ? '✓' : '' }}</span>
       </button>
     </div>
     <div
@@ -43,9 +43,8 @@ type ColumnMenu = { x: number; y: number };
 const columnMenu = ref<ColumnMenu | null>(null);
 const columnMenuEl = ref<HTMLElement | null>(null);
 
-// The column picker menu lists columns alphabetically regardless of their
-// drag-reordered position in the table, so toggling a column's visibility
-// never shuffles the menu itself.
+// Alphabetical rather than in table order, so ticking one never shuffles the
+// menu under the cursor.
 const columnMenuFields = computed<ColumnField[]>(() =>
   [...store.columnOrder].sort((a, b) =>
     COLUMN_LABELS.value[a].localeCompare(COLUMN_LABELS.value[b])

@@ -449,3 +449,73 @@ describe('a decode that fails leaves the deck usable', () => {
     expect(decks.deckA.trackName).toBe('');
   });
 });
+
+describe('a deck holding a track with no bpm', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const gridless: LoadableTrack = {
+    path: '/music/gridless.mp3',
+    name: 'Gridless',
+    bpm: null,
+    silenceEnd: 0.5,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('loads, opens at the beat offset, and reports no grid', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(gridless);
+
+    expect(decks.deckA.trackLoaded).toBe(true);
+    expect(decks.deckA.hasGrid).toBe(false);
+    expect(decks.deckA.trackBpm).toBeNull();
+    expect(decks.deckA.targetBpm).toBeNull();
+    expect(decks.deckA.cuePoint).toBe(0.5);
+    expect(decks.deckA.beat).toBeNull();
+    expect(decks.deckA.phase).toBe(0);
+  });
+
+  it('sends the beat grid with a null bpm rather than skipping it', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(gridless);
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('set_beat_grid', {
+      deck: 'A',
+      bpm: null,
+      beatOffsetSec: 0.5
+    });
+  });
+
+  it('records a moved beat offset even with no bpm to anchor', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(gridless);
+    vi.mocked(invoke).mockClear();
+
+    decks.deckA.setBeatOffset(1.25);
+
+    expect(decks.deckA.beatOffset).toBe(1.25);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('set_beat_grid', {
+      deck: 'A',
+      bpm: null,
+      beatOffsetSec: 1.25
+    });
+  });
+
+  it('gains a grid when a bpm is set on it', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(gridless);
+
+    decks.deckA.setTrackBpm(124);
+
+    expect(decks.deckA.hasGrid).toBe(true);
+    expect(decks.deckA.targetBpm).toBe(124);
+    expect(decks.deckA.pitchOffset).toBe(0);
+  });
+});

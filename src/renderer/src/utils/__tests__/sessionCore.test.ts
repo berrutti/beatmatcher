@@ -17,7 +17,6 @@ import {
   decimateSteps,
   filterActiveAt,
   toggleFilterActiveRange,
-  deleteNudgeRange,
   relocateEventPaths,
   editConstants,
   currentBeat
@@ -26,6 +25,25 @@ import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 
 const CLASSIC = 'classic-3band';
+
+// The rate range only bounds the rate lane, so a gain splice takes the lane's own.
+function spliceGain(events: SessionEvent[]) {
+  const rate = laneSpecs(CLASSIC).rate;
+  return spliceLaneEvents(
+    events,
+    'gain',
+    CLASSIC,
+    'A',
+    5000,
+    8000,
+    [
+      { ms: 5000, value: 0.4 },
+      { ms: 6000, value: 0.4 }
+    ],
+    rate.min,
+    rate.max
+  );
+}
 const ISOLATOR = 'isolator-3band';
 
 function simpleSession(): SessionEvent[] {
@@ -60,7 +78,6 @@ describe('buildTimeline', () => {
     expect(built.loadedSpans[0].trackName).toBe('name:/tracks/one.mp3');
     expect(built.deckLanes['A'].gain.length).toBeGreaterThan(1);
     expect(built.masterLanes.gain[0].ms).toBe(0);
-    expect(built.deckNudges['A']).toEqual([]);
   });
 
   it('prefers the collection grid and falls back to recorded values', () => {
@@ -166,10 +183,7 @@ describe('lane edit wrappers', () => {
     const events: SessionEvent[] = [
       { elapsed_ms: 1000, type: 'set_param', deck: 'A', slot: 'fader', param: 'gain', value: 0.8 }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const gains = out
       .filter((event) => event.type === 'set_param' && event.slot === 'fader')
       .map((event) => event.value);
@@ -200,10 +214,7 @@ describe('lane edit wrappers', () => {
         frame: 882000
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const untouched = out.find((event) => event.elapsed_ms === 20000);
     expect(untouched?.frame).toBe(882000);
   });
@@ -220,10 +231,7 @@ describe('lane edit wrappers', () => {
         frame: 44100
       }
     ];
-    const out = spliceLaneEvents(events, 'gain', CLASSIC, 'A', 5000, 8000, [
-      { ms: 5000, value: 0.4 },
-      { ms: 6000, value: 0.4 }
-    ]);
+    const out = spliceGain(events);
     const created = out.filter((event) => event.elapsed_ms >= 5000 && event.elapsed_ms <= 8000);
     expect(created.length).toBeGreaterThan(0);
     for (const event of created) expect(event.frame).toBeUndefined();
@@ -237,11 +245,6 @@ describe('lane edit wrappers', () => {
 });
 
 describe('reference-preserving no-ops', () => {
-  it('deleteNudgeRange returns the input reference when nothing matches', () => {
-    const events = simpleSession();
-    expect(deleteNudgeRange(events, 'A', 1000, 2000)).toBe(events);
-  });
-
   it('relocateEventPaths returns the input reference for an unmapped set', () => {
     const events = simpleSession();
     expect(relocateEventPaths(events, { '/never/there.mp3': '/new.mp3' })).toBe(events);

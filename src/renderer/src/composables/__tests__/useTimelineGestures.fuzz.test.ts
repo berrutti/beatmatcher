@@ -71,12 +71,10 @@ function harness(clips: Clip[], events: SessionEvent[], hit: Hit) {
     getClips: () => clips,
     getEvents: () => events,
     getDeckLanes: () => ({}),
-    laneHeight: () => 64,
-    waveformHeight: () => 80,
+    laneHeightFor: () => 64,
+    waveformHeightFor: () => 80,
     isEditMode: () => true,
     durationMs: () => DURATION_MS,
-    nudgeDirectionAt: () => 1,
-    nudgeSensitivity: () => 1,
     accentFor: () => '#ffffff',
     requestRender: () => {},
     setCursor: () => {}
@@ -85,7 +83,7 @@ function harness(clips: Clip[], events: SessionEvent[], hit: Hit) {
 }
 
 const RECT = { left: 0, top: 0 } as DOMRect;
-const mouseAt = (x: number, y: number) => ({ clientX: x, clientY: y }) as MouseEvent;
+const mouseAt = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0 }) as MouseEvent;
 
 type Case = {
   index: number;

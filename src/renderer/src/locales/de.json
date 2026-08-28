@@ -20,17 +20,22 @@
   },
   "topStrip": {
     "rec": "Rec",
+    "finishing": "Speichern…",
+    "savingRecording": "Aufnahme wird gespeichert",
+    "hideProgress": "Ausblenden",
+    "savingHint": "Läuft im Hintergrund. Die Wiedergabe ist nicht betroffen.",
+    "masterHint": "Master-Lautstärke: Doppelklick zum Zurücksetzen",
     "fourDecks": "4 Decks",
     "twoDecks": "2 Decks",
     "waveforms": "Wellenformen",
-    "swarmHint": "Zahlentasten halten",
+    "swarmHint": "Swarm: Zahlentasten halten",
     "swarm": "Schwarm",
     "vol": "Lautst.",
     "master": "Master",
     "notConfigured": "Nicht konfiguriert",
     "channel": "Kan. {n1}-{n2}",
     "cue": "CUE",
-    "cueMixHint": "CUE/MIX: Cue-Signal mit Master-Ausgang im Kopfhörer mischen",
+    "cueMixHint": "CUE/MIX: Cue mit Master im Kopfhörer mischen",
     "mix": "Mix"
   },
   "settings": {
@@ -58,6 +63,11 @@
       "exponential": "Exponentiell",
       "linear": "Linear",
       "logarithmic": "Logarithmisch"
+    },
+    "sliderClick": {
+      "title": "Regler-Klick",
+      "label": "Auf den Griff eines Reglers klicken, um ihn zurückzusetzen",
+      "hint": "Gilt für alle Fader, EQs, Filter und Pitch-Regler. Nur der Griff reagiert; Ziehen bleibt unverändert. Doppelklick ist wirkungslos, solange dies aktiv ist."
     },
     "filterStart": {
       "title": "Filter beim Start",
@@ -150,7 +160,7 @@
     "colTitle": "Titel",
     "colBpm": "BPM",
     "colAdded": "Hinzugefügt",
-    "colDecks": "An Deck senden",
+    "colDecks": "Senden an",
     "colTracks": "Tracks",
     "colArtist": "Künstler",
     "colAlbum": "Album",
@@ -166,7 +176,6 @@
     "columnsMenuTitle": "Spalten",
     "columnRequired": "Mindestens eine Spalte erforderlich",
     "detecting": "wird analysiert...",
-    "statusError": "Fehler",
     "statusMissing": "fehlt",
     "analyze": "Analysieren",
     "setBpm": "BPM setzen",
@@ -189,8 +198,7 @@
     "sendToEdit": "Klicken, um an Edit zu senden",
     "sendToDeck": "Klicken, um an Deck {deckId} zu senden",
     "analyzeFirst": "Diesen Track zuerst analysieren, bevor er an ein Deck gesendet wird",
-    "sameDeck": "Kann nicht an dasselbe Deck gesendet werden",
-    "analyzeFailedTooltip": "Dieser Track konnte nicht analysiert werden"
+    "sameDeck": "Kann nicht an dasselbe Deck gesendet werden"
   },
   "search": {
     "placeholder": "Suchen"
@@ -214,8 +222,11 @@
     "loadBody": "Die Wiedergabe wird gestoppt und der aktuelle Track ersetzt.",
     "ejectConfirmTitle": "Laufenden Track auswerfen?",
     "ejectConfirmBody": "Die Wiedergabe wird gestoppt und das Deck geleert.",
-    "label": "DECK {id}",
+    "label": "Deck {id}",
     "ejectTitle": "Track auswerfen",
+    "quantizeTitle": "Quantisieren: Cue und Loop am Beatraster ausrichten",
+    "quantizeNeedsGrid": "Quantisieren braucht ein Beatraster: zuerst BPM setzen",
+    "pitchHint": "Pitch: Doppelklick zum Zurücksetzen",
     "notLoaded": "Track laden",
     "artist": "Künstler:",
     "track": "Track:",
@@ -232,15 +243,20 @@
     "cue": "CUE"
   },
   "editWaveform": {
-    "noTrackLoaded": "Kein Track geladen"
+    "noTrackLoaded": "Kein Track geladen",
+    "loading": "Track wird geladen…"
   },
   "mixer": {
     "cue": "CUE",
     "cueHint": "CUE umschalten: Leertaste + Zahl",
+    "filterToggle": "Filter umschalten",
+    "filterHint": "Filter: Doppelklick zum Zurücksetzen",
+    "eqHint": "EQ: Doppelklick zum Zurücksetzen",
+    "faderHint": "Kanal-Lautstärke: Doppelklick zum Zurücksetzen",
     "assignA": "A",
     "assignB": "B",
-    "assignHint": "Crossfader-Zuweisung: A oder B, keins zum Umgehen",
-    "xfaderHint": "Crossfader. Doppelklick zum Zentrieren."
+    "assignHint": "Crossfader zuweisen: A oder B, keins zum Umgehen",
+    "xfaderHint": "Crossfader: Doppelklick zum Zentrieren"
   },
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",
@@ -259,21 +275,27 @@
     "rendering": "Wird gerendert...",
     "renderWav": "Als WAV rendern",
     "renderFlac": "Als FLAC rendern",
-    "edit": "Session editieren",
+    "edit": "Bearbeiten",
+    "editHint": "Session editieren: Spuren zeichnen, Clips verschieben (Tab)",
     "saveAs": "Speichern unter",
     "discardTitle": "Ungespeicherte Änderungen verwerfen?",
     "discardBody": "Die Session hat ungespeicherte Änderungen. Beim Auswerfen gehen sie verloren.",
     "discardConfirm": "Verwerfen",
     "missingFiles": "Diese Audiodateien fehlen. Wähle den Ordner, der sie enthält, um die Wiedergabe wiederherzustellen:",
     "locate": "Ordner auswählen",
-    "deleteNudge": "Nudge löschen",
     "deleteFilterRegion": "Filterbereich löschen",
+    "resetLaneFromHere": "{lane} ab hier zurücksetzen",
+    "resetLaneUntilHere": "{lane} bis hier zurücksetzen",
+    "resetLaneThisMove": "Diese {lane}-Bewegung zurücksetzen",
     "setClipBpm": "BPM festlegen (ganzer Clip)…",
     "setBpmFromHere": "BPM ab hier festlegen…",
     "splitClip": "Clip hier teilen",
-    "mute": "Mute",
+    "enabled": "Aktiv",
+    "enabledOverridden": "Ein Solo-Deck setzt dies außer Kraft",
+    "disabledBadge": "Aus",
     "solo": "Solo",
     "lanesMenu": "Parameter",
+    "lastLane": "Eine Zeile braucht mindestens eine Spur",
     "loadingTitle": "Session wird geladen",
     "loadingBody": "Tracks werden dekodiert. Die Wiedergabe startet, sobald alle bereit sind.",
     "loadingTracks": "{loaded} von {total} Tracks",

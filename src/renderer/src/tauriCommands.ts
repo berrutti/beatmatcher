@@ -32,6 +32,7 @@ type Commands = {
   press_cue: { args: { deck: string }; returns: unknown };
   read_file: { args: { path: string }; returns: string };
   read_track_tags: { args: { path: string }; returns: unknown };
+  recording_save_progress: { args: Record<string, never>; returns: number | null };
   recover_discard: { args: { id: string }; returns: void };
   recover_save_file: { args: { id: string; file: string; dest: string }; returns: void };
   release_cue: { args: { deck: string }; returns: unknown };
@@ -48,7 +49,10 @@ type Commands = {
   scan_folder: { args: { path: string }; returns: string[] };
   seek: { args: { deck: string; sec: number }; returns: unknown };
   set_app_mode: { args: { mode: unknown }; returns: void };
-  set_beat_grid: { args: { deck: string; bpm: number; beatOffsetSec: number }; returns: void };
+  set_beat_grid: {
+    args: { deck: string; bpm: number | null; beatOffsetSec: number };
+    returns: void;
+  };
   set_bpm_range: { args: { min: number; max: number }; returns: void };
   set_buffer_size: { args: { frames: number }; returns: void };
   set_cue_active: { args: { deck: string; active: boolean }; returns: void };
@@ -70,6 +74,7 @@ type Commands = {
   set_midi_device_deck: { args: { port: string; deck: string | null }; returns: void };
   set_midi_monitor: { args: { enabled: boolean }; returns: void };
   set_nudge: { args: { deck: string; percent: number }; returns: unknown };
+  set_pitch_offset: { args: { deck: string; percent: number }; returns: number };
   set_pitch_range: { args: { percent: number }; returns: void };
   set_playback_rate: { args: { deck: string; rate: number }; returns: void };
   set_quantize: { args: { deck: string; quantize: boolean }; returns: void };

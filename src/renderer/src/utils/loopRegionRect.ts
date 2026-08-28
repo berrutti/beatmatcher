@@ -1,7 +1,5 @@
-// Shared by every loop-region drawer (mixer/Waveform.vue, EditWaveform.vue,
-// TrackWaveform.vue), which each clamped a region to its visible width the
-// same way. Each caller keeps its own sec-to-px convention and passes it in
-// as `xFor`, so the drawers don't need a shared coordinate system.
+// Each caller keeps its own sec-to-px convention and passes it in as `xFor`, so
+// the drawers need no shared coordinate system.
 export function loopRegionRect(
   xFor: (sec: number) => number,
   region: { startSec: number; endSec: number } | null,

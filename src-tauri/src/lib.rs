@@ -55,9 +55,13 @@ const PITCH_STEPS_PER_PERCENT: f64 = 100.0;
 
 const MIN_PLAYBACK_RATE: f64 = 0.1;
 
-fn rate_from_fader(position: f64, pitch_range_percent: f64) -> f64 {
-    let offset_percent = pitch_range_percent * (position.clamp(0.0, 1.0) * 2.0 - 1.0);
-    let stepped = (offset_percent * PITCH_STEPS_PER_PERCENT).round() / PITCH_STEPS_PER_PERCENT;
+fn fader_offset_percent(position: f64, pitch_range_percent: f64) -> f64 {
+    pitch_range_percent * (position.clamp(0.0, 1.0) * 2.0 - 1.0)
+}
+
+fn rate_from_offset(offset_percent: f64, pitch_range_percent: f64) -> f64 {
+    let offset = offset_percent.clamp(-pitch_range_percent, pitch_range_percent);
+    let stepped = (offset * PITCH_STEPS_PER_PERCENT).round() / PITCH_STEPS_PER_PERCENT;
     1.0 + stepped / 100.0
 }
 
@@ -146,6 +150,7 @@ pub fn run() {
             commands::set_bpm_range,
             commands::set_buffer_size,
             commands::set_app_mode,
+            commands::set_pitch_offset,
             commands::set_pitch_range,
             commands::set_jog_rotation_speed,
             commands::set_fader_curve,
@@ -168,6 +173,7 @@ pub fn run() {
             commands::set_deck_muted,
             commands::start_recording,
             commands::stop_recording,
+            commands::recording_save_progress,
             commands::stop,
             commands::toggle_play,
             commands::open_session_dialog,
@@ -285,25 +291,101 @@ mod tests {
         }
     }
 
+    fn fader_rate(position: f64, range: f64) -> f64 {
+        rate_from_offset(fader_offset_percent(position, range), range)
+    }
+
     #[test]
     fn a_centred_tempo_fader_is_exactly_unity() {
         for range in [6.0, 8.0, 10.0, 16.0, 50.0, 100.0] {
-            assert_eq!(rate_from_fader(0.5, range), 1.0);
+            assert_eq!(fader_rate(0.5, range), 1.0);
         }
     }
 
     #[test]
     fn the_tempo_fader_ends_span_the_pitch_range() {
-        assert_eq!(rate_from_fader(0.0, 10.0), 0.9);
-        assert_eq!(rate_from_fader(1.0, 10.0), 1.1);
-        assert_eq!(rate_from_fader(0.0, 100.0), 0.0);
-        assert_eq!(rate_from_fader(1.0, 100.0), 2.0);
+        assert_eq!(fader_rate(0.0, 10.0), 0.9);
+        assert_eq!(fader_rate(1.0, 10.0), 1.1);
+        assert_eq!(fader_rate(0.0, 100.0), 0.0);
+        assert_eq!(fader_rate(1.0, 100.0), 2.0);
     }
 
     #[test]
     fn a_fader_position_outside_the_unit_interval_cannot_widen_the_range() {
-        assert_eq!(rate_from_fader(-0.5, 10.0), 0.9);
-        assert_eq!(rate_from_fader(2.0, 10.0), 1.1);
+        assert_eq!(fader_rate(-0.5, 10.0), 0.9);
+        assert_eq!(fader_rate(2.0, 10.0), 1.1);
+    }
+
+    #[test]
+    fn an_offset_outside_the_pitch_range_cannot_widen_it() {
+        assert_eq!(rate_from_offset(-50.0, 10.0), 0.9);
+        assert_eq!(rate_from_offset(50.0, 10.0), 1.1);
+    }
+
+    fn fuzz_rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    // Offsets deliberately reach well past the range on both sides.
+    fn fuzz_offset(seed: &mut u64) -> f64 {
+        (fuzz_rng(seed) % 40_001) as f64 / 100.0 - 200.0
+    }
+
+    #[test]
+    fn a_fuzzed_offset_never_leaves_the_pitch_range() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15;
+        for range in [6.0, 8.0, 10.0, 16.0, 50.0, 100.0] {
+            for _ in 0..2000 {
+                let rate = rate_from_offset(fuzz_offset(&mut seed), range);
+                assert!(rate >= 1.0 - range / 100.0 - 1e-9, "{rate} below {range}");
+                assert!(rate <= 1.0 + range / 100.0 + 1e-9, "{rate} above {range}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_larger_offset_never_yields_a_slower_rate() {
+        let mut seed = 0x1234_5678_9ABC_DEF0;
+        for range in [6.0, 10.0, 50.0, 100.0] {
+            for _ in 0..2000 {
+                let first = fuzz_offset(&mut seed);
+                let second = fuzz_offset(&mut seed);
+                let (lower, higher) = if first <= second {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                assert!(
+                    rate_from_offset(lower, range) <= rate_from_offset(higher, range) + 1e-12,
+                    "{lower} -> {higher} at range {range}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_centred_offset_is_exactly_unity_at_every_range() {
+        for range in [6.0, 8.0, 10.0, 16.0, 50.0, 100.0] {
+            assert_eq!(rate_from_offset(0.0, range), 1.0);
+        }
+    }
+
+    #[test]
+    fn feeding_a_resolved_rate_back_in_as_an_offset_changes_nothing() {
+        let mut seed = 0x0BAD_C0FF_EE0D_DF00;
+        for range in [6.0, 8.0, 10.0, 16.0, 50.0, 100.0] {
+            for _ in 0..2000 {
+                let rate = rate_from_offset(fuzz_offset(&mut seed), range);
+                let again = rate_from_offset((rate - 1.0) * 100.0, range);
+                assert!(
+                    (again - rate).abs() < 1e-9,
+                    "{rate} -> {again} at range {range}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -314,7 +396,7 @@ mod tests {
         let mut distinct = 0;
         for step in 0..FOURTEEN_BIT_POSITIONS {
             let position = f64::from(step) / f64::from(FOURTEEN_BIT_POSITIONS - 1);
-            let rate = rate_from_fader(position, range);
+            let rate = fader_rate(position, range);
             if rate != previous {
                 distinct += 1;
                 previous = rate;

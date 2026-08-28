@@ -46,14 +46,14 @@ pub(crate) struct Recoverable {
 /// app starts is work the last run never delivered, which is the whole crash detector.
 pub(crate) struct Recovery {
     root: std::sync::Mutex<Option<PathBuf>>,
-    active_recording: std::sync::Mutex<Option<Job>>,
+    active_recordings: std::sync::Mutex<Vec<Job>>,
 }
 
 impl Recovery {
     pub(crate) fn new() -> Self {
         Self {
             root: std::sync::Mutex::new(None),
-            active_recording: std::sync::Mutex::new(None),
+            active_recordings: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -81,15 +81,17 @@ impl Recovery {
     }
 
     pub(crate) fn set_active_recording(&self, job: Job) {
-        *self.active_recording.locked() = Some(job);
+        self.active_recordings.locked().push(job);
     }
 
-    /// The recording reached the user's disk, or they threw it away. Either way it is
-    /// no longer unfinished work.
-    pub(crate) fn finish_recording(&self) {
-        if let Some(job) = self.active_recording.locked().take() {
-            job.finish();
-        }
+    /// Found by the directory the named file sits in, because a new recording can
+    /// start while the previous one is still being saved.
+    pub(crate) fn finish_recording(&self, recorded_file: &str) {
+        let mut jobs = self.active_recordings.locked();
+        let Some(index) = jobs.iter().position(|job| job.holds(recorded_file)) else {
+            return;
+        };
+        jobs.remove(index).finish();
     }
 
     pub(crate) fn begin(
@@ -101,7 +103,10 @@ impl Recovery {
     ) -> Result<Job, String> {
         let started_at = unix_secs();
         let root = self.root()?;
-        let dir = root.join(format!("{started_at}-{}", std::process::id()));
+        // A sequence number as well as the clock: two recordings can begin in the
+        // same second, and two jobs sharing a directory overwrite each other.
+        let seq = NEXT_JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = root.join(format!("{started_at}-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let manifest = Manifest {
             kind,
@@ -183,6 +188,8 @@ impl Recovery {
     }
 }
 
+static NEXT_JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) struct Job {
     dir: PathBuf,
 }
@@ -190,6 +197,10 @@ pub(crate) struct Job {
 impl Job {
     pub(crate) fn path(&self, file: &str) -> String {
         self.dir.join(file).to_string_lossy().into_owned()
+    }
+
+    fn holds(&self, file: &str) -> bool {
+        Path::new(file).parent() == Some(self.dir.as_path())
     }
 
     /// The work reached the place the user asked for, so the job stops being recoverable.

@@ -4,7 +4,7 @@
   </span>
   <span v-else-if="bpm !== null" class="track-bpm-cell__value">{{ bpm.toFixed(1) }} BPM</span>
   <button
-    v-else-if="status === 'error'"
+    v-else-if="status === 'ready'"
     class="track-bpm-cell__btn"
     tabindex="-1"
     @click.stop="onSetBpm"

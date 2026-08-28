@@ -1,6 +1,31 @@
-use super::dsp::{Biquad, Equalizer, Filter};
+use super::dsp::{Biquad, Equalizer, Filter, FILTER_COEFF_REFRESH_INTERVAL};
 
 const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
+
+struct Smoothed {
+    current: f32,
+    target: f32,
+    coeff: f32,
+}
+
+impl Smoothed {
+    fn new(value: f32, sample_rate: f32, tau_sec: f32) -> Self {
+        Self {
+            current: value,
+            target: value,
+            coeff: 1.0 - (-1.0 / (sample_rate * tau_sec)).exp(),
+        }
+    }
+
+    fn set(&mut self, target: f32) {
+        self.target = target;
+    }
+
+    fn advance(&mut self) -> f32 {
+        self.current = approach(self.current, self.target, self.coeff);
+        self.current
+    }
+}
 
 pub trait AudioUnit: Send {
     fn set_param(&mut self, param: &str, value: f32);
@@ -20,41 +45,51 @@ pub trait AudioUnit: Send {
 
 struct Eq3Band {
     eq: Equalizer,
-    low: f32,
-    mid: f32,
-    high: f32,
+    low: Smoothed,
+    mid: Smoothed,
+    high: Smoothed,
+    since_refresh: u32,
+    stale: bool,
 }
 
 impl AudioUnit for Eq3Band {
     fn set_param(&mut self, param: &str, value: f32) {
         match param {
-            "low" => {
-                self.low = value;
-                self.eq.set_low(value);
-            }
-            "mid" => {
-                self.mid = value;
-                self.eq.set_mid(value);
-            }
-            "high" => {
-                self.high = value;
-                self.eq.set_high(value);
-            }
+            "low" => self.low.set(value),
+            "mid" => self.mid.set(value),
+            "high" => self.high.set(value),
             _ => {}
         }
     }
 
+    // The target, not the smoothed value: a readback mid-ramp must report the
+    // knob the user set rather than where the ramp happens to be.
     fn param(&self, param: &str) -> Option<f32> {
         match param {
-            "low" => Some(self.low),
-            "mid" => Some(self.mid),
-            "high" => Some(self.high),
+            "low" => Some(self.low.target),
+            "mid" => Some(self.mid.target),
+            "high" => Some(self.high.target),
             _ => None,
         }
     }
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let before = (self.low.current, self.mid.current, self.high.current);
+        let now = (self.low.advance(), self.mid.advance(), self.high.advance());
+        if now != before {
+            self.stale = true;
+            self.since_refresh += 1;
+        }
+        // Designing three biquads per sample is what the divider avoids; the
+        // `now == before` arm catches the last step so a settled EQ is exact.
+        if self.stale && (self.since_refresh >= FILTER_COEFF_REFRESH_INTERVAL || now == before) {
+            self.eq.set_low(now.0);
+            self.eq.set_mid(now.1);
+            self.eq.set_high(now.2);
+            self.since_refresh = 0;
+            self.stale = false;
+        }
         self.eq.process(l, r)
     }
 }
@@ -97,17 +132,16 @@ impl AudioUnit for SweepFilter {
 struct Fader {
     position: f32,
     curve: session_core::FaderCurve,
-    target_gain: f32,
-    current_gain: f32,
-    smooth_coeff: f32,
+    gain: Smoothed,
     muted: bool,
-    mute_gain: f32,
+    mute: Smoothed,
 }
 
 impl Fader {
     // Curved before smoothing, so the one-pole interpolates what is heard.
     fn resolve_gain(&mut self) {
-        self.target_gain = self.curve.gain(f64::from(self.position)) as f32;
+        self.gain
+            .set(self.curve.gain(f64::from(self.position)) as f32);
     }
 }
 
@@ -135,11 +169,9 @@ impl AudioUnit for Fader {
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        self.current_gain = approach(self.current_gain, self.target_gain, self.smooth_coeff);
         // Mute fades over the same time constant as the fader to avoid clicks.
-        let mute_target = if self.muted { 0.0 } else { 1.0 };
-        self.mute_gain = approach(self.mute_gain, mute_target, self.smooth_coeff);
-        let gain = self.current_gain * self.mute_gain;
+        self.mute.set(if self.muted { 0.0 } else { 1.0 });
+        let gain = self.gain.advance() * self.mute.advance();
         (l * gain, r * gain)
     }
 }
@@ -161,8 +193,6 @@ const ISOLATOR_LOW_HZ: f32 = 300.0;
 const ISOLATOR_HIGH_HZ: f32 = 3_000.0;
 const BUTTERWORTH_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-// A two-stage Linkwitz-Riley tree per channel: split at the low crossover,
-// then split what is left at the high one.
 struct IsolatorChannel {
     low_split_lp: [Biquad; 2],
     low_split_hp: [Biquad; 2],
@@ -205,9 +235,7 @@ impl IsolatorChannel {
 
 struct Isolator3Band {
     channels: [IsolatorChannel; 2],
-    targets: [f32; 3],
-    gains: [f32; 3],
-    smooth_coeff: f32,
+    bands: [Smoothed; 3],
 }
 
 impl AudioUnit for Isolator3Band {
@@ -218,26 +246,28 @@ impl AudioUnit for Isolator3Band {
             "high" => 2,
             _ => return,
         };
-        self.targets[band] = value.clamp(0.0, 1.0);
+        self.bands[band].set(value.clamp(0.0, 1.0));
     }
 
     fn param(&self, param: &str) -> Option<f32> {
         match param {
-            "low" => Some(self.targets[0]),
-            "mid" => Some(self.targets[1]),
-            "high" => Some(self.targets[2]),
+            "low" => Some(self.bands[0].target),
+            "mid" => Some(self.bands[1].target),
+            "high" => Some(self.bands[2].target),
             _ => None,
         }
     }
 
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        for (gain, target) in self.gains.iter_mut().zip(self.targets) {
-            *gain = approach(*gain, target, self.smooth_coeff);
-        }
+        let gains = [
+            self.bands[0].advance(),
+            self.bands[1].advance(),
+            self.bands[2].advance(),
+        ];
         (
-            self.channels[0].process(l, &self.gains),
-            self.channels[1].process(r, &self.gains),
+            self.channels[0].process(l, &gains),
+            self.channels[1].process(r, &gains),
         )
     }
 }
@@ -246,9 +276,11 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
     match unit_id {
         "eq3band" => Some(Box::new(Eq3Band {
             eq: Equalizer::new(sample_rate),
-            low: 0.0,
-            mid: 0.0,
-            high: 0.0,
+            low: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            high: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            since_refresh: 0,
+            stale: false,
         })),
         "sweep_filter" => Some(Box::new(SweepFilter {
             filter: Filter::new(sample_rate),
@@ -260,18 +292,14 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
                 IsolatorChannel::new(sample_rate),
                 IsolatorChannel::new(sample_rate),
             ],
-            targets: [1.0; 3],
-            gains: [1.0; 3],
-            smooth_coeff: 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp(),
+            bands: std::array::from_fn(|_| Smoothed::new(1.0, sample_rate, GAIN_SMOOTHING_TAU_SEC)),
         })),
         "fader" => Some(Box::new(Fader {
             position: 1.0,
             curve: session_core::FaderCurve::default(),
-            target_gain: 1.0,
-            current_gain: 1.0,
-            smooth_coeff: 1.0 - (-1.0 / (sample_rate * GAIN_SMOOTHING_TAU_SEC)).exp(),
+            gain: Smoothed::new(1.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             muted: false,
-            mute_gain: 1.0,
+            mute: Smoothed::new(1.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
         })),
         _ => None,
     }

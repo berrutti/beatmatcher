@@ -4,10 +4,11 @@
       <button
         class="btn-secondary topstrip__rec-btn"
         :class="{ 'topstrip__rec-btn--active': mixer.isRecording }"
+        :disabled="recordingBusy"
         tabindex="-1"
         @click="onRecClick"
       >
-        {{ $t('topStrip.rec') }}
+        {{ recordingBusy ? $t('topStrip.finishing') : $t('topStrip.rec') }}
       </button>
 
       <button
@@ -46,6 +47,18 @@
       </div>
     </template>
 
+    <template v-else-if="appMode.mode === 'session'">
+      <button
+        class="btn-secondary topstrip__edit-btn"
+        :class="{ 'topstrip__edit-btn--active': editStore.editMode }"
+        tabindex="-1"
+        v-tooltip="$t('session.editHint')"
+        @click="editStore.toggleEditMode()"
+      >
+        ✎ {{ $t('session.edit') }}
+      </button>
+    </template>
+
     <div class="topstrip__spacer" />
 
     <span class="topstrip__label">{{ $t('topStrip.vol') }}</span>
@@ -56,6 +69,11 @@
       max="1"
       step="0.01"
       :value="mixer.masterGain"
+      v-tooltip="$t('topStrip.masterHint')"
+      v-slider-reset="{
+        enabled: settings.sliderClickResets,
+        reset: () => mixer.setMasterGain(1)
+      }"
       @input="(e) => mixer.setMasterGain(parseFloat((e.target as HTMLInputElement).value))"
       @dblclick="mixer.setMasterGain(1)"
     />
@@ -118,9 +136,10 @@
           max="1"
           step="0.01"
           :value="mixer.cueMix"
+          v-tooltip="$t('topStrip.cueMixHint')"
+          v-slider-reset="{ enabled: settings.sliderClickResets, reset: () => mixer.setCueMix(0) }"
           @input="(e) => mixer.setCueMix(parseFloat((e.target as HTMLInputElement).value))"
           @dblclick="mixer.setCueMix(0)"
-          v-tooltip="$t('topStrip.cueMixHint')"
         />
         <span class="topstrip__label topstrip__label--dim">{{ $t('topStrip.mix') }}</span>
         <select
@@ -167,6 +186,8 @@ import { useI18n } from 'vue-i18n';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { DECKS_DISPOSITION, useDecksStore } from '@renderer/stores/decks';
 import { useAppModeStore } from '@renderer/stores/appMode';
+import { useSessionEditStore } from '@renderer/stores/sessionEdit';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 import { dateStamp } from '@renderer/utils/time';
 
@@ -174,6 +195,8 @@ const { t } = useI18n();
 const mixer = useMixerStore();
 const decksStore = useDecksStore();
 const appMode = useAppModeStore();
+const editStore = useSessionEditStore();
+const settings = useSettingsStore();
 
 const stopMarkPlayedWatch = watch(
   () => DECKS_DISPOSITION.map((id) => decksStore.decks[id].loadedPath),
@@ -217,17 +240,30 @@ async function pollLevels() {
   rafId = requestAnimationFrame(pollLevels);
 }
 
+// Set before the first await, so the press disables the button on the same tick
+// rather than after the file finishes writing.
+const recordingBusy = ref(false);
+
 async function onRecClick() {
-  if (mixer.isRecording) {
-    const tempPath = await mixer.stopRecording();
-    const destPath = await mixer.pickSavePath(t('files.defaultName', { date: dateStamp() }));
-    if (destPath) {
-      await mixer.saveRecording(tempPath, destPath);
-    } else {
-      await mixer.discardRecording(tempPath);
+  if (recordingBusy.value) return;
+  recordingBusy.value = true;
+  let tempPath: string;
+  try {
+    if (!mixer.isRecording) {
+      await mixer.startRecording();
+      return;
     }
+    tempPath = await mixer.stopRecording();
+  } finally {
+    // Released here rather than after the save: the take is off the recorder by
+    // now, so a new one can start while the previous file is still being written.
+    recordingBusy.value = false;
+  }
+  const destPath = await mixer.pickSavePath(t('files.defaultName', { date: dateStamp() }));
+  if (destPath) {
+    await mixer.saveRecording(tempPath, destPath);
   } else {
-    await mixer.startRecording();
+    await mixer.discardRecording(tempPath);
   }
 }
 
@@ -322,7 +358,7 @@ onUnmounted(() => {
 .topstrip__swarm-btn--active {
   border-color: var(--color-accent-amber);
   color: var(--color-accent-amber);
-  background: color-mix(in srgb, var(--color-accent-amber) 15%, transparent);
+  background: color-mix(in srgb, var(--color-accent-amber) var(--toggle-on-fill), transparent);
   animation: swarm-pulse 1.2s ease-in-out infinite;
 }
 
@@ -375,6 +411,7 @@ onUnmounted(() => {
 }
 
 .topstrip__master-fader {
+  --slider-thumb-length: 8px;
   -webkit-appearance: none;
   appearance: none;
   width: 72px;
@@ -391,7 +428,7 @@ onUnmounted(() => {
 .topstrip__master-fader::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 8px;
+  width: var(--slider-thumb-length);
   height: 14px;
   background: #e8e8e8;
   border-radius: 2px;
@@ -403,6 +440,7 @@ onUnmounted(() => {
 }
 
 .topstrip__cue-mix-fader {
+  --slider-thumb-length: 8px;
   -webkit-appearance: none;
   appearance: none;
   width: 56px;
@@ -419,7 +457,7 @@ onUnmounted(() => {
 .topstrip__cue-mix-fader::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 8px;
+  width: var(--slider-thumb-length);
   height: 14px;
   background: #e8e8e8;
   border-radius: 2px;
@@ -474,15 +512,21 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
-.topstrip__rec-btn:hover {
-  border-color: var(--color-danger);
-  color: var(--color-danger);
+.topstrip__rec-btn:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+.topstrip__rec-btn:hover:not(:disabled):not(.topstrip__rec-btn--active) {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+  background: var(--toggle-hover-fill);
 }
 
 .topstrip__rec-btn--active {
   border-color: var(--color-danger);
   color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  background: color-mix(in srgb, var(--color-danger) var(--toggle-on-fill), transparent);
   animation: rec-pulse 1.2s ease-in-out infinite;
 }
 
@@ -496,6 +540,7 @@ onUnmounted(() => {
   }
 }
 
+.topstrip__edit-btn,
 .topstrip__deck-count-btn {
   color: var(--color-muted);
   font-family: var(--font);
@@ -512,14 +557,31 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
-.topstrip__deck-count-btn:hover {
-  border-color: var(--color-text);
+.topstrip__deck-count-btn:hover:not(.topstrip__deck-count-btn--active),
+.topstrip__edit-btn:hover:not(.topstrip__edit-btn--active) {
+  border-color: var(--color-border-hover);
   color: var(--color-text);
+  background: var(--toggle-hover-fill);
+}
+
+.topstrip__edit-btn--active {
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
+}
+
+.topstrip__edit-btn--active:hover {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .topstrip__deck-count-btn--active {
-  border-color: var(--color-text);
-  color: var(--color-text);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill), transparent);
+}
+
+.topstrip__deck-count-btn--active:hover {
+  background: color-mix(in srgb, var(--color-accent-cyan) var(--toggle-on-fill-hover), transparent);
 }
 
 .topstrip__refresh {

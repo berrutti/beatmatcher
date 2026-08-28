@@ -17,6 +17,7 @@
     <EditView v-if="appMode.mode === 'edit'" class="app__view" :deck="decksStore.deckE" />
     <Performance v-else-if="appMode.mode === 'performance'" class="app__view" />
     <Session v-else-if="appMode.mode === 'session'" class="app__view" />
+    <SaveProgress />
     <Tooltip />
   </div>
 </template>
@@ -42,6 +43,7 @@ import EditView from '@renderer/components/deck/EditView.vue';
 import Performance from '@renderer/components/performance/Performance.vue';
 import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
+import SaveProgress from '@renderer/components/SaveProgress.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
 import RecoveryModal from '@renderer/components/modals/RecoveryModal.vue';
 import Tooltip from '@renderer/components/Tooltip.vue';

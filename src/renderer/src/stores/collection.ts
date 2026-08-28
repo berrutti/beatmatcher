@@ -11,7 +11,7 @@ export type CollectionEntryStatus = 'idle' | 'analyzing' | 'ready' | 'error' | '
 export type SavedTrack = {
   path: string;
   name: string;
-  bpm: number;
+  bpm: number | null;
   silenceEnd: number;
   beatOffset: number;
 };
@@ -23,9 +23,7 @@ export type Playlist = {
   addedAt: Record<string, number>;
 };
 
-// Every editable, non-BPM metadata point a track can carry. `title` and
-// `artist` are shown by default. The rest are opt-in columns the user picks
-// from the header context menu.
+// `title` and `artist` are shown by default; the rest are opt-in columns.
 export const METADATA_FIELDS = [
   'title',
   'artist',
@@ -43,9 +41,8 @@ export const METADATA_FIELDS = [
 export type MetadataField = (typeof METADATA_FIELDS)[number];
 export type TrackMetadata = Record<MetadataField, string | null>;
 
-// bpm and added aren't editable metadata (they come from analysis and from
-// the track's addedAt timestamp, not TrackMetadata), but they render as
-// ordinary columns, so they share the same visibility/order/width system.
+// bpm and added are not editable metadata, but they render as ordinary columns
+// and so share the visibility, order and width system.
 export const COLUMN_FIELDS = [...METADATA_FIELDS, 'bpm', 'added'] as const;
 export type ColumnField = (typeof COLUMN_FIELDS)[number];
 
@@ -73,10 +70,8 @@ type ColumnsState = {
   shares: Partial<Record<MetadataField, number>>;
 };
 
-// The shape columns were stored in before widths became shares: `widths`
-// held literal pixel values. Reusing those same numbers as shares still
-// preserves the user's intent (only the ratio between them matters for a
-// share), so loading old data needs nothing more than reading the old key.
+// Stored pixel widths read back as shares unchanged: only the ratio between
+// them matters, so an older file needs no migration.
 type StoredColumnsState = Partial<Omit<ColumnsState, 'shares'>> & {
   shares?: Partial<Record<MetadataField, number>>;
   widths?: Partial<Record<MetadataField, number>>;
@@ -103,10 +98,8 @@ function loadColumnsState(): ColumnsState {
   // stored order yet. Append it so it still shows up in the column picker.
   const order = [...validOrder, ...COLUMN_FIELDS.filter((f) => !validOrder.includes(f))];
   const validVisible = stored.visible.filter(isColumnField);
-  // bpm/added were permanent, non-optional columns before they joined this
-  // system, so a store saved before that never listed them in `visible`.
-  // Without this, upgrading would silently hide two previously-always-shown
-  // columns instead of just making them optional going forward.
+  // bpm and added were permanent before they became optional, so a file saved
+  // then lists neither and would upgrade into hiding both.
   const visible: ColumnField[] = validOrder.includes('bpm')
     ? validVisible
     : [...validVisible, 'bpm', 'added'];
@@ -121,7 +114,6 @@ export type CollectionEntry = {
   status: CollectionEntryStatus;
   silenceEnd: number;
   addedAt: number | null;
-  lastAnalysisFailed: boolean;
 } & TrackMetadata;
 
 function emptyMetadata(): TrackMetadata {
@@ -222,9 +214,8 @@ export const useCollectionStore = defineStore('collection', () => {
     persistColumnsState();
   }
 
-  // `beforeField` is the field `field` should land in front of, or null to
-  // move it to the end. Working in terms of fields rather than indices keeps
-  // this correct regardless of how many hidden columns sit between them.
+  // A null `beforeField` moves it to the end. Working in fields rather than
+  // indices keeps this correct however many hidden columns sit between them.
   function reorderColumn(field: ColumnField, beforeField: ColumnField | null) {
     const order = columnsState.order;
     const fromIndex = order.indexOf(field);
@@ -239,11 +230,8 @@ export const useCollectionStore = defineStore('collection', () => {
     return columnsState.shares[field] ?? DEFAULT_COLUMN_SHARE[field];
   }
 
-  // The meaningful floor is a pixel width, but that depends on how much
-  // space is actually available at resize time, which this store has no
-  // notion of - so it's enforced by the caller (see Browser.vue's use of
-  // utils/columnShares.ts) before a share ever reaches here. This just
-  // guards against a share collapsing to zero or negative outright.
+  // The pixel floor depends on the space available at resize time, which the
+  // store cannot see, so the caller enforces it. This only stops a zero.
   function setColumnShare(field: MetadataField, share: number) {
     columnsState.shares[field] = Math.max(1, share);
     persistColumnsState();
@@ -265,8 +253,7 @@ export const useCollectionStore = defineStore('collection', () => {
       status: 'missing',
       silenceEnd: 0,
       ...emptyMetadata(),
-      addedAt: p.addedAt ?? null,
-      lastAnalysisFailed: false
+      addedAt: p.addedAt ?? null
     });
   });
 
@@ -315,8 +302,7 @@ export const useCollectionStore = defineStore('collection', () => {
       status: hasSaved ? 'ready' : 'idle',
       silenceEnd: 0,
       ...emptyMetadata(),
-      addedAt: Date.now(),
-      lastAnalysisFailed: false
+      addedAt: Date.now()
     };
   }
 
@@ -471,36 +457,24 @@ export const useCollectionStore = defineStore('collection', () => {
       const result = await invoke<{ bpm: number | null; silenceEnd: number }>('analyze_track', {
         path: entry.path
       });
-      if (result.bpm !== null && result.bpm > 0) {
-        entry.silenceEnd = result.silenceEnd;
-        saveSaved({
-          path: entry.path,
-          name: entry.name,
-          bpm: result.bpm,
-          silenceEnd: result.silenceEnd,
-          beatOffset: result.silenceEnd
-        });
+      const detected = result.bpm !== null && result.bpm > 0 ? result.bpm : null;
+      // silenceEnd is left alone here because setBpm derives beatOffset from it,
+      // and a run not trusted for the BPM is not trusted to shift the grid.
+      if (detected === null && hadPreviousBpm) {
         entry.status = 'ready';
-        entry.lastAnalysisFailed = false;
-      } else {
-        markAnalysisFallback(entry, hadPreviousBpm);
+        return;
       }
-    } catch {
-      markAnalysisFallback(entry, hadPreviousBpm);
-    }
-  }
-
-  // A failed or low-confidence reanalysis keeps the previously saved BPM
-  // grid intact rather than discarding it. Entry.silenceEnd is deliberately
-  // left untouched here since setBpm reads it to derive beatOffset, and a
-  // detector run that wasn't trusted enough to update the BPM shouldn't be
-  // trusted to shift the beat grid either.
-  function markAnalysisFallback(entry: CollectionEntry, hadPreviousBpm: boolean) {
-    if (hadPreviousBpm) {
+      entry.silenceEnd = result.silenceEnd;
+      saveSaved({
+        path: entry.path,
+        name: entry.name,
+        bpm: detected,
+        silenceEnd: result.silenceEnd,
+        beatOffset: result.silenceEnd
+      });
       entry.status = 'ready';
-      entry.lastAnalysisFailed = true;
-    } else {
-      entry.status = 'error';
+    } catch {
+      entry.status = hadPreviousBpm ? 'ready' : 'error';
     }
   }
 
@@ -570,7 +544,6 @@ export const useCollectionStore = defineStore('collection', () => {
       beatOffset: entry.silenceEnd
     });
     entry.status = 'ready';
-    entry.lastAnalysisFailed = false;
   }
 
   function updateTrack(path: string, patch: { beatOffset?: number; bpm?: number }) {
@@ -632,10 +605,8 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   const loadedPlaylists = storageGet<Playlist[]>(STORAGE_KEYS.playlists, []);
-  // Playlists saved before per-playlist "date added" existed have no
-  // addedAt map at all. Backfill an empty one so lookups never throw. Paths
-  // already in the playlist at that point have no recorded moment, and
-  // correctly show as unknown rather than inventing one.
+  // Playlists saved before per-playlist "date added" carry no map. An empty one
+  // shows those paths as unknown rather than inventing a moment for them.
   loadedPlaylists.forEach((p) => {
     if (!p.addedAt) p.addedAt = {};
   });

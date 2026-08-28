@@ -37,10 +37,9 @@
     </template>
 
     <template v-else>
-      <label class="recovery__ask">
-        <input v-model="dontAskAgain" type="checkbox" />
-        <span>{{ $t('recovery.dontAskAgain') }}</span>
-      </label>
+      <Checkbox v-model="dontAskAgain" class="recovery__ask">
+        {{ $t('recovery.dontAskAgain') }}
+      </Checkbox>
       <div class="recovery__actions">
         <Button ref="cancelBtn" :disabled="busy" @click="confirming = false">
           {{ $t('modal.cancel') }}
@@ -57,6 +56,7 @@
 import { computed, nextTick, ref } from 'vue';
 import Modal from '@renderer/components/modals/Modal.vue';
 import Button from '@renderer/components/Button.vue';
+import Checkbox from '@renderer/components/Checkbox.vue';
 import { useRecoveryStore, type RecoverableFile } from '@renderer/stores/recovery';
 
 const recovery = useRecoveryStore();
@@ -152,19 +152,9 @@ async function onDiscard(): Promise<void> {
 }
 
 .recovery__ask {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   min-width: 340px;
   font-size: 0.7rem;
   color: var(--color-muted);
-  cursor: pointer;
-}
-
-/* Gated like the buttons: see `utils/keyboardNav.ts`. */
-:root[data-keyboard-nav] .recovery__ask input:focus {
-  outline: 2px solid var(--color-text);
-  outline-offset: 2px;
 }
 
 .recovery__actions {

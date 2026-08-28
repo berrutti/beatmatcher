@@ -1,8 +1,5 @@
-// The index a dragged row would occupy, taken from where the row itself would
-// sit rather than from where the pointer is. Measuring the pointer against row
-// boundaries instead makes the gesture asymmetric: a boundary is crossed after
-// one row of travel downwards but a row and a half upwards, so the row lands
-// above the point it was picked up by.
+// Measured from where the row would sit, not the pointer: against row boundaries
+// the gesture is asymmetric, crossing after one row down but one and a half up.
 export function targetIndexAt(
   clientY: number,
   grabOffsetY: number,

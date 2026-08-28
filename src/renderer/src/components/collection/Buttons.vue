@@ -1,55 +1,28 @@
 <template>
   <div class="deck-buttons">
-    <template v-if="appModeStore.mode === 'edit'">
-      <button
-        class="deck-btn"
-        :class="{ 'deck-btn--loaded': deckLoaded('E'), 'deck-btn--unavailable': disabled }"
-        :style="{ '--btn-color': decksStore.deckE.accent }"
-        :disabled="disabled || deckLoaded('E')"
-        tabindex="-1"
-        v-tooltip="
-          deckLoaded('E')
-            ? $t('browser.sameDeck')
-            : disabled
-              ? unavailableTooltip
-              : $t('browser.sendToEdit')
-        "
-        @click.stop="loadToDeck(path, 'E')"
-      >
-        {{ decksStore.decks['E'].name }}
-      </button>
-    </template>
-    <template v-else>
-      <button
-        v-for="deckId in DECKS_DISPOSITION"
-        :key="deckId"
-        class="deck-btn"
-        :class="{ 'deck-btn--loaded': deckLoaded(deckId), 'deck-btn--unavailable': disabled }"
-        :style="{ '--btn-color': decksStore.decks[deckId].accent }"
-        :disabled="disabled || deckLoaded(deckId)"
-        tabindex="-1"
-        v-tooltip="
-          deckLoaded(deckId)
-            ? $t('browser.sameDeck')
-            : disabled
-              ? unavailableTooltip
-              : $t('browser.sendToDeck', { deckId })
-        "
-        @click.stop="loadToDeck(path, deckId)"
-      >
-        {{ decksStore.decks[deckId].name }}
-      </button>
-    </template>
+    <button
+      v-for="deckId in deckIds"
+      :key="deckId"
+      class="deck-btn"
+      :class="{ 'deck-btn--loaded': deckLoaded(deckId), 'deck-btn--unavailable': disabled }"
+      :style="{ '--btn-color': decksStore.decks[deckId].accent }"
+      :disabled="disabled || deckLoaded(deckId)"
+      tabindex="-1"
+      v-tooltip="tooltipFor(deckId)"
+      @click.stop="loadToDeck(path, deckId)"
+    >
+      {{ decksStore.decks[deckId].name }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
+import { useDecksStore, EDIT_DECK_ID } from '@renderer/stores/decks';
+import { useDeckButtons } from '@renderer/composables/useDeckButtons';
 import { loadToDeck } from '@renderer/utils/deckDrop';
 import type { DeckId } from '@renderer/utils/types';
-import { useAppModeStore } from '@renderer/stores/appMode';
 
 const props = defineProps<{
   path: string;
@@ -62,10 +35,16 @@ const { t } = useI18n();
 const unavailableTooltip = computed(() => props.unavailableTooltip ?? t('browser.analyzeFirst'));
 
 const decksStore = useDecksStore();
-const appModeStore = useAppModeStore();
+const { deckIds } = useDeckButtons();
 
 function deckLoaded(deckId: DeckId): boolean {
   return decksStore.decks[deckId].loadedPath === props.path;
+}
+
+function tooltipFor(deckId: DeckId): string {
+  if (deckLoaded(deckId)) return t('browser.sameDeck');
+  if (props.disabled) return unavailableTooltip.value;
+  return deckId === EDIT_DECK_ID ? t('browser.sendToEdit') : t('browser.sendToDeck', { deckId });
 }
 </script>
 
