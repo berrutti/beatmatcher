@@ -6,13 +6,27 @@ use crate::ParamOrigin;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-fn band_normalization_scale(band: &[f32]) -> f32 {
-    let max = band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-    if max > 0.0 {
-        1.0 / max
-    } else {
-        1.0
-    }
+/// Small enough that the interval below decides the update rate, not the chunk size.
+const POINTS_PER_CHUNK: usize = 64;
+/// One update a frame, so the waveform fills in smoothly instead of in visible blocks.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Emitted while the track is being analysed, so a drawer can paint what has arrived.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaveformProgress {
+    deck: String,
+    points_ready: usize,
+    total_points: usize,
+    points_per_sec: f64,
+}
+
+/// What `bands-ready` carries, so the frontend can read a band against its own average
+/// instead of the track's without a second round trip.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BandsReady {
+    deck: String,
 }
 
 /// Where the crossfader was when recording started. Thru is skipped because every reader
@@ -546,11 +560,75 @@ pub(crate) async fn load_track(
 
     let path_for_log = path.clone();
 
-    let (samples, channels, bpm, silence_end, native_sr, cover_art) =
+    let stream_deck = Arc::clone(&deck_arc);
+    let stream_app = app.clone();
+    let stream_deck_id = deck.clone();
+
+    let (samples, channels, bpm, silence_end, native_sr, cover_art, reducer) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let started = std::time::Instant::now();
             let cover_art = audio::read_cover_art(&path);
+            let cover_ms = started.elapsed().as_millis();
+
+            let at_decode = std::time::Instant::now();
+            // The reduction runs on its own thread: on the decode thread it doubled the
+            // time to a playable deck, which is the one thing decode is on the path for.
+            let (to_reducer, from_decoder) =
+                std::sync::mpsc::channel::<(Vec<f32>, audio::DecodedShape)>();
+            let reducer = std::thread::spawn(move || {
+                let mut stream: Option<audio::BandStream> = None;
+                let mut last_emit = std::time::Instant::now();
+                while let Ok((decoded, shape)) = from_decoder.recv() {
+                    let reducer = stream.get_or_insert_with(|| {
+                        let started = audio::BandStream::new(
+                            shape.total_frames,
+                            shape.channels,
+                            shape.sample_rate,
+                            POINTS_PER_CHUNK,
+                        );
+                        let mut deck_state = stream_deck.locked();
+                        deck_state.reset_dense_points(started.total_points());
+                        started
+                    });
+                    reducer.push(&decoded, |points, total| {
+                        let ready = {
+                            let mut deck_state = stream_deck.locked();
+                            deck_state.push_dense_points(points);
+                            deck_state.dense_points.len() / 4
+                        };
+                        if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+                            last_emit = std::time::Instant::now();
+                            stream_app
+                                .emit(
+                                    "waveform-progress",
+                                    WaveformProgress {
+                                        deck: stream_deck_id.clone(),
+                                        points_ready: ready,
+                                        total_points: total,
+                                        points_per_sec: audio::DENSE_POINTS_PER_SEC,
+                                    },
+                                )
+                                .ok();
+                        }
+                    });
+                }
+                stream
+            });
+
             let (raw_samples, channels, native_sr) =
-                audio::decode_audio(&path).map_err(|e| e.to_string())?;
+                audio::decode_audio_streaming(&path, |decoded, shape| {
+                    // Only when no resampling stands between the decoder and the analysis;
+                    // otherwise the points would be indexed at a rate the bands are not.
+                    if shape.sample_rate != device_sample_rate || shape.total_frames == 0 {
+                        return;
+                    }
+                    to_reducer.send((decoded.to_vec(), shape)).ok();
+                })
+                .map_err(|e| e.to_string())?;
+            drop(to_reducer);
+            let decode_ms = at_decode.elapsed().as_millis();
+
+            let at_analyse = std::time::Instant::now();
 
             let (bpm, silence_end) = if analyze {
                 let mono_owned: Vec<f32>;
@@ -571,12 +649,20 @@ pub(crate) async fn load_track(
                 log::info!("load_track: skipping analysis (saved data will be used)");
                 (None, 0.0)
             };
+            let analyse_ms = at_analyse.elapsed().as_millis();
 
+            let at_resample = std::time::Instant::now();
             let resampled = if native_sr == device_sample_rate {
                 raw_samples
             } else {
                 audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
             };
+            let resample_ms = at_resample.elapsed().as_millis();
+
+            log::info!(
+                "load_track timing: cover={cover_ms}ms decode={decode_ms}ms analyse={analyse_ms}ms resample={resample_ms}ms total={}ms",
+                started.elapsed().as_millis()
+            );
 
             Ok((
                 Arc::new(resampled),
@@ -585,6 +671,10 @@ pub(crate) async fn load_track(
                 silence_end,
                 native_sr,
                 cover_art,
+                // Handed on rather than joined: waiting here would hold the deck unplayable
+                // until the analysis finished, which is the whole thing decode is on the
+                // path for.
+                reducer,
             ))
         })
         .await
@@ -617,29 +707,81 @@ pub(crate) async fn load_track(
     // Backgrounded so the waveform never holds up the load.
     let deck_id = deck.clone();
     tokio::spawn(async move {
-        let (bass_band, mid_band, high_band) = tokio::task::spawn_blocking(move || {
-            audio::compute_spectral_bands(&samples, channels, device_sample_rate)
+        let at_bands = std::time::Instant::now();
+        let progress_deck = deck_id.clone();
+        let progress_app = app.clone();
+        let progress_arc = Arc::clone(&deck_arc);
+        let streamed = tokio::task::spawn_blocking(move || {
+            let mut last_emit = std::time::Instant::now();
+            let mut on_points = |points: &[f32], total: usize| {
+                let ready = {
+                    let mut deck_state = progress_arc.locked();
+                    deck_state.push_dense_points(points);
+                    deck_state.dense_points.len() / 4
+                };
+                if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+                    last_emit = std::time::Instant::now();
+                    progress_app
+                        .emit(
+                            "waveform-progress",
+                            WaveformProgress {
+                                deck: progress_deck.clone(),
+                                points_ready: ready,
+                                total_points: total,
+                                points_per_sec: audio::DENSE_POINTS_PER_SEC,
+                            },
+                        )
+                        .ok();
+                }
+            };
+            // Already reduced alongside the decode unless the file needed resampling.
+            match reducer.join().unwrap_or(None) {
+                Some(stream) => stream.finish(&mut on_points),
+                None => {
+                    let mut stream = audio::BandStream::new(
+                        total_frames,
+                        channels,
+                        device_sample_rate,
+                        POINTS_PER_CHUNK,
+                    );
+                    {
+                        let mut deck_state = progress_arc.locked();
+                        deck_state.reset_dense_points(stream.total_points());
+                    }
+                    stream.push(&samples, &mut on_points);
+                    stream.finish(&mut on_points)
+                }
+            }
         })
         .await
-        .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
+        .unwrap_or_else(|_| audio::StreamedBands {
+            bass: Vec::new(),
+            mid: Vec::new(),
+            high: Vec::new(),
+            bass_rms: 0.0,
+            mid_rms: 0.0,
+            high_rms: 0.0,
+        });
 
-        let bass_scale = band_normalization_scale(&bass_band);
-        let mid_scale = band_normalization_scale(&mid_band);
-        let high_scale = band_normalization_scale(&high_band);
+        let bands = audio::SpectralBands {
+            bass_rms: streamed.bass_rms,
+            mid_rms: streamed.mid_rms,
+            high_rms: streamed.high_rms,
+            bass: Arc::new(streamed.bass),
+            mid: Arc::new(streamed.mid),
+            high: Arc::new(streamed.high),
+        };
+        log::info!(
+            "bands timing [{deck_id}]: finish={}ms",
+            at_bands.elapsed().as_millis()
+        );
 
         {
             let mut deck_state = deck_arc.locked();
-            deck_state.set_bands(audio::SpectralBands {
-                bass: Arc::new(bass_band),
-                mid: Arc::new(mid_band),
-                high: Arc::new(high_band),
-                bass_scale,
-                mid_scale,
-                high_scale,
-            });
+            deck_state.set_bands(bands);
         }
 
-        app.emit("bands-ready", deck_id).ok();
+        app.emit("bands-ready", BandsReady { deck: deck_id }).ok();
     });
 
     engine.recorder.log_at(
@@ -673,6 +815,27 @@ pub(crate) fn eject_track(
 // Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
 // f32 little-endian bytes. Binary transfer avoids JSON serialization overhead
 // that would otherwise cause GC pauses on large waveform loads.
+#[tauri::command]
+pub(crate) async fn get_dense_points(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    deck: String,
+    from_point: usize,
+    to_point: usize,
+) -> Result<tauri::ipc::Response, String> {
+    let deck_arc = engine.deck(&deck)?;
+    let bytes = {
+        let deck_state = deck_arc.locked();
+        let held = deck_state.dense_points.len() / 4;
+        let from = from_point.min(held);
+        let to = to_point.min(held).max(from);
+        deck_state.dense_points[from * 4..to * 4]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub(crate) async fn get_spectral_waveform_region(
     engine: tauri::State<'_, crate::engine::Engine>,

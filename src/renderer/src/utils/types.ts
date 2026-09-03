@@ -152,3 +152,6 @@ export type Recoverable = {
   audioBytes: number;
   logPath: string | null;
 };
+
+export const WAVEFORM_STYLE_OPTIONS = ['blended', 'threeBand', 'twoTone'] as const;
+export type WaveformStyleOption = (typeof WAVEFORM_STYLE_OPTIONS)[number];

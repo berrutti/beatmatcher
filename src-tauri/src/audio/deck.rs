@@ -360,16 +360,16 @@ impl Default for JogFilter {
     }
 }
 
-/// Per-band mono buffers and the scale each is normalised by. Filled in after the track
-/// loads and read only by the waveform drawing, never by the transport.
+/// Per-band mono buffers and each band's level over the whole track. Filled in after the
+/// track loads and read only by the waveform drawing, never by the transport.
 #[derive(Clone)]
 pub struct SpectralBands {
     pub bass: Arc<Vec<f32>>,
     pub mid: Arc<Vec<f32>>,
     pub high: Arc<Vec<f32>>,
-    pub bass_scale: f32,
-    pub mid_scale: f32,
-    pub high_scale: f32,
+    pub bass_rms: f32,
+    pub mid_rms: f32,
+    pub high_rms: f32,
 }
 
 impl Default for SpectralBands {
@@ -378,9 +378,9 @@ impl Default for SpectralBands {
             bass: Arc::new(Vec::new()),
             mid: Arc::new(Vec::new()),
             high: Arc::new(Vec::new()),
-            bass_scale: 1.0,
-            mid_scale: 1.0,
-            high_scale: 1.0,
+            bass_rms: 1.0,
+            mid_rms: 1.0,
+            high_rms: 1.0,
         }
     }
 }
@@ -425,6 +425,8 @@ pub struct Deck {
     pub(crate) quantize: bool,
 
     pub(crate) bands: SpectralBands,
+    /// Grows while the track is being analysed, so a drawer can paint what has arrived.
+    pub(crate) dense_points: Vec<f32>,
 
     // Set to true by the audio thread when the track reaches its natural end.
     // The monitoring task in lib.rs polls this and emits a "track-ended" event.
@@ -458,6 +460,7 @@ impl Deck {
             jog_shift: false,
             quantize: true,
             bands: SpectralBands::default(),
+            dense_points: Vec::new(),
             just_ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -512,6 +515,14 @@ impl Deck {
 
     pub(crate) fn set_bands(&mut self, bands: SpectralBands) {
         self.bands = bands;
+    }
+
+    pub(crate) fn reset_dense_points(&mut self, total_points: usize) {
+        self.dense_points = Vec::with_capacity(total_points * 4);
+    }
+
+    pub(crate) fn push_dense_points(&mut self, points: &[f32]) {
+        self.dense_points.extend_from_slice(points);
     }
 
     /// The transport state a `deck_snapshot` restores, clamped to the loaded track.

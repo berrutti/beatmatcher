@@ -286,6 +286,24 @@
         </section>
 
         <section class="settings-section">
+          <div class="settings-section-label">{{ $t('settings.waveformStyle.title') }}</div>
+          <div class="settings-row">
+            <button
+              v-for="style in WAVEFORM_STYLE_OPTIONS"
+              :key="style"
+              class="btn-secondary settings-chip"
+              :class="{ 'settings-chip--active': settings.waveformStyle === style }"
+              @click="settings.setWaveformStyle(style)"
+            >
+              {{ $t(`settings.waveformStyle.${style}`) }}
+            </button>
+          </div>
+          <p class="settings-hint">
+            {{ $t('settings.waveformStyle.hint') }}
+          </p>
+        </section>
+
+        <section class="settings-section">
           <div class="settings-section-label">{{ $t('settings.deckColors.title') }}</div>
           <div class="settings-decks">
             <label
@@ -391,7 +409,7 @@ import {
 } from '@renderer/stores/settings';
 import { faderCurveGain } from '@renderer/utils/sessionCore';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
-import type { DeckId } from '@renderer/utils/types';
+import { WAVEFORM_STYLE_OPTIONS, type DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { SUPPORTED_LOCALES } from '@renderer/i18n';
 import { useMidiStore } from '@renderer/stores/midi';

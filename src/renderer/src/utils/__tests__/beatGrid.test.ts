@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { beatLineStep, beatTier } from '../beatGrid';
+import { beatGridStep, beatLineStep, beatTier, visibleBeats } from '../beatGrid';
 
 describe('beatLineStep', () => {
   it('keeps step at 1 when beats are already spaced past the minimum', () => {
@@ -47,5 +47,56 @@ describe('beatTier', () => {
     expect(beatTier(1, 4, 16)).toBe('beat');
     expect(beatTier(3, 4, 16)).toBe('beat');
     expect(beatTier(5, 4, 16)).toBe('beat');
+  });
+});
+
+describe('visibleBeats', () => {
+  it('marks every fourth beat a downbeat and the rest not', () => {
+    const beats = visibleBeats(120, 0, 0, 4, 1, 4);
+    expect(beats.map((beat) => beat.beatNumber)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(beats.filter((beat) => beat.isDownbeat).map((beat) => beat.beatNumber)).toEqual([
+      0, 4, 8
+    ]);
+  });
+
+  it('places beats a beat period apart from the offset', () => {
+    const beats = visibleBeats(120, 0.25, 0, 1.5, 1, 4);
+    expect(beats.map((beat) => beat.sec)).toEqual([0.25, 0.75, 1.25]);
+  });
+
+  it('keeps only multiples of the step so the LOD thins the grid', () => {
+    const beats = visibleBeats(120, 0, 0, 8, 4, 4);
+    expect(beats.map((beat) => beat.beatNumber)).toEqual([0, 4, 8, 12, 16]);
+    expect(beats.every((beat) => beat.isDownbeat)).toBe(true);
+  });
+
+  it('walks backwards past the track start without losing downbeat alignment', () => {
+    const beats = visibleBeats(120, 2, 0, 2, 1, 4);
+    expect(beats.map((beat) => beat.beatNumber)).toEqual([-4, -3, -2, -1, 0]);
+    expect(beats.filter((beat) => beat.isDownbeat).map((beat) => beat.beatNumber)).toEqual([-4, 0]);
+  });
+
+  it('returns nothing for an unusable grid', () => {
+    expect(visibleBeats(0, 0, 0, 10, 1, 4)).toEqual([]);
+    expect(visibleBeats(120, 0, 10, 0, 1, 4)).toEqual([]);
+    expect(visibleBeats(120, 0, 0, 10, 0, 4)).toEqual([]);
+  });
+});
+
+describe('beatGridStep', () => {
+  it('keeps every beat while beats still fit', () => {
+    expect(beatGridStep(32, 4, 6, 24)).toBe(1);
+    expect(beatGridStep(9, 4, 6, 24)).toBe(1);
+  });
+
+  it('jumps to bar spacing the moment beats stop fitting', () => {
+    expect(beatGridStep(5, 4, 6, 24)).toBe(16);
+    expect(beatGridStep(0.625, 4, 6, 24)).toBe(64);
+  });
+
+  it('never leaves a heavy line under the bar spacing', () => {
+    for (const pxPerBeat of [0.2, 0.625, 1, 3.1, 5.9]) {
+      expect(pxPerBeat * beatGridStep(pxPerBeat, 4, 6, 24)).toBeGreaterThanOrEqual(24);
+    }
   });
 });

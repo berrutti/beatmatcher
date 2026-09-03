@@ -33,6 +33,9 @@
         :loop-active="deck.loopActive"
         :dense-spectral-data="deck.denseSpectralData"
         :dense-spectral-rate="deck.denseSpectralRate"
+        :dense-points-ready="deck.densePointsReady"
+        :band-balance="deck.bandBalance"
+        :waveform-style="settings.waveformStyle"
         :get-track-position="() => deck.trackPosition"
         :get-playhead-position="deck.getPlayheadPosition"
         :get-spectral-waveform-region="deck.getSpectralWaveformRegion"
@@ -106,6 +109,7 @@
 import { ref } from 'vue';
 import type { Deck } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
 import { useDeckDrop } from '@renderer/composables/useDeckDrop';
 import { formatMs } from '@renderer/utils/time';
@@ -124,6 +128,8 @@ const deckEl = ref<HTMLElement | null>(null);
 const bpmModalOpen = ref(false);
 
 const collectionStore = useCollectionStore();
+
+const settings = useSettingsStore();
 
 const { isDragOver } = useCollectionDragOver(deckEl, () => props.deck.loadedPath);
 

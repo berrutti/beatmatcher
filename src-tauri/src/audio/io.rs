@@ -42,8 +42,26 @@ fn open_format(
     )?)
 }
 
+/// What the caller would otherwise have to reopen the file to learn.
+#[derive(Clone, Copy)]
+pub struct DecodedShape {
+    pub channels: usize,
+    pub total_frames: usize,
+    pub sample_rate: u32,
+}
+
 pub fn decode_audio(
     path: &str,
+) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
+    decode_audio_streaming(path, |_, _| {})
+}
+
+/// `on_decoded` sees each run of frames as it is decoded, in order, so a caller can
+/// analyse the head of a track while the tail is still being read. It also carries the
+/// track's shape, which the caller cannot know without opening the file itself.
+pub fn decode_audio_streaming(
+    path: &str,
+    mut on_decoded: impl FnMut(&[f32], DecodedShape),
 ) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -65,6 +83,7 @@ pub fn decode_audio(
     let mut decoder =
         symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
+    let expected_frames = codec_params.n_frames.unwrap_or(0) as usize;
     let capacity = codec_params
         .n_frames
         .map(|frame_count| frame_count as usize * 2)
@@ -113,6 +132,7 @@ pub fn decode_audio(
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 buf.copy_interleaved_ref(decoded);
                 let src = buf.samples();
+                let appended_from = samples.len();
                 if src_channels <= 2 {
                     samples.extend_from_slice(src);
                 } else {
@@ -124,6 +144,14 @@ pub fn decode_audio(
                         }
                     }
                 }
+                on_decoded(
+                    &samples[appended_from..],
+                    DecodedShape {
+                        channels: out_channels,
+                        total_frames: expected_frames,
+                        sample_rate,
+                    },
+                );
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
             Err(error) => return Err(error.into()),

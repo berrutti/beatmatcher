@@ -2,6 +2,7 @@
   <WaveformStrips
     class="waveform-strip"
     :sources="sources"
+    :waveform-style="settings.waveformStyle"
     @scrub-start="(i) => emit('scrub-start', deckIds[i])"
     @scrub="(i, sec) => emit('scrub', deckIds[i], sec)"
     @scrub-end="(i) => emit('scrub-end', deckIds[i])"
@@ -13,6 +14,7 @@ import { computed } from 'vue';
 import { useDecksStore } from '@renderer/stores/decks';
 import type { DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
+import { useSettingsStore } from '@renderer/stores/settings';
 import WaveformStrips from '@renderer/components/mixer/Waveform.vue';
 
 const emit = defineEmits<{
@@ -23,6 +25,7 @@ const emit = defineEmits<{
 
 const decksStore = useDecksStore();
 const mixerStore = useMixerStore();
+const settings = useSettingsStore();
 
 const deckIds = computed(() => mixerStore.activeDecks);
 
@@ -39,7 +42,8 @@ const sources = computed(() =>
       isWaveformLoading: () => deck.waveformLoading,
       getLoopRegion: () => deck.loopRegion,
       getLoopActive: () => deck.loopActive,
-      accent: deck.accent
+      getCuePoint: () => deck.cuePoint,
+      getBandBalance: () => deck.bandBalance
     };
   })
 );

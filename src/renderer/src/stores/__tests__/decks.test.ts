@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
+import { listen } from '@tauri-apps/api/event';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue({})
@@ -51,6 +52,12 @@ import { useAppModeStore } from '../appMode';
 import { invoke } from '@tauri-apps/api/core';
 
 const mockedInvoke = vi.mocked(invoke);
+
+// The load awaits its waveform listeners before invoking, so a single microtask no longer
+// reaches the decode.
+function reachedDecode(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe('switchTo edit', () => {
   beforeEach(() => {
@@ -287,7 +294,7 @@ describe('a dropped track names itself before it has loaded', () => {
 
     const decks = useDecksStore();
     const loading = decks.deckA.loadTrack(track);
-    await Promise.resolve();
+    await reachedDecode();
 
     expect(decks.deckA.trackName).toBe('Next Track');
     expect(decks.deckA.loading).toBe(true);
@@ -312,7 +319,7 @@ describe('a dropped track names itself before it has loaded', () => {
       return {};
     });
     const loading = decks.deckA.loadTrack({ ...track, name: 'Second' });
-    await Promise.resolve();
+    await reachedDecode();
 
     expect(decks.deckA.trackName).toBe('Second');
     expect(decks.deckA.coverArt, 'the old art must not sit under the new name').toBe(null);
@@ -349,7 +356,7 @@ describe('a deck that is still loading says so', () => {
 
     const decks = useDecksStore();
     const loading = decks.deckA.loadTrack(track);
-    await Promise.resolve();
+    await reachedDecode();
 
     // The name is there so a glance reads the right track, but the deck holds
     // nothing yet, which is what the UI dims until the decode lands.
@@ -394,7 +401,7 @@ describe('swapping a track shows the loading state too', () => {
       return {};
     });
     const loading = decks.deckA.loadTrack({ ...track, name: 'Second' });
-    await Promise.resolve();
+    await reachedDecode();
 
     expect(decks.deckA.trackLoaded).toBe(false);
     expect(decks.deckA.trackName).toBe('Second');
@@ -517,5 +524,80 @@ describe('a deck holding a track with no bpm', () => {
     expect(decks.deckA.hasGrid).toBe(true);
     expect(decks.deckA.targetBpm).toBe(124);
     expect(decks.deckA.pitchOffset).toBe(0);
+  });
+});
+
+describe('the waveform arrives while the deck is still loading', () => {
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  type Handler = (event: { payload: unknown }) => void;
+
+  function captureListeners(): Map<string, Handler[]> {
+    const handlers = new Map<string, Handler[]>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      const forEvent = handlers.get(event) ?? [];
+      forEvent.push(handler as Handler);
+      handlers.set(event, forEvent);
+      return () => {};
+    });
+    return handlers;
+  }
+
+  it('listens for points before it asks for the decode', async () => {
+    const handlers = captureListeners();
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await reachedDecode();
+
+    expect(handlers.get('waveform-progress')?.length).toBe(1);
+    expect(handlers.get('bands-ready')?.length).toBe(1);
+
+    releaseLoad();
+    await loading;
+  });
+
+  it('keeps the deck unplayable while the first points are already painting', async () => {
+    const handlers = captureListeners();
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await reachedDecode();
+
+    handlers.get('waveform-progress')?.[0]({
+      payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+    });
+    await reachedDecode();
+
+    expect(decks.deckA.denseSpectralData?.length).toBe(400);
+    expect(decks.deckA.waveformLoading).toBe(false);
+    expect(decks.deckA.loading).toBe(true);
+
+    releaseLoad();
+    await loading;
+    expect(decks.deckA.loading).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import { ref, watch } from 'vue';
 import { call } from '@renderer/tauriCommands';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { DEFAULT_KEYS, type Keybindings, type Command } from '@renderer/keybindings';
+import type { WaveformStyleOption } from '@renderer/utils/types';
 
 export const PITCH_RANGE_OPTIONS = [6, 8, 10, 16, 50, 100] as const;
 export type PitchRangeOption = (typeof PITCH_RANGE_OPTIONS)[number];
@@ -43,6 +44,7 @@ type Stored = {
   recordBms?: boolean;
   recordCue?: boolean;
   deckAccents?: Record<string, string>;
+  waveformStyle?: WaveformStyleOption;
 };
 
 export type ConflictInfo = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
@@ -65,6 +67,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const recordBms = ref<boolean>(false);
   const recordCue = ref<boolean>(false);
   const deckAccents = ref<Record<string, string>>({});
+  const waveformStyle = ref<WaveformStyleOption>('threeBand');
   const isOpen = ref(false);
   // Distinguishes the stored values arriving from the user changing one, which a
   // setting that only applies at launch has to be able to tell apart.
@@ -88,6 +91,7 @@ export const useSettingsStore = defineStore('settings', () => {
     recordBms.value = stored.recordBms ?? recordBms.value;
     recordCue.value = stored.recordCue ?? recordCue.value;
     deckAccents.value = stored.deckAccents ?? deckAccents.value;
+    waveformStyle.value = stored.waveformStyle ?? waveformStyle.value;
   }
 
   async function init(): Promise<void> {
@@ -118,7 +122,8 @@ export const useSettingsStore = defineStore('settings', () => {
       recordingFormat: recordingFormat.value,
       recordBms: recordBms.value,
       recordCue: recordCue.value,
-      deckAccents: Object.keys(deckAccents.value).length > 0 ? deckAccents.value : undefined
+      deckAccents: Object.keys(deckAccents.value).length > 0 ? deckAccents.value : undefined,
+      waveformStyle: waveformStyle.value
     } satisfies Stored);
     await store.save();
   }
@@ -236,11 +241,18 @@ export const useSettingsStore = defineStore('settings', () => {
     trySave();
   }
 
+  function setWaveformStyle(value: WaveformStyleOption): void {
+    waveformStyle.value = value;
+    trySave();
+  }
+
   return {
     bpmMax,
     bpmMin,
     bufferSize,
     deckAccents,
+    waveformStyle,
+    setWaveformStyle,
     faderCurve,
     filtersEngagedAtStart,
     isOpen,

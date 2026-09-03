@@ -10,6 +10,10 @@ type Commands = {
   eject_track: { args: { deck: string }; returns: void };
   files_info: { args: { paths: string[] }; returns: (number | null)[] };
   get_deck_levels: { args: Record<string, never>; returns: Record<string, [number, number]> };
+  get_dense_points: {
+    args: { deck: string; fromPoint: number; toPoint: number };
+    returns: unknown;
+  };
   get_master_level: { args: Record<string, never>; returns: [number, number] };
   get_spectral_waveform_region: {
     args: { deck: string; startSec: number; endSec: number; numPoints: number };

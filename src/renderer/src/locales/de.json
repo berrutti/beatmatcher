@@ -128,6 +128,13 @@
       "title": "Deck-Farben",
       "reset": "Auf Standard zurücksetzen"
     },
+    "waveformStyle": {
+      "title": "Wellenform-Stil",
+      "blended": "Spektral",
+      "threeBand": "Drei Bänder",
+      "twoTone": "Zweifarbig",
+      "hint": "Wie die Wellenform ihren Frequenzinhalt einfärbt. Spektral mischt die drei Bänder zu einer Farbe pro Spalte; die anderen beiden zeichnen jedes Band in eigener Höhe."
+    },
     "keyboard": {
       "title": "Tastaturbelegung",
       "hint": "Klicken oder Enter drücken zum Neu-Belegen. Pfeiltasten zur Navigation. Entf setzt auf Standard zurück. Doppelklick setzt ebenfalls zurück.",

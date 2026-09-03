@@ -3,40 +3,182 @@ use super::dsp::Biquad;
 const BAND_BASS_HZ: f32 = 250.0;
 const BAND_MID_HZ: f32 = 2_000.0;
 
-pub fn compute_spectral_bands(
-    samples: &[f32],
+// 6.7 ms a point, finer than a device pixel at every zoom the edit view offers, and the
+// rate the established waveform formats use.
+pub const DENSE_POINTS_PER_SEC: f64 = 150.0;
+
+/// What one pass over the track produces: the band buffers a region request still needs,
+/// each band's level, and the dense points, handed out in chunks as they are reduced.
+pub struct StreamedBands {
+    pub bass: Vec<f32>,
+    pub mid: Vec<f32>,
+    pub high: Vec<f32>,
+    pub bass_rms: f32,
+    pub mid_rms: f32,
+    pub high_rms: f32,
+}
+
+pub fn dense_point_count(total_frames: usize, sample_rate: u32) -> usize {
+    if sample_rate == 0 || total_frames == 0 {
+        return 0;
+    }
+    let seconds = total_frames as f64 / sample_rate as f64;
+    (seconds * DENSE_POINTS_PER_SEC).ceil() as usize
+}
+
+/// The reduction as a resumable object, so it can be driven from the decoder while the
+/// file is still being read instead of waiting for the whole buffer.
+pub struct BandStream {
     channels: usize,
-    sample_rate: u32,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    if samples.is_empty() || channels == 0 {
-        return (Vec::new(), Vec::new(), Vec::new());
+    total_frames: usize,
+    total_points: usize,
+    frames_per_point: f64,
+    lp_bass: Biquad,
+    lp_bass_mid: Biquad,
+    bass: Vec<f32>,
+    mid: Vec<f32>,
+    high: Vec<f32>,
+    sum_bass_sq: f64,
+    sum_mid_sq: f64,
+    sum_high_sq: f64,
+    frame: usize,
+    points_done: usize,
+    bin_bass: f32,
+    bin_mid: f32,
+    bin_high: f32,
+    bin_amp: f32,
+    bin_count: f32,
+    chunk: Vec<f32>,
+    points_per_chunk: usize,
+}
+
+impl BandStream {
+    pub fn new(
+        total_frames: usize,
+        channels: usize,
+        sample_rate: u32,
+        points_per_chunk: usize,
+    ) -> Self {
+        let sr = sample_rate as f32;
+        let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
+        let total_points = dense_point_count(total_frames, sample_rate);
+        Self {
+            channels,
+            total_frames,
+            total_points,
+            frames_per_point: if total_points == 0 {
+                0.0
+            } else {
+                total_frames as f64 / total_points as f64
+            },
+            lp_bass: Biquad::low_pass(sr, BAND_BASS_HZ, butterworth_q),
+            lp_bass_mid: Biquad::low_pass(sr, BAND_MID_HZ, butterworth_q),
+            bass: Vec::with_capacity(total_frames),
+            mid: Vec::with_capacity(total_frames),
+            high: Vec::with_capacity(total_frames),
+            sum_bass_sq: 0.0,
+            sum_mid_sq: 0.0,
+            sum_high_sq: 0.0,
+            frame: 0,
+            points_done: 0,
+            bin_bass: 0.0,
+            bin_mid: 0.0,
+            bin_high: 0.0,
+            bin_amp: 0.0,
+            bin_count: 0.0,
+            chunk: Vec::with_capacity(points_per_chunk * 4),
+            points_per_chunk,
+        }
     }
-    let n = samples.len() / channels;
-    let sr = sample_rate as f32;
-    let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
 
-    let mut lp_bass = Biquad::low_pass(sr, BAND_BASS_HZ, butterworth_q);
-    let mut lp_bass_mid = Biquad::low_pass(sr, BAND_MID_HZ, butterworth_q);
+    pub fn total_points(&self) -> usize {
+        self.total_points
+    }
 
-    let mut bass = Vec::with_capacity(n);
-    let mut mid = Vec::with_capacity(n);
-    let mut high = Vec::with_capacity(n);
+    /// `samples` is the next run of interleaved frames, in order, never re-sent.
+    pub fn push(&mut self, samples: &[f32], mut on_points: impl FnMut(&[f32], usize)) {
+        if self.channels == 0 || self.total_points == 0 {
+            return;
+        }
+        let frames = samples.len() / self.channels;
+        for local in 0..frames {
+            if self.frame >= self.total_frames {
+                break;
+            }
+            let base = local * self.channels;
+            let mono: f32 =
+                samples[base..base + self.channels].iter().sum::<f32>() / self.channels as f32;
+            let b = self.lp_bass.process(mono);
+            let bm = self.lp_bass_mid.process(mono);
+            let m = bm - b;
+            let h = mono - bm;
+            self.bass.push(b);
+            self.mid.push(m);
+            self.high.push(h);
+            self.sum_bass_sq += (b as f64) * (b as f64);
+            self.sum_mid_sq += (m as f64) * (m as f64);
+            self.sum_high_sq += (h as f64) * (h as f64);
+            self.bin_bass += b * b;
+            self.bin_mid += m * m;
+            self.bin_high += h * h;
+            for ch in 0..self.channels {
+                let sample = samples[base + ch];
+                self.bin_amp += sample * sample;
+            }
+            self.bin_count += 1.0;
+            self.frame += 1;
 
-    for frame in 0..n {
-        let mono = if channels == 1 {
-            samples[frame]
+            let point_end = (((self.points_done + 1) as f64 * self.frames_per_point) as usize)
+                .min(self.total_frames);
+            if self.frame >= point_end && self.points_done < self.total_points {
+                self.close_point();
+                if self.chunk.len() >= self.points_per_chunk * 4 {
+                    on_points(&self.chunk, self.total_points);
+                    self.chunk.clear();
+                }
+            }
+        }
+    }
+
+    fn close_point(&mut self) {
+        if self.bin_count > 0.0 {
+            self.chunk.push((self.bin_bass / self.bin_count).sqrt());
+            self.chunk.push((self.bin_mid / self.bin_count).sqrt());
+            self.chunk.push((self.bin_high / self.bin_count).sqrt());
+            self.chunk.push(
+                (self.bin_amp / (self.bin_count * self.channels as f32))
+                    .sqrt()
+                    .min(1.0),
+            );
         } else {
-            let sum: f32 = (0..channels).map(|ch| samples[frame * channels + ch]).sum();
-            sum / channels as f32
-        };
-        let b = lp_bass.process(mono);
-        let bm = lp_bass_mid.process(mono);
-        bass.push(b);
-        mid.push(bm - b);
-        high.push(mono - bm);
+            self.chunk.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        }
+        self.bin_bass = 0.0;
+        self.bin_mid = 0.0;
+        self.bin_high = 0.0;
+        self.bin_amp = 0.0;
+        self.bin_count = 0.0;
+        self.points_done += 1;
     }
 
-    (bass, mid, high)
+    pub fn finish(mut self, mut on_points: impl FnMut(&[f32], usize)) -> StreamedBands {
+        while self.points_done < self.total_points {
+            self.close_point();
+        }
+        if !self.chunk.is_empty() {
+            on_points(&self.chunk, self.total_points);
+            self.chunk.clear();
+        }
+        let frames = self.total_frames.max(1) as f64;
+        StreamedBands {
+            bass: self.bass,
+            mid: self.mid,
+            high: self.high,
+            bass_rms: (self.sum_bass_sq / frames).sqrt() as f32,
+            mid_rms: (self.sum_mid_sq / frames).sqrt() as f32,
+            high_rms: (self.sum_high_sq / frames).sqrt() as f32,
+        }
+    }
 }
 
 // RMS rather than peak: mastered music puts a near-|1.0| sample in almost every bin, so
@@ -44,6 +186,20 @@ pub fn compute_spectral_bands(
 // amplitude is stored raw so the sqrt curve in the frontend has range left to spread.
 const AMP_DISPLAY_BOOST: f32 = 1.0;
 const BAND_DISPLAY_BOOST: f32 = 1.0;
+
+/// The three bands sum to the mono signal, so their levels in quadrature stand in for the
+/// track's own. Never zero, so callers can divide by it.
+pub fn band_reference(bands: &super::SpectralBands) -> f32 {
+    let total = (bands.bass_rms * bands.bass_rms
+        + bands.mid_rms * bands.mid_rms
+        + bands.high_rms * bands.high_rms)
+        .sqrt();
+    if total > 0.0 {
+        total
+    } else {
+        1.0
+    }
+}
 
 pub fn compute_spectral_waveform_region(
     samples: &[f32],
@@ -55,7 +211,10 @@ pub fn compute_spectral_waveform_region(
     num_points: usize,
 ) -> Vec<f32> {
     let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
-    let (bass_scale, mid_scale, high_scale) = (bands.bass_scale, bands.mid_scale, bands.high_scale);
+    // One reference for all three bands, so a bin's values keep the loudness ratio between
+    // them. Dividing each band by its own level instead makes every band average 1, which
+    // leaves the three stacked heights the same and the display saying nothing.
+    let reference = band_reference(bands);
     if bass.is_empty() || num_points == 0 {
         return vec![0.0; num_points * 4];
     }
@@ -100,9 +259,10 @@ pub fn compute_spectral_waveform_region(
         let rms_mid = (sum_mid_sq / count).sqrt();
         let rms_high = (sum_high_sq / count).sqrt();
 
-        let r = (rms_bass * bass_scale * BAND_DISPLAY_BOOST).min(1.0);
-        let g = (rms_mid * mid_scale * BAND_DISPLAY_BOOST).min(1.0);
-        let b = (rms_high * high_scale * BAND_DISPLAY_BOOST).min(1.0);
+        // Unclamped: the frontend takes only the ratio between the three.
+        let r = (rms_bass / reference) * BAND_DISPLAY_BOOST;
+        let g = (rms_mid / reference) * BAND_DISPLAY_BOOST;
+        let b = (rms_high / reference) * BAND_DISPLAY_BOOST;
         let amp = (rms_amp * AMP_DISPLAY_BOOST).min(1.0);
 
         result.push(r);

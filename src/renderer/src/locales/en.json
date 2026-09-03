@@ -128,6 +128,13 @@
       "title": "Deck colors",
       "reset": "Reset to defaults"
     },
+    "waveformStyle": {
+      "title": "Waveform style",
+      "blended": "Spectral",
+      "threeBand": "Three band",
+      "twoTone": "Two tone",
+      "hint": "How the waveform colours its frequency content. Spectral blends the three bands into one colour per column; the other two draw each band at its own height."
+    },
     "keyboard": {
       "title": "Keyboard mapping",
       "hint": "Click or press Enter to remap. Arrow keys navigate. Delete resets to default. Double-click also resets.",

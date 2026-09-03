@@ -128,6 +128,13 @@
       "title": "Colores del deck",
       "reset": "Restablecer valores por defecto"
     },
+    "waveformStyle": {
+      "title": "Estilo de forma de onda",
+      "blended": "Espectral",
+      "threeBand": "Tres bandas",
+      "twoTone": "Dos tonos",
+      "hint": "Cómo colorea la forma de onda su contenido en frecuencia. Espectral mezcla las tres bandas en un color por columna; las otras dos dibujan cada banda con su propia altura."
+    },
     "keyboard": {
       "title": "Asignación de teclado",
       "hint": "Haz clic o pulsa Enter para reasignar. Las teclas de flecha permiten navegar. Supr restablece el valor por defecto. Doble clic también restablece.",

@@ -9,8 +9,8 @@ mod stream;
 mod unit;
 
 pub use analysis::{
-    compute_amplitude_region, compute_spectral_bands, compute_spectral_waveform_region, detect_bpm,
-    detect_silence_end,
+    compute_amplitude_region, compute_spectral_waveform_region, detect_bpm, detect_silence_end,
+    BandStream, StreamedBands, DENSE_POINTS_PER_SEC,
 };
 pub(crate) use deck::DeckRestore;
 #[cfg(test)]
@@ -19,7 +19,9 @@ pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, RenderFram
 pub(crate) use dsp::Limiter;
 pub(crate) use dsp::{master_block, master_output, FILTER_CROSSFADE_TAU_SEC};
 pub use io::TrackTags;
-pub use io::{decode_audio, read_cover_art, read_tags, resample_linear};
+pub use io::{
+    decode_audio, decode_audio_streaming, read_cover_art, read_tags, resample_linear, DecodedShape,
+};
 pub(crate) use session_apply::{apply_deck_command, LoadedSamples};
 pub use stream::MasterMonitor;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;

@@ -11,17 +11,29 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import type { TrackData } from '@renderer/stores/decks';
-import { buildWaveformImageData, maxBarTop } from '@renderer/utils/waveformImage';
+import {
+  waveformColumns,
+  waveformImageData,
+  maxBarTop,
+  type WaveformPaint
+} from '@renderer/utils/waveformImage';
 import { loopRegionRect } from '@renderer/utils/loopRegionRect';
+import { waveformPalette } from '@renderer/utils/waveformPalettes';
+import { OVERVIEW_SCALES } from '@renderer/utils/waveformPaints';
+import type { WaveformStyleOption } from '@renderer/utils/types';
+import { drawCueTriangle } from '@renderer/utils/cueMarker';
 
 const props = defineProps<{
   accent: string;
   trackData: TrackData | null;
   getPlayheadPosition: () => number;
-  fullSpectralData: Float32Array | null;
+  denseSpectralData: Float32Array | null;
+  densePointsReady: number;
   loopRegion: { startSec: number; endSec: number } | null;
   loopActive: boolean;
   cuePoint: number;
+  bandBalance: [number, number, number];
+  waveformStyle: WaveformStyleOption;
 }>();
 
 const emit = defineEmits<{ seek: [sec: number] }>();
@@ -37,9 +49,16 @@ let waveImgData: ImageData | null = null;
 let waveImgForPeaks: Float32Array | null = null;
 let waveImgForCw = 0;
 let waveImgForCh = 0;
+let waveImgForStyle = '';
+let waveImgForReady = -1;
 let playheadTop = 0;
 
-const OVERVIEW_AMP_SCALE = 0.85;
+function overviewPaint(): WaveformPaint {
+  return {
+    ...OVERVIEW_SCALES,
+    palette: waveformPalette(props.waveformStyle, props.bandBalance)
+  };
+}
 const CUE_TRIANGLE_WIDTH = 4;
 const CUE_TRIANGLE_HEIGHT = 8;
 // Half the cue triangle's width, reserved on both edges so the triangle
@@ -69,7 +88,7 @@ function draw() {
     ctx.scale(dpr, dpr);
   }
 
-  const peaks = props.fullSpectralData;
+  const peaks = props.denseSpectralData;
   if (!peaks) {
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#0a0a0a';
@@ -80,12 +99,22 @@ function draw() {
   const marginPx = SIDE_MARGIN * dpr;
   const cw = canvas.width - marginPx * 2;
   const ch = canvas.height;
-  if (waveImgForPeaks !== peaks || waveImgForCw !== cw || waveImgForCh !== ch) {
-    waveImgData = buildWaveformImageData(cw, ch, peaks, OVERVIEW_AMP_SCALE);
-    playheadTop = maxBarTop(peaks, cw, ch, OVERVIEW_AMP_SCALE);
+  if (
+    waveImgForPeaks !== peaks ||
+    waveImgForCw !== cw ||
+    waveImgForCh !== ch ||
+    waveImgForStyle !== props.waveformStyle ||
+    waveImgForReady !== props.densePointsReady
+  ) {
+    const style = overviewPaint();
+    const columns = waveformColumns(peaks, cw);
+    waveImgData = waveformImageData(cw, ch, columns, style);
+    playheadTop = maxBarTop(columns, ch, style);
     waveImgForPeaks = peaks;
     waveImgForCw = cw;
     waveImgForCh = ch;
+    waveImgForStyle = props.waveformStyle;
+    waveImgForReady = props.densePointsReady;
   }
   if (!waveImgData) return;
   ctx.clearRect(0, 0, w, h);
@@ -115,16 +144,7 @@ function draw() {
 
   if (trackDuration > 0) {
     const cueX = SIDE_MARGIN + (props.cuePoint / trackDuration) * usableW;
-    ctx.save();
-    ctx.fillStyle = '#eab308';
-    ctx.globalAlpha = 0.9;
-    ctx.beginPath();
-    ctx.moveTo(cueX - CUE_TRIANGLE_WIDTH, h);
-    ctx.lineTo(cueX + CUE_TRIANGLE_WIDTH, h);
-    ctx.lineTo(cueX, h - CUE_TRIANGLE_HEIGHT);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+    drawCueTriangle(ctx, cueX, h, CUE_TRIANGLE_WIDTH, -CUE_TRIANGLE_HEIGHT);
   }
 
   const pos = props.getPlayheadPosition();

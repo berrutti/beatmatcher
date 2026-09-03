@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import EditWaveform from '@renderer/components/deck/EditWaveform.vue';
+import type { WaveformStyleOption } from '@renderer/utils/types';
 import type { TrackData } from '@renderer/stores/decks';
 
 const DURATION_SEC = 240;
@@ -74,6 +75,9 @@ function wheelAt(clientX: number, deltaY: number, deltaX: number): WheelEvent {
   return event;
 }
 
+const bandBalance: [number, number, number] = [1, 1, 1];
+const waveformStyle: WaveformStyleOption = 'blended';
+
 function mountWaveform() {
   return mount(EditWaveform, {
     props: {
@@ -87,6 +91,9 @@ function mountWaveform() {
       loopActive: false,
       denseSpectralData: null,
       denseSpectralRate: 0,
+      densePointsReady: 0,
+      bandBalance,
+      waveformStyle,
       getTrackPosition: () => 12,
       getPlayheadPosition: () => 12,
       getSpectralWaveformRegion: async () => new ArrayBuffer(0)
