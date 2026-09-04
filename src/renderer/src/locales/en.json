@@ -59,7 +59,7 @@
     },
     "faderCurve": {
       "title": "Channel fader curve",
-      "hint": "How a channel fader's throw maps to volume. Linear only reaches silence at the very bottom; exponential drops away far earlier.",
+      "hint": "How a channel fader's throw maps to volume. Linear only reaches silence at the very bottom while exponential drops away far earlier.",
       "exponential": "Exponential",
       "linear": "Linear",
       "logarithmic": "Logarithmic"
@@ -67,7 +67,7 @@
     "sliderClick": {
       "title": "Slider click",
       "label": "Click a slider's handle to return it to its default",
-      "hint": "Applies to every fader, EQ, filter and pitch control. Only the handle responds; dragging is unaffected. Double-click does nothing while this is on."
+      "hint": "Applies to every fader, EQ, filter and pitch control. Only the handle responds. Dragging is unaffected. Double-click does nothing while this is on."
     },
     "filterStart": {
       "title": "Filters at startup",
@@ -133,7 +133,7 @@
       "blended": "Spectral",
       "threeBand": "Three band",
       "twoTone": "Two tone",
-      "hint": "How the waveform colours its frequency content. Spectral blends the three bands into one colour per column; the other two draw each band at its own height."
+      "hint": "How the waveform colours its frequency content. Spectral blends the three bands into one colour per column, while the other two draw each band at its own height."
     },
     "keyboard": {
       "title": "Keyboard mapping",

@@ -59,7 +59,7 @@
     },
     "faderCurve": {
       "title": "Curva del fader de canal",
-      "hint": "Cómo el recorrido de un fader de canal se traduce en volumen. La lineal solo llega al silencio al final del recorrido; la exponencial cae mucho antes.",
+      "hint": "Cómo el recorrido de un fader de canal se traduce en volumen. La lineal solo llega al silencio al final del recorrido, mientras que la exponencial cae mucho antes.",
       "exponential": "Exponencial",
       "linear": "Lineal",
       "logarithmic": "Logarítmica"
@@ -67,7 +67,7 @@
     "sliderClick": {
       "title": "Clic en el deslizador",
       "label": "Haz clic en el tirador de un deslizador para restablecerlo",
-      "hint": "Se aplica a todos los faders, ecualizadores, filtros y controles de pitch. Solo responde el tirador; arrastrar no cambia. El doble clic no hace nada mientras esto está activo."
+      "hint": "Se aplica a todos los faders, ecualizadores, filtros y controles de pitch. Solo responde el tirador. Arrastrar no cambia. El doble clic no hace nada mientras esto está activo."
     },
     "filterStart": {
       "title": "Filtros al iniciar",
@@ -133,7 +133,7 @@
       "blended": "Espectral",
       "threeBand": "Tres bandas",
       "twoTone": "Dos tonos",
-      "hint": "Cómo colorea la forma de onda su contenido en frecuencia. Espectral mezcla las tres bandas en un color por columna; las otras dos dibujan cada banda con su propia altura."
+      "hint": "Cómo colorea la forma de onda su contenido en frecuencia. Espectral mezcla las tres bandas en un color por columna, mientras que las otras dos dibujan cada banda con su propia altura."
     },
     "keyboard": {
       "title": "Asignación de teclado",
