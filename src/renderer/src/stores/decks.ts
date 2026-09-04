@@ -1,4 +1,11 @@
 import { defineStore } from 'pinia';
+import {
+  addBandSquares,
+  bandBalanceOf,
+  bandReferenceOf,
+  densePointsFit,
+  type BandSquares
+} from '@renderer/utils/bandBalance';
 import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { call } from '@renderer/tauriCommands';
@@ -38,9 +45,15 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-// Covers zoom down to ~5s on a 1000-2000px canvas, at ~650 KB of Float32 for a
-// three-minute track. Deeper zoom falls back to an on-demand fetch.
-const DENSE_LOD_PTS_PER_SEC = 250;
+type BandsReady = { deck: string; loadId: number; bandReference: number };
+
+type WaveformProgress = {
+  deck: string;
+  loadId: number;
+  pointsReady: number;
+  totalPoints: number;
+  pointsPerSec: number;
+};
 
 type DeckSyncPayload = {
   isPlaying: boolean;
@@ -62,8 +75,6 @@ function roundBpm(bpm: number): number {
   return Math.round(bpm * 100) / 100;
 }
 
-// Everything a track puts on a deck. Ejecting applies this again rather than
-// naming each field to clear, so a field added here cannot be forgotten there.
 type DeckTrackState = {
   trackName: string;
   trackLoaded: boolean;
@@ -71,13 +82,20 @@ type DeckTrackState = {
   waveformLoading: boolean;
   loadedPath: string | null;
   trackData: TrackData | null;
-  // Low-rate overview over the whole track, used by the overview strip and as a
-  // first-paint fallback in WaveformDisplay while the dense LOD loads.
-  fullSpectralData: Float32Array | null;
-  // Higher-rate LOD over the whole track, sliced in JS for any zoom the rate can satisfy.
-  // Deeper zooms fall back to on-demand fetches, see WaveformDisplay.
+  // Grows as the analysis reduces the track; deeper zooms than its rate can serve fall
+  // back to an on-demand fetch in EditWaveform.
   denseSpectralData: Float32Array | null;
   denseSpectralRate: number;
+  // What lifts each band to the track's own level, for a drawer that wants a band read
+  // against its own average rather than against the other two.
+  bandBalance: [number, number, number];
+  // The track's own band level, which both point sources are read against. Running while
+  // the reduction streams, then the exact one the engine reports with its bands.
+  bandReference: number;
+  densePointsReady: number;
+  // The edit view re-asks for a region on this, since the last points land just before the
+  // bands they were reduced from are stored.
+  bandsReady: boolean;
   coverArt: string | null;
   loopPlaying: boolean;
   loopRegion: LoopRegion | null;
@@ -100,9 +118,12 @@ function emptyDeck(): DeckTrackState {
     waveformLoading: false,
     loadedPath: null,
     trackData: null,
-    fullSpectralData: null,
     denseSpectralData: null,
     denseSpectralRate: 0,
+    bandBalance: [1, 1, 1],
+    bandReference: 1,
+    densePointsReady: 0,
+    bandsReady: false,
     coverArt: null,
     loopPlaying: false,
     loopRegion: null,
@@ -127,29 +148,47 @@ function createDeck(id: DeckId, accent: string, name: string) {
   let loadGeneration = 0;
   let pitchGeneration = 0;
 
-  async function fetchDenseLodChunked(
-    generation: number,
-    duration: number,
-    totalPoints: number
-  ): Promise<void> {
-    const CHUNKS = 10;
-    const buffer = new Float32Array(totalPoints * 4);
-    for (let i = 0; i < CHUNKS; i++) {
-      if (loadGeneration !== generation) return;
-      const startPt = Math.floor((i * totalPoints) / CHUNKS);
-      const endPt = Math.floor(((i + 1) * totalPoints) / CHUNKS);
-      const chunkBuf = await state.getSpectralWaveformRegion(
-        (duration * startPt) / totalPoints,
-        (duration * endPt) / totalPoints,
-        endPt - startPt
-      );
-      if (loadGeneration !== generation) return;
-      buffer.set(new Float32Array(chunkBuf), startPt * 4);
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  let pointsFetched = 0;
+  let pointsAnnounced = 0;
+  let fetchingPoints = false;
+  let bandSquares: BandSquares = [0, 0, 0];
+
+  // One request per progress event would queue behind itself on a fast analysis; this
+  // asks for everything that has arrived since the last answer instead.
+  async function drainPoints(generation: number, ready: number): Promise<void> {
+    if (ready > pointsAnnounced) pointsAnnounced = ready;
+    if (fetchingPoints || pointsAnnounced <= pointsFetched) return;
+    fetchingPoints = true;
+    try {
+      while (loadGeneration === generation && pointsAnnounced > pointsFetched) {
+        const from = pointsFetched;
+        const buffer = await call('get_dense_points', {
+          deck: id,
+          fromPoint: from,
+          toPoint: pointsAnnounced
+        });
+        if (loadGeneration !== generation) return;
+        const points = new Float32Array(buffer);
+        const arrived = points.length / 4;
+        const dense = state.denseSpectralData;
+        if (!densePointsFit(dense, from, arrived)) return;
+        dense.set(points, from * 4);
+        // From the points themselves, so colour is right from the first chunk rather than
+        // bass-heavy until the analysis ends.
+        addBandSquares(bandSquares, points, arrived);
+        pointsFetched = from + arrived;
+        state.bandBalance = bandBalanceOf(bandSquares, pointsFetched);
+        state.bandReference = bandReferenceOf(bandSquares, pointsFetched);
+        state.densePointsReady = pointsFetched;
+        // get_dense_points clamps to what the deck holds, so a short answer is possible
+        // and would otherwise re-ask for the same range forever.
+        if (arrived === 0) return;
+      }
+    } catch (error) {
+      console.error('[decks] dense point fetch failed', error);
+    } finally {
+      fetchingPoints = false;
     }
-    if (loadGeneration !== generation) return;
-    state.denseSpectralData = buffer;
-    state.denseSpectralRate = totalPoints / duration;
   }
 
   // Re-anchor positionCache to now so rate changes don't cause a position jump.
@@ -291,6 +330,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
       loadGeneration++;
       state.loading = true;
       state.waveformLoading = true;
+      state.denseSpectralData = null;
+      state.denseSpectralRate = 0;
+      state.densePointsReady = 0;
+      state.bandsReady = false;
       if (state.loopPlaying) {
         await call('stop', { deck: id });
         state.loopPlaying = false;
@@ -305,10 +348,48 @@ function createDeck(id: DeckId, accent: string, name: string) {
       // Before the decode, which takes long enough that a glance at the deck in
       // between would otherwise read the track that was there before.
       state.trackName = data.name;
+      state.trackBpm = data.bpm;
+      state.beatOffset = data.beatOffset;
+      state.cuePoint = data.beatOffset;
       state.coverArt = null;
       state.trackLoaded = false;
 
       onBeatOffsetChangeCb = data.onBeatOffsetChange;
+
+      // Before the call, not after: the analysis runs inside it, so a listener registered
+      // afterwards misses every point.
+      const gen = loadGeneration;
+      pointsFetched = 0;
+      pointsAnnounced = 0;
+      bandSquares = [0, 0, 0];
+
+      const progressUnlisten = await listen<WaveformProgress>('waveform-progress', (event) => {
+        // The load this listener was registered for, not the deck: a superseded load's
+        // listeners are already gone, so its late events arrive at this one.
+        if (event.payload.deck !== id || event.payload.loadId !== gen) return;
+        if (!state.denseSpectralData) {
+          state.denseSpectralData = new Float32Array(event.payload.totalPoints * 4);
+          state.denseSpectralRate = event.payload.pointsPerSec;
+        }
+        state.waveformLoading = false;
+        drainPoints(gen, event.payload.pointsReady).catch((error) => {
+          console.error('[decks] dense point drain failed', error);
+        });
+      });
+
+      const unlisten = await listen<BandsReady>('bands-ready', (event) => {
+        if (event.payload.deck !== id || event.payload.loadId !== gen) return;
+        state.waveformLoading = false;
+        state.bandReference = event.payload.bandReference;
+        state.bandsReady = true;
+        bandsReadyUnlisten = null;
+        setTimeout(unlisten, 0);
+        setTimeout(progressUnlisten, 0);
+      });
+      bandsReadyUnlisten = () => {
+        unlisten();
+        progressUnlisten();
+      };
 
       let info: TrackData;
       try {
@@ -316,7 +397,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
           deck: id,
           path: data.path,
           analyze: false,
-          beatOffsetSec: data.beatOffset
+          beatOffsetSec: data.beatOffset,
+          loadId: gen
         });
       } catch (error) {
         // A deck left mid-load refuses every command for the rest of the session,
@@ -324,6 +406,12 @@ function createDeck(id: DeckId, accent: string, name: string) {
         state.loading = false;
         state.waveformLoading = false;
         state.trackName = '';
+        state.trackBpm = null;
+        state.targetBpm = null;
+        state.beatOffset = 0;
+        state.cuePoint = 0;
+        bandsReadyUnlisten?.();
+        bandsReadyUnlisten = null;
         throw error;
       }
 
@@ -333,9 +421,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.loading = false;
       state.loadedPath = data.path;
 
-      state.trackBpm = data.bpm;
-      state.beatOffset = data.beatOffset;
-      state.cuePoint = data.beatOffset;
       state.targetBpm = data.bpm;
       state.pitchOffset = 0;
       positionCache = data.beatOffset;
@@ -343,28 +428,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       localRate = 1.0;
       await call('set_playback_rate', { deck: id, rate: 1.0 });
       call('set_beat_grid', { deck: id, bpm: data.bpm, beatOffsetSec: data.beatOffset });
-
-      // Fetched in parallel once Rust says the bands are ready: the overview
-      // lands first, the dense LOD after its pass through the band buffers.
-      const overviewPoints = Math.min(2000, Math.max(256, Math.ceil(info.duration * 4)));
-      const densePoints = Math.max(256, Math.ceil(info.duration * DENSE_LOD_PTS_PER_SEC));
-      const gen = loadGeneration;
-      const unlisten = await listen<string>('bands-ready', async (event) => {
-        if (event.payload !== id) return;
-        bandsReadyUnlisten = null;
-        setTimeout(unlisten, 0);
-        try {
-          const result = await state.getSpectralWaveformRegion(0, info.duration, overviewPoints);
-          if (loadGeneration !== gen) return;
-          state.fullSpectralData = new Float32Array(result);
-          state.waveformLoading = false;
-          fetchDenseLodChunked(gen, info.duration, densePoints);
-        } catch {
-          // spectral fetch failed. Waveform will remain blank but deck is playable
-          state.waveformLoading = false;
-        }
-      });
-      bandsReadyUnlisten = unlisten;
     },
 
     setBeatOffset(sec: number) {
@@ -500,7 +563,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       endSec: number,
       numPoints: number
     ): Promise<ArrayBuffer> {
-      return invoke<ArrayBuffer>('get_spectral_waveform_region', {
+      return call('get_spectral_waveform_region', {
         deck: id,
         startSec,
         endSec,

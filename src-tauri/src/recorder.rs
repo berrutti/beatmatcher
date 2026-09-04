@@ -408,14 +408,15 @@ mod tests {
     }
 
     #[test]
-    fn session_logger_timestamps_are_non_negative() {
+    fn every_logged_event_carries_both_clocks() {
         let mut logger = SessionLogger::new(
             &session_core::CLASSIC_3BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "e", serde_json::json!({}));
-        let elapsed_ms = logger.events[0]["elapsed_ms"].as_f64().unwrap();
-        assert!(elapsed_ms >= 0.0);
+        let event = &logger.events[0];
+        assert!(event["elapsed_ms"].as_f64().is_some_and(f64::is_finite));
+        assert!(event["frame"].as_u64().is_some());
     }
 
     #[test]

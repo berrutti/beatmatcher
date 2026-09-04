@@ -17,10 +17,35 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { spectralColor } from '@renderer/utils/waveformImage';
-import { beatLineStep, beatTier } from '@renderer/utils/beatGrid';
+import {
+  waveformColumns,
+  paintWaveformColumns,
+  type WaveformPaint
+} from '@renderer/utils/waveformImage';
+import { beatGridStep, visibleBeats } from '@renderer/utils/beatGrid';
 import { loopRegionRect, drawLoopRegionOverlay } from '@renderer/utils/loopRegionRect';
 import { computeCanvasSize } from '@renderer/utils/canvasResize';
+import { CUE_CHANNELS, drawCueTriangle } from '@renderer/utils/cueMarker';
+import {
+  MARKER_OUTLINE_COLOR,
+  MIN_WAVEFORM_BEAT_SPACING_PX,
+  MIN_WAVEFORM_BAR_SPACING_PX,
+  STRIP_GRID,
+  fillPixelLine,
+  drawBeatLine,
+  drawBarLine,
+  drawBeatMarker
+} from '@renderer/utils/beatGridDraw';
+import {
+  stripColumnRate,
+  stripScaleX,
+  snappedToDevicePixel,
+  stripX,
+  stripBitmapIsStale
+} from '@renderer/utils/stripGeometry';
+import { waveformPalette } from '@renderer/utils/waveformPalettes';
+import { STRIP_SCALES } from '@renderer/utils/waveformPaints';
+import { DEFAULT_METER, type WaveformStyleOption } from '@renderer/utils/types';
 
 type WaveformStripsSource = {
   getPosition: () => number;
@@ -29,13 +54,19 @@ type WaveformStripsSource = {
   getRate: () => number;
   getDenseData: () => Float32Array | null;
   getDenseRate: () => number;
+  getDensePointsReady: () => number;
+  getBandReference: () => number;
   isWaveformLoading: () => boolean;
   getLoopRegion: () => { startSec: number; endSec: number } | null;
   getLoopActive: () => boolean;
-  accent: string;
+  getCuePoint: () => number;
+  getBandBalance: () => [number, number, number];
 };
 
-const props = defineProps<{ sources: WaveformStripsSource[] }>();
+const props = defineProps<{
+  sources: WaveformStripsSource[];
+  waveformStyle: WaveformStyleOption;
+}>();
 const emit = defineEmits<{
   'scrub-start': [sourceIndex: number];
   scrub: [sourceIndex: number, sec: number];
@@ -44,26 +75,19 @@ const emit = defineEmits<{
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_CROSS = 256;
-const MIN_BEAT_LINE_SPACING_PX = 6;
-const BEATS_PER_BAR = 4;
-const BEATS_PER_PHRASE = 16;
-const BEAT_LINE_ALPHA = 0.35;
-// Device pixels, not CSS lineWidth, since these are fillRect not stroke.
-const BEAT_LINE_DEVICE_WIDTH = 2;
-const BAR_LINE_OUTLINE_DEVICE_WIDTH = 6;
-const BAR_LINE_CORE_DEVICE_WIDTH = 2;
-const BAR_LINE_OUTLINE_COLOR = 'rgba(0,0,0,0.9)';
-const BAR_LINE_CORE_COLOR = '#ffffff';
-const BAR_MARKER_TRI_W = 5;
-const BAR_MARKER_TRI_H = 6;
-const BAR_MARKER_FILL_COLOR = '#ffffff';
-const BAR_MARKER_OUTLINE_COLOR = '#000000';
-const BAR_MARKER_OUTLINE_WIDTH = 1.5;
+function stripPaint(balance: [number, number, number]): WaveformPaint {
+  return { ...STRIP_SCALES, palette: waveformPalette(props.waveformStyle, balance) };
+}
+const CUE_TRI_W = 6;
+const CUE_TRI_H = 9;
+const CUE_LINE_DEVICE_WIDTH = 2;
+const CUE_LINE_ALPHA = 0.5;
 const EMPTY_STRIP_BG = '#141414';
 const STRIP_SEPARATOR_COLOR = '#2a2a2a';
-// Pre-render ±30s around the playhead. At 250 pts/sec this caps the offscreen
-// at 15,000 columns, well within WebKit's ~32k canvas dimension limit.
+// Pre-render ±30s around the playhead, shortened on a wide strip so the offscreen stays
+// under WebKit's ~32k canvas dimension limit.
 const BUFFER_SEC = 30;
+const MAX_OFFSCREEN_COLUMNS = 30000;
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 let rafId = 0;
@@ -133,146 +157,119 @@ const STEPS_PER_CHUNK = 500;
 type OffscreenState = {
   canvas: HTMLCanvasElement | null;
   builtFrom: Float32Array | null;
+  builtPointsReady: number;
   denseRate: number;
-  // Aggregated steps/sec stored in the offscreen. Chosen so that 1 step ≈ 1
-  // physical pixel in the visible window, eliminating downscale aliasing.
   displayRate: number;
   numSteps: number;
   bufferStartSec: number;
   lastBuiltMain: number;
   lastBuiltDpr: number;
-  isBuilding: boolean;
+  lastBuiltStyle: WaveformStyleOption | null;
+  builtBandReference: number;
+};
+
+const EMPTY_STATE: OffscreenState = {
+  canvas: null,
+  builtFrom: null,
+  builtPointsReady: 0,
+  denseRate: 0,
+  displayRate: 0,
+  numSteps: 0,
+  bufferStartSec: 0,
+  lastBuiltMain: 0,
+  lastBuiltDpr: 0,
+  lastBuiltStyle: null,
+  builtBandReference: 0
 };
 
 let states: OffscreenState[] = [];
+let building: boolean[] = [];
 
-function initStates() {
-  states = props.sources.map(() => ({
-    canvas: null,
-    builtFrom: null,
-    denseRate: 0,
-    displayRate: 0,
-    numSteps: 0,
-    bufferStartSec: 0,
-    lastBuiltMain: 0,
-    lastBuiltDpr: 0,
-    isBuilding: false
-  }));
+function resetStates() {
+  states = props.sources.map(() => ({ ...EMPTY_STATE }));
+  building = props.sources.map(() => false);
 }
 
-async function buildOffscreenWindow(i: number, centerPos: number, mainSize: number, dpr: number) {
-  const state = states[i];
-  state.isBuilding = true;
+// Null keeps whatever the strip already has: the track changed under us mid-build.
+async function offscreenWindow(
+  i: number,
+  centerPos: number,
+  mainSize: number,
+  dpr: number
+): Promise<OffscreenState | null> {
   await new Promise<void>((r) => setTimeout(r, 0));
 
   const src = props.sources[i];
   const data = src.getDenseData();
-
-  if (!data) {
-    state.canvas = null;
-    state.builtFrom = null;
-    state.isBuilding = false;
-    return;
-  }
+  if (!data) return { ...EMPTY_STATE };
+  const pointsReady = src.getDensePointsReady();
+  const bandReference = src.getBandReference();
 
   const denseRate = src.getDenseRate();
-  const totalSamples = Math.floor(data.length / 4);
-  const totalDuration = totalSamples / denseRate;
+  const totalPoints = Math.floor(data.length / 4);
+  const totalDuration = totalPoints / denseRate;
 
-  // Target: 1 aggregated step per physical pixel in the 10-second visible window
-  const physicalMain = mainSize * dpr;
-  const targetDisplayRate = physicalMain / (2 * HALF_WINDOW_SEC);
-  const stride = Math.max(1, Math.round(denseRate / targetDisplayRate));
-  const displayRate = denseRate / stride;
+  const displayRate = stripColumnRate(mainSize * dpr, HALF_WINDOW_SEC);
 
-  const bufferStartSec = Math.max(0, centerPos - BUFFER_SEC);
-  const bufferEndSec = Math.min(totalDuration, centerPos + BUFFER_SEC);
-  const startSample = Math.floor(bufferStartSec * denseRate);
-  const endSample = Math.min(totalSamples, Math.ceil(bufferEndSec * denseRate));
-  const numSteps = Math.ceil((endSample - startSample) / stride);
+  const halfBufferSec = Math.min(BUFFER_SEC, MAX_OFFSCREEN_COLUMNS / displayRate / 2);
+  const bufferStartSec = Math.max(0, centerPos - halfBufferSec);
+  const bufferEndSec = Math.min(totalDuration, centerPos + halfBufferSec);
+  const startPoint = Math.floor(bufferStartSec * denseRate);
+  const endPoint = Math.min(totalPoints, Math.ceil(bufferEndSec * denseRate));
+  const spanSec = (endPoint - startPoint) / denseRate;
+  const numSteps = Math.max(1, Math.round(spanSec * displayRate));
 
   const canvas = document.createElement('canvas');
   canvas.width = numSteps;
   canvas.height = OFFSCREEN_CROSS;
   const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    state.isBuilding = false;
-    return;
-  }
+  if (!ctx) return null;
 
+  const style = stripPaint(src.getBandBalance());
+  const columns = waveformColumns(data, numSteps, startPoint, endPoint, bandReference);
   const imageData = ctx.createImageData(numSteps, OFFSCREEN_CROSS);
-  const px = imageData.data;
-  const cy = OFFSCREEN_CROSS / 2;
 
-  for (let col = 0; col < numSteps; col++) {
-    let bass = 0,
-      mid = 0,
-      high = 0,
-      amp = 0,
-      count = 0;
-    for (let k = 0; k < stride; k++) {
-      const sampleIdx = startSample + col * stride + k;
-      if (sampleIdx >= totalSamples) break;
-      const di = sampleIdx * 4;
-      bass += data[di];
-      mid += data[di + 1];
-      high += data[di + 2];
-      amp += data[di + 3];
-      count++;
-    }
-
-    if (count === 0) continue;
-    bass /= count;
-    mid /= count;
-    high /= count;
-    amp /= count;
-
-    const [r, g, b] = spectralColor(bass, mid, high);
-    const barH = Math.sqrt(amp) * cy * 1.5;
-    const yTop = Math.max(0, Math.round(cy - barH));
-    const yBottom = Math.min(OFFSCREEN_CROSS - 1, Math.round(cy + barH));
-
-    for (let y = yTop; y <= yBottom; y++) {
-      const idx = (y * numSteps + col) * 4;
-      px[idx] = r;
-      px[idx + 1] = g;
-      px[idx + 2] = b;
-      px[idx + 3] = 255;
-    }
-
-    if ((col + 1) % STEPS_PER_CHUNK === 0) {
-      if (src.getDenseData() !== data) {
-        state.isBuilding = false;
-        return;
-      }
-      await new Promise<void>((r) => setTimeout(r, 0));
-    }
+  // Chunked because painting 15,000 columns of 256 rows in one go drops frames.
+  for (let from = 0; from < numSteps; from += STEPS_PER_CHUNK) {
+    paintWaveformColumns(
+      imageData,
+      columns,
+      style,
+      from,
+      Math.min(numSteps, from + STEPS_PER_CHUNK)
+    );
+    if (src.getDenseData() !== data) return null;
+    await new Promise<void>((r) => setTimeout(r, 0));
   }
 
-  if (src.getDenseData() !== data) {
-    state.isBuilding = false;
-    return;
-  }
-
+  if (src.getDenseData() !== data) return null;
   ctx.putImageData(imageData, 0, 0);
 
-  state.canvas = canvas;
-  state.builtFrom = data;
-  state.denseRate = denseRate;
-  state.displayRate = displayRate;
-  state.numSteps = numSteps;
-  state.bufferStartSec = bufferStartSec;
-  state.lastBuiltMain = mainSize;
-  state.lastBuiltDpr = dpr;
-  state.isBuilding = false;
+  return {
+    canvas,
+    builtFrom: data,
+    builtPointsReady: pointsReady,
+    denseRate,
+    displayRate,
+    numSteps,
+    bufferStartSec,
+    lastBuiltMain: mainSize,
+    lastBuiltDpr: dpr,
+    lastBuiltStyle: props.waveformStyle,
+    builtBandReference: bandReference
+  };
 }
 
-function stripXFor(width: number, pos: number, rate: number, sec: number): number {
-  return width / 2 + (((sec - pos) / rate) * width) / (2 * HALF_WINDOW_SEC);
-}
-
-function snapToDevicePixel(x: number, dpr: number): number {
-  return Math.round(x * dpr) / dpr;
+async function refreshOffscreen(i: number, centerPos: number, mainSize: number, dpr: number) {
+  // resetStates swaps both arrays, and a build can outlive the sources it started on.
+  const generation = states;
+  building[i] = true;
+  try {
+    const next = await offscreenWindow(i, centerPos, mainSize, dpr);
+    if (next && states === generation) states[i] = next;
+  } finally {
+    if (states === generation) building[i] = false;
+  }
 }
 
 function drawEmptyStrip(
@@ -317,71 +314,20 @@ function drawLoopRegion(
   drawLoopRegionOverlay(ctx, rect, y0, stripH, active);
 }
 
-// A stroke's anti-aliased edge would shimmer as position scrolls. A pixel-aligned fill can't.
-function fillPixelLine(
-  ctx: CanvasRenderingContext2D,
-  centerX: number,
-  y0: number,
-  height: number,
-  devicePxWidth: number,
-  dpr: number,
-  color: string
-): void {
-  const leftDevicePx = Math.round(centerX * dpr) - devicePxWidth / 2;
-  ctx.fillStyle = color;
-  ctx.fillRect(leftDevicePx / dpr, y0, devicePxWidth / dpr, height);
-}
-
-function drawPlainBeatLine(
+function drawCueMarker(
   ctx: CanvasRenderingContext2D,
   x: number,
   y0: number,
+  width: number,
   stripH: number,
   dpr: number
 ): void {
-  const color = `rgba(255,255,255,${BEAT_LINE_ALPHA})`;
-  fillPixelLine(ctx, x, y0, stripH, BEAT_LINE_DEVICE_WIDTH, dpr, color);
+  if (x < -CUE_TRI_W || x > width + CUE_TRI_W) return;
+  const lineColor = `rgba(${CUE_CHANNELS}, ${CUE_LINE_ALPHA})`;
+  fillPixelLine(ctx, x, y0, stripH, CUE_LINE_DEVICE_WIDTH, dpr, lineColor);
+  drawCueTriangle(ctx, x, y0 + stripH, CUE_TRI_W, -CUE_TRI_H, MARKER_OUTLINE_COLOR);
 }
 
-function drawBarLine(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y0: number,
-  stripH: number,
-  dpr: number
-): void {
-  fillPixelLine(ctx, x, y0, stripH, BAR_LINE_OUTLINE_DEVICE_WIDTH, dpr, BAR_LINE_OUTLINE_COLOR);
-  fillPixelLine(ctx, x, y0, stripH, BAR_LINE_CORE_DEVICE_WIDTH, dpr, BAR_LINE_CORE_COLOR);
-}
-
-function drawTriangle(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  yBase: number,
-  pointHeight: number
-): void {
-  ctx.beginPath();
-  ctx.moveTo(x - BAR_MARKER_TRI_W, yBase);
-  ctx.lineTo(x + BAR_MARKER_TRI_W, yBase);
-  ctx.lineTo(x, yBase + pointHeight);
-  ctx.closePath();
-  ctx.fillStyle = BAR_MARKER_FILL_COLOR;
-  ctx.strokeStyle = BAR_MARKER_OUTLINE_COLOR;
-  ctx.lineWidth = BAR_MARKER_OUTLINE_WIDTH;
-  ctx.stroke();
-  ctx.fill();
-}
-
-// Two triangles so a bar reads at a glance instead of only through line density.
-function drawBarMarker(ctx: CanvasRenderingContext2D, x: number, y0: number, stripH: number): void {
-  ctx.save();
-  drawTriangle(ctx, x, y0, BAR_MARKER_TRI_H);
-  drawTriangle(ctx, x, y0 + stripH, -BAR_MARKER_TRI_H);
-  ctx.restore();
-}
-
-// LOD-stepped so lines stay legibly spaced instead of overlapping into noise
-// at high BPM or when zoomed out.
 function drawBeatGrid(
   ctx: CanvasRenderingContext2D,
   y0: number,
@@ -394,25 +340,33 @@ function drawBeatGrid(
   xFor: (sec: number) => number,
   dpr: number
 ): void {
-  const beatPeriod = 60 / bpm;
+  const pxPerBeat = (60 / bpm / rate) * (width / (2 * HALF_WINDOW_SEC));
+  const step = beatGridStep(
+    pxPerBeat,
+    DEFAULT_METER.beatsPerBar,
+    MIN_WAVEFORM_BEAT_SPACING_PX,
+    MIN_WAVEFORM_BAR_SPACING_PX
+  );
   const audioHalfWindow = HALF_WINDOW_SEC * rate;
-  const pxPerBeat = (beatPeriod / rate) * (width / (2 * HALF_WINDOW_SEC));
-  const step = beatLineStep(pxPerBeat, MIN_BEAT_LINE_SPACING_PX, BEATS_PER_BAR);
 
-  const nStart = Math.ceil((pos - audioHalfWindow - beatOffset) / beatPeriod);
-  const nEnd = Math.floor((pos + audioHalfWindow - beatOffset) / beatPeriod);
+  for (const { sec, isDownbeat } of visibleBeats(
+    bpm,
+    beatOffset,
+    pos - audioHalfWindow,
+    pos + audioHalfWindow,
+    step,
+    DEFAULT_METER
+  )) {
+    const xBeat = xFor(sec);
 
-  for (let bn = nStart; bn <= nEnd; bn++) {
-    if (bn % step !== 0) continue;
-    const tBeat = beatOffset + bn * beatPeriod;
-    const xBeat = xFor(tBeat);
-
-    if (beatTier(bn, BEATS_PER_BAR, BEATS_PER_PHRASE) === 'beat') {
-      drawPlainBeatLine(ctx, xBeat, y0, stripH, dpr);
+    if (isDownbeat) {
+      drawBarLine(ctx, xBeat, y0, stripH, dpr, STRIP_GRID);
     } else {
-      drawBarLine(ctx, xBeat, y0, stripH, dpr);
-      drawBarMarker(ctx, xBeat, y0, stripH);
+      drawBeatLine(ctx, xBeat, y0, stripH, dpr, STRIP_GRID);
     }
+    // The strip holds barely one phrase at its single zoom, so only the edit view
+    // colours them apart.
+    drawBeatMarker(ctx, xBeat, y0, stripH, isDownbeat ? 'bar' : 'beat', STRIP_GRID);
   }
 }
 
@@ -483,16 +437,18 @@ function draw() {
     const y0 = i * stripH;
 
     const pos = src.getPosition();
-    const bufferEndSec = state.bufferStartSec + state.numSteps / (state.displayRate || 1);
-    const edgeGuard = HALF_WINDOW_SEC + 5;
-    const needsRebuild =
-      state.builtFrom !== src.getDenseData() ||
-      state.lastBuiltMain !== w ||
-      state.lastBuiltDpr !== dpr ||
-      pos < state.bufferStartSec + edgeGuard ||
-      pos > bufferEndSec - edgeGuard;
+    const needsRebuild = stripBitmapIsStale(state, {
+      data: src.getDenseData(),
+      pointsReady: src.getDensePointsReady(),
+      position: pos,
+      cssWidth: w,
+      dpr,
+      style: props.waveformStyle,
+      bandReference: src.getBandReference(),
+      edgeGuardSec: HALF_WINDOW_SEC + 5
+    });
 
-    if (needsRebuild && !state.isBuilding) buildOffscreenWindow(i, pos, w, dpr).catch(() => {});
+    if (needsRebuild && !building[i]) refreshOffscreen(i, pos, w, dpr).catch(() => {});
     if (!state.canvas) {
       drawEmptyStrip(ctx, y0, w, stripH);
       continue;
@@ -501,13 +457,13 @@ function draw() {
     // Audio-time offsets divide by rate to reach screen coordinates: pitched up,
     // fewer audio seconds fit the fixed real-time window.
     const rate = Math.max(0.1, src.getRate());
-    const scaleX = w / (2 * HALF_WINDOW_SEC * state.displayRate * rate);
+    const scaleX = stripScaleX(w, HALF_WINDOW_SEC, state.displayRate, rate);
     const txRaw = w / 2 - (pos - state.bufferStartSec) * state.displayRate * scaleX;
-    const tx = Math.round(txRaw * dpr) / dpr;
+    const tx = snappedToDevicePixel(txRaw, dpr);
 
     drawStripWaveform(ctx, state.canvas, state.numSteps, y0, w, stripH, tx, scaleX);
 
-    const xFor = (sec: number) => stripXFor(w, pos, rate, sec);
+    const xFor = (sec: number) => stripX(w, HALF_WINDOW_SEC, pos, rate, sec);
 
     const loopRegion = src.getLoopRegion();
     if (loopRegion) drawLoopRegion(ctx, y0, w, stripH, loopRegion, src.getLoopActive(), xFor);
@@ -517,11 +473,13 @@ function draw() {
       drawBeatGrid(ctx, y0, w, stripH, bpm, src.getBeatOffset(), rate, pos, xFor, dpr);
     }
 
+    drawCueMarker(ctx, xFor(src.getCuePoint()), y0, w, stripH, dpr);
+
     if (src.isWaveformLoading()) drawLoadingOverlay(ctx, y0, w, stripH);
   }
 
   // x is the same for every strip, unlike the per-strip draws in the loop above.
-  drawPlayhead(ctx, snapToDevicePixel(w / 2, dpr), h);
+  drawPlayhead(ctx, snappedToDevicePixel(w / 2, dpr), h);
   drawStripSeparators(ctx, n, w, stripH);
 
   rafId = requestAnimationFrame(draw);
@@ -548,7 +506,7 @@ onMounted(() => {
   if (!canvas) return;
   requestAnimationFrame(() => {
     resizeCanvas(canvas);
-    initStates();
+    resetStates();
     rafId = requestAnimationFrame(draw);
   });
   resizeObserver = new ResizeObserver(() => {

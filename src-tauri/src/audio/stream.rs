@@ -280,8 +280,6 @@ fn f32_to_i16_sample(s: f32) -> i16 {
     (s * i16::MAX as f32) as i16
 }
 
-// Dispatch over sample format once. The caller provides a closure that fills a
-// float buffer. The I16 branch transparently routes through an intermediate buffer.
 fn build_float_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
@@ -555,9 +553,6 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
     }
 }
 
-// Used when main output is unrouted but a cue stream is active and recording is
-// requested. Renders both the cue signal (into `data`) and the master mix (into
-// a temporary stereo buffer), then taps the master mix for metering/recording.
 // Nothing from the master mix is sent to the cue hardware output.
 #[allow(clippy::too_many_arguments)]
 fn fill_cue_with_master_tap(
@@ -720,9 +715,7 @@ fn fill_output_combined(
     );
 }
 
-// Reads the final clamped master L/R samples from the output buffer, stores
-// the peak level in the monitor atomics, and forwards to the recording channel
-// if recording is active. Uses try_lock so the audio callback never blocks.
+// Uses try_lock so the audio callback never blocks.
 fn tap_master_output(
     data: &[f32],
     frames: usize,

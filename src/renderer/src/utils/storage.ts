@@ -1,16 +1,11 @@
-// All localStorage keys the app uses, in one place.
-// Format: beatmatcher.<group>.<item>all lowercase kebab-case.
 export const STORAGE_KEYS = {
-  // User-facing settings persisted across sessions
   settings: 'beatmatcher.settings',
 
-  // Collection and track metadata
   collection: 'beatmatcher.library.collection',
   playlists: 'beatmatcher.library.playlists',
   savedTracks: 'beatmatcher.library.saved-tracks',
   metadataOverrides: 'beatmatcher.library.metadata-overrides',
 
-  // UI state (layout, panel sizes)
   deckCount: 'beatmatcher.ui.deck-count',
   bigLibrary: 'beatmatcher.ui.big-library',
   showWaveformStrip: 'beatmatcher.ui.show-waveform-strip',
@@ -23,7 +18,6 @@ export const STORAGE_KEYS = {
   browserColumns: 'beatmatcher.ui.browser-columns',
   skipDiscardConfirm: 'beatmatcher.ui.skip-recovery-discard-confirm',
 
-  // Hardware
   midiDeckAssignments: 'beatmatcher.midi.deck-assignments'
 } as const;
 

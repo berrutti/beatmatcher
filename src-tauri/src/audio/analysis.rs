@@ -1,49 +1,227 @@
 use super::dsp::Biquad;
+use super::io::DecodedPacket;
 
 const BAND_BASS_HZ: f32 = 250.0;
 const BAND_MID_HZ: f32 = 2_000.0;
 
-pub fn compute_spectral_bands(
-    samples: &[f32],
-    channels: usize,
-    sample_rate: u32,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    if samples.is_empty() || channels == 0 {
-        return (Vec::new(), Vec::new(), Vec::new());
-    }
-    let n = samples.len() / channels;
-    let sr = sample_rate as f32;
-    let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
+// 6.7 ms a point, finer than a device pixel at every zoom the edit view offers, and the
+// rate the established waveform formats use.
+pub const DENSE_POINTS_PER_SEC: f64 = 150.0;
 
-    let mut lp_bass = Biquad::low_pass(sr, BAND_BASS_HZ, butterworth_q);
-    let mut lp_bass_mid = Biquad::low_pass(sr, BAND_MID_HZ, butterworth_q);
-
-    let mut bass = Vec::with_capacity(n);
-    let mut mid = Vec::with_capacity(n);
-    let mut high = Vec::with_capacity(n);
-
-    for frame in 0..n {
-        let mono = if channels == 1 {
-            samples[frame]
-        } else {
-            let sum: f32 = (0..channels).map(|ch| samples[frame * channels + ch]).sum();
-            sum / channels as f32
-        };
-        let b = lp_bass.process(mono);
-        let bm = lp_bass_mid.process(mono);
-        bass.push(b);
-        mid.push(bm - b);
-        high.push(mono - bm);
-    }
-
-    (bass, mid, high)
+#[derive(Default)]
+pub struct StreamedBands {
+    pub bass: Vec<f32>,
+    pub mid: Vec<f32>,
+    pub high: Vec<f32>,
+    pub bass_rms: f32,
+    pub mid_rms: f32,
+    pub high_rms: f32,
 }
 
-// RMS rather than peak: mastered music puts a near-|1.0| sample in almost every bin, so
-// peak heights collapse to a flat block. Channels ride band energy un-normalised, and the
-// amplitude is stored raw so the sqrt curve in the frontend has range left to spread.
-const AMP_DISPLAY_BOOST: f32 = 1.0;
-const BAND_DISPLAY_BOOST: f32 = 1.0;
+/// Fed from the decoder, so points reach `on_points` while the file is still being read.
+/// `None` when no packet arrived.
+pub fn reduce_packets(
+    packets: std::sync::mpsc::Receiver<DecodedPacket>,
+    points_per_chunk: usize,
+    mut on_total_points: impl FnMut(usize),
+    mut on_points: impl FnMut(&[f32], usize),
+) -> Option<StreamedBands> {
+    let mut stream: Option<BandStream> = None;
+    while let Ok((packet, shape)) = packets.recv() {
+        let reducer = stream.get_or_insert_with(|| {
+            let started = BandStream::new(
+                shape.total_frames,
+                shape.channels,
+                shape.sample_rate,
+                points_per_chunk,
+            );
+            on_total_points(started.total_points());
+            started
+        });
+        reducer.push(&packet, &mut on_points);
+    }
+    // Closed here rather than by the caller: the last points would otherwise wait for the
+    // load to finish before they could be painted.
+    stream.map(|stream| stream.finish(&mut on_points))
+}
+
+pub fn dense_point_count(total_frames: usize, sample_rate: u32) -> usize {
+    if sample_rate == 0 || total_frames == 0 {
+        return 0;
+    }
+    let seconds = total_frames as f64 / sample_rate as f64;
+    (seconds * DENSE_POINTS_PER_SEC).ceil() as usize
+}
+
+/// The reduction as a resumable object, so it can be driven from the decoder while the
+/// file is still being read instead of waiting for the whole buffer.
+pub struct BandStream {
+    channels: usize,
+    total_frames: usize,
+    total_points: usize,
+    frames_per_point: f64,
+    lp_bass: Biquad,
+    lp_bass_mid: Biquad,
+    bass: Vec<f32>,
+    mid: Vec<f32>,
+    high: Vec<f32>,
+    sum_bass_sq: f64,
+    sum_mid_sq: f64,
+    sum_high_sq: f64,
+    frame: usize,
+    points_done: usize,
+    bin_bass: f32,
+    bin_mid: f32,
+    bin_high: f32,
+    bin_amp: f32,
+    bin_count: f32,
+    chunk: Vec<f32>,
+    points_per_chunk: usize,
+}
+
+impl BandStream {
+    pub fn new(
+        total_frames: usize,
+        channels: usize,
+        sample_rate: u32,
+        points_per_chunk: usize,
+    ) -> Self {
+        let sr = sample_rate as f32;
+        let butterworth_q = 1.0 / std::f32::consts::SQRT_2;
+        let total_points = dense_point_count(total_frames, sample_rate);
+        Self {
+            channels,
+            total_frames,
+            total_points,
+            frames_per_point: if total_points == 0 {
+                0.0
+            } else {
+                total_frames as f64 / total_points as f64
+            },
+            lp_bass: Biquad::low_pass(sr, BAND_BASS_HZ, butterworth_q),
+            lp_bass_mid: Biquad::low_pass(sr, BAND_MID_HZ, butterworth_q),
+            bass: Vec::with_capacity(total_frames),
+            mid: Vec::with_capacity(total_frames),
+            high: Vec::with_capacity(total_frames),
+            sum_bass_sq: 0.0,
+            sum_mid_sq: 0.0,
+            sum_high_sq: 0.0,
+            frame: 0,
+            points_done: 0,
+            bin_bass: 0.0,
+            bin_mid: 0.0,
+            bin_high: 0.0,
+            bin_amp: 0.0,
+            bin_count: 0.0,
+            chunk: Vec::with_capacity(points_per_chunk * 4),
+            points_per_chunk,
+        }
+    }
+
+    pub fn total_points(&self) -> usize {
+        self.total_points
+    }
+
+    pub fn push(&mut self, samples: &[f32], mut on_points: impl FnMut(&[f32], usize)) {
+        if self.channels == 0 || self.total_points == 0 {
+            return;
+        }
+        let frames = samples.len() / self.channels;
+        for local in 0..frames {
+            if self.frame >= self.total_frames {
+                break;
+            }
+            let base = local * self.channels;
+            let mono: f32 =
+                samples[base..base + self.channels].iter().sum::<f32>() / self.channels as f32;
+            let b = self.lp_bass.process(mono);
+            let bm = self.lp_bass_mid.process(mono);
+            let m = bm - b;
+            let h = mono - bm;
+            self.bass.push(b);
+            self.mid.push(m);
+            self.high.push(h);
+            self.sum_bass_sq += (b as f64) * (b as f64);
+            self.sum_mid_sq += (m as f64) * (m as f64);
+            self.sum_high_sq += (h as f64) * (h as f64);
+            self.bin_bass += b * b;
+            self.bin_mid += m * m;
+            self.bin_high += h * h;
+            for ch in 0..self.channels {
+                let sample = samples[base + ch];
+                self.bin_amp += sample * sample;
+            }
+            self.bin_count += 1.0;
+            self.frame += 1;
+
+            let point_end = (((self.points_done + 1) as f64 * self.frames_per_point) as usize)
+                .min(self.total_frames);
+            if self.frame >= point_end && self.points_done < self.total_points {
+                self.close_point();
+                if self.chunk.len() >= self.points_per_chunk * 4 {
+                    on_points(&self.chunk, self.total_points);
+                    self.chunk.clear();
+                }
+            }
+        }
+    }
+
+    fn close_point(&mut self) {
+        if self.bin_count > 0.0 {
+            self.chunk.push((self.bin_bass / self.bin_count).sqrt());
+            self.chunk.push((self.bin_mid / self.bin_count).sqrt());
+            self.chunk.push((self.bin_high / self.bin_count).sqrt());
+            self.chunk.push(
+                (self.bin_amp / (self.bin_count * self.channels as f32))
+                    .sqrt()
+                    .min(1.0),
+            );
+        } else {
+            self.chunk.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        }
+        self.bin_bass = 0.0;
+        self.bin_mid = 0.0;
+        self.bin_high = 0.0;
+        self.bin_amp = 0.0;
+        self.bin_count = 0.0;
+        self.points_done += 1;
+    }
+
+    pub fn finish(mut self, mut on_points: impl FnMut(&[f32], usize)) -> StreamedBands {
+        while self.points_done < self.total_points {
+            self.close_point();
+        }
+        if !self.chunk.is_empty() {
+            on_points(&self.chunk, self.total_points);
+            self.chunk.clear();
+        }
+        // What arrived, not what the container declared: n_frames is approximate in some
+        // containers, and dividing by it would scale every band level by the error.
+        let frames = self.frame.max(1) as f64;
+        StreamedBands {
+            bass: self.bass,
+            mid: self.mid,
+            high: self.high,
+            bass_rms: (self.sum_bass_sq / frames).sqrt() as f32,
+            mid_rms: (self.sum_mid_sq / frames).sqrt() as f32,
+            high_rms: (self.sum_high_sq / frames).sqrt() as f32,
+        }
+    }
+}
+
+/// The three bands sum to the mono signal, so their levels in quadrature stand in for the
+/// track's own.
+pub fn band_reference(bands: &super::SpectralBands) -> f32 {
+    let total = (bands.bass_rms * bands.bass_rms
+        + bands.mid_rms * bands.mid_rms
+        + bands.high_rms * bands.high_rms)
+        .sqrt();
+    if total > 0.0 {
+        total
+    } else {
+        1.0
+    }
+}
 
 pub fn compute_spectral_waveform_region(
     samples: &[f32],
@@ -53,30 +231,39 @@ pub fn compute_spectral_waveform_region(
     start_sec: f64,
     end_sec: f64,
     num_points: usize,
-) -> Vec<f32> {
-    let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
-    let (bass_scale, mid_scale, high_scale) = (bands.bass_scale, bands.mid_scale, bands.high_scale);
-    if bass.is_empty() || num_points == 0 {
-        return vec![0.0; num_points * 4];
+) -> Option<Vec<f32>> {
+    if bands.frames() == 0 || num_points == 0 {
+        return None;
     }
-    let total_frames = bass.len();
-    let sr = sample_rate as f64;
-    let start_frame = (start_sec * sr).max(0.0) as usize;
-    let end_frame = ((end_sec * sr) as usize).min(total_frames);
+    let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
+    let band_rate = if bands.source_rate > 0 {
+        bands.source_rate
+    } else {
+        sample_rate
+    } as f64;
+    let total_frames = bands.frames();
+    let start_frame = (start_sec * band_rate).max(0.0) as usize;
+    let end_frame = ((end_sec * band_rate) as usize).min(total_frames);
 
     if start_frame >= end_frame {
-        return vec![0.0; num_points * 4];
+        return None;
     }
 
     let visible_frames = end_frame - start_frame;
     let frames_per_point = visible_frames as f64 / num_points as f64;
+    // Without a floor, the same kick reads taller the deeper the zoom that asked for it.
+    let window = frames_per_point.max(band_rate / DENSE_POINTS_PER_SEC);
+    // The deck's own rate, which the resampler may have moved away from the file's.
+    let sample_frames = samples.len() / channels.max(1);
+    let sample_scale = sample_rate as f64 / band_rate;
 
     let mut result = Vec::with_capacity(num_points * 4);
 
     for point_index in 0..num_points {
-        let bin_start = start_frame + (point_index as f64 * frames_per_point) as usize;
-        let bin_end = (start_frame + ((point_index + 1) as f64 * frames_per_point) as usize)
-            .min(end_frame)
+        let centre = start_frame as f64 + (point_index as f64 + 0.5) * frames_per_point;
+        let bin_start = (centre - window / 2.0).max(0.0) as usize;
+        let bin_end = ((centre + window / 2.0) as usize)
+            .min(total_frames)
             .max(bin_start + 1);
 
         let mut sum_bass_sq = 0.0f32;
@@ -85,33 +272,39 @@ pub fn compute_spectral_waveform_region(
         let mut sum_sample_sq = 0.0f32;
         let count = (bin_end - bin_start) as f32;
 
+        let mut sample_count = 0.0f32;
         for frame in bin_start..bin_end {
             sum_bass_sq += bass[frame] * bass[frame];
             sum_mid_sq += mid[frame] * mid[frame];
             sum_high_sq += high[frame] * high[frame];
-            for ch in 0..channels {
-                let s = samples[frame * channels + ch];
-                sum_sample_sq += s * s;
+            let at = (frame as f64 * sample_scale) as usize;
+            if at < sample_frames {
+                for ch in 0..channels {
+                    let s = samples[at * channels + ch];
+                    sum_sample_sq += s * s;
+                }
+                sample_count += 1.0;
             }
         }
 
-        let rms_amp = (sum_sample_sq / (count * channels as f32)).sqrt();
+        let rms_amp = if sample_count > 0.0 {
+            (sum_sample_sq / (sample_count * channels as f32)).sqrt()
+        } else {
+            0.0
+        };
         let rms_bass = (sum_bass_sq / count).sqrt();
         let rms_mid = (sum_mid_sq / count).sqrt();
         let rms_high = (sum_high_sq / count).sqrt();
 
-        let r = (rms_bass * bass_scale * BAND_DISPLAY_BOOST).min(1.0);
-        let g = (rms_mid * mid_scale * BAND_DISPLAY_BOOST).min(1.0);
-        let b = (rms_high * high_scale * BAND_DISPLAY_BOOST).min(1.0);
-        let amp = (rms_amp * AMP_DISPLAY_BOOST).min(1.0);
-
-        result.push(r);
-        result.push(g);
-        result.push(b);
-        result.push(amp);
+        // Raw and unclamped, the scale the streamed points arrive on: the frontend lifts
+        // both to the track's own level and takes only the ratio between the three.
+        result.push(rms_bass);
+        result.push(rms_mid);
+        result.push(rms_high);
+        result.push(rms_amp.min(1.0));
     }
 
-    result
+    Some(result)
 }
 
 pub fn compute_amplitude_region(
@@ -507,5 +700,290 @@ mod tests {
             (detected * 10.0).round() / 10.0,
             "result should round to one decimal"
         );
+    }
+
+    fn tone(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels)
+            .map(|i| {
+                let t = (i / channels) as f32 / 44100.0;
+                0.6 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                    + 0.2 * (2.0 * std::f32::consts::PI * 5000.0 * t).sin()
+            })
+            .collect()
+    }
+
+    fn points_from(samples: &[f32], channels: usize, chunk_frames: usize) -> Vec<f32> {
+        let frames = samples.len() / channels;
+        let mut stream = BandStream::new(frames, channels, 44100, 64);
+        let mut points = Vec::new();
+        let mut at = 0;
+        while at < frames {
+            let end = (at + chunk_frames).min(frames);
+            stream.push(&samples[at * channels..end * channels], |chunk, _| {
+                points.extend_from_slice(chunk)
+            });
+            at = end;
+        }
+        stream.finish(|chunk, _| points.extend_from_slice(chunk));
+        points
+    }
+
+    #[test]
+    fn the_chunk_size_the_decoder_hands_over_does_not_change_the_points() {
+        let samples = tone(44100, 2);
+        let whole = points_from(&samples, 2, 44100);
+        for chunk in [1, 7, 512, 4096] {
+            assert_eq!(points_from(&samples, 2, chunk), whole, "chunk of {chunk}");
+        }
+    }
+
+    #[test]
+    fn every_declared_point_is_emitted_once() {
+        let samples = tone(44100, 2);
+        let stream = BandStream::new(44100, 2, 44100, 64);
+        let expected = stream.total_points();
+        assert_eq!(points_from(&samples, 2, 512).len(), expected * 4);
+    }
+
+    #[test]
+    fn a_band_level_counts_only_the_frames_that_arrived() {
+        let samples = tone(44100, 2);
+        // The declared length is what the container claimed; only half of it turns up.
+        let half = samples.len() / 2;
+        let mut short = BandStream::new(44100, 2, 44100, 64);
+        short.push(&samples[..half], |_, _| {});
+        let short = short.finish(|_, _| {});
+
+        let mut exact = BandStream::new(22050, 2, 44100, 64);
+        exact.push(&samples[..half], |_, _| {});
+        let exact = exact.finish(|_, _| {});
+
+        assert!((short.bass_rms - exact.bass_rms).abs() < 1e-6);
+        assert!((short.high_rms - exact.high_rms).abs() < 1e-6);
+    }
+
+    #[test]
+    fn packets_reduce_to_the_same_points_as_one_push() {
+        let samples = tone(44100, 2);
+        let (send, packets) = std::sync::mpsc::channel();
+        for chunk in samples.chunks(512 * 2) {
+            send.send((
+                std::sync::Arc::new(chunk.to_vec()),
+                super::super::io::DecodedShape {
+                    channels: 2,
+                    total_frames: 44100,
+                    sample_rate: 44100,
+                },
+            ))
+            .ok();
+        }
+        drop(send);
+
+        let mut declared = None;
+        let mut points = Vec::new();
+        let bands = reduce_packets(
+            packets,
+            64,
+            |total| declared = Some(total),
+            |chunk, _| points.extend_from_slice(chunk),
+        )
+        .expect("packets arrived");
+
+        assert_eq!(declared, Some(dense_point_count(44100, 44100)));
+        assert_eq!(points, points_from(&samples, 2, 512));
+        assert!(bands.bass_rms > 0.0);
+    }
+
+    #[test]
+    fn no_packet_reduces_to_no_bands() {
+        let (send, packets) = std::sync::mpsc::channel();
+        drop(send);
+        let mut declared = false;
+        assert!(reduce_packets(packets, 64, |_| declared = true, |_, _| {}).is_none());
+        assert!(!declared);
+    }
+
+    #[test]
+    fn the_three_bands_are_filled_together() {
+        let samples = tone(4410, 2);
+        let mut stream = BandStream::new(4410, 2, 44100, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+
+        assert_eq!(reduced.bass.len(), 4410);
+        assert_eq!(reduced.bass.len(), reduced.mid.len());
+        assert_eq!(reduced.mid.len(), reduced.high.len());
+    }
+
+    #[test]
+    fn a_region_reads_the_same_amplitude_however_finely_it_is_sampled() {
+        let rate = 44100;
+        let frames = rate as usize;
+        let samples = tone(frames, 2);
+
+        let mut stream = BandStream::new(frames, 2, rate, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: rate,
+        };
+
+        let amplitudes = |num_points: usize| -> Vec<f32> {
+            compute_spectral_waveform_region(&samples, 2, &bands, rate, 0.2, 0.8, num_points)
+                .expect("a reduced track answers a region")
+                .chunks(4)
+                .map(|point| point[3])
+                .collect()
+        };
+        // 90 points over 0.6 s is the dense rate itself; 4000 is far past it.
+        let at_dense_rate = amplitudes(90);
+        let far_deeper = amplitudes(4000);
+
+        let spread = |points: &[f32]| {
+            points.iter().copied().fold(f32::MIN, f32::max)
+                - points.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let mean = |points: &[f32]| points.iter().sum::<f32>() / points.len() as f32;
+
+        assert!(
+            spread(&far_deeper) < 0.05,
+            "a steady tone drawn with a spread of {}",
+            spread(&far_deeper)
+        );
+        assert!(
+            (mean(&far_deeper) - mean(&at_dense_rate)).abs() < 0.02,
+            "{} at the dense rate against {} far deeper",
+            mean(&at_dense_rate),
+            mean(&far_deeper)
+        );
+    }
+
+    #[test]
+    fn dense_point_count_follows_the_rate() {
+        assert_eq!(
+            dense_point_count(44100, 44100),
+            DENSE_POINTS_PER_SEC as usize
+        );
+        assert_eq!(dense_point_count(0, 44100), 0);
+        assert_eq!(dense_point_count(44100, 0), 0);
+    }
+
+    #[test]
+    fn the_band_reference_is_never_zero() {
+        let silent = super::super::SpectralBands::default();
+        assert!(band_reference(&silent) > 0.0);
+    }
+
+    #[test]
+    fn band_reference_matches_the_typescript_fixture() {
+        let bands = super::super::SpectralBands {
+            bass_rms: 0.4,
+            mid_rms: 0.2,
+            high_rms: 0.1,
+            ..Default::default()
+        };
+        // f64, so the literals carry the digits the TypeScript side compares against.
+        let reference = f64::from(band_reference(&bands));
+        assert!((reference - 0.45825757).abs() < 1e-6);
+        assert!((reference / 0.4 - 1.14564392).abs() < 1e-6);
+        assert!((reference / 0.2 - 2.29128785).abs() < 1e-6);
+        assert!((reference / 0.1 - 4.58257569).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_region_and_the_streamed_points_carry_the_same_band_levels() {
+        let samples = tone(44100, 2);
+        let dense = points_from(&samples, 2, 512);
+
+        let mut stream = BandStream::new(44100, 2, 44100, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: 44100,
+        };
+
+        let num_points = dense.len() / 4;
+        let region =
+            compute_spectral_waveform_region(&samples, 2, &bands, 44100, 0.0, 1.0, num_points)
+                .expect("a reduced track answers a region");
+
+        for point in 0..num_points {
+            for band in 0..3 {
+                let at = point * 4 + band;
+                assert!(
+                    (region[at] - dense[at]).abs() < 1e-3,
+                    "point {point} band {band}: region {} vs streamed {}",
+                    region[at],
+                    dense[at]
+                );
+            }
+        }
+    }
+
+    // Bands are reduced from the decoder at the file's own rate, while the deck holds
+    // samples resampled for the device, so a region has to walk the two at their own rates.
+    #[test]
+    fn a_region_reads_bands_and_samples_at_their_own_rates() {
+        let native_rate = 44100;
+        let device_rate = 48000;
+        let seconds = 2.0;
+        let native_frames = (native_rate as f64 * seconds) as usize;
+        let device_frames = (device_rate as f64 * seconds) as usize;
+
+        let tone_at = |frames: usize, rate: u32| -> Vec<f32> {
+            (0..frames * 2)
+                .map(|i| {
+                    let t = (i / 2) as f32 / rate as f32;
+                    0.5 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                })
+                .collect()
+        };
+
+        let native = tone_at(native_frames, native_rate);
+        let device = tone_at(device_frames, device_rate);
+
+        let mut stream = BandStream::new(native_frames, 2, native_rate, 64);
+        stream.push(&native, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: native_rate,
+        };
+
+        let points =
+            compute_spectral_waveform_region(&device, 2, &bands, device_rate, 0.0, seconds, 8)
+                .expect("a reduced track answers a region");
+        assert_eq!(points.len(), 32);
+        // A steady tone: every point should carry the same bass share and amplitude.
+        for point in 1..8 {
+            assert!(
+                (points[point * 4] - points[0]).abs() < 0.05,
+                "bass share drifted at point {point}: {} vs {}",
+                points[point * 4],
+                points[0]
+            );
+            assert!(
+                (points[point * 4 + 3] - points[3]).abs() < 0.05,
+                "amplitude drifted at point {point}"
+            );
+        }
     }
 }

@@ -41,14 +41,9 @@ import { open } from '@tauri-apps/plugin-dialog';
 const mockedInvoke = vi.mocked(invoke);
 const mockedOpen = vi.mocked(open);
 
-// Paths that "exist" on the fake filesystem, with their sizes.
 let fakeFs: Record<string, number>;
-// Audio files found under a folder by the mocked scan_folder, keyed by folder.
 let fakeScan: Record<string, string[]>;
-// What the native folder picker returns.
 let dialogResult: string | null;
-
-// Content served by the mocked read_file command, keyed by path.
 let fakeBms: Record<string, string>;
 
 function installInvokeMock() {

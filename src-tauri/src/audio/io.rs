@@ -42,8 +42,25 @@ fn open_format(
     )?)
 }
 
+/// What the caller would otherwise have to reopen the file to learn.
+#[derive(Clone, Copy)]
+pub struct DecodedShape {
+    pub channels: usize,
+    pub total_frames: usize,
+    pub sample_rate: u32,
+}
+
 pub fn decode_audio(
     path: &str,
+) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
+    decode_audio_streaming(path, |_, _| {})
+}
+
+/// `on_decoded` sees each run of frames as it is decoded, in order, so a caller can
+/// analyse the head of a track while the tail is still being read.
+pub fn decode_audio_streaming(
+    path: &str,
+    mut on_decoded: impl FnMut(&[f32], DecodedShape),
 ) -> Result<(Vec<f32>, usize, u32), Box<dyn std::error::Error + Send + Sync>> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -65,6 +82,7 @@ pub fn decode_audio(
     let mut decoder =
         symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
+    let expected_frames = codec_params.n_frames.unwrap_or(0) as usize;
     let capacity = codec_params
         .n_frames
         .map(|frame_count| frame_count as usize * 2)
@@ -100,7 +118,6 @@ pub fn decode_audio(
                 }
                 let spec = *decoded.spec();
                 let src_channels = spec.channels.count();
-                // Lock in the channel count from the first packet.
                 let out_channels = *actual_channels.get_or_insert_with(|| {
                     let channel_count = src_channels.min(2);
                     log::info!(
@@ -113,6 +130,7 @@ pub fn decode_audio(
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 buf.copy_interleaved_ref(decoded);
                 let src = buf.samples();
+                let appended_from = samples.len();
                 if src_channels <= 2 {
                     samples.extend_from_slice(src);
                 } else {
@@ -124,6 +142,14 @@ pub fn decode_audio(
                         }
                     }
                 }
+                on_decoded(
+                    &samples[appended_from..],
+                    DecodedShape {
+                        channels: out_channels,
+                        total_frames: expected_frames,
+                        sample_rate,
+                    },
+                );
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
             Err(error) => return Err(error.into()),
@@ -140,6 +166,116 @@ pub fn decode_audio(
     );
 
     Ok((samples, channels, sample_rate))
+}
+
+/// `resample_linear` fed a packet at a time.
+pub struct LinearResampler {
+    channels: usize,
+    ratio: f64,
+    out_frame: usize,
+    consumed: usize,
+    window: Vec<f32>,
+    output: Vec<f32>,
+}
+
+impl LinearResampler {
+    pub fn new(channels: usize, in_rate: u32, out_rate: u32) -> Self {
+        Self {
+            channels,
+            ratio: in_rate as f64 / out_rate as f64,
+            out_frame: 0,
+            consumed: 0,
+            window: Vec::new(),
+            output: Vec::new(),
+        }
+    }
+
+    fn frame_at(&self, frame: usize) -> usize {
+        (frame - self.consumed) * self.channels
+    }
+
+    pub fn push(&mut self, frames: &[f32]) {
+        if self.channels == 0 {
+            return;
+        }
+        self.window.extend_from_slice(frames);
+        let available = self.consumed + self.window.len() / self.channels;
+
+        loop {
+            let src_pos = self.out_frame as f64 * self.ratio;
+            let lo_frame = src_pos as usize;
+            if lo_frame + 1 >= available {
+                break;
+            }
+            let interp_factor = (src_pos - lo_frame as f64) as f32;
+            let lo = self.frame_at(lo_frame);
+            let hi = self.frame_at(lo_frame + 1);
+            for channel in 0..self.channels {
+                let lo_sample = self.window[lo + channel];
+                let hi_sample = self.window[hi + channel];
+                self.output
+                    .push(lo_sample + interp_factor * (hi_sample - lo_sample));
+            }
+            self.out_frame += 1;
+        }
+
+        // Compacted once per packet: draining inside the loop moves the whole remaining
+        // window on almost every output frame, which cost more than the resample.
+        let next_lo = ((self.out_frame as f64 * self.ratio) as usize).min(available);
+        if next_lo > self.consumed {
+            let drop_frames = next_lo - self.consumed;
+            self.window.drain(..drop_frames * self.channels);
+            self.consumed = next_lo;
+        }
+    }
+
+    pub fn finish(mut self, in_frames: usize) -> Vec<f32> {
+        if self.channels == 0 || in_frames == 0 {
+            return self.output;
+        }
+        let out_frames = (in_frames as f64 / self.ratio).ceil() as usize;
+        let last = in_frames - 1;
+        while self.out_frame < out_frames {
+            let src_pos = self.out_frame as f64 * self.ratio;
+            let src_frame = src_pos as usize;
+            let interp_factor = (src_pos - src_frame as f64) as f32;
+            let lo_frame = src_frame.min(last).max(self.consumed);
+            let hi_frame = (src_frame + 1).min(last).max(self.consumed);
+            let lo = self.frame_at(lo_frame);
+            let hi = self.frame_at(hi_frame);
+            for channel in 0..self.channels {
+                let lo_sample = self.window[lo + channel];
+                let hi_sample = self.window[hi + channel];
+                self.output
+                    .push(lo_sample + interp_factor * (hi_sample - lo_sample));
+            }
+            self.out_frame += 1;
+        }
+        self.output
+    }
+}
+
+pub type DecodedPacket = (std::sync::Arc<Vec<f32>>, DecodedShape);
+
+/// Fed from the decoder, so the resample finishes with the decode rather than after it.
+/// `None` when every packet already arrived at `out_rate`.
+pub fn resample_packets(
+    packets: std::sync::mpsc::Receiver<DecodedPacket>,
+    out_rate: u32,
+) -> Option<Vec<f32>> {
+    let mut resampler: Option<LinearResampler> = None;
+    let mut in_frames = 0usize;
+    while let Ok((packet, shape)) = packets.recv() {
+        if shape.sample_rate == out_rate {
+            continue;
+        }
+        let stream = resampler.get_or_insert_with(|| {
+            LinearResampler::new(shape.channels, shape.sample_rate, out_rate)
+        });
+        in_frames += packet.len() / shape.channels.max(1);
+        stream.push(&packet);
+    }
+    resampler.map(|stream| stream.finish(in_frames))
 }
 
 pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate: u32) -> Vec<f32> {
@@ -335,5 +471,101 @@ mod tests {
     fn resample_linear_empty_input_returns_empty() {
         let output = resample_linear(&[], 1, 44100, 44100);
         assert!(output.is_empty());
+    }
+
+    fn ramp(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels)
+            .map(|i| ((i / channels) as f32 * 0.37).sin())
+            .collect()
+    }
+
+    fn streamed(
+        input: &[f32],
+        channels: usize,
+        in_rate: u32,
+        out_rate: u32,
+        chunk: usize,
+    ) -> Vec<f32> {
+        let frames = input.len() / channels;
+        let mut resampler = LinearResampler::new(channels, in_rate, out_rate);
+        let mut at = 0;
+        while at < frames {
+            let end = (at + chunk).min(frames);
+            resampler.push(&input[at * channels..end * channels]);
+            at = end;
+        }
+        resampler.finish(frames)
+    }
+
+    #[test]
+    fn a_streamed_resample_matches_the_whole_buffer_one() {
+        for (in_rate, out_rate) in [
+            (44100, 48000),
+            (48000, 44100),
+            (44100, 44100),
+            (22050, 48000),
+            (96000, 44100),
+            (192000, 48000),
+        ] {
+            let input = ramp(5000, 2);
+            let expected = resample_linear(&input, 2, in_rate, out_rate);
+            for chunk in [1, 3, 512, 5000] {
+                let actual = streamed(&input, 2, in_rate, out_rate, chunk);
+                assert_eq!(
+                    actual.len(),
+                    expected.len(),
+                    "{in_rate}->{out_rate} in chunks of {chunk}: length"
+                );
+                assert_eq!(
+                    actual, expected,
+                    "{in_rate}->{out_rate} in chunks of {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_streamed_resample_handles_mono_and_an_empty_track() {
+        let input = ramp(1000, 1);
+        assert_eq!(
+            streamed(&input, 1, 44100, 48000, 128),
+            resample_linear(&input, 1, 44100, 48000)
+        );
+        assert!(streamed(&[], 2, 44100, 48000, 128).is_empty());
+    }
+
+    #[test]
+    fn packets_resample_to_the_same_samples_as_the_whole_buffer() {
+        let input = ramp(5000, 2);
+        let (send, packets) = std::sync::mpsc::channel();
+        for chunk in input.chunks(512 * 2) {
+            let shape = DecodedShape {
+                channels: 2,
+                total_frames: 5000,
+                sample_rate: 44100,
+            };
+            send.send((std::sync::Arc::new(chunk.to_vec()), shape)).ok();
+        }
+        drop(send);
+        assert_eq!(
+            resample_packets(packets, 48000),
+            Some(resample_linear(&input, 2, 44100, 48000))
+        );
+    }
+
+    #[test]
+    fn packets_already_at_the_out_rate_resample_to_none() {
+        let (send, packets) = std::sync::mpsc::channel();
+        send.send((
+            std::sync::Arc::new(ramp(64, 2)),
+            DecodedShape {
+                channels: 2,
+                total_frames: 64,
+                sample_rate: 48000,
+            },
+        ))
+        .ok();
+        drop(send);
+        assert_eq!(resample_packets(packets, 48000), None);
     }
 }

@@ -1,5 +1,3 @@
-// The state and the intents; the view maths itself lives in timelineView.ts.
-
 import { ref, watch } from 'vue';
 import {
   type ViewWindow,
@@ -52,7 +50,6 @@ export function useTimelineView(durationMs: () => number, mixerId: () => string)
     setView(next);
   }
 
-  // Reset to the whole session whenever the duration becomes known/changes.
   watch(
     () => durationMs(),
     (duration) => {

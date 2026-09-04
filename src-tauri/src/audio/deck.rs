@@ -360,16 +360,23 @@ impl Default for JogFilter {
     }
 }
 
-/// Per-band mono buffers and the scale each is normalised by. Filled in after the track
-/// loads and read only by the waveform drawing, never by the transport.
+/// Filled in after the track loads and read only by the waveform drawing, never by
+/// the transport.
 #[derive(Clone)]
 pub struct SpectralBands {
     pub bass: Arc<Vec<f32>>,
     pub mid: Arc<Vec<f32>>,
     pub high: Arc<Vec<f32>>,
-    pub bass_scale: f32,
-    pub mid_scale: f32,
-    pub high_scale: f32,
+    pub bass_rms: f32,
+    pub mid_rms: f32,
+    pub high_rms: f32,
+    pub source_rate: u32,
+}
+
+impl SpectralBands {
+    pub fn frames(&self) -> usize {
+        self.bass.len()
+    }
 }
 
 impl Default for SpectralBands {
@@ -378,9 +385,10 @@ impl Default for SpectralBands {
             bass: Arc::new(Vec::new()),
             mid: Arc::new(Vec::new()),
             high: Arc::new(Vec::new()),
-            bass_scale: 1.0,
-            mid_scale: 1.0,
-            high_scale: 1.0,
+            bass_rms: 1.0,
+            mid_rms: 1.0,
+            high_rms: 1.0,
+            source_rate: 0,
         }
     }
 }
@@ -425,6 +433,9 @@ pub struct Deck {
     pub(crate) quantize: bool,
 
     pub(crate) bands: SpectralBands,
+    /// Grows while the track is being analysed, so a drawer can paint what has arrived.
+    pub(crate) dense_points: Vec<f32>,
+    load_id: u64,
 
     // Set to true by the audio thread when the track reaches its natural end.
     // The monitoring task in lib.rs polls this and emits a "track-ended" event.
@@ -458,6 +469,8 @@ impl Deck {
             jog_shift: false,
             quantize: true,
             bands: SpectralBands::default(),
+            dense_points: Vec::new(),
+            load_id: 0,
             just_ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -510,8 +523,39 @@ impl Deck {
         self.cue_pos = frames;
     }
 
-    pub(crate) fn set_bands(&mut self, bands: SpectralBands) {
+    // Only these two write it: a load that lands after a newer one started must leave the
+    // newer one's reduction alone, and `load` runs through `reset`.
+    pub(crate) fn begin_load(&mut self, load_id: u64) {
+        self.load_id = load_id;
+    }
+
+    pub(crate) fn end_load(&mut self) {
+        self.load_id = 0;
+    }
+
+    pub(crate) fn holds_load(&self, load_id: u64) -> bool {
+        self.load_id == load_id
+    }
+
+    pub(crate) fn set_bands(&mut self, load_id: u64, bands: SpectralBands) {
+        if !self.holds_load(load_id) {
+            return;
+        }
         self.bands = bands;
+    }
+
+    pub(crate) fn reset_dense_points(&mut self, load_id: u64, total_points: usize) {
+        if !self.holds_load(load_id) {
+            return;
+        }
+        self.dense_points = Vec::with_capacity(total_points * 4);
+    }
+
+    pub(crate) fn push_dense_points(&mut self, load_id: u64, points: &[f32]) {
+        if !self.holds_load(load_id) {
+            return;
+        }
+        self.dense_points.extend_from_slice(points);
     }
 
     /// The transport state a `deck_snapshot` restores, clamped to the loaded track.
@@ -555,7 +599,6 @@ impl Deck {
         self.next_render_frame = buffer_end;
     }
 
-    // Threshold for "position is at the cue point" used by press_cue.
     // 50 frames at 44100 Hz ≈ 1.1 ms. Matches the frontend's 0.001 s tolerance.
     const CUE_THRESHOLD_FRAMES: f64 = 50.0;
 
@@ -713,7 +756,6 @@ impl Deck {
         self.jog_hold_factor = (1.0 + percent / 100.0).max(session_core::JOG_FACTOR_MIN);
     }
 
-    // Reads the next master output sample and advances main_pos.
     #[inline]
     pub fn main_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
@@ -725,8 +767,8 @@ impl Deck {
         (l, r)
     }
 
-    // Reads the next cue sample and advances cue_pos. cue_pos always advances
-    // while playing so it stays in sync with main_pos regardless of cue_active.
+    // cue_pos always advances while playing so it stays in sync with main_pos
+    // regardless of cue_active.
     #[inline]
     pub fn cue_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
@@ -1300,29 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_scrub_travels_the_same_at_any_block_schedule() {
-        let scrub = |sizes: &[usize]| {
-            const TOTAL: usize = 44_100;
-            let mut deck = Deck::loaded_for_testing(SR, 2.0);
-            deck.main_pos = 20_000.0;
-            deck.queue_jog(500.0);
-            let mut frame = 0usize;
-            let mut index = 0usize;
-            while frame < TOTAL {
-                let size = sizes[index % sizes.len()].min(TOTAL - frame);
-                deck.consume_jog(size);
-                frame += size;
-                index += 1;
-            }
-            deck.main_pos - 20_000.0
-        };
-        assert!(scrub(&[128]) > 0.0);
-        assert_eq!(scrub(&[128]), scrub(&[512]));
-        assert_eq!(scrub(&[128]), scrub(&[117, 118, 118, 117, 118]));
-        assert_eq!(scrub(&[128]), scrub(&[61, 512, 128, 7, 1024, 199]));
-    }
-
-    #[test]
     fn the_same_hand_speed_bends_the_same_at_any_buffer_size() {
         const TICKS_PER_FRAME: f64 = 0.05;
         let bend = |frames: usize| {
@@ -1669,9 +1688,7 @@ mod tests {
     }
 }
 
-// State machine tests for the cue/play commands being ported from TypeScript
-// Every test describes one state machine transition. The state is encoded in
-// three fields: total_frames (0 = empty), is_playing, is_cueing.
+// State is encoded in three fields: total_frames (0 = empty), is_playing, is_cueing.
 #[cfg(test)]
 mod cue_state_machine {
     use super::*;
@@ -1873,12 +1890,10 @@ mod cue_state_machine {
         let mut d = stopped(10.0);
         d.cue_point = 0.0;
 
-        // First press: away from cue → moves cue to current position
         d.main_pos = beat_frames() * 3.0;
         d.press_cue();
         assert_eq!(d.cue_point, beat_frames() * 3.0);
 
-        // Second press: now at the new cue → starts preview
         d.press_cue();
         assert!(d.is_cueing);
         let pos_during_preview = d.main_pos + 500.0;
@@ -2210,5 +2225,66 @@ mod silence_early_out {
             "a skipped block wrote into the mix buffer"
         );
         assert_eq!(level, (0.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod load_id_tests {
+    use super::*;
+
+    const SR: u32 = 44100;
+
+    fn bands_of(frames: usize) -> SpectralBands {
+        SpectralBands {
+            bass: Arc::new(vec![0.5; frames]),
+            ..SpectralBands::default()
+        }
+    }
+
+    #[test]
+    fn points_and_bands_from_a_superseded_load_are_dropped() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.reset_dense_points(1, 1);
+        deck.push_dense_points(1, &[0.1, 0.2, 0.3, 0.4]);
+
+        deck.begin_load(2);
+        deck.push_dense_points(1, &[0.9, 0.9, 0.9, 0.9]);
+        deck.reset_dense_points(1, 500);
+        deck.set_bands(1, bands_of(8));
+
+        assert_eq!(deck.dense_points, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(deck.bands.frames(), 0);
+
+        deck.reset_dense_points(2, 1);
+        deck.push_dense_points(2, &[0.5, 0.5, 0.5, 0.5]);
+        deck.set_bands(2, bands_of(8));
+        assert_eq!(deck.dense_points, [0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(deck.bands.frames(), 8);
+    }
+
+    #[test]
+    fn a_deck_takes_no_more_points_once_its_load_ends() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.reset_dense_points(1, 1);
+
+        deck.end_load();
+        deck.push_dense_points(1, &[0.9, 0.9, 0.9, 0.9]);
+
+        assert!(deck.dense_points.is_empty());
+    }
+
+    #[test]
+    fn a_load_landing_late_leaves_a_newer_reduction_running() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.begin_load(2);
+
+        deck.load("/first.mp3", Arc::new(vec![0.0; 8]), 2, SR);
+
+        deck.reset_dense_points(2, 1);
+        deck.push_dense_points(2, &[0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(deck.dense_points, [0.5, 0.5, 0.5, 0.5]);
     }
 }

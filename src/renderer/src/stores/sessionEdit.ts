@@ -77,8 +77,6 @@ export const useSessionEditStore = defineStore('sessionEdit', () => {
     if (!editMode.value) selectedLane.value = null;
   }
 
-  // Syncs are chained so rapid successive edits reach Rust in order. An older
-  // payload must never overwrite a newer one.
   function syncToRust() {
     const session = sessionStore.session;
     if (!session) return;

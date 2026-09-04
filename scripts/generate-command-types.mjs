@@ -43,6 +43,8 @@ function tsType(rust) {
   if (/^(String|str)$/.test(type)) return 'string';
   if (/^(f32|f64|u8|u16|u32|u64|i8|i16|i32|i64|usize|isize)$/.test(type)) return 'number';
   if (type === 'bool') return 'boolean';
+  // A raw response is bytes on the wire, which invoke hands back as an ArrayBuffer.
+  if (/^(?:tauri::)?ipc::Response$/.test(type)) return 'ArrayBuffer';
   return 'unknown';
 }
 

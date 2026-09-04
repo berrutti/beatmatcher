@@ -9,7 +9,7 @@ import type {
   DeckLaneKey,
   DeckId
 } from '@renderer/utils/types';
-import { DECK_ACCENTS } from '@renderer/utils/types';
+import { DECK_ACCENTS, DEFAULT_METER } from '@renderer/utils/types';
 import { editConstants, laneSpecs, type LaneSpec } from '@renderer/utils/sessionCore';
 import { jogLaneColumns } from '@renderer/utils/jogLane';
 import { formatMs } from '@renderer/utils/time';
@@ -100,7 +100,6 @@ const LANE_DROPDOWN_COLOR = '#06b6d4';
 export const LANE_CARET_CLOSED = '▾';
 export const LANE_CARET_OPEN = '▴';
 const MIN_BEAT_SPACING_PX = 8;
-const BEATS_PER_BAR = 4;
 export const BEAT_LINE_W = 2;
 const CLIP_BAND_INSET_Y = 4;
 // A region narrower than this can't fit a "138.0" BPM label legibly, so it's
@@ -317,7 +316,7 @@ function drawClipBeatGrid(
     const pxPerBeat = (beatDurSec / effRate) * pxPerWallSec;
     if (pxPerBeat < BEAT_LINE_W) continue;
 
-    const step = beatLineStep(pxPerBeat, MIN_BEAT_SPACING_PX, BEATS_PER_BAR);
+    const step = beatLineStep(pxPerBeat, MIN_BEAT_SPACING_PX, DEFAULT_METER.beatsPerBar);
 
     const firstBeat = Math.ceil((seg.trackStartSec - beatOffset) / beatDurSec);
     const lastBeat = Math.floor((seg.trackEndSec - beatOffset) / beatDurSec);
@@ -325,7 +324,8 @@ function drawClipBeatGrid(
       if (beat % step !== 0) continue;
       const beatSec = beatOffset + beat * beatDurSec;
       const beatX = segX0 + ((beatSec - seg.trackStartSec) / effRate) * pxPerWallSec;
-      ctx.fillStyle = beat % (step * BEATS_PER_BAR) === 0 ? DOWNBEAT_LINE_COLOR : BEAT_LINE_COLOR;
+      ctx.fillStyle =
+        beat % (step * DEFAULT_METER.beatsPerBar) === 0 ? DOWNBEAT_LINE_COLOR : BEAT_LINE_COLOR;
       // Rounded, or the line spreads over two columns at half coverage and reads
       // as a blur rather than a grid.
       ctx.fillRect(Math.round(beatX), rectY, BEAT_LINE_W, rectHeight);
@@ -1010,9 +1010,6 @@ export function drawMasterLane(
 export function makeMsToX(view: ViewWindow, trackWidth: number): (ms: number) => number {
   return (ms: number) => LABEL_W + msToFrac(ms, view) * trackWidth;
 }
-
-// Renderers extracted from Timeline.vue's draw(): each takes the context plus
-// explicit data, no component state, so draw() stays a short orchestrator.
 
 function drawOutlinedLabel(
   ctx: CanvasRenderingContext2D,

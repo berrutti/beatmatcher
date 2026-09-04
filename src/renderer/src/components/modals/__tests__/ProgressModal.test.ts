@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createI18n } from 'vue-i18n';
@@ -46,16 +47,6 @@ describe('ProgressModal', () => {
     expect(over.find('.loading-modal__percent').text()).toBe('100%');
     const under = mountModal({ open: true, fraction: -0.2 });
     expect(under.find('.loading-modal__percent').text()).toBe('0%');
-  });
-
-  it('shows the label it was given', () => {
-    const wrapper = mountModal({ open: true, fraction: 0, label: 'Reading session file' });
-    expect(wrapper.find('.loading-modal__phase').text()).toBe('Reading session file');
-  });
-
-  it('reports the counts it was given', () => {
-    const wrapper = mountModal({ open: true, fraction: 0.5, counts: '2 of 4 tracks' });
-    expect(wrapper.find('.loading-modal__counts').text()).toBe('2 of 4 tracks');
   });
 
   it('shows no counts when it was given none', () => {

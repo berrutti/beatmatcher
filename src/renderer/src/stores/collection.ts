@@ -204,8 +204,6 @@ export const useCollectionStore = defineStore('collection', () => {
   function toggleColumn(field: ColumnField) {
     const idx = columnsState.visible.indexOf(field);
     if (idx !== -1) {
-      // At least one column must stay visible, or the table would have
-      // nothing left to show and no way to bring a column back.
       if (columnsState.visible.length === 1) return;
       columnsState.visible.splice(idx, 1);
     } else {
@@ -491,8 +489,8 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  // TODO: Rust can read tags but not write them, so an edit is an override layered
-  // over the file rather than a change to it.
+  // Rust can read tags but not write them, so an edit is an override layered over
+  // the file rather than a change to it.
   const metadataOverrides = reactive<Record<string, Partial<TrackMetadata>>>(
     storageGet(STORAGE_KEYS.metadataOverrides, {})
   );

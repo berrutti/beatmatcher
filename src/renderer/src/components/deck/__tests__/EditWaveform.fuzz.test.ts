@@ -1,6 +1,8 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import EditWaveform from '@renderer/components/deck/EditWaveform.vue';
+import type { WaveformStyleOption } from '@renderer/utils/types';
 import type { TrackData } from '@renderer/stores/decks';
 
 const DURATION_SEC = 240;
@@ -68,11 +70,14 @@ function stubSize(element: HTMLCanvasElement, width: number) {
 
 // happy-dom's WheelEvent drops the MouseEvent init fields, so `clientX` has to be
 // put back or every wheel gesture reads as NaN and tests nothing.
-function wheelAt(clientX: number, deltaY: number, deltaX: number): WheelEvent {
-  const event = new WheelEvent('wheel', { deltaY, deltaX, bubbles: true });
+function wheelAt(clientX: number, deltaY: number, deltaX: number, ctrlKey = false): WheelEvent {
+  const event = new WheelEvent('wheel', { deltaY, deltaX, ctrlKey, bubbles: true });
   Object.defineProperty(event, 'clientX', { value: clientX, configurable: true });
   return event;
 }
+
+const bandBalance: [number, number, number] = [1, 1, 1];
+const waveformStyle: WaveformStyleOption = 'blended';
 
 function mountWaveform() {
   return mount(EditWaveform, {
@@ -87,6 +92,11 @@ function mountWaveform() {
       loopActive: false,
       denseSpectralData: null,
       denseSpectralRate: 0,
+      densePointsReady: 0,
+      bandsReady: true,
+      bandBalance,
+      bandReference: 1,
+      waveformStyle,
       getTrackPosition: () => 12,
       getPlayheadPosition: () => 12,
       getSpectralWaveformRegion: async () => new ArrayBuffer(0)
@@ -136,7 +146,9 @@ describe('the edit waveform under fuzzed gestures', () => {
       flushFrame();
       window.dispatchEvent(new MouseEvent('mouseup'));
     } else if (roll < 0.7) {
-      element.dispatchEvent(wheelAt(x, (random() * 2 - 1) * 200, (random() * 2 - 1) * 200));
+      element.dispatchEvent(
+        wheelAt(x, (random() * 2 - 1) * 200, (random() * 2 - 1) * 200, random() < 0.3)
+      );
       flushFrame();
     } else {
       element.dispatchEvent(new MouseEvent('mousedown', { clientX: x, button: 0, bubbles: true }));

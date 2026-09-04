@@ -12,7 +12,7 @@ use crate::audio::DEFAULT_MASTER_GAIN;
 
 // The deterministic simulation (state machine, position math, snapshots) lives
 // in the shared `session-core` crate so the engine and the frontend can never
-// disagree. This module wires it to the real audio engine.
+// disagree.
 use session_core::{
     build_snapshots, event_sim_order, sim_apply_event, sim_pos, sim_state_from_snapshot, SimState,
 };
@@ -503,9 +503,8 @@ pub(crate) async fn preload_session(
     Ok(())
 }
 
-// Frees everything cached for a session when it is ejected: decoded track
-// samples are the bulk of it (hundreds of MB for a multi-track session).
-// Playback of a path that is no longer cached falls back to a disk read.
+// Decoded track samples are the bulk of it (hundreds of MB for a multi-track
+// session). Playback of a path that is no longer cached falls back to a disk read.
 pub(crate) fn unload_session(
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
     path: String,
@@ -521,9 +520,8 @@ pub(crate) fn unload_session(
     }
 }
 
-// Replaces the in-memory event list for a loaded session with edited events
-// from the frontend. The .bms on disk is untouched. The next playback, scrub,
-// or render uses the edited events.
+// The .bms on disk is untouched. The next playback, scrub, or render uses the
+// edited events.
 pub(crate) async fn update_session_events(
     engine: tauri::State<'_, crate::engine::Engine>,
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
@@ -616,12 +614,10 @@ pub(crate) async fn start_session_playback(
     let audio = engine.audio.clone();
     let sr = audio.device_sample_rate;
 
-    // Ensure cache is populated (fast path if preload already ran).
     let paths = session_track_paths(&session.events);
     populate_track_cache(&sessions, paths, sr, None).await;
     let cache: Arc<SampleCache> = Arc::new(sessions.track_cache.locked().clone());
 
-    // Find the nearest snapshot at or before from_ms.
     let snapshot: Option<SessionSnapshot> = {
         let snaps = sessions.snapshots.locked();
         if let Some(snaps) = snaps.get(&path) {
@@ -639,8 +635,6 @@ pub(crate) async fn start_session_playback(
         let mut sorted_events = session.events.clone();
         sorted_events.sort_by(event_sim_order);
 
-        // Reconstruct state at from_ms: find the nearest post-event snapshot,
-        // apply it, then replay any events that fall between the snapshot and from_ms.
         let (sim, snapshot_ms) = match snapshot {
             Some(ref snap) => (sim_state_from_snapshot(snap), snap.elapsed_ms),
             None => (SimState::new(), 0.0),
@@ -649,7 +643,7 @@ pub(crate) async fn start_session_playback(
         apply_sim_strips_and_master(&sim, &audio);
 
         let mut sim = sim;
-        // deck_snapshot is already folded into the base snapshot. Never replay it.
+        // deck_snapshot is already folded into the base snapshot.
         for event in sorted_events.iter().filter(|e| {
             e.elapsed_ms > snapshot_ms && e.elapsed_ms <= from_ms && e.event_type != "deck_snapshot"
         }) {
@@ -1010,7 +1004,6 @@ mod tests {
             mk(18_000.0, "exit_loop"),
         ];
 
-        // Drive the real engine once to 25s, checking sim_pos every 100ms.
         check_sim_vs_engine(&events, &cache, 25);
     }
 
@@ -1030,8 +1023,7 @@ mod tests {
             ..Default::default()
         };
 
-        // No loops: snapshot playing, rate trims, nudges (held + released),
-        // a cue preview (press/release), a stop/play, and a seek.
+        // No loops.
         let events = vec![
             SessionEvent {
                 path: Some(path.clone()),

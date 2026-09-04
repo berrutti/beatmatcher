@@ -1,0 +1,144 @@
+import { drawMarkerTriangle } from '@renderer/utils/markerTriangle';
+import type { BeatMarkerKind } from '@renderer/utils/beatGrid';
+
+export const MIN_WAVEFORM_BEAT_SPACING_PX = 6;
+export const MIN_WAVEFORM_BAR_SPACING_PX = 24;
+
+export type BeatGridWeight = {
+  // Device pixels, not CSS lineWidth, since these are fillRect not stroke.
+  beatCoreDevicePx: number;
+  beatOutlineDevicePx: number;
+  beatAlpha: number;
+  barCoreDevicePx: number;
+  barOutlineDevicePx: number;
+  barAlpha: number;
+  beatMarkerHalfWidth: number;
+  downbeatMarkerHalfWidth: number;
+};
+
+// The strip is ten seconds wide and the grid is the beatmatching aid, so it can be heavy.
+export const STRIP_GRID: BeatGridWeight = {
+  beatCoreDevicePx: 2,
+  beatOutlineDevicePx: 4,
+  beatAlpha: 0.85,
+  barCoreDevicePx: 2,
+  barOutlineDevicePx: 6,
+  barAlpha: 1,
+  beatMarkerHalfWidth: 4,
+  downbeatMarkerHalfWidth: 6
+};
+
+// The edit view spans minutes and the waveform is the subject, so the grid stays out of its
+// way: hairlines, and a triangle only where a bar or a phrase starts.
+export const EDIT_GRID: BeatGridWeight = {
+  beatCoreDevicePx: 1,
+  beatOutlineDevicePx: 0,
+  beatAlpha: 0.18,
+  barCoreDevicePx: 1,
+  barOutlineDevicePx: 0,
+  barAlpha: 0.5,
+  beatMarkerHalfWidth: 0,
+  downbeatMarkerHalfWidth: 5
+};
+
+const MARKER_HEIGHT_RATIO = 1.4;
+// Green because the waveform has no green band and the bars are already red.
+const MARKER_FILL_COLOR: Record<BeatMarkerKind, string> = {
+  beat: '#ffffff',
+  bar: 'rgb(220,30,30)',
+  phrase: 'rgb(30,180,90)'
+};
+const LINE_OUTLINE_COLOR = 'rgba(0,0,0,0.7)';
+export const MARKER_OUTLINE_COLOR = '#000000';
+const MARKER_OUTLINE_WIDTH = 1.5;
+
+// A stroke's anti-aliased edge would shimmer as position scrolls. A pixel-aligned fill can't.
+export function fillPixelLine(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  top: number,
+  height: number,
+  devicePxWidth: number,
+  dpr: number,
+  color: string
+): void {
+  const leftDevicePx = Math.round(centerX * dpr) - devicePxWidth / 2;
+  ctx.fillStyle = color;
+  ctx.fillRect(leftDevicePx / dpr, top, devicePxWidth / dpr, height);
+}
+
+function drawGridLine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  top: number,
+  height: number,
+  dpr: number,
+  core: number,
+  outline: number,
+  alpha: number
+): void {
+  if (outline > 0) fillPixelLine(ctx, x, top, height, outline, dpr, LINE_OUTLINE_COLOR);
+  fillPixelLine(ctx, x, top, height, core, dpr, `rgba(255,255,255,${alpha})`);
+}
+
+export function drawBeatLine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  top: number,
+  height: number,
+  dpr: number,
+  weight: BeatGridWeight
+): void {
+  drawGridLine(
+    ctx,
+    x,
+    top,
+    height,
+    dpr,
+    weight.beatCoreDevicePx,
+    weight.beatOutlineDevicePx,
+    weight.beatAlpha
+  );
+}
+
+export function drawBarLine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  top: number,
+  height: number,
+  dpr: number,
+  weight: BeatGridWeight
+): void {
+  drawGridLine(
+    ctx,
+    x,
+    top,
+    height,
+    dpr,
+    weight.barCoreDevicePx,
+    weight.barOutlineDevicePx,
+    weight.barAlpha
+  );
+}
+
+// On both edges so the grid reads without following a line across the waveform.
+export function drawBeatMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  top: number,
+  height: number,
+  kind: BeatMarkerKind,
+  weight: BeatGridWeight
+): void {
+  const halfWidth = kind === 'beat' ? weight.beatMarkerHalfWidth : weight.downbeatMarkerHalfWidth;
+  if (halfWidth <= 0) return;
+  const pointHeight = halfWidth * MARKER_HEIGHT_RATIO;
+  const style = {
+    fill: MARKER_FILL_COLOR[kind],
+    outline: MARKER_OUTLINE_COLOR,
+    outlineWidth: MARKER_OUTLINE_WIDTH,
+    alpha: 1
+  };
+  drawMarkerTriangle(ctx, x, top, halfWidth, pointHeight, style);
+  drawMarkerTriangle(ctx, x, top + height, halfWidth, -pointHeight, style);
+}

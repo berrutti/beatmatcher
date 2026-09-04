@@ -252,10 +252,9 @@ const FILTER_CENTER_DEAD_ZONE: f32 = session_core::FILTER_DEAD_ZONE as f32;
 // so the identity reset at the boundary lands while nothing can hear it.
 const FILTER_ENTRY_WIDTH: f32 = 0.05;
 const FILTER_SMOOTHING_TAU_SEC: f32 = 0.015;
-// Crossfade time for bypass toggle. The filter output is crossfaded with the
-// dry signal so the knob position never sweeps during a bypass transition.
+// The filter output is crossfaded with the dry signal so the knob position never
+// sweeps during a bypass transition.
 pub(crate) const FILTER_CROSSFADE_TAU_SEC: f32 = 0.05;
-// Coefficients are refreshed every N samples (knob is already smoothed per-sample).
 // Small enough to avoid click artifacts at high Q, large enough to keep CPU light.
 pub(crate) const FILTER_COEFF_REFRESH_INTERVAL: u32 = 4;
 // Beyond this sweep fraction (0..1) the output gain fades linearly to 0 so the
@@ -323,9 +322,9 @@ impl Filter {
         let abs_knob = knob.abs();
 
         if abs_knob <= FILTER_CENTER_DEAD_ZONE {
-            // Reset to identity with zeroed delay lines. Preserving delay lines here
-            // would allow IIR state from the previous active filter to ring through,
-            // causing transient overshoots that push samples above 1.0.
+            // Preserving delay lines here would allow IIR state from the previous
+            // active filter to ring through, causing transient overshoots that push
+            // samples above 1.0.
             let identity = Biquad::identity();
             for (a, b) in self.filters_a.iter_mut().zip(self.filters_b.iter_mut()) {
                 *a = identity;
@@ -364,8 +363,6 @@ impl Filter {
         self.coeff_refresh_counter =
             (self.coeff_refresh_counter + 1) % FILTER_COEFF_REFRESH_INTERVAL;
 
-        // Kill gain: fade to 0 as the sweep enters the last 20% of its range so the
-        // extreme position always reaches -infinity regardless of biquad slope.
         let abs_knob = self.current_knob.abs();
         let kill_gain = if abs_knob > FILTER_CENTER_DEAD_ZONE {
             let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
@@ -378,8 +375,6 @@ impl Filter {
             1.0
         };
 
-        // Filter always runs at its set position. Bypass is a crossfade between
-        // filtered and dry so no frequency sweep ever happens during a toggle.
         let gain = kill_gain * self.makeup;
         let l_filtered = self.filters_b[0].process(self.filters_a[0].process(l)) * gain;
         let r_filtered = self.filters_b[1].process(self.filters_a[1].process(r)) * gain;
@@ -441,8 +436,6 @@ impl Limiter {
         }
     }
 
-    // Attack is instantaneous: gain_reduction jumps immediately to prevent any
-    // sample from exceeding THRESHOLD. Release recovers smoothly over ~150ms.
     // Clamp is a safety net for floating-point edge cases.
     #[inline]
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {

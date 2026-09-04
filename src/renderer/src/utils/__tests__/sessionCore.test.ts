@@ -1,6 +1,3 @@
-// Marshalling-layer tests for the sessionCore WASM wrappers. Edit-op semantics
-// are covered by the Rust suite in session-core.
-
 import { describe, it, expect } from 'vitest';
 import { laneSpecFor } from '@renderer/utils/sessionEditOps';
 import { ALL_LANE_KEYS } from '@renderer/utils/types';

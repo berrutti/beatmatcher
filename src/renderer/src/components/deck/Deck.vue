@@ -7,7 +7,7 @@
     :class="{
       'deck--playing': props.deck.playing,
       'deck--drag-over': isDragOverCollection,
-      'deck--loading': props.deck.waveformLoading
+      'deck--loading': props.deck.loading
     }"
   >
     <ConfirmModal
@@ -68,7 +68,11 @@
         :accent="props.deck.accent"
         :track-data="props.deck.trackData"
         :get-playhead-position="props.deck.getPlayheadPosition"
-        :full-spectral-data="props.deck.fullSpectralData"
+        :dense-spectral-data="props.deck.denseSpectralData"
+        :dense-points-ready="props.deck.densePointsReady"
+        :band-balance="props.deck.bandBalance"
+        :band-reference="props.deck.bandReference"
+        :waveform-style="settingsStore.waveformStyle"
         :loop-region="props.deck.loopRegion"
         :loop-active="props.deck.loopActive"
         :cue-point="props.deck.cuePoint"
@@ -86,7 +90,11 @@
           :accent="props.deck.accent"
           :track-data="props.deck.trackData"
           :get-playhead-position="props.deck.getPlayheadPosition"
-          :full-spectral-data="props.deck.fullSpectralData"
+          :dense-spectral-data="props.deck.denseSpectralData"
+          :dense-points-ready="props.deck.densePointsReady"
+          :band-balance="props.deck.bandBalance"
+          :band-reference="props.deck.bandReference"
+          :waveform-style="settingsStore.waveformStyle"
           :loop-region="props.deck.loopRegion"
           :loop-active="props.deck.loopActive"
           :cue-point="props.deck.cuePoint"

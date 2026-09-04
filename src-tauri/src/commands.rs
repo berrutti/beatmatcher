@@ -6,13 +6,28 @@ use crate::ParamOrigin;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-fn band_normalization_scale(band: &[f32]) -> f32 {
-    let max = band.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
-    if max > 0.0 {
-        1.0 / max
-    } else {
-        1.0
-    }
+/// Small enough that PROGRESS_INTERVAL decides the update rate, not the chunk size.
+const POINTS_PER_CHUNK: usize = 64;
+/// One update a frame, so the waveform fills in smoothly instead of in visible blocks.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Emitted while the track is being analysed, so a drawer can paint what has arrived.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaveformProgress {
+    deck: String,
+    load_id: u64,
+    points_ready: usize,
+    total_points: usize,
+    points_per_sec: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BandsReady {
+    deck: String,
+    load_id: u64,
+    band_reference: f32,
 }
 
 /// Where the crossfader was when recording started. Thru is skipped because every reader
@@ -524,6 +539,39 @@ pub(crate) fn set_xfader_assign(
     )
 }
 
+fn point_sink(
+    app: tauri::AppHandle,
+    deck: String,
+    deck_arc: Arc<std::sync::Mutex<audio::Deck>>,
+    load_id: u64,
+) -> impl FnMut(&[f32], usize) {
+    let mut last_emit = std::time::Instant::now();
+    move |points: &[f32], total: usize| {
+        let ready = {
+            let mut deck_state = deck_arc.locked();
+            if !deck_state.holds_load(load_id) {
+                return;
+            }
+            deck_state.push_dense_points(load_id, points);
+            deck_state.dense_points.len() / 4
+        };
+        if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+            last_emit = std::time::Instant::now();
+            app.emit(
+                "waveform-progress",
+                WaveformProgress {
+                    deck: deck.clone(),
+                    load_id,
+                    points_ready: ready,
+                    total_points: total,
+                    points_per_sec: audio::DENSE_POINTS_PER_SEC,
+                },
+            )
+            .ok();
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn load_track(
     app: tauri::AppHandle,
@@ -532,8 +580,10 @@ pub(crate) async fn load_track(
     path: String,
     analyze: bool,
     beat_offset_sec: f64,
+    load_id: u64,
 ) -> Result<TrackInfo, String> {
     let deck_arc = engine.deck(&deck)?;
+    deck_arc.locked().begin_load(load_id);
     let device_sample_rate = engine.audio.device_sample_rate;
     let bpm_min = engine
         .audio
@@ -546,11 +596,57 @@ pub(crate) async fn load_track(
 
     let path_for_log = path.clone();
 
-    let (samples, channels, bpm, silence_end, native_sr, cover_art) =
+    let stream_deck = Arc::clone(&deck_arc);
+    let stream_app = app.clone();
+    let stream_deck_id = deck.clone();
+
+    let (samples, channels, bpm, silence_end, native_sr, cover_art, reducer) =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let started = std::time::Instant::now();
             let cover_art = audio::read_cover_art(&path);
+            let cover_ms = started.elapsed().as_millis();
+
+            let at_decode = std::time::Instant::now();
+            // Beside the decode, not on it: reducing on the decode thread doubled the time
+            // to a playable deck.
+            let (to_reducer, packets_for_reducer) =
+                std::sync::mpsc::channel::<audio::DecodedPacket>();
+            let (to_resampler, packets_for_resampler) =
+                std::sync::mpsc::channel::<audio::DecodedPacket>();
+            let resampler = std::thread::spawn(move || {
+                audio::resample_packets(packets_for_resampler, device_sample_rate)
+            });
+            let reducer = std::thread::spawn(move || {
+                audio::reduce_packets(
+                    packets_for_reducer,
+                    POINTS_PER_CHUNK,
+                    |total| stream_deck.locked().reset_dense_points(load_id, total),
+                    point_sink(
+                        stream_app,
+                        stream_deck_id,
+                        Arc::clone(&stream_deck),
+                        load_id,
+                    ),
+                )
+            });
+
             let (raw_samples, channels, native_sr) =
-                audio::decode_audio(&path).map_err(|e| e.to_string())?;
+                audio::decode_audio_streaming(&path, |decoded, shape| {
+                    // A container that will not say how long it is cannot be reduced
+                    // progressively: the point count has to be known from the first chunk.
+                    if shape.total_frames == 0 {
+                        return;
+                    }
+                    let packet = Arc::new(decoded.to_vec());
+                    to_reducer.send((Arc::clone(&packet), shape)).ok();
+                    to_resampler.send((packet, shape)).ok();
+                })
+                .map_err(|e| e.to_string())?;
+            drop(to_reducer);
+            drop(to_resampler);
+            let decode_ms = at_decode.elapsed().as_millis();
+
+            let at_analyse = std::time::Instant::now();
 
             let (bpm, silence_end) = if analyze {
                 let mono_owned: Vec<f32>;
@@ -571,12 +667,23 @@ pub(crate) async fn load_track(
                 log::info!("load_track: skipping analysis (saved data will be used)");
                 (None, 0.0)
             };
+            let analyse_ms = at_analyse.elapsed().as_millis();
 
+            let at_resample = std::time::Instant::now();
             let resampled = if native_sr == device_sample_rate {
                 raw_samples
             } else {
-                audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
+                // A container that hides its length sends no packets, so this fallback is live.
+                resampler.join().ok().flatten().unwrap_or_else(|| {
+                    audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
+                })
             };
+            let resample_ms = at_resample.elapsed().as_millis();
+
+            log::info!(
+                "load_track timing: cover={cover_ms}ms decode={decode_ms}ms analyse={analyse_ms}ms resample={resample_ms}ms total={}ms",
+                started.elapsed().as_millis()
+            );
 
             Ok((
                 Arc::new(resampled),
@@ -585,6 +692,8 @@ pub(crate) async fn load_track(
                 silence_end,
                 native_sr,
                 cover_art,
+                // Returned rather than joined: the deck is playable before the analysis ends.
+                reducer,
             ))
         })
         .await
@@ -617,29 +726,72 @@ pub(crate) async fn load_track(
     // Backgrounded so the waveform never holds up the load.
     let deck_id = deck.clone();
     tokio::spawn(async move {
-        let (bass_band, mid_band, high_band) = tokio::task::spawn_blocking(move || {
-            audio::compute_spectral_bands(&samples, channels, device_sample_rate)
+        let at_bands = std::time::Instant::now();
+        let progress_deck = deck_id.clone();
+        let progress_app = app.clone();
+        let progress_arc = Arc::clone(&deck_arc);
+        let (band_rate, streamed) = tokio::task::spawn_blocking(move || {
+            let mut on_points = point_sink(
+                progress_app,
+                progress_deck,
+                Arc::clone(&progress_arc),
+                load_id,
+            );
+            // Already reduced alongside the decode unless the container hid its length.
+            match reducer.join().unwrap_or(None) {
+                Some(bands) => (native_sr, bands),
+                None => {
+                    let mut stream = audio::BandStream::new(
+                        total_frames,
+                        channels,
+                        device_sample_rate,
+                        POINTS_PER_CHUNK,
+                    );
+                    {
+                        let mut deck_state = progress_arc.locked();
+                        deck_state.reset_dense_points(load_id, stream.total_points());
+                    }
+                    stream.push(&samples, &mut on_points);
+                    (device_sample_rate, stream.finish(&mut on_points))
+                }
+            }
         })
         .await
-        .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
+        .unwrap_or((device_sample_rate, audio::StreamedBands::default()));
 
-        let bass_scale = band_normalization_scale(&bass_band);
-        let mid_scale = band_normalization_scale(&mid_band);
-        let high_scale = band_normalization_scale(&high_band);
+        let bands = audio::SpectralBands {
+            bass_rms: streamed.bass_rms,
+            mid_rms: streamed.mid_rms,
+            high_rms: streamed.high_rms,
+            source_rate: band_rate,
+            bass: Arc::new(streamed.bass),
+            mid: Arc::new(streamed.mid),
+            high: Arc::new(streamed.high),
+        };
+        log::info!(
+            "bands timing [{deck_id}]: finish={}ms",
+            at_bands.elapsed().as_millis()
+        );
 
-        {
+        let band_reference = audio::band_reference(&bands);
+        let still_loaded = {
             let mut deck_state = deck_arc.locked();
-            deck_state.set_bands(audio::SpectralBands {
-                bass: Arc::new(bass_band),
-                mid: Arc::new(mid_band),
-                high: Arc::new(high_band),
-                bass_scale,
-                mid_scale,
-                high_scale,
-            });
+            deck_state.set_bands(load_id, bands);
+            deck_state.holds_load(load_id)
+        };
+        if !still_loaded {
+            return;
         }
 
-        app.emit("bands-ready", deck_id).ok();
+        app.emit(
+            "bands-ready",
+            BandsReady {
+                deck: deck_id,
+                load_id,
+                band_reference,
+            },
+        )
+        .ok();
     });
 
     engine.recorder.log_at(
@@ -670,9 +822,29 @@ pub(crate) fn eject_track(
     engine.eject_track(&deck)
 }
 
-// Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
-// f32 little-endian bytes. Binary transfer avoids JSON serialization overhead
-// that would otherwise cause GC pauses on large waveform loads.
+#[tauri::command]
+pub(crate) async fn get_dense_points(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    deck: String,
+    from_point: usize,
+    to_point: usize,
+) -> Result<tauri::ipc::Response, String> {
+    let deck_arc = engine.deck(&deck)?;
+    let bytes = {
+        let deck_state = deck_arc.locked();
+        let held = deck_state.dense_points.len() / 4;
+        let from = from_point.min(held);
+        let to = to_point.min(held).max(from);
+        deck_state.dense_points[from * 4..to * 4]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// Flat [bass, mid, high, amplitude] per point as raw little-endian f32. Binary rather
+// than JSON, which stalled on garbage collection at these sizes.
 #[tauri::command]
 pub(crate) async fn get_spectral_waveform_region(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -698,7 +870,11 @@ pub(crate) async fn get_spectral_waveform_region(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let bytes: Vec<u8> = floats
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -1576,8 +1752,6 @@ mod tests {
 
     #[test]
     fn press_cue_starts_preview_immediately_after_load() {
-        // After load_track, main_pos == cue_point, so press_cue must return PreviewStarted
-        // without a CueMoved step first.
         let mut d = load_deck_at_beat_offset(1.5, 10.0);
         let outcome = d.press_cue();
         assert!(

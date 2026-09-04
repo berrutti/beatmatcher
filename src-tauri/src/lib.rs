@@ -131,6 +131,7 @@ pub fn run() {
             commands::get_deck_levels,
             commands::get_master_level,
             commands::get_spectral_waveform_region,
+            commands::get_dense_points,
             commands::get_track_amplitude_region,
             commands::list_audio_devices,
             commands::load_track,
@@ -220,6 +221,10 @@ fn install_logging(app: &tauri::App, level: log::LevelFilter) -> tauri::Result<(
     app.handle().plugin(
         tauri_plugin_log::Builder::default()
             .level(level)
+            // Also into the webview console, so a timing run needs no terminal.
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Webview,
+            ))
             // Symphonia logs every frame it parses at info.
             .level_for("symphonia_format_riff", log::LevelFilter::Warn)
             .level_for("symphonia_format_isomp4", log::LevelFilter::Warn)

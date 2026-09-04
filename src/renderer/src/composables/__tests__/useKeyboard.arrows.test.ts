@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { defineComponent, h } from 'vue';
@@ -98,7 +99,6 @@ describe('arrow keys in performance mode', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  // A range input steps itself on the arrow cluster.
   it('leaves the key to a focused range input', () => {
     const browse = useBrowseStore();
     const before = browse.cursorIndex;

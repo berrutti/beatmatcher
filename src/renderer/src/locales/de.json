@@ -67,7 +67,7 @@
     "sliderClick": {
       "title": "Regler-Klick",
       "label": "Auf den Griff eines Reglers klicken, um ihn zurückzusetzen",
-      "hint": "Gilt für alle Fader, EQs, Filter und Pitch-Regler. Nur der Griff reagiert; Ziehen bleibt unverändert. Doppelklick ist wirkungslos, solange dies aktiv ist."
+      "hint": "Gilt für alle Fader, EQs, Filter und Pitch-Regler. Nur der Griff reagiert. Ziehen bleibt unverändert. Doppelklick ist wirkungslos, solange dies aktiv ist."
     },
     "filterStart": {
       "title": "Filter beim Start",
@@ -127,6 +127,13 @@
     "deckColors": {
       "title": "Deck-Farben",
       "reset": "Auf Standard zurücksetzen"
+    },
+    "waveformStyle": {
+      "title": "Wellenform-Stil",
+      "blended": "Spektral",
+      "threeBand": "Drei Bänder",
+      "twoTone": "Zweifarbig",
+      "hint": "Wie die Wellenform ihren Frequenzinhalt einfärbt. Spektral mischt die drei Bänder zu einer Farbe pro Spalte, während die anderen beiden jedes Band in eigener Höhe zeichnen."
     },
     "keyboard": {
       "title": "Tastaturbelegung",

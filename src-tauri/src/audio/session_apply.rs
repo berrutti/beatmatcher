@@ -76,6 +76,7 @@ pub(crate) fn apply_deck_command(
         }
 
         SessionCommand::EjectTrack { .. } => {
+            deck.end_load();
             deck.eject();
         }
 
@@ -231,6 +232,7 @@ fn load_into(
     load_samples: &mut LoadSamples<'_>,
 ) -> Result<(), String> {
     let (samples, channels) = load_samples(path)?;
+    deck.end_load();
     deck.load(path, samples, channels, sample_rate);
     Ok(())
 }

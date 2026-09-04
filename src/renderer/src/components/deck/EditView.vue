@@ -33,6 +33,11 @@
         :loop-active="deck.loopActive"
         :dense-spectral-data="deck.denseSpectralData"
         :dense-spectral-rate="deck.denseSpectralRate"
+        :dense-points-ready="deck.densePointsReady"
+        :bands-ready="deck.bandsReady"
+        :band-balance="deck.bandBalance"
+        :band-reference="deck.bandReference"
+        :waveform-style="settings.waveformStyle"
         :get-track-position="() => deck.trackPosition"
         :get-playhead-position="deck.getPlayheadPosition"
         :get-spectral-waveform-region="deck.getSpectralWaveformRegion"
@@ -106,6 +111,7 @@
 import { ref } from 'vue';
 import type { Deck } from '@renderer/stores/decks';
 import { useCollectionStore } from '@renderer/stores/collection';
+import { useSettingsStore } from '@renderer/stores/settings';
 import { useCollectionDragOver } from '@renderer/composables/useCollectionDragOver';
 import { useDeckDrop } from '@renderer/composables/useDeckDrop';
 import { formatMs } from '@renderer/utils/time';
@@ -124,6 +130,8 @@ const deckEl = ref<HTMLElement | null>(null);
 const bpmModalOpen = ref(false);
 
 const collectionStore = useCollectionStore();
+
+const settings = useSettingsStore();
 
 const { isDragOver } = useCollectionDragOver(deckEl, () => props.deck.loadedPath);
 
@@ -156,9 +164,15 @@ function onBpmSubmit(bpm: number) {
   font-family: var(--font);
 }
 
-.edit-view__body--drag-over {
-  outline: 2px dashed var(--deck-accent);
-  outline-offset: -4px;
+/* An overlay rather than the deck's `outline`: the waveform is a positioned child, so it
+   paints over an outline drawn by the body itself. */
+.edit-view__body--drag-over::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  z-index: 1;
+  border: 2px dashed var(--deck-accent);
+  pointer-events: none;
 }
 
 .edit-view__body {
@@ -166,6 +180,7 @@ function onBpmSubmit(bpm: number) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .edit-view__waveform {

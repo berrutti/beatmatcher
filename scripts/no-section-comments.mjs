@@ -33,7 +33,22 @@ const BINARY_EXTENSIONS = new Set([
   '.lock'
 ]);
 
-const DIVIDER = /^\s*(\/\/|<!--|#)\s*(─|-{3,})/;
+const DIVIDER = /^\s*(\/\/+|<!--|#)\s*(─|-{3,})/;
+
+// Read by whoever just ran the gate, model or human. This script only catches dividers.
+// Everything else in the maxim is on the reader.
+const RULE = [
+  '',
+  'This check catches one shape. The rule it belongs to is not automated:',
+  '',
+  '  why comments are allowed (+). the reason a reader cannot recover from the code',
+  '  what comments are not (-). anything the name, type or body already says',
+  '  invariants should go to tests, never prose',
+  '',
+  'Rewording a what-comment is not deleting it. Moving one to /// is not deleting it.',
+  'Passing this script is not evidence a comment should exist.',
+  ''
+].join('\n');
 
 // Untracked files are included and deleted-but-unstaged ones skipped, or a new file
 // escapes the check entirely and a removed one crashes it.
@@ -53,5 +68,8 @@ const offenders = trackedFiles.flatMap((path) =>
 if (offenders.length) {
   console.error('Section-divider comments are banned:');
   console.error(offenders.map((offender) => `  ${offender}`).join('\n'));
+  console.error(RULE);
   process.exit(1);
 }
+
+console.log(RULE);
