@@ -40,8 +40,8 @@ export type StackedPalette = {
   all: Rgb;
 };
 
-// Blended reads each band against its own track average, so it needs the balance; stacked
-// reads them against each other, so it must not have it.
+// Blended reads each band against its own track average. Stacked reads them against
+// each other.
 export type WaveformPalette =
   | { kind: 'blended'; balance: [number, number, number] }
   | { kind: 'stacked'; colors: StackedPalette };

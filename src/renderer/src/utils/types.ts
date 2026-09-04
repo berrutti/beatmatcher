@@ -95,7 +95,7 @@ export type WaveSegment = {
 };
 
 export type Clip = {
-  // Clips emitted together form one editable unit: loop iterations share a blockId. A regular play segment is a block of its own.
+  // Loop iterations share a blockId. A regular play segment is a block of its own.
   blockId: number;
   // Recorded beat grid in effect when the clip started. Null bpm = draw no beats.
   bpm: number | null;

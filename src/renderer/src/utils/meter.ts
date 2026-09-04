@@ -1,17 +1,11 @@
-// Maps linear amplitude [0,1] to a perceptual [0,1] scale.
 // log10(9x + 1) compresses loud signals and expands quiet ones.
 const VU_LOG_SCALE = 9;
 
-// Fraction of the gap closed per frame on the falling edge (attack is instant).
+// Attack is instant.
 const METER_FALL_COEFF = 0.1;
 
-// How long the peak indicator holds at its maximum before starting to fall (ms).
 const PEAK_HOLD_MS = 400;
-
-// Approximate frame duration used to step the peak hold counter (~30 fps).
 const PEAK_FRAME_MS = 33;
-
-// How far the peak indicator drops per frame once the hold expires.
 const PEAK_DECAY_PER_FRAME = 0.022;
 
 export function vuParam(meanAbs: number): number {

@@ -5,10 +5,16 @@ import {
   densePointRange,
   bitmapRange,
   bitmapIsStale,
-  bitmapSharpness,
   type BuiltBitmap,
   type PeakCache
 } from '../waveformCache';
+
+// Source columns per device pixel where the bitmap is drawn. Below 1 the picture is being
+// stretched past the data it holds.
+function bitmapSharpness(bitmap: BuiltBitmap, devicePxPerSec: number): number {
+  const drawnWidth = (bitmap.endSec - bitmap.startSec) * devicePxPerSec;
+  return drawnWidth > 0 ? bitmap.width / drawnWidth : Infinity;
+}
 
 function makeRandom(seed: number): () => number {
   let state = seed >>> 0;

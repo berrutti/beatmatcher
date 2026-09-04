@@ -6,7 +6,7 @@ use crate::ParamOrigin;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-/// Small enough that the interval below decides the update rate, not the chunk size.
+/// Small enough that PROGRESS_INTERVAL decides the update rate, not the chunk size.
 const POINTS_PER_CHUNK: usize = 64;
 /// One update a frame, so the waveform fills in smoothly instead of in visible blocks.
 const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
@@ -21,8 +21,6 @@ struct WaveformProgress {
     points_per_sec: f64,
 }
 
-/// What `bands-ready` carries, so the frontend can read a band against its own average
-/// instead of the track's without a second round trip.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BandsReady {
@@ -538,6 +536,34 @@ pub(crate) fn set_xfader_assign(
     )
 }
 
+fn point_sink(
+    app: tauri::AppHandle,
+    deck: String,
+    deck_arc: Arc<std::sync::Mutex<audio::Deck>>,
+) -> impl FnMut(&[f32], usize) {
+    let mut last_emit = std::time::Instant::now();
+    move |points: &[f32], total: usize| {
+        let ready = {
+            let mut deck_state = deck_arc.locked();
+            deck_state.push_dense_points(points);
+            deck_state.dense_points.len() / 4
+        };
+        if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+            last_emit = std::time::Instant::now();
+            app.emit(
+                "waveform-progress",
+                WaveformProgress {
+                    deck: deck.clone(),
+                    points_ready: ready,
+                    total_points: total,
+                    points_per_sec: audio::DENSE_POINTS_PER_SEC,
+                },
+            )
+            .ok();
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn load_track(
     app: tauri::AppHandle,
@@ -577,7 +603,7 @@ pub(crate) async fn load_track(
                 std::sync::mpsc::channel::<(Vec<f32>, audio::DecodedShape)>();
             let reducer = std::thread::spawn(move || {
                 let mut stream: Option<audio::BandStream> = None;
-                let mut last_emit = std::time::Instant::now();
+                let mut sink = point_sink(stream_app, stream_deck_id, Arc::clone(&stream_deck));
                 while let Ok((decoded, shape)) = from_decoder.recv() {
                     let reducer = stream.get_or_insert_with(|| {
                         let started = audio::BandStream::new(
@@ -590,27 +616,7 @@ pub(crate) async fn load_track(
                         deck_state.reset_dense_points(started.total_points());
                         started
                     });
-                    reducer.push(&decoded, |points, total| {
-                        let ready = {
-                            let mut deck_state = stream_deck.locked();
-                            deck_state.push_dense_points(points);
-                            deck_state.dense_points.len() / 4
-                        };
-                        if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
-                            last_emit = std::time::Instant::now();
-                            stream_app
-                                .emit(
-                                    "waveform-progress",
-                                    WaveformProgress {
-                                        deck: stream_deck_id.clone(),
-                                        points_ready: ready,
-                                        total_points: total,
-                                        points_per_sec: audio::DENSE_POINTS_PER_SEC,
-                                    },
-                                )
-                                .ok();
-                        }
-                    });
+                    reducer.push(&decoded, &mut sink);
                 }
                 stream
             });
@@ -712,28 +718,7 @@ pub(crate) async fn load_track(
         let progress_app = app.clone();
         let progress_arc = Arc::clone(&deck_arc);
         let streamed = tokio::task::spawn_blocking(move || {
-            let mut last_emit = std::time::Instant::now();
-            let mut on_points = |points: &[f32], total: usize| {
-                let ready = {
-                    let mut deck_state = progress_arc.locked();
-                    deck_state.push_dense_points(points);
-                    deck_state.dense_points.len() / 4
-                };
-                if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
-                    last_emit = std::time::Instant::now();
-                    progress_app
-                        .emit(
-                            "waveform-progress",
-                            WaveformProgress {
-                                deck: progress_deck.clone(),
-                                points_ready: ready,
-                                total_points: total,
-                                points_per_sec: audio::DENSE_POINTS_PER_SEC,
-                            },
-                        )
-                        .ok();
-                }
-            };
+            let mut on_points = point_sink(progress_app, progress_deck, Arc::clone(&progress_arc));
             // Already reduced alongside the decode unless the file needed resampling.
             match reducer.join().unwrap_or(None) {
                 Some(stream) => stream.finish(&mut on_points),
@@ -812,9 +797,6 @@ pub(crate) fn eject_track(
     engine.eject_track(&deck)
 }
 
-// Returns flat [bass_norm, mid_norm, high_norm, amplitude] * num_points as raw
-// f32 little-endian bytes. Binary transfer avoids JSON serialization overhead
-// that would otherwise cause GC pauses on large waveform loads.
 #[tauri::command]
 pub(crate) async fn get_dense_points(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -836,6 +818,8 @@ pub(crate) async fn get_dense_points(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+// Flat [bass, mid, high, amplitude] per point as raw little-endian f32. Binary rather
+// than JSON, which stalled on garbage collection at these sizes.
 #[tauri::command]
 pub(crate) async fn get_spectral_waveform_region(
     engine: tauri::State<'_, crate::engine::Engine>,
@@ -1739,8 +1723,6 @@ mod tests {
 
     #[test]
     fn press_cue_starts_preview_immediately_after_load() {
-        // After load_track, main_pos == cue_point, so press_cue must return PreviewStarted
-        // without a CueMoved step first.
         let mut d = load_deck_at_beat_offset(1.5, 10.0);
         let outcome = d.press_cue();
         assert!(

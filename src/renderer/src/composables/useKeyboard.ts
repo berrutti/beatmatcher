@@ -161,7 +161,7 @@ export function useKeyboard() {
 
     if (appMode.mode !== 'performance' || isTyping(e) || e.repeat) return;
 
-    // Space is now just a modifier: while it's held, a deck key toggles that
+    // Space is just a modifier: while it's held, a deck key toggles that
     // channel's CUE. On its own a deck key selects it into the swarm.
     if (e.code === 'Space') {
       e.preventDefault();

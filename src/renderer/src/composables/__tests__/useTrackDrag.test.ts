@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startTrackDrag } from '../useTrackDrag';
 import { DROP_LANDING_ATTRIBUTE } from '@renderer/utils/dropLanding';

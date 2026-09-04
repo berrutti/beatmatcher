@@ -191,3 +191,50 @@ describe('undo and redo under fuzzed edit sequences', () => {
     }
   });
 });
+
+function syncedEventCount(args: unknown): number | null {
+  if (typeof args !== 'object' || args === null || !('eventsJson' in args)) return null;
+  const { eventsJson } = args;
+  if (typeof eventsJson !== 'string') return null;
+  const parsed: unknown = JSON.parse(eventsJson);
+  return Array.isArray(parsed) ? parsed.length : null;
+}
+
+describe('the sync to Rust keeps the order the edits were made in', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('lands the later edit last even when the first call is slow', async () => {
+    const arrivals: number[] = [];
+    let releaseFirst = () => {};
+    let calls = 0;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const count = cmd === 'update_session_events' ? syncedEventCount(args) : null;
+      if (count === null) return null;
+      calls += 1;
+      if (calls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      arrivals.push(count);
+      return null;
+    });
+
+    const { editStore } = await loadSession(baseEvents());
+    const random = makeRandom(7);
+    await randomGesture(editStore, random);
+    await randomGesture(editStore, random);
+
+    expect(arrivals).toEqual([]);
+    expect(calls).toBe(1);
+
+    releaseFirst();
+    await editStore.flushSync();
+
+    expect(arrivals.length).toBe(2);
+    expect(arrivals[1]).toBeGreaterThanOrEqual(arrivals[0]);
+  });
+});

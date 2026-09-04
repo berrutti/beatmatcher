@@ -1,6 +1,3 @@
-// The "parent reacts" half: intents in, store edits and camera moves out.
-// Nothing here or in the gestures touches the canvas.
-
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { lanesForDeck, lanesForMaster, toggleLane } from '@renderer/utils/laneSelection';
@@ -373,8 +370,7 @@ export function useTimelineController(opts: {
     opts.requestRender();
   }
 
-  // Deletes every selected span through the intent path (which clears the
-  // selection and commits one edit). Overlapping spans merge per deck.
+  // Overlapping spans merge per deck.
   function deleteSelectedRanges(): void {
     if (clipSelection.value.length === 0) return;
     handleIntent({ type: 'clip.delete', ranges: mergeSelectionRanges(clipSelection.value) });

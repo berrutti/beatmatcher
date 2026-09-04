@@ -1,6 +1,6 @@
 export type BandSquares = [number, number, number];
 
-export const FLAT_BALANCE: BandSquares = [1, 1, 1];
+const FLAT_BALANCE: BandSquares = [1, 1, 1];
 
 export function addBandSquares(into: BandSquares, points: Float32Array, count: number): void {
   for (let point = 0; point < count; point++) {
@@ -27,7 +27,7 @@ export function densePointsFit(
   buffer: Float32Array | null,
   fromPoint: number,
   arrivedPoints: number
-): boolean {
+): buffer is Float32Array {
   if (!buffer) return false;
   return (fromPoint + arrivedPoints) * 4 <= buffer.length;
 }

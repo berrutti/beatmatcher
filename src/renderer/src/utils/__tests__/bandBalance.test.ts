@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  addBandSquares,
-  bandBalanceOf,
-  densePointsFit,
-  FLAT_BALANCE,
-  type BandSquares
-} from '../bandBalance';
+import { addBandSquares, bandBalanceOf, densePointsFit, type BandSquares } from '../bandBalance';
 
 function pointsOf(bands: [number, number, number][]): Float32Array {
   const out = new Float32Array(bands.length * 4);
@@ -17,7 +11,7 @@ function pointsOf(bands: [number, number, number][]): Float32Array {
 
 describe('bandBalanceOf', () => {
   it('is flat before any point has arrived', () => {
-    expect(bandBalanceOf([0, 0, 0], 0)).toEqual(FLAT_BALANCE);
+    expect(bandBalanceOf([0, 0, 0], 0)).toEqual([1, 1, 1]);
   });
 
   it('lifts each band to the three levels in quadrature', () => {
@@ -70,5 +64,14 @@ describe('densePointsFit', () => {
 
   it('refuses anything before a buffer exists', () => {
     expect(densePointsFit(null, 0, 1)).toBe(false);
+  });
+});
+
+describe('the reference matches the Rust band_reference fixture', () => {
+  it('lifts 0.4, 0.2 and 0.1 to the shared values', () => {
+    const balance = bandBalanceOf([0.16, 0.04, 0.01], 1);
+    expect(balance[0]).toBeCloseTo(1.14564392, 6);
+    expect(balance[1]).toBeCloseTo(2.29128785, 6);
+    expect(balance[2]).toBeCloseTo(4.58257569, 6);
   });
 });

@@ -3,9 +3,6 @@ import type { DeckId } from '@renderer/utils/types';
 import { ROW_H, type RowLayout, type SublaneLayout } from './timelineDraw';
 import type { DeckLaneKey } from '@renderer/utils/types';
 
-// Pure geometry for the session timeline: everything draw() needs to know
-// about where things sit, computed without a canvas so it can be unit tested.
-
 export type LaneHeight = { key: DeckLaneKey; height: number };
 
 // Lays a run of lanes end to end from `top`. Shared by the deck rows and the

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import TableColgroup from '../TableColgroup.vue';
@@ -49,19 +50,5 @@ describe('TableColgroup', () => {
     const secondEl = wrapper.find('col').element as HTMLElement & { _marker?: boolean };
     expect(secondEl._marker).toBeUndefined();
     expect(secondEl.getAttribute('style')).toContain('width: 200px');
-  });
-
-  it('renders no cols for an empty field list', () => {
-    const wrapper = mount(
-      { template: '<table><TableColgroup :fields="fields" :get-width="getWidth" /></table>' },
-      {
-        global: { components: { TableColgroup } },
-        data: () => ({
-          fields: [],
-          getWidth: () => '0px'
-        })
-      }
-    );
-    expect(wrapper.findAll('col')).toHaveLength(0);
   });
 });

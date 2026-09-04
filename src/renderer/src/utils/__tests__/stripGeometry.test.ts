@@ -1,18 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import {
-  stripColumnRate,
-  stripScaleX,
-  devicePixelsPerColumn,
-  snappedToDevicePixel,
-  stripX
-} from '../stripGeometry';
+import { stripColumnRate, stripScaleX, snappedToDevicePixel, stripX } from '../stripGeometry';
 
 const HALF_WINDOW_SEC = 5;
 
 function ratioFor(canvasWidthDevicePx: number, dpr: number, rate: number): number {
   const columnRate = stripColumnRate(canvasWidthDevicePx, HALF_WINDOW_SEC);
   const scaleX = stripScaleX(canvasWidthDevicePx / dpr, HALF_WINDOW_SEC, columnRate, rate);
-  return devicePixelsPerColumn(scaleX, dpr);
+  return scaleX * dpr;
 }
 
 describe('the strip draws one source column per device pixel', () => {

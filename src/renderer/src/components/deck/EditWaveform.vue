@@ -41,14 +41,15 @@ import {
 } from '@renderer/utils/waveformImage';
 import { beatGridStep, visibleBeats } from '@renderer/utils/beatGrid';
 import {
-  MIN_BEAT_SPACING_PX,
-  MIN_BAR_SPACING_PX,
+  MIN_WAVEFORM_BEAT_SPACING_PX,
+  MIN_WAVEFORM_BAR_SPACING_PX,
   EDIT_GRID,
   drawBeatLine,
   drawBarLine,
   drawBeatMarker
 } from '@renderer/utils/beatGridDraw';
 import { loopRegionRect } from '@renderer/utils/loopRegionRect';
+import { DECK_LOD_DEBOUNCE_MS } from '@renderer/utils/waveformLod';
 import { drawCueTriangle } from '@renderer/utils/cueMarker';
 import { waveformPalette } from '@renderer/utils/waveformPalettes';
 import { EDIT_SCALES } from '@renderer/utils/waveformPaints';
@@ -162,13 +163,11 @@ const OVERSCAN_FACTOR = 1.0;
 const MAX_BITMAP_PX = 8192;
 const MIN_FETCH_POINTS = 64;
 
-let cachedPeaks: Float32Array | null = null;
-let cachedStartSec = NaN;
-let cachedEndSec = NaN;
-let cachedPtsPerSec = 0;
+type PeaksCache = PeakCache & { peaks: Float32Array };
+let cache: PeaksCache | null = null;
 
 let waveImgBitmap: ImageBitmap | null = null;
-let bitmapForStyle = '';
+let bitmapForStyle: WaveformStyleOption | null = null;
 let builtBitmap: BuiltBitmap | null = null;
 let bitmapBuildInFlight = false;
 
@@ -181,19 +180,15 @@ function requiredPtsPerSec(): number {
   return canvas.width / zoomSec;
 }
 
-function currentCache(): PeakCache | null {
-  if (!cachedPeaks) return null;
-  return { startSec: cachedStartSec, endSec: cachedEndSec, ptsPerSec: cachedPtsPerSec };
+function peaksSource(): CacheSource {
+  return cacheSource(cache, viewStartSec, viewEndSec, requiredPtsPerSec(), props.denseSpectralRate);
 }
 
-function peaksSource(): CacheSource {
-  return cacheSource(
-    currentCache(),
-    viewStartSec,
-    viewEndSec,
-    requiredPtsPerSec(),
-    props.denseSpectralRate
-  );
+// Everything the dense buffer can answer, taken now: only a deeper zoom than it holds
+// reaches for IPC.
+function servedLocally(): boolean {
+  const source = peaksSource();
+  return source === 'keep' || (source === 'dense' && sliceFromDense());
 }
 
 function sliceFromDense(): boolean {
@@ -212,10 +207,12 @@ function sliceFromDense(): boolean {
   const range = densePointRange(startSec, endSec, denseRate, props.densePointsReady);
   if (!range) return false;
 
-  cachedPeaks = dense.subarray(range.startIndex * 4, range.endIndex * 4);
-  cachedStartSec = range.startIndex / denseRate;
-  cachedEndSec = range.endIndex / denseRate;
-  cachedPtsPerSec = denseRate;
+  cache = {
+    peaks: dense.subarray(range.startIndex * 4, range.endIndex * 4),
+    startSec: range.startIndex / denseRate,
+    endSec: range.endIndex / denseRate,
+    ptsPerSec: denseRate
+  };
   return true;
 }
 
@@ -244,10 +241,7 @@ async function fetchPeaksForView() {
     // Only apply if this fetch still covers the current view. A later
     // pan/zoom might have moved us outside the fetched range.
     if (startSec <= viewStartSec + 1e-6 && endSec >= viewEndSec - 1e-6) {
-      cachedPeaks = new Float32Array(result);
-      cachedStartSec = startSec;
-      cachedEndSec = endSec;
-      cachedPtsPerSec = rate;
+      cache = { peaks: new Float32Array(result), startSec, endSec, ptsPerSec: rate };
     }
   } catch (err) {
     console.error('[WaveformDisplay] spectral fetch failed:', err);
@@ -257,8 +251,7 @@ async function fetchPeaksForView() {
     pendingFetch = false;
     // Re-check: dense LOD may have arrived, or the view may have moved
     // back inside the current cache. In either case we skip the IPC.
-    const now = peaksSource();
-    if (now !== 'keep' && !(now === 'dense' && sliceFromDense())) {
+    if (!servedLocally()) {
       fetchPeaksForView();
     }
   }
@@ -266,9 +259,7 @@ async function fetchPeaksForView() {
 
 function ensurePeaks() {
   if (isUnmounted) return;
-  const source = peaksSource();
-  if (source === 'keep') return;
-  if (source === 'dense' && sliceFromDense()) return;
+  if (servedLocally()) return;
   if (props.denseSpectralRate <= 0) return;
   if (isFetching) {
     pendingFetch = true;
@@ -276,26 +267,28 @@ function ensurePeaks() {
   }
   clearTimeout(fetchDebounceTimer);
   fetchDebounceTimer = window.setTimeout(() => {
-    const now = peaksSource();
-    if (now === 'keep' || (now === 'dense' && sliceFromDense())) return;
+    if (servedLocally()) return;
     fetchPeaksForView();
-  }, 80);
+  }, DECK_LOD_DEBOUNCE_MS);
 }
 
 async function renderBitmap(
   peaks: Float32Array,
-  cache: PeakCache,
+  builtFrom: PeakCache,
   range: BitmapRange,
   canvasH: number
 ) {
   try {
     const totalPoints = (peaks.length / 4) | 0;
-    const fromPoint = Math.max(0, Math.round((range.startSec - cache.startSec) * cache.ptsPerSec));
+    const fromPoint = Math.max(
+      0,
+      Math.round((range.startSec - builtFrom.startSec) * builtFrom.ptsPerSec)
+    );
     const toPoint = Math.min(totalPoints, fromPoint + range.width);
     const columns = waveformColumns(peaks, range.width, fromPoint, toPoint);
     const imgData = waveformImageData(range.width, canvasH, columns, editPaint());
     const bmp = await createImageBitmap(imgData);
-    if (cachedPeaks === peaks) {
+    if (cache?.peaks === peaks) {
       waveImgBitmap = bmp;
       builtBitmap = {
         startSec: range.startSec,
@@ -312,8 +305,7 @@ async function renderBitmap(
 }
 
 function ensureBitmap(canvasH: number) {
-  const cache = currentCache();
-  if (!cachedPeaks || !cache || canvasH <= 0) return;
+  if (!cache || canvasH <= 0) return;
   const sameStyle = bitmapForStyle === props.waveformStyle;
   if (
     sameStyle &&
@@ -327,7 +319,7 @@ function ensureBitmap(canvasH: number) {
 
   bitmapForStyle = props.waveformStyle;
   bitmapBuildInFlight = true;
-  renderBitmap(cachedPeaks, cache, range, canvasH);
+  renderBitmap(cache.peaks, cache, range, canvasH);
 }
 
 function pxToSec(localX: number): number {
@@ -412,7 +404,12 @@ function drawRuler(ctx: CanvasRenderingContext2D, width: number, height: number)
   if (!props.trackBpm || props.trackBpm <= 0) return;
   const viewSpan = viewEndSec - viewStartSec;
   const pxPerBeat = ((60 / props.trackBpm) * width) / viewSpan;
-  const step = beatGridStep(pxPerBeat, BEATS_PER_STEP, MIN_BEAT_SPACING_PX, MIN_BAR_SPACING_PX);
+  const step = beatGridStep(
+    pxPerBeat,
+    BEATS_PER_STEP,
+    MIN_WAVEFORM_BEAT_SPACING_PX,
+    MIN_WAVEFORM_BAR_SPACING_PX
+  );
   if (pxPerBeat * step < 1) return;
 
   const dpr = window.devicePixelRatio || 1;
@@ -497,7 +494,7 @@ function drawCueMarker(ctx: CanvasRenderingContext2D, width: number, height: num
 function rafLoop() {
   applyPendingDrag();
   // Sync only: an IPC fetch here would flood the backend during a fast drag.
-  if (peaksSource() === 'dense') sliceFromDense();
+  servedLocally();
   drawWaveform();
   rafId = requestAnimationFrame(rafLoop);
 }
@@ -622,19 +619,13 @@ watch(
       const dur = viewDurationSec();
       viewStartSec = 0;
       viewEndSec = Math.min(dur, trackDuration);
-      cachedPeaks = null;
-      cachedStartSec = NaN;
-      cachedEndSec = NaN;
-      cachedPtsPerSec = 0;
+      cache = null;
       builtBitmap = null;
       waveImgBitmap = null;
       ensurePeaks();
     } else {
       trackDuration = 0;
-      cachedPeaks = null;
-      cachedStartSec = NaN;
-      cachedEndSec = NaN;
-      cachedPtsPerSec = 0;
+      cache = null;
       builtBitmap = null;
       waveImgBitmap = null;
     }

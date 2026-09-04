@@ -1,7 +1,3 @@
-// Pure view-window math for the session timeline's zoom/pan/scrub interactions.
-// Kept free of canvas/DOM/reactive state so it can be unit tested directly:
-// every function takes plain numbers and returns plain numbers/objects.
-
 export type ViewWindow = { start: number; duration: number };
 
 function finiteOr(value: number, fallback: number): number {

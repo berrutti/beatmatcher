@@ -719,7 +719,6 @@ export function useTimelineGestures(deps: GestureDeps) {
     }
   }
 
-  // Overlay items for the active gesture's preview, appended to the scene.
   function overlays(): SceneItem[] {
     if (!active) return [];
     const viewContext = deps.getVc();

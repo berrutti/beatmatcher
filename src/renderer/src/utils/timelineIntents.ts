@@ -1,6 +1,3 @@
-// What the user did, kept apart from what the app does about it: items and
-// gestures emit these and never touch a store.
-
 import type { ResetExtent } from '@renderer/utils/sessionCore';
 import type { ViewWindow } from '@renderer/utils/timelineView';
 import type { ClipSelectionRef } from '@renderer/utils/timelineLayout';

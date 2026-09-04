@@ -9,7 +9,7 @@ import {
   WAVEFORM_BACKGROUND,
   type WaveformPaint
 } from '../waveformImage';
-import { BLENDED_RGB_FLAT, blendedRgb, STACKED_THREE_BAND, twoTone } from '../waveformPalettes';
+import { waveformPalette } from '../waveformPalettes';
 
 // ImageData is a browser API not available in the Node test environment.
 if (typeof ImageData === 'undefined') {
@@ -26,13 +26,16 @@ if (typeof ImageData === 'undefined') {
 
 const BG = 10; // background channel value
 
+const FLAT_BLENDED = waveformPalette('blended', [1, 1, 1]);
+const THREE_BAND = waveformPalette('threeBand', [1, 1, 1]);
+
 const OPAQUE: WaveformPaint = {
   ampScale: 1.0,
   bandScale: 1.0,
   maxBarFraction: 1,
   background: WAVEFORM_BACKGROUND,
   baseline: null,
-  palette: BLENDED_RGB_FLAT
+  palette: FLAT_BLENDED
 };
 const CLAMPED: WaveformPaint = {
   ampScale: 1.5,
@@ -40,7 +43,7 @@ const CLAMPED: WaveformPaint = {
   maxBarFraction: 0.5,
   background: null,
   baseline: null,
-  palette: BLENDED_RGB_FLAT
+  palette: FLAT_BLENDED
 };
 
 function styleWith(ampScale: number): WaveformPaint {
@@ -281,7 +284,7 @@ describe('waveformImageData with a stacked palette', () => {
     maxBarFraction: 1,
     background: null,
     baseline: null,
-    palette: STACKED_THREE_BAND
+    palette: THREE_BAND
   };
 
   it('paints the bands over each other, overlaps included', () => {
@@ -294,12 +297,10 @@ describe('waveformImageData with a stacked palette', () => {
   });
 
   it('shows only two colours for a two-tone palette', () => {
-    const body: [number, number, number] = [0, 0x55, 0xe1];
-    const highs: [number, number, number] = [255, 255, 255];
     const peaks = new Float32Array([1, 0.5, 0.25, 0.25]);
     const img = waveformImageData(1, 100, waveformColumns(peaks, 1), {
       ...stacked,
-      palette: twoTone(body, highs)
+      palette: waveformPalette('twoTone', [1, 1, 1])
     });
     const shown = new Set<string>();
     for (let row = 0; row < 100; row++) {
@@ -315,7 +316,7 @@ describe('a blended palette with a band balance', () => {
     const balanced: WaveformPaint = {
       ...OPAQUE,
       background: null,
-      palette: blendedRgb([1, 2, 4])
+      palette: waveformPalette('blended', [1, 2, 4])
     };
     const peaks = new Float32Array([0.4, 0.2, 0.1, 1]);
     const img = waveformImageData(1, 10, waveformColumns(peaks, 1), balanced);
@@ -325,7 +326,7 @@ describe('a blended palette with a band balance', () => {
   });
 
   it('leaves the bands alone at a flat balance', () => {
-    const flat: WaveformPaint = { ...OPAQUE, background: null, palette: BLENDED_RGB_FLAT };
+    const flat: WaveformPaint = { ...OPAQUE, background: null, palette: FLAT_BLENDED };
     const peaks = new Float32Array([0.4, 0.2, 0.1, 1]);
     const img = waveformImageData(1, 10, waveformColumns(peaks, 1), flat);
     const p = pixel(img, 0, 5);

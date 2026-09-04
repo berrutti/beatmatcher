@@ -11,10 +11,6 @@ export function stripScaleX(
   return cssWidth / (2 * halfWindowSec * columnRate * rate);
 }
 
-export function devicePixelsPerColumn(scaleX: number, dpr: number): number {
-  return scaleX * dpr;
-}
-
 export function snappedToDevicePixel(value: number, dpr: number): number {
   return Math.round(value * dpr) / dpr;
 }

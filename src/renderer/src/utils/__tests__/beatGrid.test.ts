@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { beatGridStep, beatLineStep, beatTier, visibleBeats } from '../beatGrid';
+import { beatGridStep, beatLineStep, visibleBeats } from '../beatGrid';
 
 describe('beatLineStep', () => {
   it('keeps step at 1 when beats are already spaced past the minimum', () => {
@@ -24,29 +24,6 @@ describe('beatLineStep', () => {
 
   it('supports a non-power-of-4 group size', () => {
     expect(beatLineStep(1, 20, 3)).toBe(27);
-  });
-});
-
-describe('beatTier', () => {
-  it('classifies every 16th beat as a phrase', () => {
-    expect(beatTier(0, 4, 16)).toBe('phrase');
-    expect(beatTier(16, 4, 16)).toBe('phrase');
-    expect(beatTier(32, 4, 16)).toBe('phrase');
-  });
-
-  it('classifies negative phrase-aligned beats the same as positive ones', () => {
-    expect(beatTier(-16, 4, 16)).toBe('phrase');
-  });
-
-  it('classifies a non-phrase multiple of the bar size as a bar', () => {
-    expect(beatTier(4, 4, 16)).toBe('bar');
-    expect(beatTier(12, 4, 16)).toBe('bar');
-  });
-
-  it('classifies everything else as a plain beat', () => {
-    expect(beatTier(1, 4, 16)).toBe('beat');
-    expect(beatTier(3, 4, 16)).toBe('beat');
-    expect(beatTier(5, 4, 16)).toBe('beat');
   });
 });
 

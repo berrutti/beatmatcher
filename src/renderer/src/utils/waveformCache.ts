@@ -125,10 +125,3 @@ export function bitmapIsStale(
     bitmap.endSec < Math.min(cache.endSec, viewEndSec) - 1e-6
   );
 }
-
-// Source columns per device pixel where the bitmap is drawn. Below 1 the picture is being
-// stretched past the data it holds.
-export function bitmapSharpness(bitmap: BuiltBitmap, devicePxPerSec: number): number {
-  const drawnWidth = (bitmap.endSec - bitmap.startSec) * devicePxPerSec;
-  return drawnWidth > 0 ? bitmap.width / drawnWidth : Infinity;
-}

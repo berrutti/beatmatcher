@@ -49,7 +49,7 @@ let waveImgData: ImageData | null = null;
 let waveImgForPeaks: Float32Array | null = null;
 let waveImgForCw = 0;
 let waveImgForCh = 0;
-let waveImgForStyle = '';
+let waveImgForStyle: WaveformStyleOption | null = null;
 let waveImgForReady = -1;
 let playheadTop = 0;
 

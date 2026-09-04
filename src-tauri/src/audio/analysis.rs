@@ -7,8 +7,6 @@ const BAND_MID_HZ: f32 = 2_000.0;
 // rate the established waveform formats use.
 pub const DENSE_POINTS_PER_SEC: f64 = 150.0;
 
-/// What one pass over the track produces: the band buffers a region request still needs,
-/// each band's level, and the dense points, handed out in chunks as they are reduced.
 pub struct StreamedBands {
     pub bass: Vec<f32>,
     pub mid: Vec<f32>,
@@ -95,7 +93,6 @@ impl BandStream {
         self.total_points
     }
 
-    /// `samples` is the next run of interleaved frames, in order, never re-sent.
     pub fn push(&mut self, samples: &[f32], mut on_points: impl FnMut(&[f32], usize)) {
         if self.channels == 0 || self.total_points == 0 {
             return;
@@ -169,7 +166,9 @@ impl BandStream {
             on_points(&self.chunk, self.total_points);
             self.chunk.clear();
         }
-        let frames = self.total_frames.max(1) as f64;
+        // What arrived, not what the container declared: n_frames is approximate in some
+        // containers, and dividing by it would scale every band level by the error.
+        let frames = self.frame.max(1) as f64;
         StreamedBands {
             bass: self.bass,
             mid: self.mid,
@@ -181,14 +180,8 @@ impl BandStream {
     }
 }
 
-// RMS rather than peak: mastered music puts a near-|1.0| sample in almost every bin, so
-// peak heights collapse to a flat block. Channels ride band energy un-normalised, and the
-// amplitude is stored raw so the sqrt curve in the frontend has range left to spread.
-const AMP_DISPLAY_BOOST: f32 = 1.0;
-const BAND_DISPLAY_BOOST: f32 = 1.0;
-
 /// The three bands sum to the mono signal, so their levels in quadrature stand in for the
-/// track's own. Never zero, so callers can divide by it.
+/// track's own.
 pub fn band_reference(bands: &super::SpectralBands) -> f32 {
     let total = (bands.bass_rms * bands.bass_rms
         + bands.mid_rms * bands.mid_rms
@@ -259,11 +252,12 @@ pub fn compute_spectral_waveform_region(
         let rms_mid = (sum_mid_sq / count).sqrt();
         let rms_high = (sum_high_sq / count).sqrt();
 
-        // Unclamped: the frontend takes only the ratio between the three.
-        let r = (rms_bass / reference) * BAND_DISPLAY_BOOST;
-        let g = (rms_mid / reference) * BAND_DISPLAY_BOOST;
-        let b = (rms_high / reference) * BAND_DISPLAY_BOOST;
-        let amp = (rms_amp * AMP_DISPLAY_BOOST).min(1.0);
+        // Unclamped: the frontend takes only the ratio between the three. The amplitude
+        // is stored raw so the sqrt curve in the frontend has range left to spread.
+        let r = rms_bass / reference;
+        let g = rms_mid / reference;
+        let b = rms_high / reference;
+        let amp = rms_amp.min(1.0);
 
         result.push(r);
         result.push(g);
@@ -667,5 +661,97 @@ mod tests {
             (detected * 10.0).round() / 10.0,
             "result should round to one decimal"
         );
+    }
+
+    fn tone(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels)
+            .map(|i| {
+                let t = (i / channels) as f32 / 44100.0;
+                0.6 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                    + 0.2 * (2.0 * std::f32::consts::PI * 5000.0 * t).sin()
+            })
+            .collect()
+    }
+
+    fn points_from(samples: &[f32], channels: usize, chunk_frames: usize) -> Vec<f32> {
+        let frames = samples.len() / channels;
+        let mut stream = BandStream::new(frames, channels, 44100, 64);
+        let mut points = Vec::new();
+        let mut at = 0;
+        while at < frames {
+            let end = (at + chunk_frames).min(frames);
+            stream.push(&samples[at * channels..end * channels], |chunk, _| {
+                points.extend_from_slice(chunk)
+            });
+            at = end;
+        }
+        stream.finish(|chunk, _| points.extend_from_slice(chunk));
+        points
+    }
+
+    #[test]
+    fn the_chunk_size_the_decoder_hands_over_does_not_change_the_points() {
+        let samples = tone(44100, 2);
+        let whole = points_from(&samples, 2, 44100);
+        for chunk in [1, 7, 512, 4096] {
+            assert_eq!(points_from(&samples, 2, chunk), whole, "chunk of {chunk}");
+        }
+    }
+
+    #[test]
+    fn every_declared_point_is_emitted_once() {
+        let samples = tone(44100, 2);
+        let stream = BandStream::new(44100, 2, 44100, 64);
+        let expected = stream.total_points();
+        assert_eq!(points_from(&samples, 2, 512).len(), expected * 4);
+    }
+
+    #[test]
+    fn a_band_level_counts_only_the_frames_that_arrived() {
+        let samples = tone(44100, 2);
+        // The declared length is what the container claimed; only half of it turns up.
+        let half = samples.len() / 2;
+        let mut short = BandStream::new(44100, 2, 44100, 64);
+        short.push(&samples[..half], |_, _| {});
+        let short = short.finish(|_, _| {});
+
+        let mut exact = BandStream::new(22050, 2, 44100, 64);
+        exact.push(&samples[..half], |_, _| {});
+        let exact = exact.finish(|_, _| {});
+
+        assert!((short.bass_rms - exact.bass_rms).abs() < 1e-6);
+        assert!((short.high_rms - exact.high_rms).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dense_point_count_follows_the_rate() {
+        assert_eq!(
+            dense_point_count(44100, 44100),
+            DENSE_POINTS_PER_SEC as usize
+        );
+        assert_eq!(dense_point_count(0, 44100), 0);
+        assert_eq!(dense_point_count(44100, 0), 0);
+    }
+
+    #[test]
+    fn the_band_reference_is_never_zero() {
+        let silent = super::super::SpectralBands::default();
+        assert!(band_reference(&silent) > 0.0);
+    }
+
+    #[test]
+    fn band_reference_matches_the_typescript_fixture() {
+        let bands = super::super::SpectralBands {
+            bass_rms: 0.4,
+            mid_rms: 0.2,
+            high_rms: 0.1,
+            ..Default::default()
+        };
+        // f64, so the literals carry the digits the TypeScript side compares against.
+        let reference = f64::from(band_reference(&bands));
+        assert!((reference - 0.45825757).abs() < 1e-6);
+        assert!((reference / 0.4 - 1.14564392).abs() < 1e-6);
+        assert!((reference / 0.2 - 2.29128785).abs() < 1e-6);
+        assert!((reference / 0.1 - 4.58257569).abs() < 1e-6);
     }
 }

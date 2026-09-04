@@ -1,6 +1,3 @@
-// Pure, and rebuilt each frame from reactive inputs. Also reports the content
-// height, because only the composed scene knows how tall the rows came out.
-
 import type { SceneItem, ViewContext } from '@renderer/utils/timelineEngine';
 import { TrackWaveform, type MasterSublane, type RowLayout } from '@renderer/utils/timelineDraw';
 import {
@@ -72,7 +69,6 @@ export type SceneInput = {
   soloFor: (deck: string) => boolean;
   clipSelection: ClipSelectionRef[];
   filterSelection: { deck: string; startMs: number; endMs: number } | null;
-  // Active gesture/selection previews, drawn on top of the rows.
   overlays?: SceneItem[];
 };
 

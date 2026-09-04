@@ -1011,9 +1011,6 @@ export function makeMsToX(view: ViewWindow, trackWidth: number): (ms: number) =>
   return (ms: number) => LABEL_W + msToFrac(ms, view) * trackWidth;
 }
 
-// Renderers extracted from Timeline.vue's draw(): each takes the context plus
-// explicit data, no component state, so draw() stays a short orchestrator.
-
 function drawOutlinedLabel(
   ctx: CanvasRenderingContext2D,
   text: string,

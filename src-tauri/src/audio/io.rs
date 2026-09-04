@@ -119,7 +119,6 @@ pub fn decode_audio_streaming(
                 }
                 let spec = *decoded.spec();
                 let src_channels = spec.channels.count();
-                // Lock in the channel count from the first packet.
                 let out_channels = *actual_channels.get_or_insert_with(|| {
                     let channel_count = src_channels.min(2);
                     log::info!(

@@ -1,11 +1,9 @@
 import type { Rgb, StackedPalette, WaveformPalette } from '@renderer/utils/waveformImage';
 import type { WaveformStyleOption } from '@renderer/utils/types';
 
-export function blendedRgb(balance: [number, number, number]): WaveformPalette {
+function blendedRgb(balance: [number, number, number]): WaveformPalette {
   return { kind: 'blended', balance };
 }
-
-export const BLENDED_RGB_FLAT = blendedRgb([1, 1, 1]);
 
 // Sampled off a rendered stacked waveform rather than chosen: the overlaps are the part
 // that cannot be derived, and bassMid in particular is darker than either band alone.
@@ -19,10 +17,10 @@ const THREE_BAND: StackedPalette = {
   all: [0xf5, 0xeb, 0xd7]
 };
 
-export const STACKED_THREE_BAND: WaveformPalette = { kind: 'stacked', colors: THREE_BAND };
+const STACKED_THREE_BAND: WaveformPalette = { kind: 'stacked', colors: THREE_BAND };
 
 // One hue plus white highs: the mid rides with the bass, so only two colours ever show.
-export function twoTone(body: Rgb, highs: Rgb): WaveformPalette {
+function twoTone(body: Rgb, highs: Rgb): WaveformPalette {
   return {
     kind: 'stacked',
     colors: {

@@ -44,10 +44,8 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-// Covers zoom down to ~5s on a 1000-2000px canvas, at ~650 KB of Float32 for a
-// three-minute track. Deeper zoom falls back to an on-demand fetch.
-
 type BandsReady = { deck: string };
+
 type WaveformProgress = {
   deck: string;
   pointsReady: number;
@@ -75,8 +73,6 @@ function roundBpm(bpm: number): number {
   return Math.round(bpm * 100) / 100;
 }
 
-// Everything a track puts on a deck. Ejecting applies this again rather than
-// naming each field to clear, so a field added here cannot be forgotten there.
 type DeckTrackState = {
   trackName: string;
   trackLoaded: boolean;
@@ -84,10 +80,8 @@ type DeckTrackState = {
   waveformLoading: boolean;
   loadedPath: string | null;
   trackData: TrackData | null;
-  // Low-rate overview over the whole track, used by the overview strip and as a
-  // first-paint fallback in WaveformDisplay while the dense LOD loads.
-  // Higher-rate LOD over the whole track, sliced in JS for any zoom the rate can satisfy.
-  // Deeper zooms fall back to on-demand fetches, see WaveformDisplay.
+  // Grows as the analysis reduces the track; deeper zooms than its rate can serve fall
+  // back to an on-demand fetch in EditWaveform.
   denseSpectralData: Float32Array | null;
   denseSpectralRate: number;
   // What lifts each band to the track's own level, for a drawer that wants a band read
@@ -164,15 +158,18 @@ function createDeck(id: DeckId, accent: string, name: string) {
         if (loadGeneration !== generation) return;
         const points = new Float32Array(buffer);
         const arrived = points.length / 4;
-        if (!densePointsFit(state.denseSpectralData, from, arrived)) return;
-        state.denseSpectralData?.set(points, from * 4);
+        const dense = state.denseSpectralData;
+        if (!densePointsFit(dense, from, arrived)) return;
+        dense.set(points, from * 4);
         // From the points themselves, so colour is right from the first chunk rather than
         // bass-heavy until the analysis ends.
         addBandSquares(bandSquares, points, arrived);
         pointsFetched = from + arrived;
         state.bandBalance = bandBalanceOf(bandSquares, pointsFetched);
         state.densePointsReady = pointsFetched;
-        if (pointsFetched === 0) return;
+        // get_dense_points clamps to what the deck holds, so a short answer is possible
+        // and would otherwise re-ask for the same range forever.
+        if (arrived === 0) return;
       }
     } catch (error) {
       console.error('[decks] dense point fetch failed', error);
@@ -345,7 +342,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       // Before the call, not after: the analysis now runs inside it, so a listener
       // registered afterwards misses every point.
       const gen = loadGeneration;
-      const loadStartedAt = performance.now();
       pointsFetched = 0;
       bandSquares = [0, 0, 0];
 
@@ -354,12 +350,11 @@ function createDeck(id: DeckId, accent: string, name: string) {
         if (!state.denseSpectralData) {
           state.denseSpectralData = new Float32Array(event.payload.totalPoints * 4);
           state.denseSpectralRate = event.payload.pointsPerSec;
-          console.info(
-            `[waveform ${id}] first points after ${Math.round(performance.now() - loadStartedAt)}ms`
-          );
         }
         state.waveformLoading = false;
-        drainPoints(gen, event.payload.pointsReady);
+        drainPoints(gen, event.payload.pointsReady).catch((error) => {
+          console.error('[decks] dense point drain failed', error);
+        });
       });
 
       const unlisten = await listen<BandsReady>('bands-ready', (event) => {
@@ -368,9 +363,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
         bandsReadyUnlisten = null;
         setTimeout(unlisten, 0);
         setTimeout(progressUnlisten, 0);
-        console.info(
-          `[waveform ${id}] analysis done after ${Math.round(performance.now() - loadStartedAt)}ms`
-        );
       });
       bandsReadyUnlisten = () => {
         unlisten();

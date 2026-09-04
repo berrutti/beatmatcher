@@ -1,5 +1,7 @@
-export const MIN_BEAT_SPACING_PX = 6;
-export const MIN_BAR_SPACING_PX = 24;
+import { drawMarkerTriangle } from '@renderer/utils/markerTriangle';
+
+export const MIN_WAVEFORM_BEAT_SPACING_PX = 6;
+export const MIN_WAVEFORM_BAR_SPACING_PX = 24;
 
 export type BeatGridWeight = {
   // Device pixels, not CSS lineWidth, since these are fillRect not stroke.
@@ -114,26 +116,6 @@ export function drawBarLine(
   );
 }
 
-function drawTriangle(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  baseY: number,
-  halfWidth: number,
-  pointHeight: number,
-  fill: string
-): void {
-  ctx.beginPath();
-  ctx.moveTo(x - halfWidth, baseY);
-  ctx.lineTo(x + halfWidth, baseY);
-  ctx.lineTo(x, baseY + pointHeight);
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.strokeStyle = MARKER_OUTLINE_COLOR;
-  ctx.lineWidth = MARKER_OUTLINE_WIDTH;
-  ctx.stroke();
-  ctx.fill();
-}
-
 // On both edges so the grid reads without following a line across the waveform.
 export function drawBeatMarker(
   ctx: CanvasRenderingContext2D,
@@ -146,9 +128,12 @@ export function drawBeatMarker(
   const halfWidth = isDownbeat ? weight.downbeatMarkerHalfWidth : weight.beatMarkerHalfWidth;
   if (halfWidth <= 0) return;
   const pointHeight = halfWidth * MARKER_HEIGHT_RATIO;
-  const fill = isDownbeat ? DOWNBEAT_MARKER_FILL_COLOR : BEAT_MARKER_FILL_COLOR;
-  ctx.save();
-  drawTriangle(ctx, x, top, halfWidth, pointHeight, fill);
-  drawTriangle(ctx, x, top + height, halfWidth, -pointHeight, fill);
-  ctx.restore();
+  const style = {
+    fill: isDownbeat ? DOWNBEAT_MARKER_FILL_COLOR : BEAT_MARKER_FILL_COLOR,
+    outline: MARKER_OUTLINE_COLOR,
+    outlineWidth: MARKER_OUTLINE_WIDTH,
+    alpha: 1
+  };
+  drawMarkerTriangle(ctx, x, top, halfWidth, pointHeight, style);
+  drawMarkerTriangle(ctx, x, top + height, halfWidth, -pointHeight, style);
 }

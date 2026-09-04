@@ -43,3 +43,9 @@ dirs = "6"
 # Our own code stays unoptimized for fast recompiles and usable stack traces.
 [profile.dev.package."*"]
 opt-level = 3
+
+# The DSP parity tests render millions of frames through our own code, which the
+# dev profile leaves unoptimised: 15s against 2s. debug-assertions stay on, and
+# `cargo build` is unaffected.
+[profile.test]
+opt-level = 2

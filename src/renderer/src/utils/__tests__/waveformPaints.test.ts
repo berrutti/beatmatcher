@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { STRIP_SCALES, OVERVIEW_SCALES, EDIT_SCALES, type WaveformScales } from '../waveformPaints';
 import { waveformImageData, type WaveformColumn } from '../waveformImage';
-import { BLENDED_RGB_FLAT, STACKED_THREE_BAND } from '../waveformPalettes';
+import { waveformPalette } from '../waveformPalettes';
 
 if (typeof ImageData === 'undefined') {
   (globalThis as Record<string, unknown>).ImageData = class {
@@ -27,7 +27,7 @@ function paintedRows(column: WaveformColumn, scales: WaveformScales, stacked: bo
   const image = waveformImageData(1, HEIGHT, [column], {
     ...scales,
     background: null,
-    palette: stacked ? STACKED_THREE_BAND : BLENDED_RGB_FLAT
+    palette: waveformPalette(stacked ? 'threeBand' : 'blended', [1, 1, 1])
   });
   let rows = 0;
   for (let row = 0; row < HEIGHT; row++) {

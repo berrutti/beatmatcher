@@ -196,6 +196,7 @@ import {
   type BadgeFade
 } from '@renderer/utils/badgeFade';
 import { overlapsRange } from '@renderer/utils/timelineView';
+import { TIMELINE_LOD_DEBOUNCE_MS } from '@renderer/utils/waveformLod';
 import { renderScene, type SceneItem, type ViewContext } from '@renderer/utils/timelineEngine';
 import { useTimelineView } from '@renderer/composables/useTimelineView';
 import { useTimelineController } from '@renderer/composables/useTimelineController';
@@ -213,7 +214,6 @@ const MIN_REGION_POINTS = 256;
 const MAX_REGION_POINTS = 16000;
 const BASE_REGION_POINTS_MAX = 4000;
 const LOD_OVERSAMPLE = 1.5;
-const LOD_DEBOUNCE_MS = 150;
 
 const props = defineProps<{
   durationMs: number;
@@ -637,7 +637,7 @@ function updateWaveformLod(): void {
 let lodTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleWaveformLod(): void {
   if (lodTimer !== null) clearTimeout(lodTimer);
-  lodTimer = setTimeout(updateWaveformLod, LOD_DEBOUNCE_MS);
+  lodTimer = setTimeout(updateWaveformLod, TIMELINE_LOD_DEBOUNCE_MS);
 }
 
 // Zoom (duration), pan (start), and clips arriving all change which track region
@@ -648,15 +648,12 @@ watch(
   { immediate: true }
 );
 
-// Keep the playhead on screen while playing: if it runs off either edge of the
-// zoomed-in view, the view jumps so it lands near the left edge with a lead-in.
 watch(
   () => props.playheadMs,
   (ms) => camera.followPlayhead(ms)
 );
 
-// Delete/Backspace removes whichever editable thing is selected (clip takes
-// precedence over a filter span). Edit-mode only. The commit stops playback.
+// Clip takes precedence over a filter span.
 function onKeyDown(e: KeyboardEvent): void {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (!editStore.editMode) return;
@@ -709,8 +706,6 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onWindowUp);
 });
 
-// Anything that changes the picture redraws (the camera's own state, the props,
-// the interaction state, and per-deck accents).
 watch(
   () => [
     props.clips,

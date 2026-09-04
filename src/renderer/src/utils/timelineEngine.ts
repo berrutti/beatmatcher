@@ -44,8 +44,6 @@ function pointInRect(pt: Point, r: Rect): boolean {
   return pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h;
 }
 
-// Draw every item in order (later items paint on top), each clipped to its own
-// bounds so nothing bleeds past where it lives.
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   items: SceneItem[],

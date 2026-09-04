@@ -528,6 +528,11 @@ describe('a deck holding a track with no bpm', () => {
 });
 
 describe('the waveform arrives while the deck is still loading', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
   const track: LoadableTrack = {
     path: '/music/next.mp3',
     name: 'Next Track',
@@ -599,5 +604,93 @@ describe('the waveform arrives while the deck is still loading', () => {
     releaseLoad();
     await loading;
     expect(decks.deckA.loading).toBe(false);
+  });
+});
+
+describe('the point drain under a short answer', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('stops asking when the backend answers with nothing', async () => {
+    const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      const forEvent = handlers.get(event) ?? [];
+      forEvent.push(handler as (event: { payload: unknown }) => void);
+      handlers.set(event, forEvent);
+      return () => {};
+    });
+
+    let pointRequests = 0;
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'get_dense_points') return {};
+      pointRequests++;
+      // Answers the first ask, then goes short, which used to spin forever.
+      return pointRequests === 1 ? new Float32Array(40).buffer : new ArrayBuffer(0);
+    });
+
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(track);
+
+    const progress = handlers.get('waveform-progress')?.[0];
+    progress?.({ payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 } });
+    await reachedDecode();
+    progress?.({ payload: { deck: 'A', pointsReady: 50, totalPoints: 100, pointsPerSec: 150 } });
+    await reachedDecode();
+
+    expect(decks.deckA.densePointsReady).toBe(10);
+    expect(pointRequests).toBeLessThan(5);
+  });
+});
+
+describe('ejecting returns the deck to empty', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    vi.mocked(listen).mockResolvedValue(() => {});
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  function trackFields(deck: Record<string, unknown>): Record<string, string> {
+    const snapshot: Record<string, string> = {};
+    for (const key of Object.keys(deck)) {
+      const value = deck[key];
+      if (typeof value === 'function') continue;
+      snapshot[key] = JSON.stringify(value) ?? 'undefined';
+    }
+    return snapshot;
+  }
+
+  it('leaves no field of a loaded track behind', async () => {
+    const decks = useDecksStore();
+    const empty = trackFields(decks.deckA);
+
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'load_track') return { duration: 300, sampleRate: 44100 };
+      return {};
+    });
+    await decks.deckA.loadTrack(track);
+    expect(trackFields(decks.deckA)).not.toEqual(empty);
+
+    await decks.deckA.ejectTrack();
+    expect(trackFields(decks.deckA)).toEqual(empty);
   });
 });

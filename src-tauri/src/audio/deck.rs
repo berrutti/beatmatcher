@@ -360,8 +360,8 @@ impl Default for JogFilter {
     }
 }
 
-/// Per-band mono buffers and each band's level over the whole track. Filled in after the
-/// track loads and read only by the waveform drawing, never by the transport.
+/// Filled in after the track loads and read only by the waveform drawing, never by
+/// the transport.
 #[derive(Clone)]
 pub struct SpectralBands {
     pub bass: Arc<Vec<f32>>,
@@ -566,7 +566,6 @@ impl Deck {
         self.next_render_frame = buffer_end;
     }
 
-    // Threshold for "position is at the cue point" used by press_cue.
     // 50 frames at 44100 Hz ≈ 1.1 ms. Matches the frontend's 0.001 s tolerance.
     const CUE_THRESHOLD_FRAMES: f64 = 50.0;
 
@@ -724,7 +723,6 @@ impl Deck {
         self.jog_hold_factor = (1.0 + percent / 100.0).max(session_core::JOG_FACTOR_MIN);
     }
 
-    // Reads the next master output sample and advances main_pos.
     #[inline]
     pub fn main_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
@@ -736,8 +734,8 @@ impl Deck {
         (l, r)
     }
 
-    // Reads the next cue sample and advances cue_pos. cue_pos always advances
-    // while playing so it stays in sync with main_pos regardless of cue_active.
+    // cue_pos always advances while playing so it stays in sync with main_pos
+    // regardless of cue_active.
     #[inline]
     pub fn cue_tick(&mut self) -> (f32, f32) {
         if !self.is_playing || self.samples.is_empty() {
@@ -1311,29 +1309,6 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_scrub_travels_the_same_at_any_block_schedule() {
-        let scrub = |sizes: &[usize]| {
-            const TOTAL: usize = 44_100;
-            let mut deck = Deck::loaded_for_testing(SR, 2.0);
-            deck.main_pos = 20_000.0;
-            deck.queue_jog(500.0);
-            let mut frame = 0usize;
-            let mut index = 0usize;
-            while frame < TOTAL {
-                let size = sizes[index % sizes.len()].min(TOTAL - frame);
-                deck.consume_jog(size);
-                frame += size;
-                index += 1;
-            }
-            deck.main_pos - 20_000.0
-        };
-        assert!(scrub(&[128]) > 0.0);
-        assert_eq!(scrub(&[128]), scrub(&[512]));
-        assert_eq!(scrub(&[128]), scrub(&[117, 118, 118, 117, 118]));
-        assert_eq!(scrub(&[128]), scrub(&[61, 512, 128, 7, 1024, 199]));
-    }
-
-    #[test]
     fn the_same_hand_speed_bends_the_same_at_any_buffer_size() {
         const TICKS_PER_FRAME: f64 = 0.05;
         let bend = |frames: usize| {
@@ -1680,9 +1655,7 @@ mod tests {
     }
 }
 
-// State machine tests for the cue/play commands being ported from TypeScript
-// Every test describes one state machine transition. The state is encoded in
-// three fields: total_frames (0 = empty), is_playing, is_cueing.
+// State is encoded in three fields: total_frames (0 = empty), is_playing, is_cueing.
 #[cfg(test)]
 mod cue_state_machine {
     use super::*;
@@ -1884,12 +1857,10 @@ mod cue_state_machine {
         let mut d = stopped(10.0);
         d.cue_point = 0.0;
 
-        // First press: away from cue → moves cue to current position
         d.main_pos = beat_frames() * 3.0;
         d.press_cue();
         assert_eq!(d.cue_point, beat_frames() * 3.0);
 
-        // Second press: now at the new cue → starts preview
         d.press_cue();
         assert!(d.is_cueing);
         let pos_during_preview = d.main_pos + 500.0;

@@ -11,7 +11,9 @@ export default defineConfig({
     }
   },
   test: {
-    environment: 'happy-dom',
+    // A happy-dom instance per file cost more than every test body put together. The
+    // files that need one declare it with a `// @vitest-environment happy-dom` docblock.
+    environment: 'node',
     setupFiles: ['./vitest.setup.ts']
   }
 });

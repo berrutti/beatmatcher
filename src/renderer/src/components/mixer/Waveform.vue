@@ -28,8 +28,8 @@ import { computeCanvasSize } from '@renderer/utils/canvasResize';
 import { CUE_CHANNELS, drawCueTriangle } from '@renderer/utils/cueMarker';
 import {
   MARKER_OUTLINE_COLOR,
-  MIN_BEAT_SPACING_PX,
-  MIN_BAR_SPACING_PX,
+  MIN_WAVEFORM_BEAT_SPACING_PX,
+  MIN_WAVEFORM_BAR_SPACING_PX,
   STRIP_GRID,
   fillPixelLine,
   drawBeatLine,
@@ -161,7 +161,7 @@ type OffscreenState = {
   bufferStartSec: number;
   lastBuiltMain: number;
   lastBuiltDpr: number;
-  lastBuiltStyle: string;
+  lastBuiltStyle: WaveformStyleOption | null;
 };
 
 const EMPTY_STATE: OffscreenState = {
@@ -173,7 +173,7 @@ const EMPTY_STATE: OffscreenState = {
   bufferStartSec: 0,
   lastBuiltMain: 0,
   lastBuiltDpr: 0,
-  lastBuiltStyle: ''
+  lastBuiltStyle: null
 };
 
 let states: OffscreenState[] = [];
@@ -304,7 +304,6 @@ function drawLoopRegion(
   drawLoopRegionOverlay(ctx, rect, y0, stripH, active);
 }
 
-// A stroke's anti-aliased edge would shimmer as position scrolls. A pixel-aligned fill can't.
 function drawCueMarker(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -319,8 +318,6 @@ function drawCueMarker(
   drawCueTriangle(ctx, x, y0 + stripH, CUE_TRI_W, -CUE_TRI_H, MARKER_OUTLINE_COLOR);
 }
 
-// LOD-stepped so lines stay legibly spaced instead of overlapping into noise
-// at high BPM or when zoomed out.
 function drawBeatGrid(
   ctx: CanvasRenderingContext2D,
   y0: number,
@@ -334,7 +331,12 @@ function drawBeatGrid(
   dpr: number
 ): void {
   const pxPerBeat = (60 / bpm / rate) * (width / (2 * HALF_WINDOW_SEC));
-  const step = beatGridStep(pxPerBeat, BEATS_PER_BAR, MIN_BEAT_SPACING_PX, MIN_BAR_SPACING_PX);
+  const step = beatGridStep(
+    pxPerBeat,
+    BEATS_PER_BAR,
+    MIN_WAVEFORM_BEAT_SPACING_PX,
+    MIN_WAVEFORM_BAR_SPACING_PX
+  );
   const audioHalfWindow = HALF_WINDOW_SEC * rate;
 
   for (const { sec, isDownbeat } of visibleBeats(

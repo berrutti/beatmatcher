@@ -1,3 +1,5 @@
+import { drawMarkerTriangle } from '@renderer/utils/markerTriangle';
+
 // A canvas cannot read --color-cue, so the value lives here once instead of in each drawer.
 const CUE_COLOR = '#eab308';
 export const CUE_CHANNELS = '234, 179, 8';
@@ -13,19 +15,10 @@ export function drawCueTriangle(
   pointHeight: number,
   outline?: string
 ): void {
-  ctx.save();
-  ctx.globalAlpha = CUE_ALPHA;
-  ctx.beginPath();
-  ctx.moveTo(x - halfWidth, baseY);
-  ctx.lineTo(x + halfWidth, baseY);
-  ctx.lineTo(x, baseY + pointHeight);
-  ctx.closePath();
-  ctx.fillStyle = CUE_COLOR;
-  if (outline) {
-    ctx.strokeStyle = outline;
-    ctx.lineWidth = CUE_OUTLINE_WIDTH;
-    ctx.stroke();
-  }
-  ctx.fill();
-  ctx.restore();
+  drawMarkerTriangle(ctx, x, baseY, halfWidth, pointHeight, {
+    fill: CUE_COLOR,
+    outline: outline ?? null,
+    outlineWidth: CUE_OUTLINE_WIDTH,
+    alpha: CUE_ALPHA
+  });
 }

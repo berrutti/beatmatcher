@@ -161,10 +161,8 @@ fn spawn_socket_listener(
     Ok(clients)
 }
 
-// Publishes a per-deck state snapshot to state.json (all platforms) and a Unix
-// domain socket (unix only) on a fixed interval, for an external app (the
-// performer) to phase-sync to. Best-effort: a failure to set up the sinks
-// disables broadcasting rather than aborting startup.
+// Best-effort: a failure to set up the sinks disables broadcasting rather than
+// aborting startup.
 pub fn start(data_dir: PathBuf, audio: Arc<AppAudio>) {
     let sinks = match Sinks::new(data_dir) {
         Ok(sinks) => sinks,
