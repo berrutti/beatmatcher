@@ -322,6 +322,16 @@
     "bodyDirty": "The session has unsaved edits. Quit anyway?",
     "confirm": "Quit"
   },
+  "update": {
+    "title": "Update available",
+    "available": "Beatmatcher {version} is available. Download and install now?",
+    "downloading": "Downloading update... {pct}%",
+    "downloadingNoSize": "Downloading update...",
+    "installing": "Installing...",
+    "install": "Update now",
+    "error": "The update could not be installed. Try again?",
+    "retry": "Retry"
+  },
   "recovery": {
     "title": "Unfinished work recovered",
     "body": "The previous session ended unexpectedly before these files were saved.",

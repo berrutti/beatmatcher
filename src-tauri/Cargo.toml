@@ -30,6 +30,8 @@ tauri = { version = "2.11.0", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 flacenc = "0.5"
 cpal = "0.15"
 midir = "0.10"
