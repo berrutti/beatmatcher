@@ -1,6 +1,6 @@
 {
   "name": "beatmatcher",
-  "version": "8.3.0",
+  "version": "8.4.0",
   "description": "DJ software for live mixing and session editing, played on a keyboard or MIDI controller",
   "author": "berrutti",
   "license": "GPL-3.0-or-later",
