@@ -36,6 +36,7 @@
         :dense-points-ready="deck.densePointsReady"
         :bands-ready="deck.bandsReady"
         :band-balance="deck.bandBalance"
+        :band-reference="deck.bandReference"
         :waveform-style="settings.waveformStyle"
         :get-track-position="() => deck.trackPosition"
         :get-playhead-position="deck.getPlayheadPosition"

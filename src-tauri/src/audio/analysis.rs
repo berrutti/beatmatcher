@@ -236,10 +236,6 @@ pub fn compute_spectral_waveform_region(
         return None;
     }
     let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
-    // One reference for all three bands, so a bin's values keep the loudness ratio between
-    // them. Dividing each band by its own level instead makes every band average 1, which
-    // leaves the three stacked heights the same and the display saying nothing.
-    let reference = band_reference(bands);
     let band_rate = if bands.source_rate > 0 {
         bands.source_rate
     } else {
@@ -300,17 +296,12 @@ pub fn compute_spectral_waveform_region(
         let rms_mid = (sum_mid_sq / count).sqrt();
         let rms_high = (sum_high_sq / count).sqrt();
 
-        // Unclamped: the frontend takes only the ratio between the three. The amplitude
-        // is stored raw so the sqrt curve in the frontend has range left to spread.
-        let r = rms_bass / reference;
-        let g = rms_mid / reference;
-        let b = rms_high / reference;
-        let amp = rms_amp.min(1.0);
-
-        result.push(r);
-        result.push(g);
-        result.push(b);
-        result.push(amp);
+        // Raw and unclamped, the scale the streamed points arrive on: the frontend lifts
+        // both to the track's own level and takes only the ratio between the three.
+        result.push(rms_bass);
+        result.push(rms_mid);
+        result.push(rms_high);
+        result.push(rms_amp.min(1.0));
     }
 
     Some(result)
@@ -903,6 +894,42 @@ mod tests {
         assert!((reference / 0.4 - 1.14564392).abs() < 1e-6);
         assert!((reference / 0.2 - 2.29128785).abs() < 1e-6);
         assert!((reference / 0.1 - 4.58257569).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_region_and_the_streamed_points_carry_the_same_band_levels() {
+        let samples = tone(44100, 2);
+        let dense = points_from(&samples, 2, 512);
+
+        let mut stream = BandStream::new(44100, 2, 44100, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: 44100,
+        };
+
+        let num_points = dense.len() / 4;
+        let region =
+            compute_spectral_waveform_region(&samples, 2, &bands, 44100, 0.0, 1.0, num_points)
+                .expect("a reduced track answers a region");
+
+        for point in 0..num_points {
+            for band in 0..3 {
+                let at = point * 4 + band;
+                assert!(
+                    (region[at] - dense[at]).abs() < 1e-3,
+                    "point {point} band {band}: region {} vs streamed {}",
+                    region[at],
+                    dense[at]
+                );
+            }
+        }
     }
 
     // Bands are reduced from the decoder at the file's own rate, while the deck holds

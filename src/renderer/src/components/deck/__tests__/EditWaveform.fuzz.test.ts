@@ -95,6 +95,7 @@ function mountWaveform() {
       densePointsReady: 0,
       bandsReady: true,
       bandBalance,
+      bandReference: 1,
       waveformStyle,
       getTrackPosition: () => 12,
       getPlayheadPosition: () => 12,

@@ -476,6 +476,29 @@ describe('a decode that fails leaves the deck usable', () => {
 
     expect(decks.deckA.trackName).toBe('');
   });
+
+  it('does not leave the bpm, beat offset or cue of a track it never loaded', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack({
+      ...track,
+      name: 'First',
+      path: '/music/first.mp3',
+      bpm: 100,
+      beatOffset: 0.25
+    });
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'load_track') throw new Error('no such file');
+      return {};
+    });
+    await expect(decks.deckA.loadTrack(track)).rejects.toThrow();
+
+    expect(decks.deckA.trackBpm).toBeNull();
+    expect(decks.deckA.targetBpm).toBeNull();
+    expect(decks.deckA.beatOffset).toBe(0);
+    expect(decks.deckA.cuePoint).toBe(0);
+  });
 });
 
 describe('a deck holding a track with no bpm', () => {
@@ -614,7 +637,7 @@ describe('the waveform arrives while the deck is still loading', () => {
     await reachedDecode();
 
     handlers.get('waveform-progress')?.[0]({
-      payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+      payload: { deck: 'A', loadId: 1, pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
     });
     await reachedDecode();
 
@@ -643,13 +666,18 @@ describe('the waveform arrives while the deck is still loading', () => {
     await reachedDecode();
 
     handlers.get('waveform-progress')?.[0]({
-      payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+      payload: { deck: 'A', loadId: 1, pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
     });
     await reachedDecode();
     expect(decks.deckA.bandsReady).toBe(false);
 
-    handlers.get('bands-ready')?.[0]({ payload: { deck: 'A' } });
+    handlers.get('bands-ready')?.[0]({
+      payload: { deck: 'A', loadId: 1, bandReference: 0.42 }
+    });
     expect(decks.deckA.bandsReady).toBe(true);
+    // The running reference the points gave is replaced by the one the engine measured
+    // over every frame.
+    expect(decks.deckA.bandReference).toBe(0.42);
 
     releaseLoad();
     await loading;
@@ -692,13 +720,140 @@ describe('the point drain under a short answer', () => {
     await decks.deckA.loadTrack(track);
 
     const progress = handlers.get('waveform-progress')?.[0];
-    progress?.({ payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 } });
+    progress?.({
+      payload: { deck: 'A', loadId: 1, pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+    });
     await reachedDecode();
-    progress?.({ payload: { deck: 'A', pointsReady: 50, totalPoints: 100, pointsPerSec: 150 } });
+    progress?.({
+      payload: { deck: 'A', loadId: 1, pointsReady: 50, totalPoints: 100, pointsPerSec: 150 }
+    });
     await reachedDecode();
 
     expect(decks.deckA.densePointsReady).toBe(10);
     expect(pointRequests).toBeLessThan(5);
+  });
+});
+
+describe('a second load lands while the first is still being analysed', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const first: LoadableTrack = {
+    path: '/music/first.mp3',
+    name: 'First',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0,
+    onBeatOffsetChange: () => {}
+  };
+  const second: LoadableTrack = { ...first, path: '/music/second.mp3', name: 'Second' };
+
+  it('drops the points and the bands the first load is still emitting', async () => {
+    const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      const forEvent = handlers.get(event) ?? [];
+      forEvent.push(handler as (event: { payload: unknown }) => void);
+      handlers.set(event, forEvent);
+      return () => {};
+    });
+    vi.mocked(invoke).mockResolvedValue({});
+
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(first);
+    await decks.deckA.loadTrack(second);
+
+    // The first load's listeners are gone, so what it emits now reaches the second's.
+    const progress = handlers.get('waveform-progress')?.at(-1);
+    const bands = handlers.get('bands-ready')?.at(-1);
+    progress?.({
+      payload: { deck: 'A', loadId: 1, pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+    });
+    bands?.({ payload: { deck: 'A', loadId: 1, bandReference: 0.42 } });
+    await reachedDecode();
+
+    expect(decks.deckA.denseSpectralData).toBeNull();
+    expect(decks.deckA.bandsReady).toBe(false);
+
+    progress?.({
+      payload: { deck: 'A', loadId: 2, pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+    });
+    bands?.({ payload: { deck: 'A', loadId: 2, bandReference: 0.42 } });
+    await reachedDecode();
+
+    expect(decks.deckA.denseSpectralData?.length).toBe(400);
+    expect(decks.deckA.bandsReady).toBe(true);
+  });
+
+  it('tells the backend which load the points it asks for belong to', async () => {
+    vi.mocked(listen).mockResolvedValue(() => {});
+    vi.mocked(invoke).mockResolvedValue({});
+
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(first);
+    await decks.deckA.loadTrack(second);
+
+    expect(invoke).toHaveBeenCalledWith(
+      'load_track',
+      expect.objectContaining({ path: '/music/second.mp3', loadId: 2 })
+    );
+  });
+});
+
+describe('the point drain when points land mid-fetch', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const track: LoadableTrack = {
+    path: '/music/next.mp3',
+    name: 'Next Track',
+    bpm: 128,
+    silenceEnd: 0,
+    beatOffset: 0.5,
+    onBeatOffsetChange: () => {}
+  };
+
+  it('fetches the points the last event announced while a fetch was in flight', async () => {
+    const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      const forEvent = handlers.get(event) ?? [];
+      forEvent.push(handler as (event: { payload: unknown }) => void);
+      handlers.set(event, forEvent);
+      return () => {};
+    });
+
+    let pointRequests = 0;
+    let releaseFirstAnswer = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'get_dense_points') return {};
+      pointRequests++;
+      if (pointRequests === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstAnswer = resolve;
+        });
+      }
+      return new Float32Array(40).buffer;
+    });
+
+    const decks = useDecksStore();
+    await decks.deckA.loadTrack(track);
+
+    const progress = handlers.get('waveform-progress')?.[0];
+    progress?.({
+      payload: { deck: 'A', loadId: 1, pointsReady: 10, totalPoints: 20, pointsPerSec: 150 }
+    });
+    await reachedDecode();
+    progress?.({
+      payload: { deck: 'A', loadId: 1, pointsReady: 20, totalPoints: 20, pointsPerSec: 150 }
+    });
+    releaseFirstAnswer();
+    await reachedDecode();
+
+    expect(decks.deckA.densePointsReady).toBe(20);
+    expect(pointRequests).toBe(2);
   });
 });
 

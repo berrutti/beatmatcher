@@ -11,14 +11,24 @@ export function addBandSquares(into: BandSquares, points: Float32Array, count: n
   }
 }
 
-// Each band lifted to the track's own level, which is the three levels in quadrature. The
-// same rule Rust scales the emitted values by, so the two agree on what neutral means.
+function bandLevels([bassSquares, midSquares, highSquares]: BandSquares, count: number) {
+  const level = (sum: number) => Math.sqrt(sum / count);
+  return { bass: level(bassSquares), mid: level(midSquares), high: level(highSquares) };
+}
+
+export function bandReferenceOf(squares: BandSquares, count: number): number {
+  if (count <= 0) return 1;
+  const { bass, mid, high } = bandLevels(squares, count);
+  const reference = Math.sqrt(bass * bass + mid * mid + high * high);
+  return reference > 0 ? reference : 1;
+}
+
 export function bandBalanceOf(squares: BandSquares, count: number): BandSquares {
   if (count <= 0) return [...FLAT_BALANCE];
-  const levels = squares.map((sum) => Math.sqrt(sum / count));
-  const reference = Math.sqrt(levels.reduce((total, level) => total + level * level, 0));
-  const balance = levels.map((level) => (level > 0 ? reference / level : 1));
-  return [balance[0], balance[1], balance[2]];
+  const reference = bandReferenceOf(squares, count);
+  const { bass, mid, high } = bandLevels(squares, count);
+  const lift = (level: number) => (level > 0 ? reference / level : 1);
+  return [lift(bass), lift(mid), lift(high)];
 }
 
 // A chunk destined for a buffer sized by a previous, shorter track would write past its

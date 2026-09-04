@@ -221,7 +221,7 @@ impl LinearResampler {
 
         // Compacted once per packet: draining inside the loop moves the whole remaining
         // window on almost every output frame, which cost more than the resample.
-        let next_lo = (self.out_frame as f64 * self.ratio) as usize;
+        let next_lo = ((self.out_frame as f64 * self.ratio) as usize).min(available);
         if next_lo > self.consumed {
             let drop_frames = next_lo - self.consumed;
             self.window.drain(..drop_frames * self.channels);
@@ -504,6 +504,8 @@ mod tests {
             (48000, 44100),
             (44100, 44100),
             (22050, 48000),
+            (96000, 44100),
+            (192000, 48000),
         ] {
             let input = ramp(5000, 2);
             let expected = resample_linear(&input, 2, in_rate, out_rate);

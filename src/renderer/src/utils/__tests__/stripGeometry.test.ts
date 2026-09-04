@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { stripColumnRate, stripScaleX, snappedToDevicePixel, stripX } from '../stripGeometry';
+import {
+  stripColumnRate,
+  stripScaleX,
+  snappedToDevicePixel,
+  stripX,
+  stripBitmapIsStale,
+  type StripBuild,
+  type StripFrame
+} from '../stripGeometry';
 
 const HALF_WINDOW_SEC = 5;
 
@@ -62,5 +70,58 @@ describe('stripX', () => {
 
   it('fits fewer audio seconds when the deck is pitched up', () => {
     expect(stripX(690, HALF_WINDOW_SEC, 30, 2, 35)).toBe(517.5);
+  });
+});
+
+describe('stripBitmapIsStale', () => {
+  const points = new Float32Array(150 * 60 * 4);
+
+  const built: StripBuild = {
+    builtFrom: points,
+    builtPointsReady: 1500,
+    displayRate: 138,
+    numSteps: 138 * 40,
+    bufferStartSec: 10,
+    lastBuiltMain: 690,
+    lastBuiltDpr: 2,
+    lastBuiltStyle: 'threeBand',
+    builtBandReference: 0.3
+  };
+
+  const frame: StripFrame = {
+    data: points,
+    pointsReady: 1500,
+    position: 30,
+    cssWidth: 690,
+    dpr: 2,
+    style: 'threeBand',
+    bandReference: 0.3,
+    edgeGuardSec: HALF_WINDOW_SEC + 5
+  };
+
+  it('keeps the bitmap when nothing has moved', () => {
+    expect(stripBitmapIsStale(built, frame)).toBe(false);
+  });
+
+  it('rebuilds when points landed in the buffer it was built from', () => {
+    expect(stripBitmapIsStale(built, { ...frame, pointsReady: 2400 })).toBe(true);
+  });
+
+  it('rebuilds when the track reference settles on the one the bands measured', () => {
+    expect(stripBitmapIsStale(built, { ...frame, bandReference: 0.31 })).toBe(true);
+  });
+
+  it('rebuilds on a new track, a resize, a device pixel ratio change and a new style', () => {
+    expect(stripBitmapIsStale(built, { ...frame, data: new Float32Array(4) })).toBe(true);
+    expect(stripBitmapIsStale(built, { ...frame, cssWidth: 700 })).toBe(true);
+    expect(stripBitmapIsStale(built, { ...frame, dpr: 1 })).toBe(true);
+    expect(stripBitmapIsStale(built, { ...frame, style: 'blended' })).toBe(true);
+  });
+
+  it('rebuilds once the playhead comes within the guard of either buffer edge', () => {
+    expect(stripBitmapIsStale(built, { ...frame, position: 19 })).toBe(true);
+    expect(stripBitmapIsStale(built, { ...frame, position: 41 })).toBe(true);
+    expect(stripBitmapIsStale(built, { ...frame, position: 21 })).toBe(false);
+    expect(stripBitmapIsStale(built, { ...frame, position: 39 })).toBe(false);
   });
 });

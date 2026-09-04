@@ -33,6 +33,7 @@ const props = defineProps<{
   loopActive: boolean;
   cuePoint: number;
   bandBalance: [number, number, number];
+  bandReference: number;
   waveformStyle: WaveformStyleOption;
 }>();
 
@@ -51,6 +52,7 @@ let waveImgForCw = 0;
 let waveImgForCh = 0;
 let waveImgForStyle: WaveformStyleOption | null = null;
 let waveImgForReady = -1;
+let waveImgForReference = -1;
 let playheadTop = 0;
 
 function overviewPaint(): WaveformPaint {
@@ -104,10 +106,11 @@ function draw() {
     waveImgForCw !== cw ||
     waveImgForCh !== ch ||
     waveImgForStyle !== props.waveformStyle ||
-    waveImgForReady !== props.densePointsReady
+    waveImgForReady !== props.densePointsReady ||
+    waveImgForReference !== props.bandReference
   ) {
     const style = overviewPaint();
-    const columns = waveformColumns(peaks, cw);
+    const columns = waveformColumns(peaks, cw, 0, (peaks.length / 4) | 0, props.bandReference);
     waveImgData = waveformImageData(cw, ch, columns, style);
     playheadTop = maxBarTop(columns, ch, style);
     waveImgForPeaks = peaks;
@@ -115,6 +118,7 @@ function draw() {
     waveImgForCh = ch;
     waveImgForStyle = props.waveformStyle;
     waveImgForReady = props.densePointsReady;
+    waveImgForReference = props.bandReference;
   }
   if (!waveImgData) return;
   ctx.clearRect(0, 0, w, h);

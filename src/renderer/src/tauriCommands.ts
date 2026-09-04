@@ -27,7 +27,7 @@ type Commands = {
   list_midi_devices: { args: Record<string, never>; returns: unknown[] };
   list_recoverable: { args: Record<string, never>; returns: unknown[] };
   load_track: {
-    args: { deck: string; path: string; analyze: boolean; beatOffsetSec: number };
+    args: { deck: string; path: string; analyze: boolean; beatOffsetSec: number; loadId: number };
     returns: unknown;
   };
   open_session_dialog: { args: Record<string, never>; returns: unknown | null };

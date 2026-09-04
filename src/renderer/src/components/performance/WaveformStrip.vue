@@ -39,6 +39,8 @@ const sources = computed(() =>
       getRate: () => deck.rate,
       getDenseData: () => deck.denseSpectralData,
       getDenseRate: () => deck.denseSpectralRate,
+      getDensePointsReady: () => deck.densePointsReady,
+      getBandReference: () => deck.bandReference,
       isWaveformLoading: () => deck.waveformLoading,
       getLoopRegion: () => deck.loopRegion,
       getLoopActive: () => deck.loopActive,

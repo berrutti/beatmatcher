@@ -93,6 +93,7 @@ const props = defineProps<{
   densePointsReady: number;
   bandsReady: boolean;
   bandBalance: [number, number, number];
+  bandReference: number;
   waveformStyle: WaveformStyleOption;
   getTrackPosition: () => number | null;
   getPlayheadPosition: () => number;
@@ -178,6 +179,7 @@ let cache: PeaksCache | null = null;
 let waveImgBitmap: ImageBitmap | null = null;
 let bitmapForStyle: WaveformStyleOption | null = null;
 let builtBalance: BandSquares | null = null;
+let builtReference = -1;
 let builtBitmap: BuiltBitmap | null = null;
 let bitmapBuildInFlight = false;
 
@@ -291,7 +293,7 @@ async function renderBitmap(
   try {
     const totalPoints = (peaks.length / 4) | 0;
     const { startIndex, endIndex } = bitmapPointRange(builtFrom, range, totalPoints);
-    const columns = waveformColumns(peaks, range.width, startIndex, endIndex);
+    const columns = waveformColumns(peaks, range.width, startIndex, endIndex, props.bandReference);
     const style = props.waveformStyle;
     const balance: BandSquares = [...props.bandBalance];
     const imgData = waveformImageData(range.width, canvasH, columns, editPaint(style, balance));
@@ -300,6 +302,7 @@ async function renderBitmap(
       waveImgBitmap = bmp;
       bitmapForStyle = style;
       builtBalance = balance;
+      builtReference = props.bandReference;
       builtBitmap = {
         startSec: range.startSec,
         endSec: range.endSec,
@@ -319,7 +322,8 @@ function ensureBitmap(canvasH: number) {
   const samePaint =
     bitmapForStyle === props.waveformStyle &&
     builtBalance !== null &&
-    sameBandBalance(builtBalance, props.bandBalance);
+    sameBandBalance(builtBalance, props.bandBalance) &&
+    builtReference === props.bandReference;
   if (
     samePaint &&
     !bitmapIsStale(builtBitmap, cache, viewStartSec, viewEndSec, canvasH, MAX_BITMAP_PX)

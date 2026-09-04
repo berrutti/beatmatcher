@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import {
   addBandSquares,
   bandBalanceOf,
+  bandReferenceOf,
   densePointsFit,
   type BandSquares
 } from '@renderer/utils/bandBalance';
@@ -44,10 +45,11 @@ export type LoadableTrack = {
   onBeatOffsetChange: (sec: number) => void;
 };
 
-type BandsReady = { deck: string };
+type BandsReady = { deck: string; loadId: number; bandReference: number };
 
 type WaveformProgress = {
   deck: string;
+  loadId: number;
   pointsReady: number;
   totalPoints: number;
   pointsPerSec: number;
@@ -87,6 +89,9 @@ type DeckTrackState = {
   // What lifts each band to the track's own level, for a drawer that wants a band read
   // against its own average rather than against the other two.
   bandBalance: [number, number, number];
+  // The track's own band level, which both point sources are read against. Running while
+  // the reduction streams, then the exact one the engine reports with its bands.
+  bandReference: number;
   densePointsReady: number;
   // The edit view re-asks for a region on this, since the last points land just before the
   // bands they were reduced from are stored.
@@ -116,6 +121,7 @@ function emptyDeck(): DeckTrackState {
     denseSpectralData: null,
     denseSpectralRate: 0,
     bandBalance: [1, 1, 1],
+    bandReference: 1,
     densePointsReady: 0,
     bandsReady: false,
     coverArt: null,
@@ -143,21 +149,23 @@ function createDeck(id: DeckId, accent: string, name: string) {
   let pitchGeneration = 0;
 
   let pointsFetched = 0;
+  let pointsAnnounced = 0;
   let fetchingPoints = false;
   let bandSquares: BandSquares = [0, 0, 0];
 
   // One request per progress event would queue behind itself on a fast analysis; this
   // asks for everything that has arrived since the last answer instead.
   async function drainPoints(generation: number, ready: number): Promise<void> {
-    if (fetchingPoints || ready <= pointsFetched) return;
+    if (ready > pointsAnnounced) pointsAnnounced = ready;
+    if (fetchingPoints || pointsAnnounced <= pointsFetched) return;
     fetchingPoints = true;
     try {
-      while (loadGeneration === generation && ready > pointsFetched) {
+      while (loadGeneration === generation && pointsAnnounced > pointsFetched) {
         const from = pointsFetched;
         const buffer = await call('get_dense_points', {
           deck: id,
           fromPoint: from,
-          toPoint: ready
+          toPoint: pointsAnnounced
         });
         if (loadGeneration !== generation) return;
         const points = new Float32Array(buffer);
@@ -170,6 +178,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
         addBandSquares(bandSquares, points, arrived);
         pointsFetched = from + arrived;
         state.bandBalance = bandBalanceOf(bandSquares, pointsFetched);
+        state.bandReference = bandReferenceOf(bandSquares, pointsFetched);
         state.densePointsReady = pointsFetched;
         // get_dense_points clamps to what the deck holds, so a short answer is possible
         // and would otherwise re-ask for the same range forever.
@@ -351,10 +360,13 @@ function createDeck(id: DeckId, accent: string, name: string) {
       // afterwards misses every point.
       const gen = loadGeneration;
       pointsFetched = 0;
+      pointsAnnounced = 0;
       bandSquares = [0, 0, 0];
 
       const progressUnlisten = await listen<WaveformProgress>('waveform-progress', (event) => {
-        if (event.payload.deck !== id || loadGeneration !== gen) return;
+        // The load this listener was registered for, not the deck: a superseded load's
+        // listeners are already gone, so its late events arrive at this one.
+        if (event.payload.deck !== id || event.payload.loadId !== gen) return;
         if (!state.denseSpectralData) {
           state.denseSpectralData = new Float32Array(event.payload.totalPoints * 4);
           state.denseSpectralRate = event.payload.pointsPerSec;
@@ -366,8 +378,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
       });
 
       const unlisten = await listen<BandsReady>('bands-ready', (event) => {
-        if (event.payload.deck !== id) return;
+        if (event.payload.deck !== id || event.payload.loadId !== gen) return;
         state.waveformLoading = false;
+        state.bandReference = event.payload.bandReference;
         state.bandsReady = true;
         bandsReadyUnlisten = null;
         setTimeout(unlisten, 0);
@@ -384,7 +397,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
           deck: id,
           path: data.path,
           analyze: false,
-          beatOffsetSec: data.beatOffset
+          beatOffsetSec: data.beatOffset,
+          loadId: gen
         });
       } catch (error) {
         // A deck left mid-load refuses every command for the rest of the session,
@@ -392,6 +406,10 @@ function createDeck(id: DeckId, accent: string, name: string) {
         state.loading = false;
         state.waveformLoading = false;
         state.trackName = '';
+        state.trackBpm = null;
+        state.targetBpm = null;
+        state.beatOffset = 0;
+        state.cuePoint = 0;
         bandsReadyUnlisten?.();
         bandsReadyUnlisten = null;
         throw error;

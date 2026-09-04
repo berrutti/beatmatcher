@@ -64,7 +64,8 @@ export function waveformColumns(
   peaks: Float32Array,
   columnCount: number,
   fromPoint = 0,
-  toPoint = (peaks.length / 4) | 0
+  toPoint = (peaks.length / 4) | 0,
+  bandReference = 1
 ): WaveformColumn[] {
   const columns: WaveformColumn[] = [];
   const pointCount = Math.max(0, toPoint - fromPoint);
@@ -91,10 +92,11 @@ export function waveformColumns(
       count++;
     }
 
+    const lift = sumAmp > 0 ? 1 / (sumAmp * bandReference) : 0;
     columns.push({
-      bass: sumAmp > 0 ? sumBass / sumAmp : 0,
-      mid: sumAmp > 0 ? sumMid / sumAmp : 0,
-      high: sumAmp > 0 ? sumHigh / sumAmp : 0,
+      bass: sumBass * lift,
+      mid: sumMid * lift,
+      high: sumHigh * lift,
       amp: count > 0 ? sumAmp / count : 0
     });
   }

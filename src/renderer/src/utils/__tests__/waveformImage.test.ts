@@ -127,6 +127,21 @@ describe('waveformColumns', () => {
     expect(waveformColumns(new Float32Array(40), 0)).toEqual([]);
     expect(waveformColumns(new Float32Array(40), 4, 3, 3)).toEqual([]);
   });
+
+  it('lifts the bands to the track reference, which is where a level of 1 sits', () => {
+    const peaks = new Float32Array([0.4, 0.2, 0.1, 1.0]);
+    const [column] = waveformColumns(peaks, 1, 0, 1, 0.4);
+
+    expect(column.bass).toBeCloseTo(1, 6);
+    expect(column.mid).toBeCloseTo(0.5, 6);
+    expect(column.high).toBeCloseTo(0.25, 6);
+    expect(column.amp).toBe(1);
+  });
+
+  it('leaves the bands raw when no reference is given', () => {
+    const peaks = new Float32Array([0.4, 0.2, 0.1, 1.0]);
+    expect(waveformColumns(peaks, 1)[0].bass).toBeCloseTo(0.4, 6);
+  });
 });
 
 describe('waveformImageData', () => {

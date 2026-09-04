@@ -16,6 +16,7 @@ const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(
 #[serde(rename_all = "camelCase")]
 struct WaveformProgress {
     deck: String,
+    load_id: u64,
     points_ready: usize,
     total_points: usize,
     points_per_sec: f64,
@@ -25,6 +26,8 @@ struct WaveformProgress {
 #[serde(rename_all = "camelCase")]
 struct BandsReady {
     deck: String,
+    load_id: u64,
+    band_reference: f32,
 }
 
 /// Where the crossfader was when recording started. Thru is skipped because every reader
@@ -540,12 +543,16 @@ fn point_sink(
     app: tauri::AppHandle,
     deck: String,
     deck_arc: Arc<std::sync::Mutex<audio::Deck>>,
+    load_id: u64,
 ) -> impl FnMut(&[f32], usize) {
     let mut last_emit = std::time::Instant::now();
     move |points: &[f32], total: usize| {
         let ready = {
             let mut deck_state = deck_arc.locked();
-            deck_state.push_dense_points(points);
+            if !deck_state.holds_load(load_id) {
+                return;
+            }
+            deck_state.push_dense_points(load_id, points);
             deck_state.dense_points.len() / 4
         };
         if ready == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
@@ -554,6 +561,7 @@ fn point_sink(
                 "waveform-progress",
                 WaveformProgress {
                     deck: deck.clone(),
+                    load_id,
                     points_ready: ready,
                     total_points: total,
                     points_per_sec: audio::DENSE_POINTS_PER_SEC,
@@ -572,8 +580,10 @@ pub(crate) async fn load_track(
     path: String,
     analyze: bool,
     beat_offset_sec: f64,
+    load_id: u64,
 ) -> Result<TrackInfo, String> {
     let deck_arc = engine.deck(&deck)?;
+    deck_arc.locked().begin_load(load_id);
     let device_sample_rate = engine.audio.device_sample_rate;
     let bpm_min = engine
         .audio
@@ -610,8 +620,13 @@ pub(crate) async fn load_track(
                 audio::reduce_packets(
                     packets_for_reducer,
                     POINTS_PER_CHUNK,
-                    |total| stream_deck.locked().reset_dense_points(total),
-                    point_sink(stream_app, stream_deck_id, Arc::clone(&stream_deck)),
+                    |total| stream_deck.locked().reset_dense_points(load_id, total),
+                    point_sink(
+                        stream_app,
+                        stream_deck_id,
+                        Arc::clone(&stream_deck),
+                        load_id,
+                    ),
                 )
             });
 
@@ -716,7 +731,12 @@ pub(crate) async fn load_track(
         let progress_app = app.clone();
         let progress_arc = Arc::clone(&deck_arc);
         let (band_rate, streamed) = tokio::task::spawn_blocking(move || {
-            let mut on_points = point_sink(progress_app, progress_deck, Arc::clone(&progress_arc));
+            let mut on_points = point_sink(
+                progress_app,
+                progress_deck,
+                Arc::clone(&progress_arc),
+                load_id,
+            );
             // Already reduced alongside the decode unless the container hid its length.
             match reducer.join().unwrap_or(None) {
                 Some(bands) => (native_sr, bands),
@@ -729,7 +749,7 @@ pub(crate) async fn load_track(
                     );
                     {
                         let mut deck_state = progress_arc.locked();
-                        deck_state.reset_dense_points(stream.total_points());
+                        deck_state.reset_dense_points(load_id, stream.total_points());
                     }
                     stream.push(&samples, &mut on_points);
                     (device_sample_rate, stream.finish(&mut on_points))
@@ -753,12 +773,25 @@ pub(crate) async fn load_track(
             at_bands.elapsed().as_millis()
         );
 
-        {
+        let band_reference = audio::band_reference(&bands);
+        let still_loaded = {
             let mut deck_state = deck_arc.locked();
-            deck_state.set_bands(bands);
+            deck_state.set_bands(load_id, bands);
+            deck_state.holds_load(load_id)
+        };
+        if !still_loaded {
+            return;
         }
 
-        app.emit("bands-ready", BandsReady { deck: deck_id }).ok();
+        app.emit(
+            "bands-ready",
+            BandsReady {
+                deck: deck_id,
+                load_id,
+                band_reference,
+            },
+        )
+        .ok();
     });
 
     engine.recorder.log_at(

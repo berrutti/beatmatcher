@@ -9,8 +9,8 @@ mod stream;
 mod unit;
 
 pub use analysis::{
-    compute_amplitude_region, compute_spectral_waveform_region, detect_bpm, detect_silence_end,
-    reduce_packets, BandStream, StreamedBands, DENSE_POINTS_PER_SEC,
+    band_reference, compute_amplitude_region, compute_spectral_waveform_region, detect_bpm,
+    detect_silence_end, reduce_packets, BandStream, StreamedBands, DENSE_POINTS_PER_SEC,
 };
 pub(crate) use deck::DeckRestore;
 #[cfg(test)]

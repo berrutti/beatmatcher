@@ -24,6 +24,7 @@ function mountWaveform(trackData: TrackData | null, densePoints: number | null) 
       densePointsReady: 0,
       bandsReady: false,
       bandBalance: [1, 1, 1] as [number, number, number],
+      bandReference: 1,
       waveformStyle: 'blended' as WaveformStyleOption,
       getTrackPosition: () => 0,
       getPlayheadPosition: () => 0,

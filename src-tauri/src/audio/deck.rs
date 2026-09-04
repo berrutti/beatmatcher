@@ -435,6 +435,7 @@ pub struct Deck {
     pub(crate) bands: SpectralBands,
     /// Grows while the track is being analysed, so a drawer can paint what has arrived.
     pub(crate) dense_points: Vec<f32>,
+    load_id: u64,
 
     // Set to true by the audio thread when the track reaches its natural end.
     // The monitoring task in lib.rs polls this and emits a "track-ended" event.
@@ -469,6 +470,7 @@ impl Deck {
             quantize: true,
             bands: SpectralBands::default(),
             dense_points: Vec::new(),
+            load_id: 0,
             just_ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -521,15 +523,38 @@ impl Deck {
         self.cue_pos = frames;
     }
 
-    pub(crate) fn set_bands(&mut self, bands: SpectralBands) {
+    // Only these two write it: a load that lands after a newer one started must leave the
+    // newer one's reduction alone, and `load` runs through `reset`.
+    pub(crate) fn begin_load(&mut self, load_id: u64) {
+        self.load_id = load_id;
+    }
+
+    pub(crate) fn end_load(&mut self) {
+        self.load_id = 0;
+    }
+
+    pub(crate) fn holds_load(&self, load_id: u64) -> bool {
+        self.load_id == load_id
+    }
+
+    pub(crate) fn set_bands(&mut self, load_id: u64, bands: SpectralBands) {
+        if !self.holds_load(load_id) {
+            return;
+        }
         self.bands = bands;
     }
 
-    pub(crate) fn reset_dense_points(&mut self, total_points: usize) {
+    pub(crate) fn reset_dense_points(&mut self, load_id: u64, total_points: usize) {
+        if !self.holds_load(load_id) {
+            return;
+        }
         self.dense_points = Vec::with_capacity(total_points * 4);
     }
 
-    pub(crate) fn push_dense_points(&mut self, points: &[f32]) {
+    pub(crate) fn push_dense_points(&mut self, load_id: u64, points: &[f32]) {
+        if !self.holds_load(load_id) {
+            return;
+        }
         self.dense_points.extend_from_slice(points);
     }
 
@@ -2200,5 +2225,66 @@ mod silence_early_out {
             "a skipped block wrote into the mix buffer"
         );
         assert_eq!(level, (0.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod load_id_tests {
+    use super::*;
+
+    const SR: u32 = 44100;
+
+    fn bands_of(frames: usize) -> SpectralBands {
+        SpectralBands {
+            bass: Arc::new(vec![0.5; frames]),
+            ..SpectralBands::default()
+        }
+    }
+
+    #[test]
+    fn points_and_bands_from_a_superseded_load_are_dropped() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.reset_dense_points(1, 1);
+        deck.push_dense_points(1, &[0.1, 0.2, 0.3, 0.4]);
+
+        deck.begin_load(2);
+        deck.push_dense_points(1, &[0.9, 0.9, 0.9, 0.9]);
+        deck.reset_dense_points(1, 500);
+        deck.set_bands(1, bands_of(8));
+
+        assert_eq!(deck.dense_points, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(deck.bands.frames(), 0);
+
+        deck.reset_dense_points(2, 1);
+        deck.push_dense_points(2, &[0.5, 0.5, 0.5, 0.5]);
+        deck.set_bands(2, bands_of(8));
+        assert_eq!(deck.dense_points, [0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(deck.bands.frames(), 8);
+    }
+
+    #[test]
+    fn a_deck_takes_no_more_points_once_its_load_ends() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.reset_dense_points(1, 1);
+
+        deck.end_load();
+        deck.push_dense_points(1, &[0.9, 0.9, 0.9, 0.9]);
+
+        assert!(deck.dense_points.is_empty());
+    }
+
+    #[test]
+    fn a_load_landing_late_leaves_a_newer_reduction_running() {
+        let mut deck = Deck::empty(SR);
+        deck.begin_load(1);
+        deck.begin_load(2);
+
+        deck.load("/first.mp3", Arc::new(vec![0.0; 8]), 2, SR);
+
+        deck.reset_dense_points(2, 1);
+        deck.push_dense_points(2, &[0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(deck.dense_points, [0.5, 0.5, 0.5, 0.5]);
     }
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   addBandSquares,
   bandBalanceOf,
+  bandReferenceOf,
   densePointsFit,
   type BandSquares,
   sameBandBalance
@@ -79,6 +80,36 @@ describe('the reference matches the Rust band_reference fixture', () => {
     expect(balance[0]).toBeCloseTo(1.14564392, 6);
     expect(balance[1]).toBeCloseTo(2.29128785, 6);
     expect(balance[2]).toBeCloseTo(4.58257569, 6);
+  });
+
+  it('reads 0.4, 0.2 and 0.1 as the same reference Rust computes', () => {
+    expect(bandReferenceOf([0.16, 0.04, 0.01], 1)).toBeCloseTo(0.45825757, 6);
+  });
+});
+
+describe('bandReferenceOf', () => {
+  it('is one before any point has arrived', () => {
+    expect(bandReferenceOf([0, 0, 0], 0)).toBe(1);
+  });
+
+  it('is one for a silent track rather than zero', () => {
+    expect(bandReferenceOf([0, 0, 0], 10)).toBe(1);
+  });
+
+  it('settles on the same value whether the points arrive at once or in chunks', () => {
+    const bands: [number, number, number][] = [
+      [0.9, 0.4, 0.15],
+      [0.2, 0.5, 0.3],
+      [1.4, 0.3, 0.1],
+      [0.05, 0.1, 0.6]
+    ];
+    const whole: BandSquares = [0, 0, 0];
+    addBandSquares(whole, pointsOf(bands), bands.length);
+
+    const streamed: BandSquares = [0, 0, 0];
+    for (const band of bands) addBandSquares(streamed, pointsOf([band]), 1);
+
+    expect(bandReferenceOf(streamed, bands.length)).toBe(bandReferenceOf(whole, bands.length));
   });
 });
 

@@ -40,7 +40,8 @@ import {
   stripColumnRate,
   stripScaleX,
   snappedToDevicePixel,
-  stripX
+  stripX,
+  stripBitmapIsStale
 } from '@renderer/utils/stripGeometry';
 import { waveformPalette } from '@renderer/utils/waveformPalettes';
 import { STRIP_SCALES } from '@renderer/utils/waveformPaints';
@@ -53,6 +54,8 @@ type WaveformStripsSource = {
   getRate: () => number;
   getDenseData: () => Float32Array | null;
   getDenseRate: () => number;
+  getDensePointsReady: () => number;
+  getBandReference: () => number;
   isWaveformLoading: () => boolean;
   getLoopRegion: () => { startSec: number; endSec: number } | null;
   getLoopActive: () => boolean;
@@ -154,6 +157,7 @@ const STEPS_PER_CHUNK = 500;
 type OffscreenState = {
   canvas: HTMLCanvasElement | null;
   builtFrom: Float32Array | null;
+  builtPointsReady: number;
   denseRate: number;
   displayRate: number;
   numSteps: number;
@@ -161,18 +165,21 @@ type OffscreenState = {
   lastBuiltMain: number;
   lastBuiltDpr: number;
   lastBuiltStyle: WaveformStyleOption | null;
+  builtBandReference: number;
 };
 
 const EMPTY_STATE: OffscreenState = {
   canvas: null,
   builtFrom: null,
+  builtPointsReady: 0,
   denseRate: 0,
   displayRate: 0,
   numSteps: 0,
   bufferStartSec: 0,
   lastBuiltMain: 0,
   lastBuiltDpr: 0,
-  lastBuiltStyle: null
+  lastBuiltStyle: null,
+  builtBandReference: 0
 };
 
 let states: OffscreenState[] = [];
@@ -195,6 +202,8 @@ async function offscreenWindow(
   const src = props.sources[i];
   const data = src.getDenseData();
   if (!data) return { ...EMPTY_STATE };
+  const pointsReady = src.getDensePointsReady();
+  const bandReference = src.getBandReference();
 
   const denseRate = src.getDenseRate();
   const totalPoints = Math.floor(data.length / 4);
@@ -217,7 +226,7 @@ async function offscreenWindow(
   if (!ctx) return null;
 
   const style = stripPaint(src.getBandBalance());
-  const columns = waveformColumns(data, numSteps, startPoint, endPoint);
+  const columns = waveformColumns(data, numSteps, startPoint, endPoint, bandReference);
   const imageData = ctx.createImageData(numSteps, OFFSCREEN_CROSS);
 
   // Chunked because painting 15,000 columns of 256 rows in one go drops frames.
@@ -239,13 +248,15 @@ async function offscreenWindow(
   return {
     canvas,
     builtFrom: data,
+    builtPointsReady: pointsReady,
     denseRate,
     displayRate,
     numSteps,
     bufferStartSec,
     lastBuiltMain: mainSize,
     lastBuiltDpr: dpr,
-    lastBuiltStyle: props.waveformStyle
+    lastBuiltStyle: props.waveformStyle,
+    builtBandReference: bandReference
   };
 }
 
@@ -426,15 +437,16 @@ function draw() {
     const y0 = i * stripH;
 
     const pos = src.getPosition();
-    const bufferEndSec = state.bufferStartSec + state.numSteps / (state.displayRate || 1);
-    const edgeGuard = HALF_WINDOW_SEC + 5;
-    const needsRebuild =
-      state.builtFrom !== src.getDenseData() ||
-      state.lastBuiltMain !== w ||
-      state.lastBuiltDpr !== dpr ||
-      state.lastBuiltStyle !== props.waveformStyle ||
-      pos < state.bufferStartSec + edgeGuard ||
-      pos > bufferEndSec - edgeGuard;
+    const needsRebuild = stripBitmapIsStale(state, {
+      data: src.getDenseData(),
+      pointsReady: src.getDensePointsReady(),
+      position: pos,
+      cssWidth: w,
+      dpr,
+      style: props.waveformStyle,
+      bandReference: src.getBandReference(),
+      edgeGuardSec: HALF_WINDOW_SEC + 5
+    });
 
     if (needsRebuild && !building[i]) refreshOffscreen(i, pos, w, dpr).catch(() => {});
     if (!state.canvas) {
