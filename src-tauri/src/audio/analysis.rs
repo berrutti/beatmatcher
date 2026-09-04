@@ -211,10 +211,14 @@ pub fn compute_spectral_waveform_region(
     if bass.is_empty() || num_points == 0 {
         return vec![0.0; num_points * 4];
     }
+    let band_rate = if bands.source_rate > 0 {
+        bands.source_rate
+    } else {
+        sample_rate
+    } as f64;
     let total_frames = bass.len();
-    let sr = sample_rate as f64;
-    let start_frame = (start_sec * sr).max(0.0) as usize;
-    let end_frame = ((end_sec * sr) as usize).min(total_frames);
+    let start_frame = (start_sec * band_rate).max(0.0) as usize;
+    let end_frame = ((end_sec * band_rate) as usize).min(total_frames);
 
     if start_frame >= end_frame {
         return vec![0.0; num_points * 4];
@@ -222,6 +226,9 @@ pub fn compute_spectral_waveform_region(
 
     let visible_frames = end_frame - start_frame;
     let frames_per_point = visible_frames as f64 / num_points as f64;
+    // The deck's own rate, which the resampler may have moved away from the file's.
+    let sample_frames = samples.len() / channels.max(1);
+    let sample_scale = sample_rate as f64 / band_rate;
 
     let mut result = Vec::with_capacity(num_points * 4);
 
@@ -237,17 +244,26 @@ pub fn compute_spectral_waveform_region(
         let mut sum_sample_sq = 0.0f32;
         let count = (bin_end - bin_start) as f32;
 
+        let mut sample_count = 0.0f32;
         for frame in bin_start..bin_end {
             sum_bass_sq += bass[frame] * bass[frame];
             sum_mid_sq += mid[frame] * mid[frame];
             sum_high_sq += high[frame] * high[frame];
-            for ch in 0..channels {
-                let s = samples[frame * channels + ch];
-                sum_sample_sq += s * s;
+            let at = (frame as f64 * sample_scale) as usize;
+            if at < sample_frames {
+                for ch in 0..channels {
+                    let s = samples[at * channels + ch];
+                    sum_sample_sq += s * s;
+                }
+                sample_count += 1.0;
             }
         }
 
-        let rms_amp = (sum_sample_sq / (count * channels as f32)).sqrt();
+        let rms_amp = if sample_count > 0.0 {
+            (sum_sample_sq / (sample_count * channels as f32)).sqrt()
+        } else {
+            0.0
+        };
         let rms_bass = (sum_bass_sq / count).sqrt();
         let rms_mid = (sum_mid_sq / count).sqrt();
         let rms_high = (sum_high_sq / count).sqrt();
@@ -753,5 +769,59 @@ mod tests {
         assert!((reference / 0.4 - 1.14564392).abs() < 1e-6);
         assert!((reference / 0.2 - 2.29128785).abs() < 1e-6);
         assert!((reference / 0.1 - 4.58257569).abs() < 1e-6);
+    }
+
+    // Bands are reduced from the decoder at the file's own rate, while the deck holds
+    // samples resampled for the device, so a region has to walk the two at their own rates.
+    #[test]
+    fn a_region_reads_bands_and_samples_at_their_own_rates() {
+        let native_rate = 44100;
+        let device_rate = 48000;
+        let seconds = 2.0;
+        let native_frames = (native_rate as f64 * seconds) as usize;
+        let device_frames = (device_rate as f64 * seconds) as usize;
+
+        let tone_at = |frames: usize, rate: u32| -> Vec<f32> {
+            (0..frames * 2)
+                .map(|i| {
+                    let t = (i / 2) as f32 / rate as f32;
+                    0.5 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                })
+                .collect()
+        };
+
+        let native = tone_at(native_frames, native_rate);
+        let device = tone_at(device_frames, device_rate);
+
+        let mut stream = BandStream::new(native_frames, 2, native_rate, 64);
+        stream.push(&native, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: native_rate,
+        };
+
+        let points =
+            compute_spectral_waveform_region(&device, 2, &bands, device_rate, 0.0, seconds, 8);
+        assert_eq!(points.len(), 32);
+        // A steady tone: every point should carry the same bass share and amplitude.
+        for point in 1..8 {
+            assert!(
+                (points[point * 4] - points[0]).abs() < 0.05,
+                "bass share drifted at point {point}: {} vs {}",
+                points[point * 4],
+                points[0]
+            );
+            assert!(
+                (points[point * 4 + 3] - points[3]).abs() < 0.05,
+                "amplitude drifted at point {point}"
+            );
+        }
     }
 }

@@ -370,6 +370,7 @@ pub struct SpectralBands {
     pub bass_rms: f32,
     pub mid_rms: f32,
     pub high_rms: f32,
+    pub source_rate: u32,
 }
 
 impl Default for SpectralBands {
@@ -381,6 +382,7 @@ impl Default for SpectralBands {
             bass_rms: 1.0,
             mid_rms: 1.0,
             high_rms: 1.0,
+            source_rate: 0,
         }
     }
 }

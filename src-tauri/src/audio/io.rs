@@ -169,6 +169,94 @@ pub fn decode_audio_streaming(
     Ok((samples, channels, sample_rate))
 }
 
+/// `resample_linear` fed a packet at a time, so it overlaps the decode instead of following it.
+pub struct LinearResampler {
+    channels: usize,
+    ratio: f64,
+    out_frame: usize,
+    consumed: usize,
+    window: Vec<f32>,
+    output: Vec<f32>,
+}
+
+impl LinearResampler {
+    pub fn new(channels: usize, in_rate: u32, out_rate: u32) -> Self {
+        Self {
+            channels,
+            ratio: in_rate as f64 / out_rate as f64,
+            out_frame: 0,
+            consumed: 0,
+            window: Vec::new(),
+            output: Vec::new(),
+        }
+    }
+
+    fn frame_at(&self, frame: usize) -> usize {
+        (frame - self.consumed) * self.channels
+    }
+
+    pub fn push(&mut self, frames: &[f32]) {
+        if self.channels == 0 {
+            return;
+        }
+        self.window.extend_from_slice(frames);
+        let available = self.consumed + self.window.len() / self.channels;
+
+        loop {
+            let src_pos = self.out_frame as f64 * self.ratio;
+            let lo_frame = src_pos as usize;
+            if lo_frame + 1 >= available {
+                break;
+            }
+            let interp_factor = (src_pos - lo_frame as f64) as f32;
+            let lo = self.frame_at(lo_frame);
+            let hi = self.frame_at(lo_frame + 1);
+            for channel in 0..self.channels {
+                let lo_sample = self.window[lo + channel];
+                let hi_sample = self.window[hi + channel];
+                self.output
+                    .push(lo_sample + interp_factor * (hi_sample - lo_sample));
+            }
+            self.out_frame += 1;
+        }
+
+        // Compacted once per packet, never per frame: draining inside the loop moves the
+        // whole remaining window on almost every output frame, which cost more than the
+        // resample itself.
+        let next_lo = (self.out_frame as f64 * self.ratio) as usize;
+        if next_lo > self.consumed {
+            let drop_frames = next_lo - self.consumed;
+            self.window.drain(..drop_frames * self.channels);
+            self.consumed = next_lo;
+        }
+    }
+
+    pub fn finish(mut self, in_frames: usize) -> Vec<f32> {
+        if self.channels == 0 || in_frames == 0 {
+            return self.output;
+        }
+        let out_frames = (in_frames as f64 / self.ratio).ceil() as usize;
+        let last = in_frames - 1;
+        while self.out_frame < out_frames {
+            let src_pos = self.out_frame as f64 * self.ratio;
+            let src_frame = src_pos as usize;
+            let interp_factor = (src_pos - src_frame as f64) as f32;
+            let lo_frame = src_frame.min(last).max(self.consumed);
+            let hi_frame = (src_frame + 1).min(last).max(self.consumed);
+            let lo = self.frame_at(lo_frame);
+            let hi = self.frame_at(hi_frame);
+            for channel in 0..self.channels {
+                let lo_sample = self.window[lo + channel];
+                let hi_sample = self.window[hi + channel];
+                self.output
+                    .push(lo_sample + interp_factor * (hi_sample - lo_sample));
+            }
+            self.out_frame += 1;
+        }
+        self.output
+    }
+}
+
 pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate: u32) -> Vec<f32> {
     let in_frames = input.len() / in_channels;
     let ratio = in_rate as f64 / out_rate as f64;
@@ -362,5 +450,64 @@ mod tests {
     fn resample_linear_empty_input_returns_empty() {
         let output = resample_linear(&[], 1, 44100, 44100);
         assert!(output.is_empty());
+    }
+
+    fn ramp(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels)
+            .map(|i| ((i / channels) as f32 * 0.37).sin())
+            .collect()
+    }
+
+    fn streamed(
+        input: &[f32],
+        channels: usize,
+        in_rate: u32,
+        out_rate: u32,
+        chunk: usize,
+    ) -> Vec<f32> {
+        let frames = input.len() / channels;
+        let mut resampler = LinearResampler::new(channels, in_rate, out_rate);
+        let mut at = 0;
+        while at < frames {
+            let end = (at + chunk).min(frames);
+            resampler.push(&input[at * channels..end * channels]);
+            at = end;
+        }
+        resampler.finish(frames)
+    }
+
+    #[test]
+    fn a_streamed_resample_matches_the_whole_buffer_one() {
+        for (in_rate, out_rate) in [
+            (44100, 48000),
+            (48000, 44100),
+            (44100, 44100),
+            (22050, 48000),
+        ] {
+            let input = ramp(5000, 2);
+            let expected = resample_linear(&input, 2, in_rate, out_rate);
+            for chunk in [1, 3, 512, 5000] {
+                let actual = streamed(&input, 2, in_rate, out_rate, chunk);
+                assert_eq!(
+                    actual.len(),
+                    expected.len(),
+                    "{in_rate}->{out_rate} in chunks of {chunk}: length"
+                );
+                assert_eq!(
+                    actual, expected,
+                    "{in_rate}->{out_rate} in chunks of {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_streamed_resample_handles_mono_and_an_empty_track() {
+        let input = ramp(1000, 1);
+        assert_eq!(
+            streamed(&input, 1, 44100, 48000, 128),
+            resample_linear(&input, 1, 44100, 48000)
+        );
+        assert!(streamed(&[], 2, 44100, 48000, 128).is_empty());
     }
 }

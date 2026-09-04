@@ -150,7 +150,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
     try {
       while (loadGeneration === generation && ready > pointsFetched) {
         const from = pointsFetched;
-        const buffer = await invoke<ArrayBuffer>('get_dense_points', {
+        const buffer = await call('get_dense_points', {
           deck: id,
           fromPoint: from,
           toPoint: ready
@@ -539,7 +539,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       endSec: number,
       numPoints: number
     ): Promise<ArrayBuffer> {
-      return invoke<ArrayBuffer>('get_spectral_waveform_region', {
+      return call('get_spectral_waveform_region', {
         deck: id,
         startSec,
         endSec,

@@ -12,12 +12,12 @@ type Commands = {
   get_deck_levels: { args: Record<string, never>; returns: Record<string, [number, number]> };
   get_dense_points: {
     args: { deck: string; fromPoint: number; toPoint: number };
-    returns: unknown;
+    returns: ArrayBuffer;
   };
   get_master_level: { args: Record<string, never>; returns: [number, number] };
   get_spectral_waveform_region: {
     args: { deck: string; startSec: number; endSec: number; numPoints: number };
-    returns: unknown;
+    returns: ArrayBuffer;
   };
   get_track_amplitude_region: {
     args: { path: string; startSec: number; endSec: number; numPoints: number };
