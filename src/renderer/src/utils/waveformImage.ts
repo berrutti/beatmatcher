@@ -48,8 +48,8 @@ export type WaveformPalette =
 
 export type WaveformPaint = {
   ampScale: number;
-  // A band level of 1 is the track's own average for that band, so this is where average
-  // content sits and how much headroom a kick has left.
+  // A band level of 1 is the track's own average across the three bands, so this is where
+  // average content sits and how much headroom a kick has left.
   bandScale: number;
   // Leaves room for the beat grid.
   maxBarFraction: number;
