@@ -597,53 +597,22 @@ pub(crate) async fn load_track(
             let cover_ms = started.elapsed().as_millis();
 
             let at_decode = std::time::Instant::now();
-            // The reduction runs on its own thread: on the decode thread it doubled the
-            // time to a playable deck, which is the one thing decode is on the path for.
-            let (to_reducer, from_decoder) =
-                std::sync::mpsc::channel::<(Arc<Vec<f32>>, audio::DecodedShape)>();
+            // Beside the decode, not on it: reducing on the decode thread doubled the time
+            // to a playable deck.
+            let (to_reducer, packets_for_reducer) =
+                std::sync::mpsc::channel::<audio::DecodedPacket>();
             let (to_resampler, packets_for_resampler) =
-                std::sync::mpsc::channel::<(Arc<Vec<f32>>, audio::DecodedShape)>();
-            // Fed a packet at a time, so it finishes with the decode rather than after it.
+                std::sync::mpsc::channel::<audio::DecodedPacket>();
             let resampler = std::thread::spawn(move || {
-                let mut resampler: Option<audio::LinearResampler> = None;
-                let mut in_frames = 0usize;
-                while let Ok((packet, shape)) = packets_for_resampler.recv() {
-                    if shape.sample_rate == device_sample_rate {
-                        continue;
-                    }
-                    let stream = resampler.get_or_insert_with(|| {
-                        audio::LinearResampler::new(
-                            shape.channels,
-                            shape.sample_rate,
-                            device_sample_rate,
-                        )
-                    });
-                    in_frames += packet.len() / shape.channels.max(1);
-                    stream.push(&packet);
-                }
-                resampler.map(|stream| stream.finish(in_frames))
+                audio::resample_packets(packets_for_resampler, device_sample_rate)
             });
-
             let reducer = std::thread::spawn(move || {
-                let mut stream: Option<audio::BandStream> = None;
-                let mut sink = point_sink(stream_app, stream_deck_id, Arc::clone(&stream_deck));
-                while let Ok((packet, shape)) = from_decoder.recv() {
-                    let reducer = stream.get_or_insert_with(|| {
-                        let started = audio::BandStream::new(
-                            shape.total_frames,
-                            shape.channels,
-                            shape.sample_rate,
-                            POINTS_PER_CHUNK,
-                        );
-                        let mut deck_state = stream_deck.locked();
-                        deck_state.reset_dense_points(started.total_points());
-                        started
-                    });
-                    reducer.push(&packet, &mut sink);
-                }
-                // Closed here rather than by the caller: the last points would otherwise
-                // wait for the load to finish before they could be painted.
-                stream.map(|stream| stream.finish(&mut sink))
+                audio::reduce_packets(
+                    packets_for_reducer,
+                    POINTS_PER_CHUNK,
+                    |total| stream_deck.locked().reset_dense_points(total),
+                    point_sink(stream_app, stream_deck_id, Arc::clone(&stream_deck)),
+                )
             });
 
             let (raw_samples, channels, native_sr) =
@@ -689,18 +658,10 @@ pub(crate) async fn load_track(
             let resampled = if native_sr == device_sample_rate {
                 raw_samples
             } else {
-                resampler
-                    .join()
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| {
-                        audio::resample_linear(
-                            &raw_samples,
-                            channels,
-                            native_sr,
-                            device_sample_rate,
-                        )
-                    })
+                // A container that hides its length sends no packets, so this fallback is live.
+                resampler.join().ok().flatten().unwrap_or_else(|| {
+                    audio::resample_linear(&raw_samples, channels, native_sr, device_sample_rate)
+                })
             };
             let resample_ms = at_resample.elapsed().as_millis();
 
@@ -716,9 +677,7 @@ pub(crate) async fn load_track(
                 silence_end,
                 native_sr,
                 cover_art,
-                // Handed on rather than joined: waiting here would hold the deck unplayable
-                // until the analysis finished, which is the whole thing decode is on the
-                // path for.
+                // Returned rather than joined: the deck is playable before the analysis ends.
                 reducer,
             ))
         })
@@ -778,17 +737,7 @@ pub(crate) async fn load_track(
             }
         })
         .await
-        .unwrap_or((
-            device_sample_rate,
-            audio::StreamedBands {
-                bass: Vec::new(),
-                mid: Vec::new(),
-                high: Vec::new(),
-                bass_rms: 0.0,
-                mid_rms: 0.0,
-                high_rms: 0.0,
-            },
-        ));
+        .unwrap_or((device_sample_rate, audio::StreamedBands::default()));
 
         let bands = audio::SpectralBands {
             bass_rms: streamed.bass_rms,

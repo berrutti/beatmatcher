@@ -339,8 +339,8 @@ function createDeck(id: DeckId, accent: string, name: string) {
 
       onBeatOffsetChangeCb = data.onBeatOffsetChange;
 
-      // Before the call, not after: the analysis now runs inside it, so a listener
-      // registered afterwards misses every point.
+      // Before the call, not after: the analysis runs inside it, so a listener registered
+      // afterwards misses every point.
       const gen = loadGeneration;
       pointsFetched = 0;
       bandSquares = [0, 0, 0];

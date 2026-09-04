@@ -22,7 +22,7 @@ export function bandBalanceOf(squares: BandSquares, count: number): BandSquares 
 }
 
 // A chunk destined for a buffer sized by a previous, shorter track would write past its
-// end; the caller reallocates instead of letting `set` throw mid-load.
+// end; the caller drops it instead of letting `set` throw mid-load.
 export function densePointsFit(
   buffer: Float32Array | null,
   fromPoint: number,

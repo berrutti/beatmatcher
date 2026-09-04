@@ -10,7 +10,7 @@ mod unit;
 
 pub use analysis::{
     compute_amplitude_region, compute_spectral_waveform_region, detect_bpm, detect_silence_end,
-    BandStream, StreamedBands, DENSE_POINTS_PER_SEC,
+    reduce_packets, BandStream, StreamedBands, DENSE_POINTS_PER_SEC,
 };
 pub(crate) use deck::DeckRestore;
 #[cfg(test)]
@@ -20,8 +20,8 @@ pub(crate) use dsp::Limiter;
 pub(crate) use dsp::{master_block, master_output, FILTER_CROSSFADE_TAU_SEC};
 pub use io::TrackTags;
 pub use io::{
-    decode_audio, decode_audio_streaming, read_cover_art, read_tags, resample_linear, DecodedShape,
-    LinearResampler,
+    decode_audio, decode_audio_streaming, read_cover_art, read_tags, resample_linear,
+    resample_packets, DecodedPacket,
 };
 pub(crate) use session_apply::{apply_deck_command, LoadedSamples};
 pub use stream::MasterMonitor;

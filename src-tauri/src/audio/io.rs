@@ -57,8 +57,7 @@ pub fn decode_audio(
 }
 
 /// `on_decoded` sees each run of frames as it is decoded, in order, so a caller can
-/// analyse the head of a track while the tail is still being read. It also carries the
-/// track's shape, which the caller cannot know without opening the file itself.
+/// analyse the head of a track while the tail is still being read.
 pub fn decode_audio_streaming(
     path: &str,
     mut on_decoded: impl FnMut(&[f32], DecodedShape),
@@ -169,7 +168,7 @@ pub fn decode_audio_streaming(
     Ok((samples, channels, sample_rate))
 }
 
-/// `resample_linear` fed a packet at a time, so it overlaps the decode instead of following it.
+/// `resample_linear` fed a packet at a time.
 pub struct LinearResampler {
     channels: usize,
     ratio: f64,
@@ -255,6 +254,29 @@ impl LinearResampler {
         }
         self.output
     }
+}
+
+pub type DecodedPacket = (std::sync::Arc<Vec<f32>>, DecodedShape);
+
+/// Fed from the decoder, so the resample finishes with the decode rather than after it.
+/// `None` when every packet already arrived at `out_rate`.
+pub fn resample_packets(
+    packets: std::sync::mpsc::Receiver<DecodedPacket>,
+    out_rate: u32,
+) -> Option<Vec<f32>> {
+    let mut resampler: Option<LinearResampler> = None;
+    let mut in_frames = 0usize;
+    while let Ok((packet, shape)) = packets.recv() {
+        if shape.sample_rate == out_rate {
+            continue;
+        }
+        let stream = resampler.get_or_insert_with(|| {
+            LinearResampler::new(shape.channels, shape.sample_rate, out_rate)
+        });
+        in_frames += packet.len() / shape.channels.max(1);
+        stream.push(&packet);
+    }
+    resampler.map(|stream| stream.finish(in_frames))
 }
 
 pub fn resample_linear(input: &[f32], in_channels: usize, in_rate: u32, out_rate: u32) -> Vec<f32> {
@@ -509,5 +531,40 @@ mod tests {
             resample_linear(&input, 1, 44100, 48000)
         );
         assert!(streamed(&[], 2, 44100, 48000, 128).is_empty());
+    }
+
+    #[test]
+    fn packets_resample_to_the_same_samples_as_the_whole_buffer() {
+        let input = ramp(5000, 2);
+        let (send, packets) = std::sync::mpsc::channel();
+        for chunk in input.chunks(512 * 2) {
+            let shape = DecodedShape {
+                channels: 2,
+                total_frames: 5000,
+                sample_rate: 44100,
+            };
+            send.send((std::sync::Arc::new(chunk.to_vec()), shape)).ok();
+        }
+        drop(send);
+        assert_eq!(
+            resample_packets(packets, 48000),
+            Some(resample_linear(&input, 2, 44100, 48000))
+        );
+    }
+
+    #[test]
+    fn packets_already_at_the_out_rate_resample_to_none() {
+        let (send, packets) = std::sync::mpsc::channel();
+        send.send((
+            std::sync::Arc::new(ramp(64, 2)),
+            DecodedShape {
+                channels: 2,
+                total_frames: 64,
+                sample_rate: 48000,
+            },
+        ))
+        .ok();
+        drop(send);
+        assert_eq!(resample_packets(packets, 48000), None);
     }
 }

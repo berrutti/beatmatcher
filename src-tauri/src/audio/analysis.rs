@@ -1,4 +1,5 @@
 use super::dsp::Biquad;
+use super::io::DecodedPacket;
 
 const BAND_BASS_HZ: f32 = 250.0;
 const BAND_MID_HZ: f32 = 2_000.0;
@@ -7,6 +8,7 @@ const BAND_MID_HZ: f32 = 2_000.0;
 // rate the established waveform formats use.
 pub const DENSE_POINTS_PER_SEC: f64 = 150.0;
 
+#[derive(Default)]
 pub struct StreamedBands {
     pub bass: Vec<f32>,
     pub mid: Vec<f32>,
@@ -14,6 +16,33 @@ pub struct StreamedBands {
     pub bass_rms: f32,
     pub mid_rms: f32,
     pub high_rms: f32,
+}
+
+/// Fed from the decoder, so points reach `on_points` while the file is still being read.
+/// `None` when no packet arrived.
+pub fn reduce_packets(
+    packets: std::sync::mpsc::Receiver<DecodedPacket>,
+    points_per_chunk: usize,
+    mut on_total_points: impl FnMut(usize),
+    mut on_points: impl FnMut(&[f32], usize),
+) -> Option<StreamedBands> {
+    let mut stream: Option<BandStream> = None;
+    while let Ok((packet, shape)) = packets.recv() {
+        let reducer = stream.get_or_insert_with(|| {
+            let started = BandStream::new(
+                shape.total_frames,
+                shape.channels,
+                shape.sample_rate,
+                points_per_chunk,
+            );
+            on_total_points(started.total_points());
+            started
+        });
+        reducer.push(&packet, &mut on_points);
+    }
+    // Closed here rather than by the caller: the last points would otherwise wait for the
+    // load to finish before they could be painted.
+    stream.map(|stream| stream.finish(&mut on_points))
 }
 
 pub fn dense_point_count(total_frames: usize, sample_rate: u32) -> usize {
@@ -737,6 +766,47 @@ mod tests {
 
         assert!((short.bass_rms - exact.bass_rms).abs() < 1e-6);
         assert!((short.high_rms - exact.high_rms).abs() < 1e-6);
+    }
+
+    #[test]
+    fn packets_reduce_to_the_same_points_as_one_push() {
+        let samples = tone(44100, 2);
+        let (send, packets) = std::sync::mpsc::channel();
+        for chunk in samples.chunks(512 * 2) {
+            send.send((
+                std::sync::Arc::new(chunk.to_vec()),
+                super::super::io::DecodedShape {
+                    channels: 2,
+                    total_frames: 44100,
+                    sample_rate: 44100,
+                },
+            ))
+            .ok();
+        }
+        drop(send);
+
+        let mut declared = None;
+        let mut points = Vec::new();
+        let bands = reduce_packets(
+            packets,
+            64,
+            |total| declared = Some(total),
+            |chunk, _| points.extend_from_slice(chunk),
+        )
+        .expect("packets arrived");
+
+        assert_eq!(declared, Some(dense_point_count(44100, 44100)));
+        assert_eq!(points, points_from(&samples, 2, 512));
+        assert!(bands.bass_rms > 0.0);
+    }
+
+    #[test]
+    fn no_packet_reduces_to_no_bands() {
+        let (send, packets) = std::sync::mpsc::channel();
+        drop(send);
+        let mut declared = false;
+        assert!(reduce_packets(packets, 64, |_| declared = true, |_, _| {}).is_none());
+        assert!(!declared);
     }
 
     #[test]
