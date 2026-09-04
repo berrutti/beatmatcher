@@ -304,6 +304,27 @@ describe('a dropped track names itself before it has loaded', () => {
     expect(decks.deckA.trackName).toBe('Next Track');
   });
 
+  it('has the beat grid before the decode returns, since the caller already held it', async () => {
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await reachedDecode();
+
+    expect(decks.deckA.trackBpm).toBe(128);
+    expect(decks.deckA.beatOffset).toBe(0.5);
+
+    releaseLoad();
+    await loading;
+  });
+
   it('clears what the previous track left behind', async () => {
     vi.mocked(invoke).mockResolvedValue({});
     const decks = useDecksStore();
@@ -605,6 +626,34 @@ describe('the waveform arrives while the deck is still loading', () => {
     await loading;
     expect(decks.deckA.loading).toBe(false);
   });
+
+  it('reports the bands as absent until they are reduced', async () => {
+    const handlers = captureListeners();
+    let releaseLoad = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== 'load_track') return {};
+      await new Promise<void>((resolve) => {
+        releaseLoad = resolve;
+      });
+      return {};
+    });
+
+    const decks = useDecksStore();
+    const loading = decks.deckA.loadTrack(track);
+    await reachedDecode();
+
+    handlers.get('waveform-progress')?.[0]({
+      payload: { deck: 'A', pointsReady: 10, totalPoints: 100, pointsPerSec: 150 }
+    });
+    await reachedDecode();
+    expect(decks.deckA.bandsReady).toBe(false);
+
+    handlers.get('bands-ready')?.[0]({ payload: { deck: 'A' } });
+    expect(decks.deckA.bandsReady).toBe(true);
+
+    releaseLoad();
+    await loading;
+  });
 });
 
 describe('the point drain under a short answer', () => {
@@ -635,7 +684,7 @@ describe('the point drain under a short answer', () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd !== 'get_dense_points') return {};
       pointRequests++;
-      // Answers the first ask, then goes short, which used to spin forever.
+      // Answers the first ask, then goes short.
       return pointRequests === 1 ? new Float32Array(40).buffer : new ArrayBuffer(0);
     });
 

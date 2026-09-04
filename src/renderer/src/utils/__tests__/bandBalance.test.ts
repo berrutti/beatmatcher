@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { addBandSquares, bandBalanceOf, densePointsFit, type BandSquares } from '../bandBalance';
+import {
+  addBandSquares,
+  bandBalanceOf,
+  densePointsFit,
+  type BandSquares,
+  sameBandBalance
+} from '../bandBalance';
 
 function pointsOf(bands: [number, number, number][]): Float32Array {
   const out = new Float32Array(bands.length * 4);
@@ -73,5 +79,16 @@ describe('the reference matches the Rust band_reference fixture', () => {
     expect(balance[0]).toBeCloseTo(1.14564392, 6);
     expect(balance[1]).toBeCloseTo(2.29128785, 6);
     expect(balance[2]).toBeCloseTo(4.58257569, 6);
+  });
+});
+
+describe('sameBandBalance', () => {
+  it('holds while the running balance is still settling within a hair', () => {
+    expect(sameBandBalance([1.2, 0.9, 1.4], [1.203, 0.898, 1.401])).toBe(true);
+  });
+
+  it('parts once a band has moved enough to see', () => {
+    expect(sameBandBalance([1.2, 0.9, 1.4], [1.2, 0.9, 1.6])).toBe(false);
+    expect(sameBandBalance([1, 1, 1], [1.5, 1, 1])).toBe(false);
   });
 });

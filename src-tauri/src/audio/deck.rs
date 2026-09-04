@@ -373,6 +373,12 @@ pub struct SpectralBands {
     pub source_rate: u32,
 }
 
+impl SpectralBands {
+    pub fn frames(&self) -> usize {
+        self.bass.len()
+    }
+}
+
 impl Default for SpectralBands {
     fn default() -> Self {
         Self {

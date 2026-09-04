@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   overscanRange,
   cacheSource,
-  densePointRange,
   bitmapRange,
   bitmapIsStale,
   type BuiltBitmap,
@@ -63,24 +62,19 @@ class EditViewModel {
 
   private updateCache(view: View): void {
     const required = CANVAS_DEVICE_PX / (view.endSec - view.startSec);
-    const source = cacheSource(this.cache, view.startSec, view.endSec, required, DENSE_RATE);
+    const source = cacheSource(this.cache, view.startSec, view.endSec, required, DENSE_RATE, true);
     if (source === 'keep') return;
+    // Everything reduced, the way the component holds it: the dense cache never follows the view.
+    if (source === 'dense') {
+      this.cache = { startSec: 0, endSec: TRACK_DURATION, ptsPerSec: DENSE_RATE };
+      return;
+    }
     const { startSec, endSec } = overscanRange(
       view.startSec,
       view.endSec,
       TRACK_DURATION,
       OVERSCAN
     );
-    if (source === 'dense') {
-      const range = densePointRange(startSec, endSec, DENSE_RATE, TRACK_DURATION * DENSE_RATE);
-      if (!range) return;
-      this.cache = {
-        startSec: range.startIndex / DENSE_RATE,
-        endSec: range.endIndex / DENSE_RATE,
-        ptsPerSec: DENSE_RATE
-      };
-      return;
-    }
     if (endSec > startSec) this.cache = { startSec, endSec, ptsPerSec: required };
   }
 

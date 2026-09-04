@@ -61,6 +61,13 @@ export const DECK_ACCENTS: Readonly<Record<string, string>> = {
   E: '#a855f7'
 };
 
+// A property of the track, not of any view that draws it: the engine's grid is a bpm and an
+// offset, so until a track carries its own meter every reader takes this one.
+export type Meter = { beatsPerBar: number; barsPerPhrase: number };
+
+// Bars rather than beats: 16 beats is a phrase only in 4/4.
+export const DEFAULT_METER: Meter = { beatsPerBar: 4, barsPerPhrase: 4 };
+
 // Stands where a deck id goes, so a hit or a lane pick can name the master row.
 export const MASTER_ROW_ID = 'master';
 

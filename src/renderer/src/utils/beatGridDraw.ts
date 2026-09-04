@@ -1,4 +1,5 @@
 import { drawMarkerTriangle } from '@renderer/utils/markerTriangle';
+import type { BeatMarkerKind } from '@renderer/utils/beatGrid';
 
 export const MIN_WAVEFORM_BEAT_SPACING_PX = 6;
 export const MIN_WAVEFORM_BAR_SPACING_PX = 24;
@@ -28,7 +29,7 @@ export const STRIP_GRID: BeatGridWeight = {
 };
 
 // The edit view spans minutes and the waveform is the subject, so the grid stays out of its
-// way: hairlines, and a triangle only where a bar starts.
+// way: hairlines, and a triangle only where a bar or a phrase starts.
 export const EDIT_GRID: BeatGridWeight = {
   beatCoreDevicePx: 1,
   beatOutlineDevicePx: 0,
@@ -41,8 +42,12 @@ export const EDIT_GRID: BeatGridWeight = {
 };
 
 const MARKER_HEIGHT_RATIO = 1.4;
-const BEAT_MARKER_FILL_COLOR = '#ffffff';
-const DOWNBEAT_MARKER_FILL_COLOR = 'rgb(220,30,30)';
+// Green because the waveform has no green band and the bars are already red.
+const MARKER_FILL_COLOR: Record<BeatMarkerKind, string> = {
+  beat: '#ffffff',
+  bar: 'rgb(220,30,30)',
+  phrase: 'rgb(30,180,90)'
+};
 const LINE_OUTLINE_COLOR = 'rgba(0,0,0,0.7)';
 export const MARKER_OUTLINE_COLOR = '#000000';
 const MARKER_OUTLINE_WIDTH = 1.5;
@@ -122,14 +127,14 @@ export function drawBeatMarker(
   x: number,
   top: number,
   height: number,
-  isDownbeat: boolean,
+  kind: BeatMarkerKind,
   weight: BeatGridWeight
 ): void {
-  const halfWidth = isDownbeat ? weight.downbeatMarkerHalfWidth : weight.beatMarkerHalfWidth;
+  const halfWidth = kind === 'beat' ? weight.beatMarkerHalfWidth : weight.downbeatMarkerHalfWidth;
   if (halfWidth <= 0) return;
   const pointHeight = halfWidth * MARKER_HEIGHT_RATIO;
   const style = {
-    fill: isDownbeat ? DOWNBEAT_MARKER_FILL_COLOR : BEAT_MARKER_FILL_COLOR,
+    fill: MARKER_FILL_COLOR[kind],
     outline: MARKER_OUTLINE_COLOR,
     outlineWidth: MARKER_OUTLINE_WIDTH,
     alpha: 1

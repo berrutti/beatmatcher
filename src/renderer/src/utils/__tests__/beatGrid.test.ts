@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { beatGridStep, beatLineStep, visibleBeats } from '../beatGrid';
+import { beatGridStep, beatLineStep, beatMarkerKind, visibleBeats } from '../beatGrid';
+import { DEFAULT_METER, type Meter } from '../types';
 
 describe('beatLineStep', () => {
   it('keeps step at 1 when beats are already spaced past the minimum', () => {
@@ -29,7 +30,7 @@ describe('beatLineStep', () => {
 
 describe('visibleBeats', () => {
   it('marks every fourth beat a downbeat and the rest not', () => {
-    const beats = visibleBeats(120, 0, 0, 4, 1, 4);
+    const beats = visibleBeats(120, 0, 0, 4, 1, DEFAULT_METER);
     expect(beats.map((beat) => beat.beatNumber)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(beats.filter((beat) => beat.isDownbeat).map((beat) => beat.beatNumber)).toEqual([
       0, 4, 8
@@ -37,26 +38,26 @@ describe('visibleBeats', () => {
   });
 
   it('places beats a beat period apart from the offset', () => {
-    const beats = visibleBeats(120, 0.25, 0, 1.5, 1, 4);
+    const beats = visibleBeats(120, 0.25, 0, 1.5, 1, DEFAULT_METER);
     expect(beats.map((beat) => beat.sec)).toEqual([0.25, 0.75, 1.25]);
   });
 
   it('keeps only multiples of the step so the LOD thins the grid', () => {
-    const beats = visibleBeats(120, 0, 0, 8, 4, 4);
+    const beats = visibleBeats(120, 0, 0, 8, 4, DEFAULT_METER);
     expect(beats.map((beat) => beat.beatNumber)).toEqual([0, 4, 8, 12, 16]);
     expect(beats.every((beat) => beat.isDownbeat)).toBe(true);
   });
 
   it('walks backwards past the track start without losing downbeat alignment', () => {
-    const beats = visibleBeats(120, 2, 0, 2, 1, 4);
+    const beats = visibleBeats(120, 2, 0, 2, 1, DEFAULT_METER);
     expect(beats.map((beat) => beat.beatNumber)).toEqual([-4, -3, -2, -1, 0]);
     expect(beats.filter((beat) => beat.isDownbeat).map((beat) => beat.beatNumber)).toEqual([-4, 0]);
   });
 
   it('returns nothing for an unusable grid', () => {
-    expect(visibleBeats(0, 0, 0, 10, 1, 4)).toEqual([]);
-    expect(visibleBeats(120, 0, 10, 0, 1, 4)).toEqual([]);
-    expect(visibleBeats(120, 0, 0, 10, 0, 4)).toEqual([]);
+    expect(visibleBeats(0, 0, 0, 10, 1, DEFAULT_METER)).toEqual([]);
+    expect(visibleBeats(120, 0, 10, 0, 1, DEFAULT_METER)).toEqual([]);
+    expect(visibleBeats(120, 0, 0, 10, 0, DEFAULT_METER)).toEqual([]);
   });
 });
 
@@ -75,5 +76,51 @@ describe('beatGridStep', () => {
     for (const pxPerBeat of [0.2, 0.625, 1, 3.1, 5.9]) {
       expect(pxPerBeat * beatGridStep(pxPerBeat, 4, 6, 24)).toBeGreaterThanOrEqual(24);
     }
+  });
+});
+
+describe('beatMarkerKind', () => {
+  const at = (beatNumber: number) => ({
+    beatNumber,
+    sec: 0,
+    isDownbeat: beatNumber % 4 === 0
+  });
+
+  it('separates a phrase start from a plain bar start', () => {
+    expect(beatMarkerKind(at(32), DEFAULT_METER)).toBe('phrase');
+    expect(beatMarkerKind(at(20), DEFAULT_METER)).toBe('bar');
+    expect(beatMarkerKind(at(21), DEFAULT_METER)).toBe('beat');
+  });
+
+  it('keeps naming phrases before the beat grid origin', () => {
+    expect(beatMarkerKind(at(-16), DEFAULT_METER)).toBe('phrase');
+    expect(beatMarkerKind(at(-4), DEFAULT_METER)).toBe('bar');
+  });
+
+  it('names every line a phrase once the step reaches one', () => {
+    const beats = visibleBeats(120, 0, 0, 60, 16, DEFAULT_METER);
+    expect(beats.length).toBeGreaterThan(1);
+    expect(beats.every((beat) => beatMarkerKind(beat, DEFAULT_METER) === 'phrase')).toBe(true);
+  });
+});
+
+describe('a meter other than 4/4', () => {
+  const waltz: Meter = { beatsPerBar: 3, barsPerPhrase: 4 };
+
+  it('puts the downbeat on the meter, not on every fourth beat', () => {
+    const beats = visibleBeats(120, 0, 0, 3, 1, waltz);
+    expect(beats.filter((beat) => beat.isDownbeat).map((beat) => beat.beatNumber)).toEqual([
+      0, 3, 6
+    ]);
+  });
+
+  it('counts a phrase in bars, so it is twelve beats and not sixteen', () => {
+    const at = (beatNumber: number) => ({
+      beatNumber,
+      sec: 0,
+      isDownbeat: beatNumber % waltz.beatsPerBar === 0
+    });
+    expect(beatMarkerKind(at(12), waltz)).toBe('phrase');
+    expect(beatMarkerKind(at(16), waltz)).toBe('beat');
   });
 });

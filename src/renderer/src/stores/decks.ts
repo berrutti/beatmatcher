@@ -88,6 +88,9 @@ type DeckTrackState = {
   // against its own average rather than against the other two.
   bandBalance: [number, number, number];
   densePointsReady: number;
+  // The edit view re-asks for a region on this, since the last points land just before the
+  // bands they were reduced from are stored.
+  bandsReady: boolean;
   coverArt: string | null;
   loopPlaying: boolean;
   loopRegion: LoopRegion | null;
@@ -114,6 +117,7 @@ function emptyDeck(): DeckTrackState {
     denseSpectralRate: 0,
     bandBalance: [1, 1, 1],
     densePointsReady: 0,
+    bandsReady: false,
     coverArt: null,
     loopPlaying: false,
     loopRegion: null,
@@ -320,6 +324,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.denseSpectralData = null;
       state.denseSpectralRate = 0;
       state.densePointsReady = 0;
+      state.bandsReady = false;
       if (state.loopPlaying) {
         await call('stop', { deck: id });
         state.loopPlaying = false;
@@ -334,6 +339,9 @@ function createDeck(id: DeckId, accent: string, name: string) {
       // Before the decode, which takes long enough that a glance at the deck in
       // between would otherwise read the track that was there before.
       state.trackName = data.name;
+      state.trackBpm = data.bpm;
+      state.beatOffset = data.beatOffset;
+      state.cuePoint = data.beatOffset;
       state.coverArt = null;
       state.trackLoaded = false;
 
@@ -360,6 +368,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const unlisten = await listen<BandsReady>('bands-ready', (event) => {
         if (event.payload.deck !== id) return;
         state.waveformLoading = false;
+        state.bandsReady = true;
         bandsReadyUnlisten = null;
         setTimeout(unlisten, 0);
         setTimeout(progressUnlisten, 0);
@@ -394,9 +403,6 @@ function createDeck(id: DeckId, accent: string, name: string) {
       state.loading = false;
       state.loadedPath = data.path;
 
-      state.trackBpm = data.bpm;
-      state.beatOffset = data.beatOffset;
-      state.cuePoint = data.beatOffset;
       state.targetBpm = data.bpm;
       state.pitchOffset = 0;
       positionCache = data.beatOffset;

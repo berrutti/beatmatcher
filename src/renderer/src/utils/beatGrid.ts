@@ -1,3 +1,5 @@
+import type { Meter } from '@renderer/utils/types';
+
 export function beatLineStep(
   pxPerBeat: number,
   minSpacingPx: number,
@@ -17,7 +19,7 @@ export function visibleBeats(
   fromSec: number,
   toSec: number,
   step: number,
-  beatsPerBar: number
+  meter: Meter
 ): VisibleBeat[] {
   if (bpm <= 0 || step <= 0 || toSec < fromSec) return [];
   const beatPeriod = 60 / bpm;
@@ -30,20 +32,28 @@ export function visibleBeats(
     beats.push({
       beatNumber,
       sec: beatOffset + beatNumber * beatPeriod,
-      isDownbeat: beatNumber % beatsPerBar === 0
+      isDownbeat: beatNumber % meter.beatsPerBar === 0
     });
   }
   return beats;
+}
+
+export type BeatMarkerKind = 'beat' | 'bar' | 'phrase';
+
+export function beatMarkerKind(beat: VisibleBeat, meter: Meter): BeatMarkerKind {
+  if (!beat.isDownbeat) return 'beat';
+  const beatsPerPhrase = meter.beatsPerBar * meter.barsPerPhrase;
+  return beat.beatNumber % beatsPerPhrase === 0 ? 'phrase' : 'bar';
 }
 
 // Once beats no longer fit, every surviving line is a downbeat and gets the heavy
 // treatment, so the spacing that has to be met is the heavy one, not the hairline one.
 export function beatGridStep(
   pxPerBeat: number,
-  beatsPerBar: number,
+  beatsPerGroup: number,
   minBeatSpacingPx: number,
   minBarSpacingPx: number
 ): number {
   const minimum = pxPerBeat < minBeatSpacingPx ? minBarSpacingPx : minBeatSpacingPx;
-  return beatLineStep(pxPerBeat, minimum, beatsPerBar);
+  return beatLineStep(pxPerBeat, minimum, beatsPerGroup);
 }

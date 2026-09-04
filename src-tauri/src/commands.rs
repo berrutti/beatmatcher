@@ -837,7 +837,11 @@ pub(crate) async fn get_spectral_waveform_region(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let bytes: Vec<u8> = floats
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
     Ok(tauri::ipc::Response::new(bytes))
 }
 

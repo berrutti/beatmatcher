@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   overscanRange,
   cacheCoversView,
-  densePointRange,
   bitmapRange,
+  bitmapPointRange,
   cacheSource,
-  bitmapIsStale
+  pointsComplete,
+  bitmapIsStale,
+  builtFromSameSource
 } from '../waveformCache';
 
 describe('overscanRange', () => {
@@ -51,21 +53,6 @@ describe('cacheCoversView', () => {
   });
 });
 
-describe('densePointRange', () => {
-  it('covers the requested seconds, rounding outwards', () => {
-    expect(densePointRange(1.5, 2.5, 100, 1000)).toEqual({ startIndex: 150, endIndex: 250 });
-  });
-
-  it('never runs past the points held', () => {
-    expect(densePointRange(0, 100, 100, 500)).toEqual({ startIndex: 0, endIndex: 500 });
-  });
-
-  it('returns nothing when the range holds no point', () => {
-    expect(densePointRange(9, 9, 100, 500)).toBeNull();
-    expect(densePointRange(10, 20, 100, 500)).toBeNull();
-  });
-});
-
 describe('bitmapRange', () => {
   const cache = { startSec: 10, endSec: 20, ptsPerSec: 250 };
 
@@ -99,25 +86,34 @@ describe('cacheSource', () => {
   const dense = { startSec: 0, endSec: 60, ptsPerSec: 250 };
 
   it('keeps a dense cache that already covers the view', () => {
-    expect(cacheSource(dense, 10, 20, 100, 250)).toBe('keep');
+    expect(cacheSource(dense, 10, 20, 100, 250, true)).toBe('keep');
   });
 
   it('reaches for dense when it is dense enough for the zoom', () => {
-    expect(cacheSource(null, 10, 20, 100, 250)).toBe('dense');
+    expect(cacheSource(null, 10, 20, 100, 250, true)).toBe('dense');
   });
 
   it('fetches when the zoom needs more than dense holds', () => {
-    expect(cacheSource(null, 10, 10.5, 5000, 250)).toBe('fetch');
+    expect(cacheSource(null, 10, 10.5, 5000, 250, true)).toBe('fetch');
   });
 
   it('keeps a fetched cache that still covers a deep zoom', () => {
     const fetched = { startSec: 10, endSec: 11, ptsPerSec: 5000 };
-    expect(cacheSource(fetched, 10.2, 10.7, 5000, 250)).toBe('keep');
+    expect(cacheSource(fetched, 10.2, 10.7, 5000, 250, true)).toBe('keep');
   });
 
   it('fetches once a deep zoom pans off the fetched range', () => {
     const fetched = { startSec: 10, endSec: 11, ptsPerSec: 5000 };
-    expect(cacheSource(fetched, 12, 12.5, 5000, 250)).toBe('fetch');
+    expect(cacheSource(fetched, 12, 12.5, 5000, 250, true)).toBe('fetch');
+  });
+
+  it('never fetches a region before the bands it is computed from exist', () => {
+    expect(cacheSource(null, 10, 10.5, 5000, 250, false)).toBe('dense');
+    expect(cacheSource(null, 0, 10, 280, 150, false)).toBe('dense');
+  });
+
+  it('has nothing to draw from before the first point arrives', () => {
+    expect(cacheSource(null, 10, 10.5, 5000, 0, false)).toBe('fetch');
   });
 });
 
@@ -144,5 +140,57 @@ describe('bitmapIsStale', () => {
 
   it('is stale when nothing has been built', () => {
     expect(bitmapIsStale(null, cache, 12, 14, 300, 8192)).toBe(true);
+  });
+});
+
+describe('bitmapPointRange', () => {
+  const cache = { startSec: 0, endSec: 900, ptsPerSec: 150 };
+
+  it('covers the whole span a capped bitmap is stretched over', () => {
+    const range = { startSec: 0, endSec: 300, width: 8192 };
+    expect(bitmapPointRange(cache, range, 135000)).toEqual({ startIndex: 0, endIndex: 45000 });
+  });
+
+  it('takes one point per column where the bitmap was not capped', () => {
+    const range = { startSec: 0, endSec: 20, width: 3000 };
+    expect(bitmapPointRange(cache, range, 135000)).toEqual({ startIndex: 0, endIndex: 3000 });
+  });
+
+  it('offsets by where the range starts inside the cache', () => {
+    const range = { startSec: 60, endSec: 120, width: 8192 };
+    expect(bitmapPointRange(cache, range, 135000)).toEqual({ startIndex: 9000, endIndex: 18000 });
+  });
+
+  it('stops at the points the cache actually holds', () => {
+    const range = { startSec: 0, endSec: 300, width: 8192 };
+    expect(bitmapPointRange(cache, range, 1000).endIndex).toBe(1000);
+  });
+});
+
+describe('pointsComplete', () => {
+  it('is false until every point the buffer was sized for has arrived', () => {
+    const buffer = new Float32Array(400);
+    expect(pointsComplete(buffer, 0)).toBe(false);
+    expect(pointsComplete(buffer, 99)).toBe(false);
+    expect(pointsComplete(buffer, 100)).toBe(true);
+  });
+
+  it('is false with no buffer at all', () => {
+    expect(pointsComplete(null, 100)).toBe(false);
+    expect(pointsComplete(new Float32Array(0), 0)).toBe(false);
+  });
+});
+
+describe('builtFromSameSource', () => {
+  const dense = new Float32Array(400);
+
+  it('holds for a longer slice of the same buffer, which is how points arrive', () => {
+    expect(builtFromSameSource(dense.subarray(0, 100), dense.subarray(0, 300))).toBe(true);
+    expect(builtFromSameSource(dense, dense)).toBe(true);
+  });
+
+  it('parts for a buffer of its own, which is what a new track and a fetch both are', () => {
+    expect(builtFromSameSource(dense.subarray(0, 100), new Float32Array(400))).toBe(false);
+    expect(builtFromSameSource(dense, null)).toBe(false);
   });
 });

@@ -219,9 +219,8 @@ impl LinearResampler {
             self.out_frame += 1;
         }
 
-        // Compacted once per packet, never per frame: draining inside the loop moves the
-        // whole remaining window on almost every output frame, which cost more than the
-        // resample itself.
+        // Compacted once per packet: draining inside the loop moves the whole remaining
+        // window on almost every output frame, which cost more than the resample.
         let next_lo = (self.out_frame as f64 * self.ratio) as usize;
         if next_lo > self.consumed {
             let drop_frames = next_lo - self.consumed;

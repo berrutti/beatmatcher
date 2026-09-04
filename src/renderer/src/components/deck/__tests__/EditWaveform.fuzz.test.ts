@@ -70,8 +70,8 @@ function stubSize(element: HTMLCanvasElement, width: number) {
 
 // happy-dom's WheelEvent drops the MouseEvent init fields, so `clientX` has to be
 // put back or every wheel gesture reads as NaN and tests nothing.
-function wheelAt(clientX: number, deltaY: number, deltaX: number): WheelEvent {
-  const event = new WheelEvent('wheel', { deltaY, deltaX, bubbles: true });
+function wheelAt(clientX: number, deltaY: number, deltaX: number, ctrlKey = false): WheelEvent {
+  const event = new WheelEvent('wheel', { deltaY, deltaX, ctrlKey, bubbles: true });
   Object.defineProperty(event, 'clientX', { value: clientX, configurable: true });
   return event;
 }
@@ -93,6 +93,7 @@ function mountWaveform() {
       denseSpectralData: null,
       denseSpectralRate: 0,
       densePointsReady: 0,
+      bandsReady: true,
       bandBalance,
       waveformStyle,
       getTrackPosition: () => 12,
@@ -144,7 +145,9 @@ describe('the edit waveform under fuzzed gestures', () => {
       flushFrame();
       window.dispatchEvent(new MouseEvent('mouseup'));
     } else if (roll < 0.7) {
-      element.dispatchEvent(wheelAt(x, (random() * 2 - 1) * 200, (random() * 2 - 1) * 200));
+      element.dispatchEvent(
+        wheelAt(x, (random() * 2 - 1) * 200, (random() * 2 - 1) * 200, random() < 0.3)
+      );
       flushFrame();
     } else {
       element.dispatchEvent(new MouseEvent('mousedown', { clientX: x, button: 0, bubbles: true }));

@@ -31,3 +31,8 @@ export function densePointsFit(
   if (!buffer) return false;
   return (fromPoint + arrivedPoints) * 4 <= buffer.length;
 }
+
+// A move too small to see is not worth repainting every column for.
+export function sameBandBalance(a: BandSquares, b: BandSquares): boolean {
+  return a.every((value, band) => Math.abs(value - b[band]) < 0.01);
+}

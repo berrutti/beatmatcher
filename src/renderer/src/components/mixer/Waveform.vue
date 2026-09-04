@@ -44,7 +44,7 @@ import {
 } from '@renderer/utils/stripGeometry';
 import { waveformPalette } from '@renderer/utils/waveformPalettes';
 import { STRIP_SCALES } from '@renderer/utils/waveformPaints';
-import type { WaveformStyleOption } from '@renderer/utils/types';
+import { DEFAULT_METER, type WaveformStyleOption } from '@renderer/utils/types';
 
 type WaveformStripsSource = {
   getPosition: () => number;
@@ -72,7 +72,6 @@ const emit = defineEmits<{
 
 const HALF_WINDOW_SEC = 5;
 const OFFSCREEN_CROSS = 256;
-const BEATS_PER_BAR = 4;
 function stripPaint(balance: [number, number, number]): WaveformPaint {
   return { ...STRIP_SCALES, palette: waveformPalette(props.waveformStyle, balance) };
 }
@@ -333,7 +332,7 @@ function drawBeatGrid(
   const pxPerBeat = (60 / bpm / rate) * (width / (2 * HALF_WINDOW_SEC));
   const step = beatGridStep(
     pxPerBeat,
-    BEATS_PER_BAR,
+    DEFAULT_METER.beatsPerBar,
     MIN_WAVEFORM_BEAT_SPACING_PX,
     MIN_WAVEFORM_BAR_SPACING_PX
   );
@@ -345,7 +344,7 @@ function drawBeatGrid(
     pos - audioHalfWindow,
     pos + audioHalfWindow,
     step,
-    BEATS_PER_BAR
+    DEFAULT_METER
   )) {
     const xBeat = xFor(sec);
 
@@ -354,7 +353,9 @@ function drawBeatGrid(
     } else {
       drawBeatLine(ctx, xBeat, y0, stripH, dpr, STRIP_GRID);
     }
-    drawBeatMarker(ctx, xBeat, y0, stripH, isDownbeat, STRIP_GRID);
+    // The strip holds barely one phrase at its single zoom, so only the edit view
+    // colours them apart.
+    drawBeatMarker(ctx, xBeat, y0, stripH, isDownbeat ? 'bar' : 'beat', STRIP_GRID);
   }
 }
 

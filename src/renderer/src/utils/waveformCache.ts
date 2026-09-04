@@ -30,22 +30,10 @@ export function cacheCoversView(
   );
 }
 
-export function densePointRange(
-  startSec: number,
-  endSec: number,
-  denseRate: number,
-  totalPoints: number
-): PointRange | null {
-  const startIndex = Math.max(0, Math.floor(startSec * denseRate));
-  const endIndex = Math.min(totalPoints, Math.ceil(endSec * denseRate));
-  return endIndex > startIndex ? { startIndex, endIndex } : null;
-}
-
 export type BitmapRange = { startSec: number; endSec: number; width: number };
 
-// One column per cached point wherever that fits: the span shrinks around the view before
-// the resolution ever thins, or a cache far wider than the view would leave a deep zoom a
-// handful of columns to stretch. The visible span is always covered.
+// One column per cached point wherever that fits, or a cache far wider than the view would
+// leave a deep zoom a handful of columns to stretch.
 export function bitmapRange(
   cache: PeakCache,
   viewStartSec: number,
@@ -75,6 +63,29 @@ export function bitmapRange(
   return width >= 1 ? { startSec, endSec: startSec + windowSpan, width } : null;
 }
 
+// The points the range spans: a capped bitmap holds fewer columns than it has points.
+export function bitmapPointRange(
+  builtFrom: PeakCache,
+  range: BitmapRange,
+  totalPoints: number
+): PointRange {
+  const startIndex = Math.max(
+    0,
+    Math.round((range.startSec - builtFrom.startSec) * builtFrom.ptsPerSec)
+  );
+  const spanPoints = Math.round((range.endSec - range.startSec) * builtFrom.ptsPerSec);
+  return {
+    startIndex,
+    endIndex: Math.min(totalPoints, startIndex + Math.max(0, spanPoints))
+  };
+}
+
+// The reduction fills the buffer it sized on its first event, so a full buffer is the same
+// fact as the bands existing.
+export function pointsComplete(buffer: Float32Array | null, pointsReady: number): boolean {
+  return buffer !== null && buffer.length > 0 && pointsReady * 4 >= buffer.length;
+}
+
 export type CacheSource = 'keep' | 'dense' | 'fetch';
 
 export function cacheSource(
@@ -82,12 +93,14 @@ export function cacheSource(
   viewStartSec: number,
   viewEndSec: number,
   requiredPtsPerSec: number,
-  denseRate: number
+  denseRate: number,
+  bandsReady: boolean
 ): CacheSource {
   const covers =
     cache !== null && cacheCoversView(cache, viewStartSec, viewEndSec, requiredPtsPerSec);
   if (covers && cache.ptsPerSec === denseRate) return 'keep';
-  if (denseRate > 0 && denseRate >= requiredPtsPerSec * 0.9) return 'dense';
+  // A region is answered from the bands, so before they exist there is nothing to ask for.
+  if (denseRate > 0 && (!bandsReady || denseRate >= requiredPtsPerSec * 0.9)) return 'dense';
   return covers ? 'keep' : 'fetch';
 }
 
@@ -124,4 +137,9 @@ export function bitmapIsStale(
     bitmap.startSec > Math.max(cache.startSec, viewStartSec) + 1e-6 ||
     bitmap.endSec < Math.min(cache.endSec, viewEndSec) - 1e-6
   );
+}
+
+// One allocation per track, so a subarray of it is still that track's points.
+export function builtFromSameSource(built: Float32Array, cached: Float32Array | null): boolean {
+  return cached !== null && (cached === built || cached.buffer === built.buffer);
 }

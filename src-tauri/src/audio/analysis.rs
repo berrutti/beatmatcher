@@ -231,30 +231,32 @@ pub fn compute_spectral_waveform_region(
     start_sec: f64,
     end_sec: f64,
     num_points: usize,
-) -> Vec<f32> {
+) -> Option<Vec<f32>> {
+    if bands.frames() == 0 || num_points == 0 {
+        return None;
+    }
     let (bass, mid, high) = (&bands.bass, &bands.mid, &bands.high);
     // One reference for all three bands, so a bin's values keep the loudness ratio between
     // them. Dividing each band by its own level instead makes every band average 1, which
     // leaves the three stacked heights the same and the display saying nothing.
     let reference = band_reference(bands);
-    if bass.is_empty() || num_points == 0 {
-        return vec![0.0; num_points * 4];
-    }
     let band_rate = if bands.source_rate > 0 {
         bands.source_rate
     } else {
         sample_rate
     } as f64;
-    let total_frames = bass.len();
+    let total_frames = bands.frames();
     let start_frame = (start_sec * band_rate).max(0.0) as usize;
     let end_frame = ((end_sec * band_rate) as usize).min(total_frames);
 
     if start_frame >= end_frame {
-        return vec![0.0; num_points * 4];
+        return None;
     }
 
     let visible_frames = end_frame - start_frame;
     let frames_per_point = visible_frames as f64 / num_points as f64;
+    // Without a floor, the same kick reads taller the deeper the zoom that asked for it.
+    let window = frames_per_point.max(band_rate / DENSE_POINTS_PER_SEC);
     // The deck's own rate, which the resampler may have moved away from the file's.
     let sample_frames = samples.len() / channels.max(1);
     let sample_scale = sample_rate as f64 / band_rate;
@@ -262,9 +264,10 @@ pub fn compute_spectral_waveform_region(
     let mut result = Vec::with_capacity(num_points * 4);
 
     for point_index in 0..num_points {
-        let bin_start = start_frame + (point_index as f64 * frames_per_point) as usize;
-        let bin_end = (start_frame + ((point_index + 1) as f64 * frames_per_point) as usize)
-            .min(end_frame)
+        let centre = start_frame as f64 + (point_index as f64 + 0.5) * frames_per_point;
+        let bin_start = (centre - window / 2.0).max(0.0) as usize;
+        let bin_end = ((centre + window / 2.0) as usize)
+            .min(total_frames)
             .max(bin_start + 1);
 
         let mut sum_bass_sq = 0.0f32;
@@ -310,7 +313,7 @@ pub fn compute_spectral_waveform_region(
         result.push(amp);
     }
 
-    result
+    Some(result)
 }
 
 pub fn compute_amplitude_region(
@@ -810,6 +813,67 @@ mod tests {
     }
 
     #[test]
+    fn the_three_bands_are_filled_together() {
+        let samples = tone(4410, 2);
+        let mut stream = BandStream::new(4410, 2, 44100, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+
+        assert_eq!(reduced.bass.len(), 4410);
+        assert_eq!(reduced.bass.len(), reduced.mid.len());
+        assert_eq!(reduced.mid.len(), reduced.high.len());
+    }
+
+    #[test]
+    fn a_region_reads_the_same_amplitude_however_finely_it_is_sampled() {
+        let rate = 44100;
+        let frames = rate as usize;
+        let samples = tone(frames, 2);
+
+        let mut stream = BandStream::new(frames, 2, rate, 64);
+        stream.push(&samples, |_, _| {});
+        let reduced = stream.finish(|_, _| {});
+        let bands = super::super::SpectralBands {
+            bass: std::sync::Arc::new(reduced.bass),
+            mid: std::sync::Arc::new(reduced.mid),
+            high: std::sync::Arc::new(reduced.high),
+            bass_rms: reduced.bass_rms,
+            mid_rms: reduced.mid_rms,
+            high_rms: reduced.high_rms,
+            source_rate: rate,
+        };
+
+        let amplitudes = |num_points: usize| -> Vec<f32> {
+            compute_spectral_waveform_region(&samples, 2, &bands, rate, 0.2, 0.8, num_points)
+                .expect("a reduced track answers a region")
+                .chunks(4)
+                .map(|point| point[3])
+                .collect()
+        };
+        // 90 points over 0.6 s is the dense rate itself; 4000 is far past it.
+        let at_dense_rate = amplitudes(90);
+        let far_deeper = amplitudes(4000);
+
+        let spread = |points: &[f32]| {
+            points.iter().copied().fold(f32::MIN, f32::max)
+                - points.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let mean = |points: &[f32]| points.iter().sum::<f32>() / points.len() as f32;
+
+        assert!(
+            spread(&far_deeper) < 0.05,
+            "a steady tone drawn with a spread of {}",
+            spread(&far_deeper)
+        );
+        assert!(
+            (mean(&far_deeper) - mean(&at_dense_rate)).abs() < 0.02,
+            "{} at the dense rate against {} far deeper",
+            mean(&at_dense_rate),
+            mean(&far_deeper)
+        );
+    }
+
+    #[test]
     fn dense_point_count_follows_the_rate() {
         assert_eq!(
             dense_point_count(44100, 44100),
@@ -878,7 +942,8 @@ mod tests {
         };
 
         let points =
-            compute_spectral_waveform_region(&device, 2, &bands, device_rate, 0.0, seconds, 8);
+            compute_spectral_waveform_region(&device, 2, &bands, device_rate, 0.0, seconds, 8)
+                .expect("a reduced track answers a region");
         assert_eq!(points.len(), 32);
         // A steady tone: every point should carry the same bass share and amplitude.
         for point in 1..8 {

@@ -34,6 +34,7 @@
         :dense-spectral-data="deck.denseSpectralData"
         :dense-spectral-rate="deck.denseSpectralRate"
         :dense-points-ready="deck.densePointsReady"
+        :bands-ready="deck.bandsReady"
         :band-balance="deck.bandBalance"
         :waveform-style="settings.waveformStyle"
         :get-track-position="() => deck.trackPosition"
@@ -162,9 +163,15 @@ function onBpmSubmit(bpm: number) {
   font-family: var(--font);
 }
 
-.edit-view__body--drag-over {
-  outline: 2px dashed var(--deck-accent);
-  outline-offset: -4px;
+/* An overlay rather than the deck's `outline`: the waveform is a positioned child, so it
+   paints over an outline drawn by the body itself. */
+.edit-view__body--drag-over::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  z-index: 1;
+  border: 2px dashed var(--deck-accent);
+  pointer-events: none;
 }
 
 .edit-view__body {
@@ -172,6 +179,7 @@ function onBpmSubmit(bpm: number) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .edit-view__waveform {
