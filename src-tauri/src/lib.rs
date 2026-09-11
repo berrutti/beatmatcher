@@ -101,6 +101,8 @@ pub fn run() {
         .manage(recovery::Recovery::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             install_menu(app)?;
             install_logging(app, app_level)?;

@@ -6,6 +6,7 @@
       <SettingsModal v-if="settingsStore.isOpen" />
     </Transition>
     <RecoveryModal />
+    <UpdatePrompt />
     <ConfirmModal
       :open="quitModalOpen"
       :title="t('quitModal.title')"
@@ -29,6 +30,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { useDecksStore } from '@renderer/stores/decks';
 import { useSettingsStore } from '@renderer/stores/settings';
+import { useUpdaterStore } from '@renderer/stores/updater';
 import { useAppModeStore } from '@renderer/stores/appMode';
 import { useMidiStore } from '@renderer/stores/midi';
 import { useBrowseStore } from '@renderer/stores/browse';
@@ -45,12 +47,14 @@ import Session from '@renderer/components/session/Session.vue';
 import SettingsModal from '@renderer/components/Settings.vue';
 import SaveProgress from '@renderer/components/SaveProgress.vue';
 import ConfirmModal from '@renderer/components/modals/ConfirmModal.vue';
+import UpdatePrompt from '@renderer/components/modals/UpdatePrompt.vue';
 import RecoveryModal from '@renderer/components/modals/RecoveryModal.vue';
 import Tooltip from '@renderer/components/Tooltip.vue';
 
 const { t } = useI18n();
 const decksStore = useDecksStore();
 const settingsStore = useSettingsStore();
+const updaterStore = useUpdaterStore();
 const appMode = useAppModeStore();
 // Created here so a plugged-in controller reconnects at launch rather than on
 // the first visit to Settings.
@@ -109,6 +113,9 @@ onMounted(async () => {
   // Anything the last run left unfinished is offered back before the user can do
   // anything else, or it is silently lost the next time a recording starts.
   await useRecoveryStore().refresh();
+  // The updater endpoint and signing key only exist for packaged release
+  // builds, so checking during dev would always fail and is skipped.
+  if (import.meta.env.PROD) updaterStore.checkForUpdate();
   // Closing the window must quit the app, same as Cmd+Q. Letting the default
   // close happen would leave the app running without a window on macOS.
   unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
