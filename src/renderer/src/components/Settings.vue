@@ -166,21 +166,33 @@
             {{ $t('settings.midi.noDevices') }}
           </p>
           <div v-for="device in midi.devices" :key="device.port" class="settings-midi-device">
-            <div class="settings-midi-device-name">
-              <span>{{ device.port }}</span>
-              <span class="settings-midi-device-mapping">{{
-                device.mapping ?? $t('settings.midi.unmapped')
-              }}</span>
-            </div>
-            <div v-if="device.assignable" class="settings-row">
+            <div class="settings-midi-device-name">{{ device.port }}</div>
+            <div class="settings-row">
+              <Dropdown
+                class="settings-midi-mapping"
+                :label="device.mapping ?? $t('settings.midi.unmapped')"
+                :model-value="device.mapping ?? UNMAPPED"
+                :items="mappingItems"
+                @select="chooseMapping(device.port, $event)"
+              />
+              <template v-if="device.assignable">
+                <span class="settings-midi-deck-label">{{ $t('settings.midi.drives') }}</span>
+                <button
+                  v-for="deckId in DECKS_DISPOSITION"
+                  :key="deckId"
+                  class="btn-secondary settings-chip"
+                  :class="{ 'settings-chip--active': device.deck === deckId }"
+                  @click="midi.assignDeck(device.port, device.deck === deckId ? null : deckId)"
+                >
+                  {{ deckId }}
+                </button>
+              </template>
               <button
-                v-for="deckId in DECKS_DISPOSITION"
-                :key="deckId"
+                v-if="device.mapping"
                 class="btn-secondary settings-chip"
-                :class="{ 'settings-chip--active': device.deck === deckId }"
-                @click="midi.assignDeck(device.port, device.deck === deckId ? null : deckId)"
+                @click="mappingPort = device.port"
               >
-                {{ deckId }}
+                {{ $t('settings.mapping.edit') }}
               </button>
             </div>
           </div>
@@ -386,12 +398,15 @@
         </section>
       </div>
     </div>
+    <MidiMapping v-if="mappingPort" :port="mappingPort" @close="closeMapping" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import Checkbox from '@renderer/components/Checkbox.vue';
+import Dropdown from '@renderer/components/Dropdown.vue';
+import MidiMapping from '@renderer/components/MidiMapping.vue';
 import { focusableWithin, trapTabWithin } from '@renderer/utils/focusTrap';
 import { markModalClosed, markModalOpen } from '@renderer/utils/modalStack';
 import { useI18n } from 'vue-i18n';
@@ -413,6 +428,7 @@ import { WAVEFORM_STYLE_OPTIONS, type DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
 import { SUPPORTED_LOCALES } from '@renderer/i18n';
 import { useMidiStore } from '@renderer/stores/midi';
+import type { MappingChoice } from '@renderer/utils/midiMapping';
 import { commands, resolveKey, DEFAULT_KEYS, type Command } from '@renderer/keybindings';
 
 const { t, locale } = useI18n();
@@ -495,6 +511,35 @@ function accent(deckId: DeckId): string {
 type Slot = { deckId: 'A' | 'B' | 'C' | 'D'; command: Command };
 
 const modalEl = ref<HTMLElement | null>(null);
+const mappingPort = ref<string | null>(null);
+
+// Sentinels, so the picker's two verbs sit in the same list as the mappings rather
+// than needing controls of their own.
+const UNMAPPED = '__unmapped__';
+const CREATE = '__create__';
+
+const mappingItems = computed(() => [
+  { value: UNMAPPED, label: t('settings.midi.unmapped') },
+  ...midi.mappings.map((mapping: MappingChoice) => ({ value: mapping.name, label: mapping.name })),
+  { value: CREATE, label: t('settings.mapping.create') }
+]);
+
+async function chooseMapping(port: string, value: string): Promise<void> {
+  if (value === CREATE) {
+    await midi.createMapping(port);
+    mappingPort.value = port;
+    return;
+  }
+  await midi.setDeviceMapping(port, value === UNMAPPED ? null : value);
+}
+
+// A learned mapping is not live until it is loaded, so the device list is re-read
+// rather than trusted to still describe what it did before the panel opened.
+async function closeMapping(): Promise<void> {
+  mappingPort.value = null;
+  await midi.refresh();
+}
+
 const decksEl = ref<HTMLElement | null>(null);
 const capturingSlot = ref<Slot | null>(null);
 const conflictSlot = ref<Slot | null>(null);
@@ -590,6 +635,9 @@ function focusableElements(): HTMLElement[] {
 }
 
 function onWindowKeydown(e: KeyboardEvent) {
+  // Both panels listen in the capture phase and this one registered first, so
+  // without this Escape closes Settings out from under the mapping panel.
+  if (mappingPort.value !== null) return;
   if (!capturingSlot.value) {
     if (e.key === 'Escape') {
       e.preventDefault();

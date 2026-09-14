@@ -1,7 +1,8 @@
 use crate::audio::Deck;
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/renderer/src/generated/")]
 pub(crate) struct DeckSyncPayload {
     pub(crate) is_playing: bool,
     pub(crate) is_cueing: bool,
@@ -14,16 +15,19 @@ pub(crate) struct DeckSyncPayload {
     pub(crate) loop_region: Option<LoopRegionPayload>,
 }
 
-pub(crate) fn beats_between(start_sec: f64, end_sec: f64, bpm: f64) -> i64 {
-    ((end_sec - start_sec) * bpm / 60.0).round() as i64
+/// `i32` because it crosses to the frontend as JSON, where an `i64` has no exact
+/// representation. A loop's beat count is nowhere near either bound.
+pub(crate) fn beats_between(start_sec: f64, end_sec: f64, bpm: f64) -> i32 {
+    ((end_sec - start_sec) * bpm / 60.0).round() as i32
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/renderer/src/generated/")]
 pub(crate) struct LoopRegionPayload {
-    start_sec: f64,
-    end_sec: f64,
-    beats: i64,
+    pub(crate) start_sec: f64,
+    pub(crate) end_sec: f64,
+    pub(crate) beats: i32,
 }
 
 impl DeckSyncPayload {

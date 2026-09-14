@@ -4,3 +4,4 @@ dist-tauri
 node_modules
 src-tauri
 session-core
+src/renderer/src/generated

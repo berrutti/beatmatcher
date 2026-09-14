@@ -74,6 +74,7 @@ pub struct MidiState {
     dispatch: DispatchSlot,
     mappings: Vec<Mapping>,
     devices: Mutex<HashMap<String, Device>>,
+    learn: Arc<Mutex<Learn>>,
 }
 
 impl MidiState {
@@ -92,6 +93,7 @@ impl MidiState {
             dispatch,
             mappings: built_in_mappings(),
             devices: Mutex::new(HashMap::new()),
+            learn: Arc::new(Mutex::new(Learn::default())),
         }
     }
 
@@ -105,6 +107,10 @@ impl MidiState {
         self.mappings
             .iter()
             .position(|mapping| mapping.claims(port))
+    }
+
+    fn mapping_index_named(&self, name: &str) -> Option<usize> {
+        mapping_index_named(&self.mappings, name)
     }
 
     /// A port that is still present is left untouched, so a rescan never disturbs
@@ -178,6 +184,29 @@ fn serve(requests: Receiver<Request>, monitor: Arc<Monitor>, dispatch: DispatchS
     }
     drop(inputs);
     drop(outputs);
+}
+
+/// One mapping the user can choose for a device, named the way the file names itself.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MappingChoice {
+    name: String,
+    /// The surface names no decks of its own, so the user picks the deck it drives.
+    needs_deck: bool,
+}
+
+fn offered_mappings(mappings: &[Mapping]) -> Vec<MappingChoice> {
+    mappings
+        .iter()
+        .map(|mapping| MappingChoice {
+            name: mapping.name().to_string(),
+            needs_deck: mapping.needs_deck(),
+        })
+        .collect()
+}
+
+fn mapping_index_named(mappings: &[Mapping], name: &str) -> Option<usize> {
+    mappings.iter().position(|mapping| mapping.name() == name)
 }
 
 fn ports_to_open(wanted: &[String], is_open: impl Fn(&str) -> bool) -> Vec<String> {
@@ -257,6 +286,18 @@ pub(crate) fn apply(
     port: &str,
     data: &[u8],
 ) {
+    // Ahead of the surface gate, so a mapping is learned in any mode, and ahead of
+    // the profile, so a control being captured never also moves the deck it is on.
+    {
+        let mut learn = midi.learn.locked();
+        if learn.learning(port) {
+            if let Some(capture) = learn.observe(port, data) {
+                app.emit("midi-learn", LearnUpdate::pending(port, capture))
+                    .ok();
+            }
+            return;
+        }
+    }
     if !surface.allowed() {
         return;
     }
@@ -454,11 +495,17 @@ pub(crate) fn refresh_led(
 
 pub fn start_monitor(app: tauri::AppHandle, state: &MidiState) {
     let monitor = Arc::clone(&state.monitor);
+    let learn = Arc::clone(&state.learn);
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(MONITOR_FLUSH_MS));
         let batch = monitor.drain();
         if !batch.is_empty() {
             app.emit("midi-messages", batch).ok();
+        }
+        // A capture lands when its control stops moving, which nothing in the
+        // message path can see.
+        if let Some(landed) = learn.locked().settled() {
+            app.emit("midi-learn", LearnUpdate::landed(&landed)).ok();
         }
     });
 }
@@ -549,6 +596,50 @@ pub fn set_midi_device_deck(
     Ok(())
 }
 
+/// Every mapping a device can be given. A port is claimed by name on connect, and this
+/// is how that guess is overridden when it guessed wrong or did not guess at all.
+pub fn midi_mappings(state: tauri::State<'_, crate::midi::MidiState>) -> Vec<MappingChoice> {
+    offered_mappings(&state.mappings)
+}
+
+/// `None` leaves the device unmapped, which is how a controller is silenced without
+/// unplugging it.
+pub fn set_midi_device_mapping(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    app_state: tauri::State<'_, crate::engine::Engine>,
+    port: String,
+    mapping: Option<String>,
+) -> Result<(), String> {
+    let index = match &mapping {
+        Some(name) => Some(
+            state
+                .mapping_index_named(name)
+                .ok_or_else(|| format!("no mapping named '{name}'"))?,
+        ),
+        None => None,
+    };
+    {
+        let mut devices = state.devices.locked();
+        let Some(device) = devices.get_mut(&port) else {
+            return Err(format!("no MIDI device on '{port}'"));
+        };
+        device.mapping = index;
+        device.memory.clear();
+        // A surface that names no decks of its own has no profile until the user picks
+        // the deck it drives, so the deck the old mapping had cannot carry over.
+        device.deck = None;
+        device.profile = match index {
+            Some(index) if !state.mappings[index].needs_deck() => {
+                Some(state.mappings[index].profile(None)?)
+            }
+            _ => None,
+        };
+    }
+    app_state.audio.release_held_controls();
+    resync_leds(&app_state, &state);
+    Ok(())
+}
+
 pub fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, enabled: bool) {
     state.monitor.enabled.store(enabled, Ordering::Relaxed);
     if !enabled {
@@ -556,12 +647,193 @@ pub fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, enabled
     }
 }
 
+/// A capture in progress, then the same capture once its control stopped moving.
+/// `landed` is what tells the two apart, because a settled capture is the one the
+/// draft now holds.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LearnUpdate {
+    port: String,
+    slot: Slot,
+    capture: Capture,
+    landed: bool,
+}
+
+impl LearnUpdate {
+    fn pending(port: &str, (slot, capture): (Slot, Capture)) -> Self {
+        Self {
+            port: port.to_string(),
+            slot,
+            capture,
+            landed: false,
+        }
+    }
+
+    fn landed(landed: &learn::Landed) -> Self {
+        Self {
+            port: landed.port.clone(),
+            slot: landed.slot.clone(),
+            capture: landed.capture,
+            landed: true,
+        }
+    }
+}
+
+/// The draft as the UI reads it, alongside the file it would be contributed as.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MappingDraft {
+    port: String,
+    name: String,
+    matches: Vec<String>,
+    bindings: Vec<learn::DraftBinding>,
+    colliding: Vec<Slot>,
+    /// The slot a capture is being read for. Held here rather than in the frontend,
+    /// because it is what routes an incoming message and only one side can own that.
+    armed: Option<Slot>,
+    file: learn::MappingFile,
+}
+
+fn draft_of(state: &MidiState, port: &str) -> Result<MappingDraft, String> {
+    let learn = state.learn.locked();
+    let draft = learn
+        .draft(port)
+        .ok_or_else(|| format!("no mapping is being written for '{port}'"))?;
+    Ok(MappingDraft {
+        port: port.to_string(),
+        name: draft.name.clone(),
+        matches: draft.matches.clone(),
+        bindings: draft.entries(),
+        colliding: draft.colliding(),
+        armed: learn.armed_slot().cloned(),
+        file: draft.file(),
+    })
+}
+
+/// Seeded from whatever mapping already claims the port, so correcting one
+/// binding of a shipped file does not mean re-learning the device.
+pub fn start_midi_learn(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<MappingDraft, String> {
+    // The mapping the device is actually using, not the one its port name claims: the
+    // user may have overridden the guess, and editing must start from what they chose.
+    let chosen = state.devices.locked().get(&port).and_then(|d| d.mapping);
+    let seed = chosen.map(|index| &state.mappings[index]);
+    state.learn.locked().start(&port, seed);
+    draft_of(&state, &port)
+}
+
+pub fn stop_midi_learn(state: tauri::State<'_, crate::midi::MidiState>) {
+    state.learn.locked().stop();
+}
+
+pub fn arm_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: Slot,
+) -> Result<MappingDraft, String> {
+    {
+        let mut learn = state.learn.locked();
+        if !learn.learning(&port) {
+            return Err(format!("'{port}' is not being learned"));
+        }
+        learn.arm(&port, slot)?;
+    }
+    draft_of(&state, &port)
+}
+
+pub fn disarm_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<MappingDraft, String> {
+    state.learn.locked().disarm();
+    draft_of(&state, &port)
+}
+
+/// The learn window only sees a release if the user let the button go while it was
+/// armed, so the reading is correctable without re-learning the control.
+pub fn set_midi_slot_button(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: Slot,
+    button: mapping::ButtonSpec,
+) -> Result<MappingDraft, String> {
+    state
+        .learn
+        .locked()
+        .draft_mut(&port)
+        .ok_or_else(|| format!("no mapping is being written for '{port}'"))?
+        .set_button(&slot, button);
+    draft_of(&state, &port)
+}
+
+pub fn clear_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: Slot,
+) -> Result<MappingDraft, String> {
+    state
+        .learn
+        .locked()
+        .draft_mut(&port)
+        .ok_or_else(|| format!("no mapping is being written for '{port}'"))?
+        .clear(&slot);
+    draft_of(&state, &port)
+}
+
+pub fn midi_mapping_draft(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<MappingDraft, String> {
+    draft_of(&state, &port)
+}
+
+pub fn discard_midi_draft(state: tauri::State<'_, crate::midi::MidiState>, port: String) {
+    state.learn.locked().discard(&port);
+}
+
+/// The whole file, so nothing outside here decides how a mapping is spelled on disk.
+/// `None` when the save dialog was dismissed.
+pub async fn save_midi_mapping(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<Option<String>, String> {
+    let (file_name, text) = {
+        let learn = state.learn.locked();
+        let draft = learn
+            .draft(&port)
+            .ok_or_else(|| format!("no mapping is being written for '{port}'"))?;
+        (
+            draft.file_name(),
+            serde_json::to_string_pretty(&draft.file()).map_err(|error| error.to_string())?,
+        )
+    };
+    let Some(handle) = rfd::AsyncFileDialog::new()
+        .add_filter("Beatmatcher MIDI mapping", &["json"])
+        .set_file_name(&file_name)
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    std::fs::write(&path, format!("{text}\n")).map_err(|error| error.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 mod decode;
+mod learn;
 mod mapping;
+mod vocabulary;
 mod wire;
 use decode::{resolve_move, ControlMemory, Move};
+pub use learn::Slot;
+use learn::{Capture, Learn};
+pub use mapping::ButtonSpec;
 pub(crate) use mapping::Feedback;
 use mapping::{built_in_mappings, Mapping, Profile, ResolutionSpec};
+pub use vocabulary::{vocabulary, Vocabulary};
 use wire::{Key, Resolution, NOTE_ON};
 
 /// A mapped control that fails without saying so reads as broken hardware.
@@ -1235,6 +1507,24 @@ mod tests {
             .is_some());
     }
 
+    // The user picks a mapping by the name the list shows, so the name is what has to
+    // resolve back to one.
+    #[test]
+    fn a_mapping_is_found_by_the_name_the_list_offers() {
+        let mappings = built_in_mappings();
+        let offered = offered_mappings(&mappings);
+        assert!(offered.iter().any(|entry| entry.name == "DDJ-FLX6"));
+        assert!(offered
+            .iter()
+            .any(|entry| entry.name == "XDJ-1000MK2" && entry.needs_deck));
+
+        for entry in &offered {
+            let found = mapping_index_named(&mappings, &entry.name).expect(&entry.name);
+            assert_eq!(mappings[found].name(), entry.name);
+        }
+        assert!(mapping_index_named(&mappings, "no such controller").is_none());
+    }
+
     #[test]
     fn a_mapping_claims_only_the_port_names_it_names() {
         let flx6 = mapping_named("DDJ-FLX6");
@@ -1384,12 +1674,27 @@ mod tests {
         assert!(mapping.profile(None).is_err());
     }
 
+    // Refused while parsing rather than while building, so a shipped file naming an
+    // action this build dropped fails `built_in_mappings` instead of presenting a
+    // controller with one dead control.
+    // `decode.rs` turns the release into `CueRelease`, so a control that never sends
+    // one would leave the deck previewing forever.
+    #[test]
+    fn a_held_action_bound_to_a_trigger_is_refused() {
+        let source = r#"{ "version": 3, "name": "Broken", "match": [], "decks": "fixed",
+                         "bindings": [{ "channel": 1, "note": 1, "action": "transport_cue",
+                                        "deck": "A", "button": "trigger" }] }"#;
+        assert!(parse_mapping(source).is_err());
+
+        let momentary = source.replace("trigger", "momentary");
+        assert!(parse_mapping(&momentary).is_ok());
+    }
+
     #[test]
     fn an_unknown_action_name_is_refused() {
         let source = r#"{ "version": 1, "name": "Broken", "match": [], "decks": "fixed",
                          "bindings": [{ "channel": 1, "note": 1, "action": "teleport" }] }"#;
-        let mapping = parse_mapping(source).expect("a parseable file");
-        assert!(mapping.profile(None).is_err());
+        assert!(parse_mapping(source).is_err());
     }
 
     #[test]

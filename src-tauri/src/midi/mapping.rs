@@ -95,8 +95,12 @@ impl Profile {
                 }
             }
             for (key, half) in keys {
-                if by_key.insert(key, (index, half)).is_some() {
-                    return Err(format!("two bindings share {key:?}"));
+                if let Some((taken, _)) = by_key.insert(key, (index, half)) {
+                    return Err(format!(
+                        "'{}' and '{}' share {key:?}",
+                        bindings[taken].action.id(),
+                        binding.action.id()
+                    ));
                 }
             }
         }
@@ -115,25 +119,34 @@ impl Profile {
 
 /// Bumped only when the vocabulary changes. A file declaring a newer version is
 /// refused rather than half-read.
-pub(super) const MAPPING_VERSION: u32 = 2;
+pub(super) const MAPPING_VERSION: u32 = 3;
 
 /// The version that introduced the deck template. A file using it is refused below this,
 /// because an older build finds no `bindings` at all and presents a dead controller.
 pub(super) const DECK_TEMPLATE_VERSION: u32 = 2;
 
-pub(super) const MAPPING_FILES: [&str; 2] = [
-    include_str!("../../mappings/ddj-flx6.json"),
-    include_str!("../../mappings/xdj-1000mk2.json"),
-];
+// Globbed from `mappings/` by `build.rs`, so a contributed mapping is a JSON file
+// and nothing here lists it.
+include!(concat!(env!("OUT_DIR"), "/mapping_files.rs"));
 
-#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum DeckScope {
+pub enum DeckScope {
     Fixed,
     Assigned,
 }
 
-#[derive(serde::Deserialize, Clone, Copy)]
+/// What a button reports. A trigger sends its press and nothing else, so an action
+/// that acts on the release cannot be driven by one.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ButtonSpec {
+    #[default]
+    Momentary,
+    Trigger,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ResolutionSpec {
     #[serde(rename = "7bit")]
     SevenBit,
@@ -145,23 +158,25 @@ pub(super) enum ResolutionSpec {
     SignedStep,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub(super) struct BindingSpec {
     pub(super) channel: u8,
     pub(super) action: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) note: Option<u8>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cc: Option<u8>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) resolution: Option<ResolutionSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) button: Option<ButtonSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) deck: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) slot: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) param: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) steps: Option<i32>,
 }
 
@@ -184,6 +199,8 @@ pub(super) struct DeckBindingSpec {
     #[serde(default)]
     pub(super) resolution: Option<ResolutionSpec>,
     #[serde(default)]
+    pub(super) button: Option<ButtonSpec>,
+    #[serde(default)]
     pub(super) slot: Option<String>,
     #[serde(default)]
     pub(super) param: Option<String>,
@@ -199,6 +216,7 @@ impl DeckBindingSpec {
             note: self.note,
             cc: self.cc,
             resolution: self.resolution,
+            button: self.button,
             deck: Some(over.deck.clone()),
             slot: self.slot.clone(),
             param: self.param.clone(),
@@ -376,6 +394,20 @@ pub(super) fn parse_mapping(source: &str) -> Result<Mapping, String> {
     let mut bindings = file.bindings;
     for over in &file.per_deck {
         bindings.extend(file.deck_bindings.iter().map(|spec| spec.expand(over)));
+    }
+    for binding in &bindings {
+        let Some(spec) = super::vocabulary::spec(&binding.action, binding.steps) else {
+            return Err(format!(
+                "{}: unknown action '{}'",
+                file.name, binding.action
+            ));
+        };
+        if spec.needs_release && binding.button == Some(ButtonSpec::Trigger) {
+            return Err(format!(
+                "{}: '{}' acts on the release, which a trigger never sends",
+                file.name, binding.action
+            ));
+        }
     }
     Ok(Mapping {
         name: file.name,

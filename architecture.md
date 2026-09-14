@@ -55,10 +55,19 @@ private.
 verified by `yarn check:commands`). Its `call` wrapper checks the command name, its arguments and
 its return type against the Rust that will receive them, so it is the default.
 
-The generator reads only primitives, `String`, `bool`, `Vec`, `Option` and `HashMap`. A command
-returning a struct comes back as `unknown`, and those take `invoke<T>('name', args)` with `T` a
-hand-written mirror: `DeckSyncPayload`, `TrackInfo`, `LoopOutResult` and the other transport
-commands. Using `invoke` where the generator did type the return throws away the check.
+The generator reads primitives, `String`, `bool`, `Vec`, `Option` and `HashMap`, plus any struct
+listed in its `MIRRORS` table, which pairs a Rust type name with the TypeScript type that already
+mirrors it and imports it into the generated file. A struct with no entry comes back as `unknown`,
+and those take `invoke<T>('name', args)` with `T` a hand-written mirror: `DeckSyncPayload`,
+`TrackInfo`, `LoopOutResult` and the other transport commands. Using `invoke` where the generator
+did type the return throws away the check.
+
+A mirror has to live under `utils/`, because stores import the generated file and the generated
+file would otherwise import a store back.
+
+Which shape a new command should have, and why the transport verbs return a whole
+`DeckSyncPayload` while the mixer writes return nothing, is
+[its own document](docs/frontend-backend-contract.md).
 
 ## Audio signal chain (per deck)
 
@@ -226,6 +235,7 @@ Decoding a message and reading a mapping file are separate modules, each importi
 A **mapping** is a JSON file in `src-tauri/mappings/`, listing bindings that each pair a **source** with an **action**:
 
 - A source is a control change or a note. Its resolution says how to read the value: `7bit`, `14bit` (low half on the controller 32 above the high one), `centre_delta` (signed speed either side of 64, what a jog platter reports), or `signed_step` (1 or 127 per detent, what a browse encoder reports).
+- A note also says what it reports. `button` is `momentary` by default, meaning the surface sends both edges; `trigger` means it sends only the press. `transport_cue` and `shift` act on the release, so a mapping binding either of them to a trigger is refused rather than leaving the deck holding the press.
 - An action is one entry in a closed enum: a mixer parameter addressed as deck/slot/param, the crossfader, a transport button, the tempo fader, the jog, or browse.
 
 `channel` counts from 1, the way the hardware's documentation and the console monitor do. The wire counts from 0 and the loader subtracts.
@@ -238,7 +248,15 @@ A positional control is placed on its parameter's range by the mixer manifest (`
 
 ### Contributing a mapping
 
-Bind against the device rather than its documentation. Dev builds log every incoming message to the browser console as raw bytes plus a decode, so connecting a controller in Settings and moving one control at a time is how addresses are found.
+Bind against the device rather than its documentation. Settings lists every connected port, and **Edit mapping** opens the learn panel: pick a control on screen, move the one on the controller, and the address is read off what it sends. The panel writes the file. Dev builds also log every incoming message to the browser console as raw bytes plus a decode.
+
+A learn panel offers what the vocabulary offers, which is `midi/vocabulary.rs`: the closed action list plus the mixer addresses the live manifest exposes. `parse_mapping` refuses a file naming an action absent from that list, so the table cannot fall behind the files. While a port is being learned its messages never reach the engine, so capturing a control does not also move the deck it is on.
+
+The resolution is inferred rather than asked for: a note is a button, both halves of a control change are 14 bits and the file names the high one, values that stay in a band around the centre are a platter, and 1 and 127 alone are an encoder. A capture lands once its control has been still for a moment, so a fader is read from the whole sweep instead of its first message.
+
+Whether a button is momentary or a trigger is read the same way, from whether its release arrived while the slot was armed, and the panel lets it be corrected without re-learning the control: the window only sees a release if the button was let go in time.
+
+`build.rs` globs `mappings/*.json`, so a contributed mapping is a JSON file dropped in that folder and nothing in Rust lists it.
 
 Encoders are the trap. Read one through a **full revolution** before deciding what it reports, because an absolute angle, a signed step and a speed are indistinguishable over a small nudge.
 
@@ -248,6 +266,7 @@ A control no action covers needs a new enum variant, and adding one fails to com
 
 ## Further reading
 
+- [What crosses between the frontend and the engine](docs/frontend-backend-contract.md)
 - [App modes and transitions](docs/app-modes.md)
 - [Session playback and editing](docs/session-playback.md)
 - [.bms file format](docs/bms-format.md)
