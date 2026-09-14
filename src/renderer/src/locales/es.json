@@ -89,7 +89,8 @@
       "rescan": "Volver a buscar",
       "noDevices": "No hay dispositivos MIDI conectados.",
       "unmapped": "Sin asignación para este dispositivo",
-      "hint": "Todos los dispositivos conectados están activos a la vez. Un dispositivo que reproduce un solo deck necesita elegir uno aquí."
+      "hint": "Todos los dispositivos conectados están activos a la vez. Un dispositivo que reproduce un solo deck necesita elegir uno aquí.",
+      "drives": "Controla el deck"
     },
     "bpmRange": {
       "title": "Rango de detección de BPM",
@@ -148,6 +149,85 @@
       "loopIn": "Loop in",
       "loopOut": "Loop out",
       "conflict": "'{key}' ya está en uso por {deck} / {cmd}"
+    },
+    "mapping": {
+      "title": "Mapeo MIDI",
+      "edit": "Editar mapeo",
+      "hint": "Hacé clic en un control y después mové el de tu controlador. Doble clic para desasignar. El dispositivo no controla los decks mientras esto está abierto.",
+      "global": "Global",
+      "deck": "Deck",
+      "mixer": "Mezcladora",
+      "file": "Archivo de mapeo",
+      "assigned": "Asignado al deck que tenga este dispositivo",
+      "copy": "Copiar JSON",
+      "copied": "Copiado",
+      "action": {
+        "deck_param": "Parámetro de mezcladora",
+        "play_toggle": "Play",
+        "cue_toggle": "CUE de auriculares",
+        "transport_cue": "CUE",
+        "loop_in": "Inicio de loop",
+        "loop_out": "Fin de loop",
+        "loop_exit_or_reloop": "Salir / volver al loop",
+        "quantize_toggle": "Cuantizar",
+        "shift": "Shift",
+        "eject": "Expulsar",
+        "load": "Cargar",
+        "tempo_fader": "Fader de tempo",
+        "jog": "Jog",
+        "xfader_position": "Crossfader",
+        "browse": "Navegar",
+        "enter": "Entrar",
+        "back": "Volver",
+        "toggle_view": "Cambiar vista"
+      },
+      "param": {
+        "eq": {
+          "low": "EQ graves",
+          "mid": "EQ medios",
+          "high": "EQ agudos"
+        },
+        "filter": {
+          "value": "Filtro"
+        },
+        "fader": {
+          "gain": "Fader de canal"
+        }
+      },
+      "resolution": {
+        "7bit": "7 bits",
+        "14bit": "14 bits",
+        "centre_delta": "plato",
+        "signed_step": "encoder"
+      },
+      "save": "Guardar mapeo…",
+      "saved": "Guardado en {path}",
+      "collision": "{count} controles comparten una dirección. El mapeo se rechaza hasta que sean distintos.",
+      "folder": "Guardalo junto a los archivos de mapeo en src-tauri/mappings y recompilá para usar tu controlador.",
+      "identity": "Dispositivo",
+      "name": "Nombre",
+      "claims": "Toma puertos que contengan",
+      "claimsHint": "Un fragmento corto que compartan las dos revisiones del nombre del puerto. Separá con comas si hay más de uno.",
+      "scope": {
+        "fixed": "Nombra sus propios decks",
+        "assigned": "Controla un solo deck"
+      },
+      "scopeHint": {
+        "fixed": "Un controlador con una sección por deck. Cada asignación indica el deck que mueve.",
+        "assigned": "Un solo reproductor. El deck se elige en la lista de dispositivos."
+      },
+      "reset": "Empezar de nuevo",
+      "move": {
+        "button": "Presioná un botón del controlador. Esc para cancelar",
+        "positional": "Barré un fader o perilla de punta a punta. Esc para cancelar",
+        "relative": "Girá el plato o el encoder. Esc para cancelar"
+      },
+      "button": {
+        "momentary": "pulsar + soltar",
+        "trigger": "solo pulsar"
+      },
+      "needsRelease": "Esta acción se deshace al soltar el botón, así que un control que solo envía la pulsación no sirve.",
+      "create": "Crear nuevo…"
     }
   },
   "browser": {

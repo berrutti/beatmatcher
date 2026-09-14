@@ -8,6 +8,8 @@ import {
 } from '@renderer/utils/bandBalance';
 import { reactive, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import type { DeckSyncPayload } from '@renderer/generated/DeckSyncPayload';
+import type { LoopRegionPayload } from '@renderer/generated/LoopRegionPayload';
 import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import { useSettingsStore } from '@renderer/stores/settings';
@@ -21,12 +23,6 @@ export const EDIT_DECK_ID = 'E' as const;
 // The pair a two-deck mixer shows. C and D are the outer decks of the four-deck layout, so
 // they are the ones that go, and the remaining two keep their disposition order.
 export const TWO_DECK_DISPOSITION = ['A', 'B'] as const;
-
-type LoopRegion = {
-  startSec: number;
-  endSec: number;
-  beats: number;
-};
 
 export type TrackData = {
   duration: number;
@@ -53,16 +49,6 @@ type WaveformProgress = {
   pointsReady: number;
   totalPoints: number;
   pointsPerSec: number;
-};
-
-type DeckSyncPayload = {
-  isPlaying: boolean;
-  isCueing: boolean;
-  cuePointSec: number;
-  positionSec: number;
-  loopActive: boolean;
-  loopRegionCleared: boolean;
-  loopRegion: LoopRegion | null;
 };
 
 type TransportPush = DeckSyncPayload & { deck: DeckId };
@@ -98,7 +84,7 @@ type DeckTrackState = {
   bandsReady: boolean;
   coverArt: string | null;
   loopPlaying: boolean;
-  loopRegion: LoopRegion | null;
+  loopRegion: LoopRegionPayload | null;
   loopActive: boolean;
   ejectPending: boolean;
   trackBpm: number | null;
@@ -439,31 +425,22 @@ function createDeck(id: DeckId, accent: string, name: string) {
     async setLoopIn() {
       if (!state.trackLoaded) return;
       syncPosition();
-      const payload = await invoke<DeckSyncPayload>('set_loop_in', { deck: id });
+      const payload = await call('set_loop_in', { deck: id });
       applyDeckState(payload);
     },
 
+    // `null` when the press defined no region, which is the only case this decides.
+    // Everything else is the payload, applied like any other transport verb.
     async setLoopOut() {
       if (!state.trackLoaded || state.trackBpm === null) return;
-      const r = await invoke<{
-        startSec: number;
-        endSec: number;
-        beats: number;
-        seekToSec: number | null;
-      } | null>('set_loop_out', { deck: id });
-      if (!r) return;
-      state.loopRegion = { startSec: r.startSec, endSec: r.endSec, beats: r.beats };
-      state.loopActive = true;
-      if (r.seekToSec !== null) {
-        positionCache = r.seekToSec;
-        clockAtPlay = performance.now();
-      }
+      const payload = await call('set_loop_out', { deck: id });
+      if (payload) applyDeckState(payload);
     },
 
     async exitLoop() {
       if (!state.loopActive) return;
       syncPosition();
-      const payload = await invoke<DeckSyncPayload>('set_loop_active', { deck: id, active: false });
+      const payload = await call('set_loop_active', { deck: id, active: false });
       applyDeckState(payload);
     },
 
@@ -471,7 +448,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       if (!state.loopRegion) return;
       positionCache = state.loopRegion.startSec;
       clockAtPlay = performance.now();
-      const payload = await invoke<DeckSyncPayload>('set_reloop', { deck: id });
+      const payload = await call('set_reloop', { deck: id });
       applyDeckState(payload);
     },
 
@@ -494,17 +471,17 @@ function createDeck(id: DeckId, accent: string, name: string) {
     },
 
     async togglePlay() {
-      const payload = await invoke<DeckSyncPayload>('toggle_play', { deck: id });
+      const payload = await call('toggle_play', { deck: id });
       applyDeckState(payload);
     },
 
     async cueStart() {
-      const payload = await invoke<DeckSyncPayload>('press_cue', { deck: id });
+      const payload = await call('press_cue', { deck: id });
       applyDeckState(payload);
     },
 
     async cueEnd() {
-      const payload = await invoke<DeckSyncPayload>('release_cue', { deck: id });
+      const payload = await call('release_cue', { deck: id });
       applyDeckState(payload);
     },
 
@@ -512,7 +489,7 @@ function createDeck(id: DeckId, accent: string, name: string) {
       const clamped = Math.max(0, sec);
       positionCache = clamped;
       clockAtPlay = performance.now();
-      const payload = await invoke<DeckSyncPayload>('seek', { deck: id, sec: clamped });
+      const payload = await call('seek', { deck: id, sec: clamped });
       applyDeckState(payload);
     },
 

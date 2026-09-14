@@ -1,6 +1,6 @@
 use crate::audio::{self, DeviceInfo, TrackInfo};
 use crate::deck_sync::DeckSyncPayload;
-use crate::engine::{LoopOutResult, NudgeResult};
+use crate::engine::NudgeResult;
 use crate::lock::LockIgnoringPoison;
 use crate::ParamOrigin;
 use std::sync::Arc;
@@ -466,7 +466,7 @@ pub(crate) fn set_loop_in(
 pub(crate) fn set_loop_out(
     engine: tauri::State<'_, crate::engine::Engine>,
     deck: String,
-) -> Result<Option<LoopOutResult>, String> {
+) -> Result<Option<DeckSyncPayload>, String> {
     engine.loop_out(ParamOrigin::Ui, &deck)
 }
 
@@ -1472,6 +1472,98 @@ pub(crate) fn set_midi_device_deck(
 #[tauri::command]
 pub(crate) fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, enabled: bool) {
     crate::midi::set_midi_monitor(state, enabled)
+}
+
+#[tauri::command]
+pub(crate) fn midi_vocabulary() -> crate::midi::Vocabulary {
+    crate::midi::vocabulary()
+}
+
+#[tauri::command]
+pub(crate) fn midi_mappings(
+    state: tauri::State<'_, crate::midi::MidiState>,
+) -> Vec<crate::midi::MappingChoice> {
+    crate::midi::midi_mappings(state)
+}
+
+#[tauri::command]
+pub(crate) fn set_midi_device_mapping(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    app_state: tauri::State<'_, crate::engine::Engine>,
+    port: String,
+    mapping: Option<String>,
+) -> Result<(), String> {
+    crate::midi::set_midi_device_mapping(state, app_state, port, mapping)
+}
+
+#[tauri::command]
+pub(crate) fn start_midi_learn(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::start_midi_learn(state, port)
+}
+
+#[tauri::command]
+pub(crate) fn stop_midi_learn(state: tauri::State<'_, crate::midi::MidiState>) {
+    crate::midi::stop_midi_learn(state)
+}
+
+#[tauri::command]
+pub(crate) fn arm_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: crate::midi::Slot,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::arm_midi_slot(state, port, slot)
+}
+
+#[tauri::command]
+pub(crate) fn disarm_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::disarm_midi_slot(state, port)
+}
+
+#[tauri::command]
+pub(crate) fn set_midi_slot_button(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: crate::midi::Slot,
+    button: crate::midi::ButtonSpec,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::set_midi_slot_button(state, port, slot, button)
+}
+
+#[tauri::command]
+pub(crate) fn clear_midi_slot(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+    slot: crate::midi::Slot,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::clear_midi_slot(state, port, slot)
+}
+
+#[tauri::command]
+pub(crate) fn midi_mapping_draft(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<crate::midi::MappingDraft, String> {
+    crate::midi::midi_mapping_draft(state, port)
+}
+
+#[tauri::command]
+pub(crate) fn discard_midi_draft(state: tauri::State<'_, crate::midi::MidiState>, port: String) {
+    crate::midi::discard_midi_draft(state, port)
+}
+
+#[tauri::command]
+pub(crate) async fn save_midi_mapping(
+    state: tauri::State<'_, crate::midi::MidiState>,
+    port: String,
+) -> Result<Option<String>, String> {
+    crate::midi::save_midi_mapping(state, port).await
 }
 
 #[cfg(test)]

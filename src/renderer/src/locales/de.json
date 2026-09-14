@@ -89,7 +89,8 @@
       "rescan": "Neu suchen",
       "noDevices": "Keine MIDI-Geräte verbunden.",
       "unmapped": "Keine Zuordnung für dieses Gerät",
-      "hint": "Alle verbundenen Geräte sind gleichzeitig aktiv. Ein Gerät, das ein einzelnes Deck spielt, braucht hier eine Auswahl."
+      "hint": "Alle verbundenen Geräte sind gleichzeitig aktiv. Ein Gerät, das ein einzelnes Deck spielt, braucht hier eine Auswahl.",
+      "drives": "Steuert Deck"
     },
     "bpmRange": {
       "title": "BPM-Erkennungsbereich",
@@ -148,6 +149,85 @@
       "loopIn": "Loop in",
       "loopOut": "Loop out",
       "conflict": "'{key}' wird bereits von {deck} / {cmd} verwendet"
+    },
+    "mapping": {
+      "title": "MIDI-Mapping",
+      "edit": "Mapping bearbeiten",
+      "hint": "Auf ein Element klicken, dann den passenden Regler am Controller bewegen. Doppelklick löst die Zuweisung. Das Gerät steuert die Decks nicht, solange dies offen ist.",
+      "global": "Global",
+      "deck": "Deck",
+      "mixer": "Mixer",
+      "file": "Mapping-Datei",
+      "assigned": "An das Deck gebunden, dem dieses Gerät zugewiesen ist",
+      "copy": "JSON kopieren",
+      "copied": "Kopiert",
+      "action": {
+        "deck_param": "Mixer-Parameter",
+        "play_toggle": "Play",
+        "cue_toggle": "Kopfhörer-Cue",
+        "transport_cue": "CUE",
+        "loop_in": "Loop-Start",
+        "loop_out": "Loop-Ende",
+        "loop_exit_or_reloop": "Loop verlassen / erneut",
+        "quantize_toggle": "Quantisierung",
+        "shift": "Shift",
+        "eject": "Auswerfen",
+        "load": "Laden",
+        "tempo_fader": "Tempo-Fader",
+        "jog": "Jogwheel",
+        "xfader_position": "Crossfader",
+        "browse": "Blättern",
+        "enter": "Enter",
+        "back": "Zurück",
+        "toggle_view": "Ansicht wechseln"
+      },
+      "param": {
+        "eq": {
+          "low": "EQ Bass",
+          "mid": "EQ Mitten",
+          "high": "EQ Höhen"
+        },
+        "filter": {
+          "value": "Filter"
+        },
+        "fader": {
+          "gain": "Kanalfader"
+        }
+      },
+      "resolution": {
+        "7bit": "7 Bit",
+        "14bit": "14 Bit",
+        "centre_delta": "Teller",
+        "signed_step": "Encoder"
+      },
+      "save": "Mapping speichern…",
+      "saved": "Gespeichert unter {path}",
+      "collision": "{count} Elemente teilen sich eine Adresse. Das Mapping wird abgelehnt, bis sie sich unterscheiden.",
+      "folder": "Lege die Datei zu den Mapping-Dateien in src-tauri/mappings und baue neu, um deinen Controller zu nutzen.",
+      "identity": "Gerät",
+      "name": "Name",
+      "claims": "Übernimmt Ports mit",
+      "claimsHint": "Ein kurzer Teilstring, den beide Revisionen des Portnamens teilen. Mehrere durch Komma trennen.",
+      "scope": {
+        "fixed": "Benennt eigene Decks",
+        "assigned": "Steuert ein Deck"
+      },
+      "scopeHint": {
+        "fixed": "Ein Controller mit einem Bereich pro Deck. Jede Zuweisung nennt das Deck, das sie bewegt.",
+        "assigned": "Ein einzelner Player. Das Deck wird in der Geräteliste gewählt."
+      },
+      "reset": "Neu beginnen",
+      "move": {
+        "button": "Drücke eine Taste am Controller. Esc bricht ab",
+        "positional": "Fahre einen Fader oder Regler ganz durch. Esc bricht ab",
+        "relative": "Drehe das Rad oder den Encoder. Esc bricht ab"
+      },
+      "button": {
+        "momentary": "Druck + Loslassen",
+        "trigger": "nur Druck"
+      },
+      "needsRelease": "Diese Aktion wird beim Loslassen zurückgenommen, ein Element ohne Loslass-Signal kann sie nicht steuern.",
+      "create": "Neu erstellen…"
     }
   },
   "browser": {

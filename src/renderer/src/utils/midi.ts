@@ -1,5 +1,12 @@
 export type MidiMessage = { port: string; timestampUs: number; data: number[] };
 
+export type MidiDevice = {
+  port: string;
+  mapping: string | null;
+  assignable: boolean;
+  deck: string | null;
+};
+
 const CHANNEL_NAMES: Record<number, string> = {
   0x80: 'Note Off',
   0x90: 'Note On',
