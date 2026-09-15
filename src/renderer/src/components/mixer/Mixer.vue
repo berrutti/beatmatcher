@@ -33,7 +33,7 @@
               @input="(e) => onInput(deckId, spec, e)"
               @dblclick="onReset(deckId, spec)"
             />
-            <span class="mixer__eq-label">{{ spec.param[0].toUpperCase() }}</span>
+            <span class="mixer__eq-label">{{ bandLabel(spec.param) }}</span>
           </div>
         </div>
 
@@ -173,6 +173,17 @@ import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 const decks = useDecksStore();
 const mixer = useMixerStore();
 const settings = useSettingsStore();
+
+const BAND_LABELS: Record<string, string> = {
+  low: 'L',
+  lowMid: 'LM',
+  highMid: 'HM',
+  high: 'H'
+};
+
+function bandLabel(param: string): string {
+  return BAND_LABELS[param] ?? param.slice(0, 2).toUpperCase();
+}
 
 const XFADER_ASSIGNS: { value: XfaderSide; short: string; label: string }[] = [
   { value: 'a', short: 'A', label: 'mixer.assignA' },

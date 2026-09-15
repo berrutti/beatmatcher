@@ -153,6 +153,7 @@ export function faderCurveGain(curve: string, position: number): number {
 
 export type EditConstants = {
   eqMinDb: number;
+  eqMidMinDb: number;
   eqMaxDb: number;
   filterDeadZone: number;
   defaultMasterGain: number;

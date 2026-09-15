@@ -509,6 +509,24 @@ pub(crate) fn set_deck_muted(
 }
 
 #[tauri::command]
+pub(crate) fn set_mixer(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    id: String,
+) -> Result<(), String> {
+    let manifest = session_core::manifest_by_id(&id)
+        .ok_or_else(|| format!("no mixer '{id}' in this build"))?;
+    engine.audio.set_mixer(manifest)
+}
+
+#[tauri::command]
+pub(crate) fn list_mixers() -> Vec<String> {
+    session_core::MANIFESTS
+        .iter()
+        .map(|manifest| manifest.id.to_string())
+        .collect()
+}
+
+#[tauri::command]
 pub(crate) fn set_fader_curve(
     engine: tauri::State<'_, crate::engine::Engine>,
     curve: session_core::FaderCurve,
@@ -1536,13 +1554,12 @@ mod tests {
 
     #[test]
     fn record_start_stamps_a_filter_that_was_already_engaged() {
-        let events =
-            strip_start_events(&session_core::CLASSIC_3BAND_V2, "A", |slot, param| {
-                match (slot, param) {
-                    ("filter", "active") => Some(1.0),
-                    _ => None,
-                }
-            });
+        let events = strip_start_events(&session_core::CLASSIC_4BAND, "A", |slot, param| {
+            match (slot, param) {
+                ("filter", "active") => Some(1.0),
+                _ => None,
+            }
+        });
         assert_eq!(
             events,
             vec![(
@@ -1554,15 +1571,14 @@ mod tests {
 
     #[test]
     fn record_start_stamps_every_moved_strip_param() {
-        let events =
-            strip_start_events(&session_core::CLASSIC_3BAND_V2, "B", |slot, param| {
-                match (slot, param) {
-                    ("eq", "low") => Some(-6.0),
-                    ("filter", "value") => Some(0.4),
-                    ("fader", "gain") => Some(0.75),
-                    _ => None,
-                }
-            });
+        let events = strip_start_events(&session_core::CLASSIC_4BAND, "B", |slot, param| {
+            match (slot, param) {
+                ("eq", "low") => Some(-6.0),
+                ("filter", "value") => Some(0.4),
+                ("fader", "gain") => Some(0.75),
+                _ => None,
+            }
+        });
         let moved: Vec<_> = events
             .iter()
             .map(|(_, payload)| (payload["slot"].clone(), payload["param"].clone()))
@@ -1579,7 +1595,7 @@ mod tests {
 
     #[test]
     fn an_untouched_strip_stamps_nothing() {
-        let manifest = &session_core::CLASSIC_3BAND_V2;
+        let manifest = &session_core::CLASSIC_4BAND;
         let events = strip_start_events(manifest, "A", |slot, param| {
             manifest
                 .strip_slot(slot)

@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn session_logger_records_events_in_order() {
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "first", serde_json::json!({}));
@@ -355,7 +355,7 @@ mod tests {
     fn a_logged_frame_is_the_one_captured_at_the_mutation() {
         let frames = Arc::new(std::sync::atomic::AtomicU64::new(4096));
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
 
@@ -371,7 +371,7 @@ mod tests {
     fn frames_are_rebased_onto_the_buffer_the_tap_actually_captured() {
         let capture_start = Arc::new(std::sync::atomic::AtomicU64::new(audio::NOT_CAPTURING));
         let mut logger =
-            SessionLogger::new(&session_core::CLASSIC_3BAND, Arc::clone(&capture_start));
+            SessionLogger::new(&session_core::CLASSIC_4BAND, Arc::clone(&capture_start));
 
         logger.log_at(8192, "recording_start", serde_json::json!({}));
         logger.log_at(8192 + 256, "play", serde_json::json!({ "deck": "A" }));
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn a_session_whose_audio_never_reached_the_file_carries_no_frames() {
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(audio::NOT_CAPTURING)),
         );
         logger.log_at(512, "play", serde_json::json!({ "deck": "A" }));
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn session_logger_merges_payload_fields() {
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "play", serde_json::json!({ "deck": "A", "rate": 1.0 }));
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn every_logged_event_carries_both_clocks() {
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "e", serde_json::json!({}));
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn session_logger_stop_produces_valid_json() {
         let mut logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         logger.log_at(0, "recording_start", serde_json::json!({}));
@@ -437,15 +437,15 @@ mod tests {
     #[test]
     fn session_logger_stamps_the_mixer_it_recorded_on() {
         let logger = SessionLogger::new(
-            &session_core::CLASSIC_3BAND,
+            &session_core::CLASSIC_4BAND,
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );
         let parsed: serde_json::Value =
             serde_json::from_str(&logger.finish().expect("finished")).expect("valid JSON");
-        assert_eq!(parsed["mixer"]["id"], "classic-3band");
+        assert_eq!(parsed["mixer"]["id"], "classic-4band");
         assert_eq!(
             parsed["mixer"]["hash"],
-            session_core::CLASSIC_3BAND.content_hash()
+            session_core::CLASSIC_4BAND.content_hash()
         );
 
         let round_tripped: session_core::SessionFile =
@@ -455,18 +455,36 @@ mod tests {
 
     #[test]
     fn session_logger_stamps_the_mixer_it_was_given() {
-        let logger = SessionLogger::new(
-            &session_core::ISOLATOR_3BAND,
-            Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        );
+        let logger = SessionLogger::new(&STAMPED, Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let parsed: serde_json::Value =
             serde_json::from_str(&logger.finish().expect("finished")).expect("valid JSON");
-        assert_eq!(parsed["mixer"]["id"], "isolator-3band");
-        assert_eq!(
-            parsed["mixer"]["hash"],
-            session_core::ISOLATOR_3BAND.content_hash()
-        );
+        assert_eq!(parsed["mixer"]["id"], "stamped");
+        assert_eq!(parsed["mixer"]["hash"], STAMPED.content_hash());
     }
+
+    static STAMPED: session_core::MixerManifest = session_core::MixerManifest {
+        id: "stamped",
+        cue_tap: "fader",
+        strip: STAMPED_STRIP,
+        master: &[],
+        eq_bands: &[],
+    };
+
+    const STAMPED_STRIP: &[session_core::SlotDescriptor] = &[session_core::SlotDescriptor {
+        slot: "fader",
+        unit_id: "fader",
+        params: &[session_core::ParamDescriptor {
+            id: "gain",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            step: 0.01,
+            unit: session_core::ParamUnit::Normalized,
+            taper: session_core::Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        }],
+    }];
 
     #[test]
     fn a_taken_log_is_not_handed_out_twice() {

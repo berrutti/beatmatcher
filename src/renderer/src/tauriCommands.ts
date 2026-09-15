@@ -25,6 +25,7 @@ type Commands = {
   };
   list_audio_devices: { args: Record<string, never>; returns: unknown[] };
   list_midi_devices: { args: Record<string, never>; returns: unknown[] };
+  list_mixers: { args: Record<string, never>; returns: string[] };
   list_recoverable: { args: Record<string, never>; returns: unknown[] };
   load_track: {
     args: { deck: string; path: string; analyze: boolean; beatOffsetSec: number; loadId: number };
@@ -77,6 +78,7 @@ type Commands = {
   set_master_gain: { args: { gain: number }; returns: void };
   set_midi_device_deck: { args: { port: string; deck: string | null }; returns: void };
   set_midi_monitor: { args: { enabled: boolean }; returns: void };
+  set_mixer: { args: { id: string }; returns: void };
   set_nudge: { args: { deck: string; percent: number }; returns: unknown };
   set_pitch_offset: { args: { deck: string; percent: number }; returns: number };
   set_pitch_range: { args: { percent: number }; returns: void };

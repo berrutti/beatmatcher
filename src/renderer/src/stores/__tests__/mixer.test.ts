@@ -33,8 +33,8 @@ const settingsMock = reactive({
 });
 
 vi.mock('@renderer/stores/settings', () => ({
-  DEFAULT_MIXER_ID: 'classic-3band',
-  LIVE_MIXER_ID: 'classic-3band-v2',
+  DEFAULT_MIXER_ID: 'classic-4band',
+  LIVE_MIXER_ID: 'classic-4band',
   useSettingsStore: () => settingsMock
 }));
 
@@ -42,7 +42,7 @@ import { useMixerStore, paramKey, FADER_GAIN, FILTER_ACTIVE, type XfaderSide } f
 import { editConstants, mixerParams } from '@renderer/utils/sessionCore';
 import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 
-const { eqMinDb: EQ_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
+const { eqMidMinDb: EQ_MID_MIN_DB, eqMaxDb: EQ_MAX_DB } = editConstants();
 import { invoke } from '@tauri-apps/api/core';
 
 const mockedInvoke = vi.mocked(invoke);
@@ -55,7 +55,8 @@ beforeEach(() => {
 });
 
 const EQ_LOW = paramKey('eq', 'low');
-const EQ_MID = paramKey('eq', 'mid');
+const EQ_LOW_MID = paramKey('eq', 'lowMid');
+const EQ_HIGH_MID = paramKey('eq', 'highMid');
 const EQ_HIGH = paramKey('eq', 'high');
 
 // Looped from the manifest rather than named, so a param the mixer gains is covered
@@ -104,10 +105,11 @@ describe('setParam', () => {
 
   it('does not affect other decks or params', () => {
     const store = useMixerStore();
-    store.setParam('A', EQ_LOW, 4);
-    expect(store.paramValue('A', EQ_MID)).toBe(0);
-    expect(store.paramValue('A', EQ_HIGH)).toBe(0);
-    expect(store.paramValue('B', EQ_LOW)).toBe(0);
+    store.setParam('A', EQ_LOW, 0.9);
+    expect(store.paramValue('A', EQ_LOW_MID)).toBe(0);
+    expect(store.paramValue('A', EQ_HIGH_MID)).toBe(0);
+    expect(store.paramValue('A', EQ_HIGH)).toBe(0.5);
+    expect(store.paramValue('B', EQ_LOW)).toBe(0.5);
   });
 });
 
@@ -117,14 +119,28 @@ describe('eq specs', () => {
     vi.clearAllMocks();
   });
 
-  it('come from the mixer manifest', () => {
+  it('come from the mixer manifest, low to high', () => {
     const store = useMixerStore();
-    expect(store.eqSpecs.map((spec) => spec.param)).toEqual(['low', 'mid', 'high']);
+    expect(store.eqSpecs.map((spec) => spec.param)).toEqual(['low', 'lowMid', 'highMid', 'high']);
     for (const spec of store.eqSpecs) {
-      expect(spec.min).toBe(EQ_MIN_DB);
-      expect(spec.max).toBe(EQ_MAX_DB);
-      expect(spec.defaultValue).toBe(0);
       expect(spec.step).toBeGreaterThan(0);
+    }
+  });
+
+  it('give the bells dB and the shelves knob travel', () => {
+    const store = useMixerStore();
+    const byParam = Object.fromEntries(store.eqSpecs.map((spec) => [spec.param, spec]));
+
+    for (const param of ['lowMid', 'highMid']) {
+      expect(byParam[param].min).toBe(EQ_MID_MIN_DB);
+      expect(byParam[param].max).toBe(EQ_MAX_DB);
+      expect(byParam[param].defaultValue).toBe(0);
+    }
+
+    for (const param of ['low', 'high']) {
+      expect(byParam[param].min).toBe(0);
+      expect(byParam[param].max).toBe(1);
+      expect(byParam[param].defaultValue).toBe(0.5);
     }
   });
 

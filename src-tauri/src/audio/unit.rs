@@ -1,4 +1,4 @@
-use super::dsp::{Biquad, Equalizer, Filter, FILTER_COEFF_REFRESH_INTERVAL};
+use super::dsp::{Equalizer, Equalizer4, Filter, FILTER_COEFF_REFRESH_INTERVAL};
 
 const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
 
@@ -52,11 +52,13 @@ struct Eq3Band {
     stale: bool,
 }
 
+// The mid band answers to the high-mid role, not to "mid", so one controller mapping
+// addresses this unit and the four-band one without being rewritten.
 impl AudioUnit for Eq3Band {
     fn set_param(&mut self, param: &str, value: f32) {
         match param {
             "low" => self.low.set(value),
-            "mid" => self.mid.set(value),
+            "highMid" => self.mid.set(value),
             "high" => self.high.set(value),
             _ => {}
         }
@@ -67,7 +69,7 @@ impl AudioUnit for Eq3Band {
     fn param(&self, param: &str) -> Option<f32> {
         match param {
             "low" => Some(self.low.target),
-            "mid" => Some(self.mid.target),
+            "highMid" => Some(self.mid.target),
             "high" => Some(self.high.target),
             _ => None,
         }
@@ -87,6 +89,71 @@ impl AudioUnit for Eq3Band {
             self.eq.set_low(now.0);
             self.eq.set_mid(now.1);
             self.eq.set_high(now.2);
+            self.since_refresh = 0;
+            self.stale = false;
+        }
+        self.eq.process(l, r)
+    }
+}
+
+struct Eq4Band {
+    eq: Equalizer4,
+    low: Smoothed,
+    low_mid: Smoothed,
+    high_mid: Smoothed,
+    high: Smoothed,
+    since_refresh: u32,
+    stale: bool,
+}
+
+impl AudioUnit for Eq4Band {
+    fn set_param(&mut self, param: &str, value: f32) {
+        match param {
+            "low" => self.low.set(value),
+            "lowMid" => self.low_mid.set(value),
+            "highMid" => self.high_mid.set(value),
+            "high" => self.high.set(value),
+            _ => {}
+        }
+    }
+
+    // The target, not the smoothed value: a readback mid-ramp must report the
+    // knob the user set rather than where the ramp happens to be.
+    fn param(&self, param: &str) -> Option<f32> {
+        match param {
+            "low" => Some(self.low.target),
+            "lowMid" => Some(self.low_mid.target),
+            "highMid" => Some(self.high_mid.target),
+            "high" => Some(self.high.target),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let before = (
+            self.low.current,
+            self.low_mid.current,
+            self.high_mid.current,
+            self.high.current,
+        );
+        let now = (
+            self.low.advance(),
+            self.low_mid.advance(),
+            self.high_mid.advance(),
+            self.high.advance(),
+        );
+        if now != before {
+            self.stale = true;
+            self.since_refresh += 1;
+        }
+        // Designing four biquads per sample is what the divider avoids; the
+        // `now == before` arm catches the last step so a settled EQ is exact.
+        if self.stale && (self.since_refresh >= FILTER_COEFF_REFRESH_INTERVAL || now == before) {
+            self.eq.set_low(now.0);
+            self.eq.set_low_mid(now.1);
+            self.eq.set_high_mid(now.2);
+            self.eq.set_high(now.3);
             self.since_refresh = 0;
             self.stale = false;
         }
@@ -188,90 +255,6 @@ pub(crate) fn approach(current: f32, target: f32, coeff: f32) -> f32 {
     }
 }
 
-// Linkwitz-Riley 4th order: two cascaded Butterworth sections per band edge.
-const ISOLATOR_LOW_HZ: f32 = 300.0;
-const ISOLATOR_HIGH_HZ: f32 = 3_000.0;
-const BUTTERWORTH_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
-
-struct IsolatorChannel {
-    low_split_lp: [Biquad; 2],
-    low_split_hp: [Biquad; 2],
-    high_split_lp: [Biquad; 2],
-    high_split_hp: [Biquad; 2],
-    // The low band skips the second crossover, so without this it lands out of phase with
-    // the two bands that went through it and the sum notches.
-    low_align: Biquad,
-}
-
-impl IsolatorChannel {
-    fn new(sample_rate: f32) -> Self {
-        Self {
-            low_split_lp: [Biquad::low_pass(sample_rate, ISOLATOR_LOW_HZ, BUTTERWORTH_Q); 2],
-            low_split_hp: [Biquad::high_pass(sample_rate, ISOLATOR_LOW_HZ, BUTTERWORTH_Q); 2],
-            high_split_lp: [Biquad::low_pass(sample_rate, ISOLATOR_HIGH_HZ, BUTTERWORTH_Q); 2],
-            high_split_hp: [Biquad::high_pass(sample_rate, ISOLATOR_HIGH_HZ, BUTTERWORTH_Q); 2],
-            low_align: Biquad::all_pass(sample_rate, ISOLATOR_HIGH_HZ, BUTTERWORTH_Q),
-        }
-    }
-
-    #[inline]
-    fn process(&mut self, x: f32, gains: &[f32; 3]) -> f32 {
-        let low = self.low_split_lp[0].process(x);
-        let low = self.low_split_lp[1].process(low);
-        let low = self.low_align.process(low);
-
-        let upper = self.low_split_hp[0].process(x);
-        let upper = self.low_split_hp[1].process(upper);
-
-        let mid = self.high_split_lp[0].process(upper);
-        let mid = self.high_split_lp[1].process(mid);
-
-        let high = self.high_split_hp[0].process(upper);
-        let high = self.high_split_hp[1].process(high);
-
-        low * gains[0] + mid * gains[1] + high * gains[2]
-    }
-}
-
-struct Isolator3Band {
-    channels: [IsolatorChannel; 2],
-    bands: [Smoothed; 3],
-}
-
-impl AudioUnit for Isolator3Band {
-    fn set_param(&mut self, param: &str, value: f32) {
-        let band = match param {
-            "low" => 0,
-            "mid" => 1,
-            "high" => 2,
-            _ => return,
-        };
-        self.bands[band].set(value.clamp(0.0, 1.0));
-    }
-
-    fn param(&self, param: &str) -> Option<f32> {
-        match param {
-            "low" => Some(self.bands[0].target),
-            "mid" => Some(self.bands[1].target),
-            "high" => Some(self.bands[2].target),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let gains = [
-            self.bands[0].advance(),
-            self.bands[1].advance(),
-            self.bands[2].advance(),
-        ];
-        (
-            self.channels[0].process(l, &gains),
-            self.channels[1].process(r, &gains),
-        )
-    }
-}
-
 pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> {
     match unit_id {
         "eq3band" => Some(Box::new(Eq3Band {
@@ -282,17 +265,19 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
             since_refresh: 0,
             stale: false,
         })),
+        "eq4band" => Some(Box::new(Eq4Band {
+            eq: Equalizer4::new(sample_rate),
+            low: Smoothed::new(0.5, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            low_mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            high_mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            high: Smoothed::new(0.5, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            since_refresh: 0,
+            stale: false,
+        })),
         "sweep_filter" => Some(Box::new(SweepFilter {
             filter: Filter::new(sample_rate),
             knob: 0.0,
             active: false,
-        })),
-        "isolator3band" => Some(Box::new(Isolator3Band {
-            channels: [
-                IsolatorChannel::new(sample_rate),
-                IsolatorChannel::new(sample_rate),
-            ],
-            bands: std::array::from_fn(|_| Smoothed::new(1.0, sample_rate, GAIN_SMOOTHING_TAU_SEC)),
         })),
         "fader" => Some(Box::new(Fader {
             position: 1.0,
@@ -308,7 +293,7 @@ pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use session_core::{ParamScope, CLASSIC_3BAND};
+    use session_core::{ParamScope, CLASSIC_4BAND};
 
     #[test]
     fn every_slot_in_every_manifest_has_a_unit() {
@@ -343,39 +328,22 @@ mod tests {
     }
 
     fn unit_for(slot: &str) -> Box<dyn AudioUnit> {
-        let descriptor = CLASSIC_3BAND.strip_slot(slot).expect("slot");
+        let descriptor = CLASSIC_4BAND.strip_slot(slot).expect("slot");
         make_unit(descriptor.unit_id, SAMPLE_RATE).expect("unit")
     }
 
     #[test]
-    fn an_isolator_band_reaches_its_new_gain_over_a_ramp_rather_than_at_once() {
-        let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("the isolator");
-        let tone =
-            |frame: usize| (std::f32::consts::TAU * 60.0 * frame as f32 / SAMPLE_RATE).sin() * 0.3;
-        for frame in 0..PROBE_FRAMES {
-            unit.process(tone(frame), tone(frame));
-        }
-
-        unit.set_param("low", 0.0);
-        let (stepped, _) = unit.process(tone(PROBE_FRAMES), tone(PROBE_FRAMES));
-        let settled_at = PROBE_FRAMES + 4410;
-        for frame in PROBE_FRAMES + 1..settled_at {
-            unit.process(tone(frame), tone(frame));
-        }
-        let (settled, _) = unit.process(tone(settled_at), tone(settled_at));
-
-        assert!(
-            stepped.abs() > settled.abs() * 10.0,
-            "the band vanished in one sample: stepped {stepped}, settled {settled}"
-        );
-    }
-
-    #[test]
     fn every_eq_band_reaches_the_unit() {
-        for band in ["low", "mid", "high"] {
+        // The shelves travel 0..1 from a 0.5 detent; the bells are dB about zero.
+        for (band, cut_to) in [
+            ("low", 0.0),
+            ("lowMid", -20.0),
+            ("highMid", -20.0),
+            ("high", 0.0),
+        ] {
             let flat = rms_through(unit_for("eq").as_mut());
             let mut cut = unit_for("eq");
-            cut.set_param(band, -20.0);
+            cut.set_param(band, cut_to);
             assert!(
                 rms_through(cut.as_mut()) < flat * 0.95,
                 "eq/{band} did not change the output"
@@ -440,7 +408,7 @@ mod tests {
 
     #[test]
     fn the_manifest_addresses_the_fader_at_deck_scope() {
-        assert!(CLASSIC_3BAND
+        assert!(CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "fader", "gain")
             .is_some());
     }
@@ -461,53 +429,6 @@ mod tests {
                     );
                 }
             }
-        }
-    }
-
-    #[test]
-    fn the_isolator_is_level_flat_at_unity() {
-        for hz in [60.0, 300.0, 1000.0, 3000.0, 10_000.0] {
-            let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("unit");
-            let mut sum = 0.0;
-            // Skips the first 1000 frames so the filters' startup transient is
-            // not counted as level loss.
-            for frame in 0..PROBE_FRAMES {
-                let phase = frame as f32 / SAMPLE_RATE;
-                let sample = (std::f32::consts::TAU * hz * phase).sin() * 0.5;
-                let (l, _) = unit.process(sample, sample);
-                if frame >= 1000 {
-                    sum += l * l;
-                }
-            }
-            let rms = (sum / (PROBE_FRAMES - 1000) as f32).sqrt();
-            let expected = 0.5 / std::f32::consts::SQRT_2;
-            assert!(
-                (rms / expected - 1.0).abs() < 0.02,
-                "{hz} Hz came through at {rms} instead of {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_isolator_kills_a_band_outright() {
-        for (band, hz) in [("low", 60.0), ("mid", 1000.0), ("high", 10_000.0)] {
-            let mut unit = make_unit("isolator3band", SAMPLE_RATE).expect("unit");
-            unit.set_param(band, 0.0);
-            let tone = |frame: usize| {
-                (std::f32::consts::TAU * hz * frame as f32 / SAMPLE_RATE).sin() * 0.5
-            };
-            // Past the gain ramp: the claim is that a killed band is silent, not that it
-            // gets there in one sample.
-            for frame in 0..PROBE_FRAMES {
-                unit.process(tone(frame), tone(frame));
-            }
-            let mut sum = 0.0;
-            for frame in PROBE_FRAMES..PROBE_FRAMES * 2 {
-                let (l, _) = unit.process(tone(frame), tone(frame));
-                sum += l * l;
-            }
-            let rms = (sum / PROBE_FRAMES as f32).sqrt();
-            assert!(rms < 0.05, "{band} band survived its kill at rms {rms}");
         }
     }
 

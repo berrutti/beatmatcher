@@ -18,14 +18,15 @@ pub use lane_edit::{
     move_filter_active_span, normalize_gesture_samples, original_value_at, rate_lane_spec,
     relocate_event_paths, reset_lane_from, resize_filter_active_span, set_rate_at, set_rate_span,
     splice_lane_events, toggle_filter_active_range, EditableLane, LaneDisplay, LaneSpec,
-    ResetExtent, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    ResetExtent, EQ_MAX_DB, EQ_MID_MIN_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use param::{
     is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
     FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest, ParamDescriptor, ParamScope,
-    ParamUnit, SlotDescriptor, Taper, XfaderAssign, CLASSIC_3BAND, CLASSIC_3BAND_V2, FADER_GAIN,
-    ISOLATOR_3BAND, ISOLATOR_3BAND_V2, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER,
-    JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
+    EqBand, ParamUnit, SlotDescriptor, Taper, XfaderAssign, CLASSIC_3BAND, CLASSIC_4BAND,
+    FADER_GAIN,
+    JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33,
+    JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
@@ -114,7 +115,7 @@ mod wasm {
     // A build that dropped a mixer still has to draw a session naming it, so the editor
     // falls back. Rendering audio does not: `resolve_manifest` is strict on that path.
     fn resolve_mixer(id: &str) -> &'static crate::MixerManifest {
-        crate::manifest_by_id(id).unwrap_or(&crate::CLASSIC_3BAND)
+        crate::manifest_by_id(id).unwrap_or(&crate::CLASSIC_4BAND)
     }
 
     /// Rate carries its default range: a caller with a clip-specific one overrides
@@ -185,6 +186,7 @@ mod wasm {
     pub fn edit_constants() -> String {
         serde_json::json!({
             "eqMinDb": crate::EQ_MIN_DB,
+            "eqMidMinDb": crate::EQ_MID_MIN_DB,
             "eqMaxDb": crate::EQ_MAX_DB,
             "filterDeadZone": crate::FILTER_DEAD_ZONE,
             "defaultMasterGain": crate::DEFAULT_MASTER_GAIN,

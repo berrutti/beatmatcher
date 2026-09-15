@@ -20,8 +20,8 @@ vi.mock('@renderer/utils/storage', () => ({
 }));
 
 vi.mock('@renderer/stores/settings', () => ({
-  DEFAULT_MIXER_ID: 'classic-3band',
-  LIVE_MIXER_ID: 'classic-3band-v2',
+  DEFAULT_MIXER_ID: 'classic-4band',
+  LIVE_MIXER_ID: 'classic-4band',
   useSettingsStore: () => ({
     pitchRange: 8,
     nudgeSensitivity: 4,
@@ -54,7 +54,7 @@ function wildValue(random: () => number): number {
 }
 
 const DECKS: DeckId[] = ['A', 'B', 'C', 'D'];
-const BANDS = ['low', 'mid', 'high'] as const;
+const BANDS = ['low', 'lowMid', 'highMid', 'high'] as const;
 
 function rangeOf(slot: string, param: string): { min: number; max: number } {
   const spec = mixerParams(LIVE_MIXER_ID)[`${slot}/${param}`];
@@ -71,12 +71,13 @@ describe('mixer writes under fuzzed input', () => {
   it('keeps every eq band inside the manifest range, in state and on the wire', () => {
     const store = useMixerStore();
     const random = makeRandom(7);
-    const { min, max } = rangeOf('eq', 'low');
 
     for (let step = 0; step < 3000; step++) {
       const deck = DECKS[Math.floor(random() * DECKS.length)];
       const band = BANDS[Math.floor(random() * BANDS.length)];
       const key = paramKey('eq', band);
+      // The shelves and the bells carry different ranges, so it is per band.
+      const { min, max } = rangeOf('eq', band);
       store.setParam(deck, key, wildValue(random));
 
       expect(store.paramValue(deck, key), `step ${step}`).toBeGreaterThanOrEqual(min);

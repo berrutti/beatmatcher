@@ -22,7 +22,7 @@ function wildValue(random: () => number): number {
 function makeCamera(totalMs: number) {
   return useTimelineView(
     () => totalMs,
-    () => 'classic-3band'
+    () => 'classic-4band'
   );
 }
 
@@ -206,7 +206,7 @@ describe('timeline camera under fuzzed input', () => {
     const totalMs = ref(120_000);
     const camera = useTimelineView(
       () => totalMs.value,
-      () => 'classic-3band'
+      () => 'classic-4band'
     );
     const random = makeRandom(31);
 

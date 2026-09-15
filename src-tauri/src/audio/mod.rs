@@ -14,6 +14,56 @@ pub use analysis::{
 };
 pub(crate) use deck::DeckRestore;
 #[cfg(test)]
+mod mixer_swap {
+    use super::*;
+
+    fn engine() -> AppAudio {
+        AppAudio::unrouted(48_000, "test".to_string())
+    }
+
+    #[test]
+    fn swapping_the_mixer_keeps_the_addresses_both_carry() {
+        let audio = engine();
+        let strip = audio.strip("A").expect("deck A");
+        strip.locked().set_param("fader", "gain", 0.42);
+        strip.locked().set_param("filter", "value", -0.6);
+        strip.locked().set_param("filter", "active", 1.0);
+
+        audio
+            .set_mixer(&session_core::CLASSIC_3BAND)
+            .expect("swap to the three band");
+
+        let held = strip.locked();
+        assert_eq!(held.param("fader", "gain"), Some(0.42));
+        assert_eq!(held.param("filter", "value"), Some(-0.6));
+        assert_eq!(held.param("filter", "active"), Some(1.0));
+    }
+
+    #[test]
+    fn swapping_the_mixer_rebuilds_the_eq_on_the_new_manifest() {
+        let audio = engine();
+        let strip = audio.strip("A").expect("deck A");
+        assert!(strip.locked().set_param("eq", "lowMid", -4.0));
+
+        audio
+            .set_mixer(&session_core::CLASSIC_3BAND)
+            .expect("swap to the three band");
+
+        // The three band has no low-mid, and its low is dB where the four band's was travel.
+        assert!(!strip.locked().set_param("eq", "lowMid", -4.0));
+        assert_eq!(strip.locked().param("eq", "low"), Some(0.0));
+    }
+
+    #[test]
+    fn the_engine_reports_the_mixer_it_was_switched_to() {
+        let audio = engine();
+        assert_eq!(audio.mixer().id, MIXER.id);
+        audio.set_mixer(&session_core::CLASSIC_3BAND).expect("swap");
+        assert_eq!(audio.mixer().id, "classic-3band");
+    }
+}
+
+#[cfg(test)]
 pub(crate) use deck::RenderTargets;
 pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, RenderFrame, SpectralBands};
 pub(crate) use dsp::Limiter;
@@ -73,7 +123,7 @@ pub struct DeviceInfo {
 
 // The one mixer the live engine builds. The offline renderer builds whichever a `.bms`
 // names (see `session_core::MANIFESTS`), but nothing selects another at runtime.
-pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND_V2;
+pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_4BAND;
 
 pub(crate) use dsp::FILTER_COEFF_REFRESH_INTERVAL;
 
@@ -115,7 +165,7 @@ pub struct AppAudio {
     // Permille of the save that runs after the last frame is captured. Only the
     // FLAC encode has one: a WAV is already on disk by then.
     save_progress: Arc<AtomicU32>,
-    mixer: &'static session_core::MixerManifest,
+    mixer: Mutex<&'static session_core::MixerManifest>,
 }
 
 /// Clears the save dial on drop, so an early return cannot strand it mid-permille.
@@ -198,7 +248,7 @@ impl AppAudio {
             monitor: Monitor::new(),
             recording: Mutex::new(None),
             save_progress: Arc::new(AtomicU32::new(SAVE_IDLE)),
-            mixer: MIXER,
+            mixer: Mutex::new(MIXER),
         }
     }
 
@@ -278,7 +328,34 @@ impl AppAudio {
     /// What every strip is built on, so a recording is stamped with the mixer it played
     /// through and a `.bms` naming another can be refused over replayed at wrong scales.
     pub fn mixer(&self) -> &'static session_core::MixerManifest {
-        self.mixer
+        *self.mixer.locked()
+    }
+
+    /// Rebuilds every strip on another manifest without touching the streams, which hold the
+    /// strips behind their own locks and never see a manifest. Addresses both mixers carry
+    /// keep their value, so levels and the filter survive; an EQ band does not, because the
+    /// same number means something different on each.
+    pub fn set_mixer(&self, manifest: &'static session_core::MixerManifest) -> Result<(), String> {
+        if self.recording.locked().is_some() {
+            return Err("the mixer cannot change while recording: the session is stamped with the one it started on".to_string());
+        }
+        if self.mixer().id == manifest.id {
+            return Ok(());
+        }
+
+        for strip in self.strips.values() {
+            let carried = {
+                let current = strip.locked();
+                current.carryable_params()
+            };
+            let mut rebuilt = ChannelStrip::from_manifest(manifest, self.device_sample_rate as f32);
+            rebuilt.restore(&carried);
+            // Built outside the lock, swapped inside it, so the audio thread sees one strip
+            // or the other and never a half-built one.
+            *strip.locked() = rebuilt;
+        }
+        *self.mixer.locked() = manifest;
+        Ok(())
     }
 
     pub fn set_bpm_range(&self, min: u32, max: u32) {

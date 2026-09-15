@@ -11,7 +11,7 @@
   ],
   "deck_bindings": [
     { "cc": 7, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "high" },
-    { "cc": 11, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "mid" },
+    { "cc": 11, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "highMid" },
     { "cc": 15, "resolution": "14bit", "action": "deck_param", "slot": "eq", "param": "low" },
     { "cc": 19, "resolution": "14bit", "action": "deck_param", "slot": "fader", "param": "gain" },
     { "cc": 0, "resolution": "14bit", "action": "tempo_fader" },

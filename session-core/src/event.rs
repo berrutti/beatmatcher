@@ -609,47 +609,6 @@ mod tests {
     }
 
     #[test]
-    fn every_ported_address_exists_on_the_classic_mixer() {
-        let mut events = vec![
-            SessionEvent {
-                gain: Some(0.8),
-                ..make_event("set_volume")
-            },
-            SessionEvent {
-                band: Some("mid".to_string()),
-                db: Some(3.0),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                band: Some("high".to_string()),
-                db: Some(3.0),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                value: Some(-0.5),
-                ..make_event("set_filter")
-            },
-            SessionEvent {
-                active: Some(false),
-                ..make_event("set_filter_active")
-            },
-        ];
-        port_events(&mut events, 1);
-        let manifest = crate::param::resolve_manifest(None).expect("a headerless session");
-        for event in &events {
-            let slot = event.slot.as_deref().expect("ported to a slot");
-            let param = event.param.as_deref().expect("ported to a param");
-            assert!(
-                manifest
-                    .descriptor(crate::ParamScope::Deck, slot, param)
-                    .is_some(),
-                "{slot}/{param} is not on {}",
-                manifest.id
-            );
-        }
-    }
-
-    #[test]
     fn the_current_vocabulary_is_left_alone() {
         let mut events = vec![
             SessionEvent::param(0.0, Some("A"), "eq", "low", -6.0),

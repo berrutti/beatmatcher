@@ -791,6 +791,7 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
 
 pub const DEFAULT_GAIN: f64 = 1.0;
 pub const DEFAULT_EQ_DB: f64 = 0.0;
+pub const DEFAULT_EQ_SHELF: f64 = 0.5;
 pub const DEFAULT_FILTER_VALUE: f64 = 0.0;
 pub const DEFAULT_RATE: f64 = 1.0;
 // Centre. A constant because `build_lanes` derives lanes without a manifest.
@@ -844,7 +845,8 @@ pub struct FilterActiveSpan {
 pub struct DeckLanes {
     pub gain: Vec<LanePoint>,
     pub eq_low: Vec<LanePoint>,
-    pub eq_mid: Vec<LanePoint>,
+    pub eq_low_mid: Vec<LanePoint>,
+    pub eq_high_mid: Vec<LanePoint>,
     pub eq_high: Vec<LanePoint>,
     pub filter: Vec<LanePoint>,
     pub rate: Vec<LanePoint>,
@@ -924,15 +926,19 @@ fn make_deck_lanes() -> DeckLanes {
         }],
         eq_low: vec![LanePoint {
             ms: 0.0,
+            value: DEFAULT_EQ_SHELF,
+        }],
+        eq_low_mid: vec![LanePoint {
+            ms: 0.0,
             value: DEFAULT_EQ_DB,
         }],
-        eq_mid: vec![LanePoint {
+        eq_high_mid: vec![LanePoint {
             ms: 0.0,
             value: DEFAULT_EQ_DB,
         }],
         eq_high: vec![LanePoint {
             ms: 0.0,
-            value: DEFAULT_EQ_DB,
+            value: DEFAULT_EQ_SHELF,
         }],
         filter: vec![LanePoint {
             ms: 0.0,
@@ -998,7 +1004,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                         let auto = &mut deck.lanes;
                         let lane = match band {
                             "low" => Some(&mut auto.eq_low),
-                            "mid" => Some(&mut auto.eq_mid),
+                            "lowMid" => Some(&mut auto.eq_low_mid),
+                            "highMid" => Some(&mut auto.eq_high_mid),
                             "high" => Some(&mut auto.eq_high),
                             _ => None,
                         };
@@ -1087,7 +1094,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
         let auto = &mut deck.lanes;
         extend_to_end(&mut auto.gain, duration_ms);
         extend_to_end(&mut auto.eq_low, duration_ms);
-        extend_to_end(&mut auto.eq_mid, duration_ms);
+        extend_to_end(&mut auto.eq_low_mid, duration_ms);
+        extend_to_end(&mut auto.eq_high_mid, duration_ms);
         extend_to_end(&mut auto.eq_high, duration_ms);
         extend_to_end(&mut auto.filter, duration_ms);
         extend_to_end(&mut auto.rate, duration_ms);
@@ -1807,9 +1815,10 @@ mod tests {
                 value: 1.0
             }
         );
-        assert_eq!(a.eq_low[0].value, 0.0);
-        assert_eq!(a.eq_mid[0].value, 0.0);
-        assert_eq!(a.eq_high[0].value, 0.0);
+        assert_eq!(a.eq_low[0].value, DEFAULT_EQ_SHELF);
+        assert_eq!(a.eq_low_mid[0].value, 0.0);
+        assert_eq!(a.eq_high_mid[0].value, 0.0);
+        assert_eq!(a.eq_high[0].value, DEFAULT_EQ_SHELF);
         assert_eq!(a.filter[0].value, 0.0);
         assert!(a.filter_active.is_empty());
     }
@@ -1895,14 +1904,16 @@ mod tests {
     #[test]
     fn routes_eq_params_to_their_band_lane() {
         let events = vec![
-            SessionEvent::param(100.0, Some("A"), "eq", "low", -3.0),
-            SessionEvent::param(200.0, Some("A"), "eq", "mid", 2.0),
-            SessionEvent::param(300.0, Some("A"), "eq", "high", 4.0),
+            SessionEvent::param(100.0, Some("A"), "eq", "low", 0.25),
+            SessionEvent::param(200.0, Some("A"), "eq", "lowMid", 2.0),
+            SessionEvent::param(300.0, Some("A"), "eq", "highMid", -3.0),
+            SessionEvent::param(400.0, Some("A"), "eq", "high", 0.75),
         ];
         let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
-        assert_eq!(deck_lanes["A"].eq_low[1].value, -3.0);
-        assert_eq!(deck_lanes["A"].eq_mid[1].value, 2.0);
-        assert_eq!(deck_lanes["A"].eq_high[1].value, 4.0);
+        assert_eq!(deck_lanes["A"].eq_low[1].value, 0.25);
+        assert_eq!(deck_lanes["A"].eq_low_mid[1].value, 2.0);
+        assert_eq!(deck_lanes["A"].eq_high_mid[1].value, -3.0);
+        assert_eq!(deck_lanes["A"].eq_high[1].value, 0.75);
     }
 
     #[test]

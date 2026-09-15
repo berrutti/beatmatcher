@@ -40,7 +40,8 @@ export const DECK_LANE_KEYS = [
   'filter',
   'rate',
   'eqLow',
-  'eqMid',
+  'eqLowMid',
+  'eqHighMid',
   'eqHigh',
   'jog'
 ] as const;
@@ -135,7 +136,8 @@ export type FilterActiveSpan = { startMs: number; endMs: number };
 export type DeckLanes = {
   gain: LanePoint[];
   eqLow: LanePoint[];
-  eqMid: LanePoint[];
+  eqLowMid: LanePoint[];
+  eqHighMid: LanePoint[];
   eqHigh: LanePoint[];
   filter: LanePoint[];
   rate: LanePoint[];

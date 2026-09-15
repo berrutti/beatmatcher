@@ -21,16 +21,16 @@ describe('toggleLane', () => {
     const byOneOrder = toggleLane(
       DECK_LANE_KEYS,
       toggleLane(DECK_LANE_KEYS, ['jog'], 'gain'),
-      'eqMid'
+      'eqHighMid'
     );
     const byAnother = toggleLane(
       DECK_LANE_KEYS,
-      toggleLane(DECK_LANE_KEYS, ['eqMid'], 'jog'),
+      toggleLane(DECK_LANE_KEYS, ['eqHighMid'], 'jog'),
       'gain'
     );
 
     expect(byOneOrder).toEqual(byAnother);
-    expect(byOneOrder).toEqual(['gain', 'eqMid', 'jog']);
+    expect(byOneOrder).toEqual(['gain', 'eqHighMid', 'jog']);
   });
 
   it('refuses to turn off the last lane, so a row always has one to click on', () => {

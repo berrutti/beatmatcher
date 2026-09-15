@@ -45,6 +45,14 @@ impl RenderFrame {
     }
 }
 
+pub(crate) struct CarriedStrip {
+    from: &'static MixerManifest,
+    params: Vec<(&'static str, &'static str, f32)>,
+    cue_active: bool,
+    xfader_assign: session_core::XfaderAssign,
+    xfader_position: f32,
+}
+
 pub struct ChannelStrip {
     manifest: &'static MixerManifest,
     slots: Vec<Slot>,
@@ -192,6 +200,54 @@ impl ChannelStrip {
 
     fn consume_settle(&mut self, frames: usize) {
         self.settle_frames = self.settle_frames.saturating_sub(frames);
+    }
+
+    /// What survives a change of mixer: every deck-scope address this strip holds, plus the
+    /// state that lives outside the slots. The receiving strip keeps only the addresses it
+    /// also has.
+    pub(crate) fn carryable_params(&self) -> CarriedStrip {
+        let mut params = Vec::new();
+        for slot in &self.slots {
+            let Some(descriptor) = self.manifest.strip_slot(slot.name) else {
+                continue;
+            };
+            for param in descriptor.params {
+                if let Some(value) = slot.main.param(param.id) {
+                    params.push((slot.name, param.id, value));
+                }
+            }
+        }
+        CarriedStrip {
+            from: self.manifest,
+            params,
+            cue_active: self.cue_active,
+            xfader_assign: self.xfader_assign,
+            xfader_position: self.xfader_position,
+        }
+    }
+
+    pub(crate) fn restore(&mut self, carried: &CarriedStrip) {
+        for (slot, param, value) in &carried.params {
+            // Sharing an address is not sharing a meaning: `eq/low` is travel on one mixer
+            // and dB on another, so a value only crosses when the range crossed with it.
+            let theirs = carried.from.descriptor(ParamScope::Deck, slot, param);
+            let mine = self.manifest.descriptor(ParamScope::Deck, slot, param);
+            let comparable = match (theirs, mine) {
+                (Some(theirs), Some(mine)) => {
+                    theirs.min == mine.min
+                        && theirs.max == mine.max
+                        && theirs.default == mine.default
+                        && theirs.step == mine.step
+                }
+                _ => false,
+            };
+            if comparable {
+                self.set_param(slot, param, *value);
+            }
+        }
+        self.cue_active = carried.cue_active;
+        self.xfader_assign = carried.xfader_assign;
+        self.set_xfader_position(carried.xfader_position);
     }
 
     /// Both output paths, so the cue signal tracks the main one. An address the manifest
@@ -1121,7 +1177,7 @@ mod tests {
 
         let render = |sizes: &[usize]| -> Vec<f32> {
             let mut deck = Deck::loaded_for_testing(SR, 10.0);
-            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, SR as f32);
+            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, SR as f32);
             deck.is_playing = true;
             deck.main_pos = 50_000.0;
             deck.queue_jog(40.0);
@@ -1460,17 +1516,20 @@ mod tests {
     fn a_param_outside_the_descriptors_range_lands_on_the_range() {
         let mut strip = ChannelStrip::new(48000.0);
 
-        strip.set_param("eq", "low", 60.0);
+        strip.set_param("eq", "lowMid", 60.0);
         assert_eq!(
-            strip.param("eq", "low"),
+            strip.param("eq", "lowMid"),
             Some(session_core::EQ_MAX_DB as f32)
         );
 
-        strip.set_param("eq", "high", -200.0);
+        strip.set_param("eq", "highMid", -200.0);
         assert_eq!(
-            strip.param("eq", "high"),
-            Some(session_core::EQ_MIN_DB as f32)
+            strip.param("eq", "highMid"),
+            Some(session_core::EQ_MID_MIN_DB as f32)
         );
+
+        strip.set_param("eq", "high", -200.0);
+        assert_eq!(strip.param("eq", "high"), Some(0.0));
 
         strip.set_param("filter", "value", 4.0);
         assert_eq!(strip.param("filter", "value"), Some(1.0));
@@ -1544,7 +1603,7 @@ mod tests {
     #[test]
     fn a_settled_fader_gain_does_not_remember_where_it_came_from() {
         let settled_from = |start: f32| -> f32 {
-            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, 48000.0);
+            let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, 48000.0);
             strip.set_param(
                 session_core::FADER_GAIN.0,
                 session_core::FADER_GAIN.1,

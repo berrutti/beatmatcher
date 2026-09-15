@@ -65,7 +65,7 @@ const VIEW_CONTEXT = {
   trackW: 800,
   msToX: (ms: number) => ms,
   xToMs: (x: number) => x,
-  mixerId: 'classic-3band',
+  mixerId: 'classic-4band',
   laneOriginY: 0,
   scrollViewport: { top: 0, bottom: 1000 }
 } as ViewContext;
@@ -367,7 +367,8 @@ describe('clicking an active filter span selects it', () => {
       A: {
         gain: [],
         eqLow: [],
-        eqMid: [],
+        eqLowMid: [],
+        eqHighMid: [],
         eqHigh: [],
         filter: [],
         rate: [],

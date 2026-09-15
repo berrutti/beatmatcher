@@ -26,7 +26,7 @@ const viewContext = {
   trackW: TRACK_WIDTH,
   msToX: (ms: number) => (ms / DURATION_MS) * TRACK_WIDTH,
   xToMs: (x: number) => (x / TRACK_WIDTH) * DURATION_MS,
-  mixerId: 'classic-3band',
+  mixerId: 'classic-4band',
   laneOriginY: 0,
   scrollViewport: { top: 0, bottom: 1000 }
 } as ViewContext;

@@ -1353,7 +1353,7 @@ mod loop_and_quantize {
 
     #[test]
     fn a_strip_reports_whether_an_address_reached_a_unit() {
-        let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, 48_000.0);
+        let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, 48_000.0);
         assert!(strip.set_param("eq", "low", -6.0));
         assert!(!strip.set_param("eq", "presence", -6.0));
         assert!(!strip.set_param("reverb", "mix", 0.5));

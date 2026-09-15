@@ -22,8 +22,8 @@ vi.mock('@renderer/utils/storage', () => ({
 }));
 
 vi.mock('@renderer/stores/settings', () => ({
-  DEFAULT_MIXER_ID: 'classic-3band',
-  LIVE_MIXER_ID: 'classic-3band-v2',
+  DEFAULT_MIXER_ID: 'classic-4band',
+  LIVE_MIXER_ID: 'classic-4band',
   useSettingsStore: () => ({
     pitchRange: 8,
     nudgeSensitivity: 4,

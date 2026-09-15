@@ -138,23 +138,6 @@ impl Biquad {
         )
     }
 
-    // Flat magnitude, phase only. A Linkwitz-Riley split sums to this, so a band skipping
-    // one crossover needs the matching allpass to stay aligned with the ones that did not.
-    pub(crate) fn all_pass(sr: f32, freq: f32, q: f32) -> Self {
-        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
-        let cos_w = w0.cos();
-        let alpha = w0.sin() / (2.0 * f64::from(q));
-
-        Self::normalized(
-            1.0 - alpha,
-            -2.0 * cos_w,
-            1.0 + alpha,
-            1.0 + alpha,
-            -2.0 * cos_w,
-            1.0 - alpha,
-        )
-    }
-
     pub(crate) fn high_shelf(sr: f32, freq: f32, db: f32) -> Self {
         if db == 0.0 {
             return Self::identity();
@@ -233,6 +216,151 @@ impl Equalizer {
         let r = self.mid[1].process(r);
         let l = self.high_stage2[0].process(self.high_stage1[0].process(l));
         let r = self.high_stage2[1].process(self.high_stage1[1].process(r));
+        (l, r)
+    }
+}
+
+const EQ4_LOW_HZ: f32 = 250.0;
+const EQ4_LOW_MID_HZ: f32 = 350.0;
+const EQ4_HIGH_MID_HZ: f32 = 2_000.0;
+const EQ4_HIGH_HZ: f32 = 2_500.0;
+const EQ4_MAX_BOOST_DB: f32 = 6.0;
+
+const EQ4_LOW_KILL_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const EQ4_HIGH_KILL_Q: f32 = 0.66;
+
+// No closed form fits the whole travel. The 0 dB entry is unreachable, `peaking` being
+// identity there, and only keeps the table monotonic.
+const EQ4_MID_Q_BY_DB: [(f32, f32); 11] = [
+    (-30.30, 0.564),
+    (-13.75, 0.785),
+    (-8.22, 1.020),
+    (-4.72, 1.230),
+    (-2.11, 1.419),
+    (0.0, 1.580),
+    (1.79, 1.744),
+    (3.35, 1.881),
+    (4.72, 1.996),
+    (5.95, 2.088),
+    (7.04, 2.152),
+];
+
+fn eq4_mid_q(db: f32) -> f32 {
+    let table = &EQ4_MID_Q_BY_DB;
+    if db <= table[0].0 {
+        return table[0].1;
+    }
+    for pair in table.windows(2) {
+        let (low_db, low_q) = pair[0];
+        let (high_db, high_q) = pair[1];
+        if db <= high_db {
+            let span = high_db - low_db;
+            return low_q + (high_q - low_q) * (db - low_db) / span;
+        }
+    }
+    table[table.len() - 1].1
+}
+
+/// The crossfade below the detent is what the analogue stage does: it sweeps its filter's
+/// shunt reference between the stage input and ground.
+struct ShelfBand {
+    shelf: [Biquad; 2],
+    kill: [Biquad; 2],
+    kill_mix: f32,
+}
+
+impl ShelfBand {
+    fn new(kill: Biquad) -> Self {
+        Self {
+            shelf: [Biquad::identity(), Biquad::identity()],
+            kill: [kill, kill],
+            kill_mix: 0.0,
+        }
+    }
+
+    fn set(&mut self, position: f32, shelf: impl Fn(f32) -> Biquad) {
+        let position = position.clamp(0.0, 1.0);
+        if position >= 0.5 {
+            let stage = shelf((position - 0.5) * 2.0 * EQ4_MAX_BOOST_DB);
+            for channel in &mut self.shelf {
+                channel.set_coefficients(stage);
+            }
+            self.kill_mix = 0.0;
+        } else {
+            let flat = Biquad::identity();
+            for channel in &mut self.shelf {
+                channel.set_coefficients(flat);
+            }
+            self.kill_mix = (0.5 - position) * 2.0;
+        }
+    }
+
+    // Fixed coefficients, so it keeps running while mixed out rather than restarting cold.
+    #[inline]
+    fn process(&mut self, channel: usize, x: f32) -> f32 {
+        let shelved = self.shelf[channel].process(x);
+        let killed = self.kill[channel].process(shelved);
+        shelved + (killed - shelved) * self.kill_mix
+    }
+}
+
+pub(crate) struct Equalizer4 {
+    sample_rate: f32,
+    low: ShelfBand,
+    low_mid: [Biquad; 2],
+    high_mid: [Biquad; 2],
+    high: ShelfBand,
+}
+
+impl Equalizer4 {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            low: ShelfBand::new(Biquad::high_pass(sample_rate, EQ4_LOW_HZ, EQ4_LOW_KILL_Q)),
+            low_mid: [Biquad::identity(), Biquad::identity()],
+            high_mid: [Biquad::identity(), Biquad::identity()],
+            high: ShelfBand::new(Biquad::low_pass(sample_rate, EQ4_HIGH_HZ, EQ4_HIGH_KILL_Q)),
+        }
+    }
+
+    pub(crate) fn set_low(&mut self, position: f32) {
+        let sample_rate = self.sample_rate;
+        self.low.set(position, |db| {
+            Biquad::low_shelf(sample_rate, EQ4_LOW_HZ, db)
+        });
+    }
+
+    pub(crate) fn set_high(&mut self, position: f32) {
+        let sample_rate = self.sample_rate;
+        self.high.set(position, |db| {
+            Biquad::high_shelf(sample_rate, EQ4_HIGH_HZ, db)
+        });
+    }
+
+    pub(crate) fn set_low_mid(&mut self, db: f32) {
+        let filter = Biquad::peaking(self.sample_rate, EQ4_LOW_MID_HZ, eq4_mid_q(db), db);
+        for channel in &mut self.low_mid {
+            channel.set_coefficients(filter);
+        }
+    }
+
+    pub(crate) fn set_high_mid(&mut self, db: f32) {
+        let filter = Biquad::peaking(self.sample_rate, EQ4_HIGH_MID_HZ, eq4_mid_q(db), db);
+        for channel in &mut self.high_mid {
+            channel.set_coefficients(filter);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let l = self.low.process(0, l);
+        let r = self.low.process(1, r);
+        let l = self.low_mid[0].process(l);
+        let r = self.low_mid[1].process(r);
+        let l = self.high_mid[0].process(l);
+        let r = self.high_mid[1].process(r);
+        let l = self.high.process(0, l);
+        let r = self.high.process(1, r);
         (l, r)
     }
 }
@@ -777,9 +905,11 @@ mod tests {
     }
 
     #[test]
-    fn eq_at_zero_db_is_transparent() {
+    fn eq_at_its_detents_is_transparent() {
         let sr = 44100.0f32;
-        let mut eq = Equalizer::new(sr);
+        let mut eq = Equalizer4::new(sr);
+        eq.set_low(0.5);
+        eq.set_high(0.5);
         for &s in sine_wave(1000.0, sr, 1024).iter() {
             let (l, _r) = eq.process(s, s);
             assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
@@ -791,52 +921,58 @@ mod tests {
         (sum_sq / signal.len() as f32).sqrt()
     }
 
-    #[test]
-    fn eq_high_cut_reduces_high_frequency_level() {
+    fn band_rms(hz: f32, set: impl Fn(&mut Equalizer4)) -> f32 {
         let sr = 44100.0f32;
         let input: Vec<f32> = (0..8192)
-            .map(|i| (2.0 * std::f32::consts::PI * 8000.0 * i as f32 / sr).sin())
+            .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / sr).sin())
             .collect();
+        let mut eq = Equalizer4::new(sr);
+        set(&mut eq);
+        let out: Vec<f32> = input.iter().map(|&s| eq.process(s, s).0).collect();
+        rms(&out[4096..])
+    }
 
-        let mut flat = Equalizer::new(sr);
-        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
-
-        let mut cut = Equalizer::new(sr);
-        cut.set_high(-12.0);
-        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
-
-        let flat_rms = rms(&flat_out[4096..]);
-        let cut_rms = rms(&cut_out[4096..]);
+    #[test]
+    fn a_shelf_swept_to_its_end_rolls_its_band_off_at_12_db_per_octave() {
+        // An octave further out is another 12 dB down, which is the claim the manual makes
+        // about the filter the shelf becomes.
+        let at = |hz: f32, set: fn(&mut Equalizer4)| 20.0 * band_rms(hz, set).log10();
+        let one_octave = at(1250.0, |eq| eq.set_high(0.0));
+        let two_octaves = at(2500.0 * 2.0, |eq| eq.set_high(0.0));
         assert!(
-            cut_rms < flat_rms * 0.6,
-            "high cut should reduce 8kHz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms,
-            cut_rms
+            (one_octave - two_octaves - 12.0).abs() < 3.0,
+            "HI rolled {} dB over the octave",
+            one_octave - two_octaves
+        );
+
+        let flat_low = band_rms(80.0, |eq| eq.set_low(0.5));
+        let killed_low = band_rms(80.0, |eq| eq.set_low(0.0));
+        assert!(
+            killed_low < flat_low * 0.2,
+            "80 Hz was not rolled off by LO"
         );
     }
 
     #[test]
-    fn eq_low_cut_reduces_low_frequency_level() {
-        let sr = 44100.0f32;
-        let input: Vec<f32> = (0..8192)
-            .map(|i| (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin())
-            .collect();
+    fn a_shelf_swept_the_other_way_boosts_its_band() {
+        let flat = band_rms(80.0, |eq| eq.set_low(0.5));
+        let boosted = band_rms(80.0, |eq| eq.set_low(1.0));
+        assert!(boosted > flat * 1.5, "full LO boost did not reach +6 dB");
+    }
 
-        let mut flat = Equalizer::new(sr);
-        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
-
-        let mut cut = Equalizer::new(sr);
-        cut.set_low(-12.0);
-        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
-
-        let flat_rms = rms(&flat_out[4096..]);
-        let cut_rms = rms(&cut_out[4096..]);
-        assert!(
-            cut_rms < flat_rms * 0.6,
-            "low cut should reduce 80Hz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms,
-            cut_rms
-        );
+    #[test]
+    fn each_bell_reaches_its_own_centre() {
+        for (hz, set) in [(350.0f32, 0), (2000.0, 1)] {
+            let flat = band_rms(hz, |_| {});
+            let cut = band_rms(hz, |eq| {
+                if set == 0 {
+                    eq.set_low_mid(-20.0)
+                } else {
+                    eq.set_high_mid(-20.0)
+                }
+            });
+            assert!(cut < flat * 0.5, "{hz} Hz was not cut by its own bell");
+        }
     }
 
     #[test]
@@ -995,10 +1131,11 @@ mod identity {
     }
 
     fn eq_probes() -> Vec<f32> {
-        let mut eq = Equalizer::new(SAMPLE_RATE);
-        eq.set_low(6.0);
-        eq.set_mid(-8.0);
-        eq.set_high(3.0);
+        let mut eq = Equalizer4::new(SAMPLE_RATE);
+        eq.set_low(0.85);
+        eq.set_low_mid(-8.0);
+        eq.set_high_mid(3.0);
+        eq.set_high(0.2);
         probe(|l, r| eq.process(l, r))
     }
 
@@ -1031,49 +1168,49 @@ mod identity {
 
     #[rustfmt::skip]
     const EXPECTED_EQ: &[f32] = &[
-        -2.672801316e-1, 4.593355656e-1, -3.726890683e-2, -4.196850955e-1,
-        1.208602637e-1, 2.411809564e-1, 2.271541953e-2, 3.183543980e-1,
-        2.303746343e-1, 4.259868860e-1, -2.640019655e-1, -4.104354978e-2,
-        2.332944572e-1, 2.599276602e-1, -1.492637098e-1, 1.026549339e-1,
-        4.080123901e-1, -1.939231753e-1, 4.020324647e-1, 2.228890210e-1,
-        5.407449603e-1, 2.582729757e-1, -6.219656020e-2, 3.504483104e-1,
-        5.833734274e-1, 2.522146106e-1, 3.818815053e-1, 4.355834126e-1,
-        -1.164730340e-1, 3.443146944e-1, 6.957521439e-1, -5.202608705e-1,
-        -2.487288713e-1, 3.528073728e-1, -3.361644447e-1, 5.375606418e-1,
-        -4.845426232e-2, 4.383772314e-1, -2.172189206e-1, -4.380227327e-1,
-        -2.719285190e-1, 5.747136474e-1, -3.542581797e-1, 2.982886136e-1,
-        3.401522040e-1, 4.098726213e-1, 1.336056292e-1, 3.937143385e-1,
-        -1.769902259e-1, 1.102022529e-1, -4.605298862e-2, 3.754657507e-1,
-        3.959478736e-1, 4.447689652e-1, 1.589464247e-1, -5.938336849e-1,
-        -2.786172032e-1, -2.361189127e-1, -7.047908008e-2, 8.475690335e-2,
-        1.837246865e-1, -8.270978183e-2, 3.779116552e-3, -3.738029003e-1,
-        -2.435001582e-1, 6.597428918e-1, 1.942592710e-1, 1.599933505e-1,
-        5.480293036e-1, -8.524333686e-2, -2.239445299e-1, 2.501299977e-1,
-        -2.333959788e-1, -6.922489405e-1, 2.364087701e-1, -2.286149114e-1,
-        8.192615509e-1, -6.428797841e-1, -4.579114616e-1, -1.049317792e-2,
-        -2.921657562e-1, -2.570690960e-2, 6.366635114e-2, 4.918781519e-1,
-        4.799149036e-1, 1.433235705e-1, -1.627466679e-1, -3.351861984e-2,
-        -4.448723197e-1, -3.996409848e-2, -1.942261457e-1, 2.606243491e-1,
-        3.230100498e-2, 4.009176791e-2, -7.708870173e-1, 3.742616177e-1,
-        -4.105474055e-1, -1.336518228e-1, -8.347012848e-2, -5.722479522e-2,
-        3.655713797e-1, -4.697908759e-1, -6.785975099e-1, 2.255985290e-1,
-        3.810511529e-1, -5.775634944e-2, -6.121293306e-1, 1.143875867e-1,
-        -6.168357134e-1, -4.264205098e-1, 1.667537987e-1, -3.931484818e-1,
-        -2.654018700e-1, 2.894315422e-1, 8.412844688e-2, 5.003609061e-1,
-        -3.312286139e-1, 6.116205454e-1, 7.722440362e-1, -6.148669720e-1,
-        -1.651830524e-1, 4.627619982e-1, -2.475141138e-1, -2.161183655e-1,
-        2.331306487e-1, 4.536720514e-1, 4.082947373e-1, 3.330346346e-1,
-        3.762929738e-1, 2.971366048e-2, -1.989849806e-1, -4.663156867e-1,
-        1.336277276e-1, -2.457723320e-1, 6.262287498e-1, -7.167210579e-1,
-        -4.929295778e-1, 7.193487287e-1, -3.666267097e-1, -2.730633020e-1,
-        -3.934163451e-1, 3.216511607e-1, -4.512065649e-2, 7.001493573e-1,
-        -5.711629391e-1, 2.935220897e-1, -8.490790427e-2, -3.551824987e-1,
-        3.019878864e-1, -5.654896051e-2, 4.644807577e-1, -1.845764816e-1,
-        1.856894940e-1, -8.335237205e-2, 9.939108789e-2, -4.191378057e-1,
-        2.642998099e-1, -4.187245965e-1, -1.599487662e-1, -1.983449310e-1,
-        3.688427433e-2, -9.002367407e-2, 7.186941803e-3, -8.031918108e-2,
-        -3.543225527e-1, -6.193388253e-3, 2.286755741e-1, -8.280418813e-2,
-        -1.612436175e-1, 2.441374958e-1,
+        -9.997399151e-2, 1.718107909e-1, -6.014424562e-2, -1.970223337e-1,
+        5.473115668e-2, 1.243239045e-1, 8.724102378e-2, 2.147188336e-1,
+        1.137795299e-1, 2.083909512e-1, -1.164792478e-1, -8.377834409e-2,
+        9.985685349e-2, 1.569422930e-1, -2.293865383e-2, 2.588771470e-2,
+        2.288747430e-1, 6.231559813e-2, 1.934602559e-1, 1.872900724e-1,
+        6.874498725e-2, 8.780983090e-2, -2.978494018e-2, 1.353735924e-1,
+        2.300883532e-1, 2.110633999e-1, 1.472322345e-1, 2.144356370e-1,
+        -1.145520210e-1, 2.961839736e-2, 1.227668226e-1, -1.974418610e-1,
+        -1.065136939e-1, 7.657065988e-2, -8.436723053e-2, 1.707231551e-1,
+        4.726499319e-2, 2.264094800e-1, 1.293334067e-1, 2.781808376e-3,
+        -1.582397521e-1, 1.112278104e-1, -6.956391782e-2, 1.153812557e-1,
+        1.031207070e-1, 1.899891645e-1, 4.791659117e-2, 1.908360124e-1,
+        -2.005874366e-1, -1.220264211e-1, 9.087259322e-2, 2.238393873e-1,
+        1.206679046e-1, 2.004930973e-1, 2.427491099e-1, -2.173122764e-2,
+        -9.288167953e-2, -1.441591382e-1, -7.477489859e-2, -2.877187729e-2,
+        1.416819692e-1, 3.879734874e-2, 6.642691791e-2, -6.224900484e-2,
+        -2.152140737e-1, 1.045412719e-1, 1.460623145e-1, 2.117977738e-1,
+        9.981796145e-2, -4.339942709e-2, -2.169815302e-1, -4.453115165e-2,
+        -5.079244077e-2, -2.278728485e-1, 3.275789320e-2, -6.133064255e-2,
+        7.379576564e-2, -2.983230650e-1, -2.411209196e-1, -1.304185241e-1,
+        -2.543880343e-1, -2.090624571e-1, -1.726969890e-2, 1.721619964e-1,
+        1.253726482e-1, 8.132214844e-2, 5.935424566e-2, 7.266970724e-2,
+        -2.203676701e-1, -1.157215610e-1, 2.677558735e-2, 1.616063714e-1,
+        -1.267506182e-2, 9.929284453e-3, -1.354443133e-1, 1.515440941e-1,
+        -1.126899570e-1, -8.483917266e-2, -7.578897476e-2, -1.210056841e-1,
+        1.193516999e-1, -1.226907670e-1, -6.633365154e-2, 1.336234957e-1,
+        9.699971974e-2, 1.067896187e-2, -2.778427601e-1, -1.025955752e-1,
+        -9.627220035e-2, -1.384282112e-1, 1.237298995e-1, -3.671849519e-2,
+        -5.482363701e-2, 9.800714254e-2, 1.228266954e-2, 1.383764148e-1,
+        -1.796329468e-1, 1.226510108e-1, 1.325191855e-1, -2.443232089e-1,
+        -8.080874383e-2, 1.372865438e-1, -2.137154043e-1, -2.602519393e-1,
+        -5.451197177e-2, 9.060382843e-2, 1.377204657e-1, 1.899786741e-1,
+        3.142237663e-2, -5.527496338e-3, 1.855194569e-5, -1.647797525e-1,
+        -5.011386052e-2, -1.736856699e-1, 1.162838638e-1, -2.502012849e-1,
+        -1.644054949e-1, 1.868934333e-1, -2.932643890e-1, -2.987084985e-1,
+        -1.791358888e-1, 3.906442225e-2, -9.563064575e-2, 1.658844352e-1,
+        -1.096284389e-2, 1.911070943e-1, -9.341835976e-3, -9.982331097e-2,
+        1.750419438e-1, 7.973864675e-2, 1.733411849e-1, 3.791078180e-2,
+        5.870273709e-2, 1.000446081e-2, 1.837066710e-1, 4.792273045e-3,
+        2.531932890e-1, 1.754584908e-2, -4.011014104e-2, -8.841584623e-2,
+        1.144905314e-1, 3.888303041e-2, -1.435799152e-1, -1.602955014e-1,
+        -2.137265503e-1, -1.454526037e-1, 4.850776494e-2, -2.551958710e-2,
+        -6.987573206e-2, 7.620199025e-2,
     ];
 
     #[rustfmt::skip]

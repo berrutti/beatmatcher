@@ -65,7 +65,7 @@ export const useMixerStore = defineStore('mixer', () => {
 
   // Left to right on the strip. Where a control sits is a layout decision, so it is stated
   // here rather than read off the manifest. A band this omits still renders, after these.
-  const EQ_BAND_ORDER = ['low', 'mid', 'high'];
+  const EQ_BAND_ORDER = ['low', 'lowMid', 'highMid', 'high'];
 
   function specsForSlot(slot: string, order: string[]): MixerParamSpec[] {
     const rank = (spec: MixerParamSpec) => {

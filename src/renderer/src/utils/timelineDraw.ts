@@ -640,7 +640,8 @@ type LaneDrawer = (
 const SPEC_LANE_COLORS: Record<Exclude<SpecLaneKey, 'filter' | 'rate'>, string> = {
   gain: GAIN_COLOR,
   eqLow: EQ_BAND_COLORS_LOW,
-  eqMid: EQ_BAND_COLORS_MID,
+  eqLowMid: EQ_BAND_COLORS_MID,
+  eqHighMid: EQ_BAND_COLORS_MID,
   eqHigh: EQ_BAND_COLORS_HIGH
 };
 
@@ -663,7 +664,8 @@ const LANE_DRAWERS: Record<SpecLaneKey, LaneDrawer> = {
   filter: drawFilterLane,
   rate: drawRateLane,
   eqLow: specLaneDrawer('eqLow'),
-  eqMid: specLaneDrawer('eqMid'),
+  eqLowMid: specLaneDrawer('eqLowMid'),
+  eqHighMid: specLaneDrawer('eqHighMid'),
   eqHigh: specLaneDrawer('eqHigh')
 };
 

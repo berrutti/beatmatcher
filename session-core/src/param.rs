@@ -86,12 +86,40 @@ impl SlotDescriptor {
     }
 }
 
+/// Named separately from the params so a controller mapping survives a change of EQ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EqBand {
+    Low,
+    LowMid,
+    HighMid,
+    High,
+}
+
+impl EqBand {
+    pub const ALL: [EqBand; 4] = [Self::Low, Self::LowMid, Self::HighMid, Self::High];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::LowMid => "lowMid",
+            Self::HighMid => "highMid",
+            Self::High => "high",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|band| band.id() == id)
+    }
+}
+
 pub struct MixerManifest {
     pub id: &'static str,
     pub strip: &'static [SlotDescriptor],
     pub master: &'static [SlotDescriptor],
     // Cue is everything up to but excluding this slot.
     pub cue_tap: &'static str,
+    /// Outside `content_hash`: routing a control does not change what a recorded value means.
+    pub eq_bands: &'static [(EqBand, &'static str, &'static str)],
 }
 
 // The cue sheet decides a track is audible from the fader, not from the mix, so
@@ -107,6 +135,13 @@ pub fn is_fader_gain(slot: &str, param: &str) -> bool {
 impl MixerManifest {
     pub fn strip_slot(&self, slot: &str) -> Option<&SlotDescriptor> {
         self.strip.iter().find(|entry| entry.slot == slot)
+    }
+
+    pub fn eq_address(&self, band: EqBand) -> Option<(&'static str, &'static str)> {
+        self.eq_bands
+            .iter()
+            .find(|(role, _, _)| *role == band)
+            .map(|(_, slot, param)| (*slot, *param))
     }
 
     pub fn master_slot(&self, slot: &str) -> Option<&SlotDescriptor> {
@@ -188,12 +223,7 @@ pub enum ParamScope {
     Master,
 }
 
-pub static MANIFESTS: &[&MixerManifest] = &[
-    &CLASSIC_3BAND,
-    &ISOLATOR_3BAND,
-    &CLASSIC_3BAND_V2,
-    &ISOLATOR_3BAND_V2,
-];
+pub static MANIFESTS: &[&MixerManifest] = &[&CLASSIC_3BAND, &CLASSIC_4BAND];
 
 pub fn manifest_by_id(id: &str) -> Option<&'static MixerManifest> {
     MANIFESTS.iter().copied().find(|manifest| manifest.id == id)
@@ -205,11 +235,9 @@ pub struct MixerHeader {
     pub hash: String,
 }
 
-/// The manifest a session must be replayed with. A session with no header
-/// predates manifests, and every one of those was played on the classic mixer.
 pub fn resolve_manifest(header: Option<&MixerHeader>) -> Result<&'static MixerManifest, String> {
     let Some(header) = header else {
-        return Ok(&CLASSIC_3BAND);
+        return Ok(&CLASSIC_4BAND);
     };
     let manifest = manifest_by_id(&header.id).ok_or_else(|| {
         format!(
@@ -270,25 +298,6 @@ impl MixerManifest {
         }
     }
 }
-
-// A static rather than a const so callers can hold `&'static ParamDescriptor`
-// instead of borrowing a per-use temporary.
-pub static CLASSIC_3BAND: MixerManifest = MixerManifest {
-    id: "classic-3band",
-    cue_tap: "fader",
-    strip: CLASSIC_STRIP,
-    master: MASTER_SLOTS,
-};
-
-const CLASSIC_STRIP: &[SlotDescriptor] = &[
-    SlotDescriptor {
-        slot: "eq",
-        unit_id: "eq3band",
-        params: &[eq_param("low"), eq_param("mid"), eq_param("high")],
-    },
-    SWEEP_FILTER_SLOT,
-    FADER_SLOT,
-];
 
 const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "filter",
@@ -543,55 +552,83 @@ impl JogRotationSpeed {
     }
 }
 
-const MASTER_SLOTS: &[SlotDescriptor] = &[MASTER_GAIN_SLOT];
-
 const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT];
 
-// The classic strip with a different unit in the `eq` slot: full kill over a shelf, so
-// the param ids match but the ranges do not. The hash keeps the two apart.
-pub static ISOLATOR_3BAND: MixerManifest = MixerManifest {
-    id: "isolator-3band",
+pub static CLASSIC_3BAND: MixerManifest = MixerManifest {
+    id: "classic-3band",
     cue_tap: "fader",
-    strip: ISOLATOR_STRIP,
-    master: MASTER_SLOTS,
+    strip: CLASSIC_3BAND_STRIP,
+    master: MASTER_SLOTS_V2,
+    eq_bands: &[
+        (EqBand::Low, "eq", "low"),
+        (EqBand::HighMid, "eq", "highMid"),
+        (EqBand::High, "eq", "high"),
+    ],
 };
 
-const ISOLATOR_STRIP: &[SlotDescriptor] = &[
+const CLASSIC_3BAND_STRIP: &[SlotDescriptor] = &[
     SlotDescriptor {
         slot: "eq",
-        unit_id: "isolator3band",
+        unit_id: "eq3band",
         params: &[
-            isolator_param("low"),
-            isolator_param("mid"),
-            isolator_param("high"),
+            shelf_db_param("low"),
+            shelf_db_param("highMid"),
+            shelf_db_param("high"),
         ],
     },
     SWEEP_FILTER_SLOT,
     FADER_SLOT,
 ];
 
-// The v1 manifests stay frozen so pre-crossfader sessions still resolve one by id.
-// Adding the slot in place would have changed their hash and refused every file.
-pub static CLASSIC_3BAND_V2: MixerManifest = MixerManifest {
-    id: "classic-3band-v2",
+const fn shelf_db_param(id: &'static str) -> ParamDescriptor {
+    ParamDescriptor {
+        id,
+        min: crate::EQ_MIN_DB,
+        max: crate::EQ_MAX_DB,
+        default: 0.0,
+        step: 0.5,
+        unit: ParamUnit::Db,
+        taper: Taper::Bipolar { center: 0.0 },
+        dead_zone: None,
+        automatable: true,
+    }
+}
+
+pub static CLASSIC_4BAND: MixerManifest = MixerManifest {
+    id: "classic-4band",
     cue_tap: "fader",
-    strip: CLASSIC_STRIP,
+    strip: CLASSIC_4BAND_STRIP,
     master: MASTER_SLOTS_V2,
+    eq_bands: &[
+        (EqBand::Low, "eq", "low"),
+        (EqBand::LowMid, "eq", "lowMid"),
+        (EqBand::HighMid, "eq", "highMid"),
+        (EqBand::High, "eq", "high"),
+    ],
 };
 
-pub static ISOLATOR_3BAND_V2: MixerManifest = MixerManifest {
-    id: "isolator-3band-v2",
-    cue_tap: "fader",
-    strip: ISOLATOR_STRIP,
-    master: MASTER_SLOTS_V2,
-};
+const CLASSIC_4BAND_STRIP: &[SlotDescriptor] = &[
+    SlotDescriptor {
+        slot: "eq",
+        unit_id: "eq4band",
+        params: &[
+            shelf_param("low"),
+            mid_param("lowMid"),
+            mid_param("highMid"),
+            shelf_param("high"),
+        ],
+    },
+    SWEEP_FILTER_SLOT,
+    FADER_SLOT,
+];
 
-const fn isolator_param(id: &'static str) -> ParamDescriptor {
+// A shelf reaching silence has no dB floor to quote, so the travel is the knob itself.
+const fn shelf_param(id: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id,
         min: 0.0,
         max: 1.0,
-        default: 1.0,
+        default: 0.5,
         step: 0.01,
         unit: ParamUnit::Normalized,
         taper: Taper::Linear,
@@ -600,16 +637,14 @@ const fn isolator_param(id: &'static str) -> ParamDescriptor {
     }
 }
 
-const fn eq_param(id: &'static str) -> ParamDescriptor {
+const fn mid_param(id: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id,
-        min: crate::EQ_MIN_DB,
+        min: crate::EQ_MID_MIN_DB,
         max: crate::EQ_MAX_DB,
         default: 0.0,
         step: 0.5,
         unit: ParamUnit::Db,
-        // Centre-detented on hardware, so the detent has to read unity even
-        // though the kill side is far longer than the boost side.
         taper: Taper::Bipolar { center: 0.0 },
         dead_zone: None,
         automatable: true,
@@ -732,33 +767,30 @@ mod tests {
         assert_eq!(XfaderAssign::from_str_or_thru(""), XfaderAssign::Thru);
     }
 
-    #[test]
-    fn versioning_the_mixer_left_the_frozen_manifests_alone() {
-        assert!(CLASSIC_3BAND
-            .descriptor(ParamScope::Master, "xfader", "position")
-            .is_none());
-        assert!(ISOLATOR_3BAND
-            .descriptor(ParamScope::Master, "xfader", "position")
-            .is_none());
-        assert!(CLASSIC_3BAND_V2
-            .descriptor(ParamScope::Master, "xfader", "position")
-            .is_some());
-        assert!(ISOLATOR_3BAND_V2
-            .descriptor(ParamScope::Master, "xfader", "position")
-            .is_some());
-        assert_ne!(
-            CLASSIC_3BAND.content_hash(),
-            CLASSIC_3BAND_V2.content_hash()
-        );
-    }
+    // Stands in for a superseded manifest so `can_host` stays exercised with one shipped.
+    const OLDER_STRIP: &[SlotDescriptor] = &[
+        SlotDescriptor {
+            slot: "eq",
+            unit_id: "eq4band",
+            params: &[shelf_param("low"), mid_param("lowMid")],
+        },
+        SWEEP_FILTER_SLOT,
+        FADER_SLOT,
+    ];
+    const OLDER: MixerManifest = MixerManifest {
+        id: "older",
+        cue_tap: "fader",
+        strip: OLDER_STRIP,
+        master: &[MASTER_GAIN_SLOT],
+        eq_bands: &[(EqBand::Low, "eq", "low"), (EqBand::LowMid, "eq", "lowMid")],
+    };
 
+    #[test]
     #[test]
     fn every_shipped_manifest_keeps_the_hash_its_sessions_carry() {
         let pinned: &[(&str, &str)] = &[
-            ("classic-3band", "7c5d3cab7af37be4"),
-            ("isolator-3band", "7506fbbc0d1160a9"),
-            ("classic-3band-v2", "a185b94836f236e4"),
-            ("isolator-3band-v2", "93c120a76ac1a289"),
+            ("classic-3band", "503da2d79dee0d77"),
+            ("classic-4band", "f2dfcf4f3655a116"),
         ];
         let shipped: Vec<&str> = MANIFESTS.iter().map(|manifest| manifest.id).collect();
         let listed: Vec<&str> = pinned.iter().map(|(id, _)| *id).collect();
@@ -771,7 +803,7 @@ mod tests {
 
     #[test]
     fn the_shipped_manifest_is_valid() {
-        CLASSIC_3BAND.validate().expect("classic-3band");
+        CLASSIC_4BAND.validate().expect("classic-4band");
     }
 
     #[test]
@@ -781,10 +813,11 @@ mod tests {
             cue_tap: "eq",
             strip: &[SlotDescriptor {
                 slot: "eq",
-                unit_id: "eq3band",
-                params: &[eq_param("low")],
+                unit_id: "eq4band",
+                params: &[shelf_param("low")],
             }],
             master: &[],
+            eq_bands: &[],
         };
         assert!(NO_FADER.validate().is_err());
     }
@@ -810,25 +843,40 @@ mod tests {
                 }],
             }],
             master: &[],
+            eq_bands: &[],
         };
         assert!(BAD_TAP.validate().is_err());
     }
 
     #[test]
-    fn the_live_manifest_hosts_the_version_it_replaced() {
-        assert!(CLASSIC_3BAND_V2.can_host(&CLASSIC_3BAND));
-        assert!(ISOLATOR_3BAND_V2.can_host(&ISOLATOR_3BAND));
+    fn the_live_manifest_hosts_a_manifest_holding_a_subset_of_its_addresses() {
+        assert!(CLASSIC_4BAND.can_host(&OLDER));
     }
 
     #[test]
     fn a_manifest_cannot_host_one_with_addresses_it_lacks() {
-        assert!(!CLASSIC_3BAND.can_host(&CLASSIC_3BAND_V2));
+        assert!(!OLDER.can_host(&CLASSIC_4BAND));
     }
 
     #[test]
     fn a_manifest_cannot_host_another_units_slot() {
-        assert!(!CLASSIC_3BAND_V2.can_host(&ISOLATOR_3BAND));
-        assert!(!ISOLATOR_3BAND_V2.can_host(&CLASSIC_3BAND));
+        const OTHER_UNIT_STRIP: &[SlotDescriptor] = &[
+            SlotDescriptor {
+                slot: "eq",
+                unit_id: "isolator",
+                params: &[shelf_param("low")],
+            },
+            SWEEP_FILTER_SLOT,
+            FADER_SLOT,
+        ];
+        const OTHER_UNIT: MixerManifest = MixerManifest {
+            id: "other-unit",
+            cue_tap: "fader",
+            strip: OTHER_UNIT_STRIP,
+            master: &[MASTER_GAIN_SLOT],
+            eq_bands: &[],
+        };
+        assert!(!CLASSIC_4BAND.can_host(&OTHER_UNIT));
     }
 
     #[test]
@@ -837,8 +885,8 @@ mod tests {
             SWEEP_FILTER_SLOT,
             SlotDescriptor {
                 slot: "eq",
-                unit_id: "eq3band",
-                params: &[eq_param("low"), eq_param("mid"), eq_param("high")],
+                unit_id: "eq4band",
+                params: &[shelf_param("low"), mid_param("lowMid")],
             },
             FADER_SLOT,
         ];
@@ -846,10 +894,11 @@ mod tests {
             id: "filter-first",
             cue_tap: "fader",
             strip: FILTER_FIRST_STRIP,
-            master: MASTER_SLOTS,
+            master: &[MASTER_GAIN_SLOT],
+            eq_bands: &[],
         };
-        assert!(!FILTER_FIRST.can_host(&CLASSIC_3BAND));
-        assert!(!CLASSIC_3BAND.can_host(&FILTER_FIRST));
+        assert!(!FILTER_FIRST.can_host(&OLDER));
+        assert!(!OLDER.can_host(&FILTER_FIRST));
     }
 
     #[test]
@@ -857,11 +906,12 @@ mod tests {
         const CUE_AT_EQ: MixerManifest = MixerManifest {
             id: "cue-at-eq",
             cue_tap: "eq",
-            strip: CLASSIC_STRIP,
-            master: MASTER_SLOTS,
+            strip: CLASSIC_4BAND_STRIP,
+            master: MASTER_SLOTS_V2,
+            eq_bands: &[],
         };
-        assert!(!CUE_AT_EQ.can_host(&CLASSIC_3BAND));
-        assert!(!CLASSIC_3BAND.can_host(&CUE_AT_EQ));
+        assert!(!CUE_AT_EQ.can_host(&CLASSIC_4BAND));
+        assert!(!CLASSIC_4BAND.can_host(&CUE_AT_EQ));
     }
 
     #[test]
@@ -872,11 +922,33 @@ mod tests {
     }
 
     #[test]
-    fn every_mixer_lane_resolves_to_a_descriptor() {
+    fn every_band_a_mixer_declares_resolves_to_a_descriptor() {
+        for manifest in MANIFESTS {
+            for band in EqBand::ALL {
+                let Some((slot, param)) = manifest.eq_address(band) else {
+                    continue;
+                };
+                assert!(
+                    manifest
+                        .descriptor(ParamScope::Deck, slot, param)
+                        .is_some(),
+                    "{} routes {} to '{slot}/{param}', which it does not have",
+                    manifest.id,
+                    band.id()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_mixer_lane_outside_the_eq_resolves_to_a_descriptor() {
         for manifest in MANIFESTS {
             for lane in EditableLane::ALL {
-                // Rate has no slot, and the v1 manifests have no crossfader one.
-                if lane.slot_param().is_none() || lane == EditableLane::Xfader {
+                let Some((slot, _)) = lane.slot_param() else {
+                    continue;
+                };
+                // A band the mixer does not have is inert, which the band test covers.
+                if slot == "eq" {
                     continue;
                 }
                 assert!(
@@ -902,9 +974,10 @@ mod tests {
     fn lane_specs_carry_the_published_ranges() {
         let cases: &[(EditableLane, f64, f64, f64)] = &[
             (EditableLane::Gain, 0.0, 1.0, 1.0),
-            (EditableLane::EqLow, -26.0, 6.0, 0.0),
-            (EditableLane::EqMid, -26.0, 6.0, 0.0),
-            (EditableLane::EqHigh, -26.0, 6.0, 0.0),
+            (EditableLane::EqLow, 0.0, 1.0, 0.5),
+            (EditableLane::EqLowMid, -30.0, 6.0, 0.0),
+            (EditableLane::EqHighMid, -30.0, 6.0, 0.0),
+            (EditableLane::EqHigh, 0.0, 1.0, 0.5),
             (EditableLane::Filter, -1.0, 1.0, 0.0),
             (EditableLane::Rate, 0.92, 1.08, 1.0),
             (
@@ -915,7 +988,7 @@ mod tests {
             ),
         ];
         for (lane, min, max, default) in cases {
-            let spec = lane_spec_for(*lane, &CLASSIC_3BAND, None, None);
+            let spec = lane_spec_for(*lane, &CLASSIC_4BAND, None, None);
             assert_eq!(spec.min, *min, "{} min", lane.key());
             assert_eq!(spec.max, *max, "{} max", lane.key());
             assert_eq!(spec.default_value, *default, "{} default", lane.key());
@@ -924,16 +997,14 @@ mod tests {
 
     #[test]
     fn a_lane_takes_its_range_from_the_mixer_it_is_asked_for() {
-        let classic = lane_spec_for(EditableLane::EqLow, &CLASSIC_3BAND, None, None);
-        let isolator = lane_spec_for(EditableLane::EqLow, &ISOLATOR_3BAND, None, None);
+        let live = lane_spec_for(EditableLane::EqLowMid, &CLASSIC_4BAND, None, None);
+        let older = lane_spec_for(EditableLane::EqLowMid, &OLDER, None, None);
 
         assert_eq!(
-            (classic.min, classic.max),
-            (crate::EQ_MIN_DB, crate::EQ_MAX_DB)
+            (live.min, live.max),
+            (crate::EQ_MID_MIN_DB, crate::EQ_MAX_DB)
         );
-        assert_eq!((isolator.min, isolator.max), (0.0, 1.0));
-        assert_eq!(classic.default_value, 0.0);
-        assert_eq!(isolator.default_value, 1.0);
+        assert_eq!((older.min, older.max), (live.min, live.max));
 
         // Transport lanes are mixer-independent.
         for manifest in MANIFESTS {
@@ -948,19 +1019,19 @@ mod tests {
     }
 
     #[test]
-    fn a_session_without_a_header_replays_on_the_classic_mixer() {
+    fn a_session_without_a_header_replays_on_the_live_mixer() {
         assert_eq!(
             resolve_manifest(None).expect("no header").id,
-            "classic-3band"
+            CLASSIC_4BAND.id
         );
     }
 
     #[test]
     fn a_matching_header_resolves() {
-        let header = CLASSIC_3BAND.header();
+        let header = CLASSIC_4BAND.header();
         assert_eq!(
             resolve_manifest(Some(&header)).expect("matching header").id,
-            "classic-3band"
+            "classic-4band"
         );
     }
 
@@ -968,7 +1039,7 @@ mod tests {
     fn an_unknown_mixer_id_is_refused() {
         let header = MixerHeader {
             id: "isolator".to_string(),
-            hash: CLASSIC_3BAND.content_hash(),
+            hash: CLASSIC_4BAND.content_hash(),
         };
         assert!(resolve_manifest(Some(&header)).is_err());
     }
@@ -976,7 +1047,7 @@ mod tests {
     #[test]
     fn a_changed_mixer_is_refused() {
         let header = MixerHeader {
-            id: "classic-3band".to_string(),
+            id: "classic-4band".to_string(),
             hash: "0000000000000000".to_string(),
         };
         assert!(resolve_manifest(Some(&header)).is_err());
@@ -985,7 +1056,7 @@ mod tests {
     #[test]
     fn the_hash_tracks_semantics_and_ignores_labels() {
         const RENAMED: MixerManifest = MixerManifest {
-            id: "classic-3band",
+            id: "classic-4band",
             cue_tap: "fader",
             strip: &[SlotDescriptor {
                 slot: "fader",
@@ -993,9 +1064,10 @@ mod tests {
                 params: &[fader_gain_param(1.0)],
             }],
             master: &[],
+            eq_bands: &[],
         };
         const RERANGED: MixerManifest = MixerManifest {
-            id: "classic-3band",
+            id: "classic-4band",
             cue_tap: "fader",
             strip: &[SlotDescriptor {
                 slot: "fader",
@@ -1003,9 +1075,10 @@ mod tests {
                 params: &[fader_gain_param(0.8)],
             }],
             master: &[],
+            eq_bands: &[],
         };
         const ORIGINAL: MixerManifest = MixerManifest {
-            id: "classic-3band",
+            id: "classic-4band",
             cue_tap: "fader",
             strip: &[SlotDescriptor {
                 slot: "fader",
@@ -1013,6 +1086,7 @@ mod tests {
                 params: &[fader_gain_param(1.0)],
             }],
             master: &[],
+            eq_bands: &[],
         };
         assert_eq!(ORIGINAL.content_hash(), RENAMED.content_hash());
         assert_ne!(ORIGINAL.content_hash(), RERANGED.content_hash());
@@ -1047,23 +1121,23 @@ mod tests {
 
     #[test]
     fn a_control_position_lands_on_the_params_own_range() {
-        let gain = CLASSIC_3BAND
+        let gain = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "fader", "gain")
             .expect("fader/gain");
         assert_eq!(gain.from_unit_interval(0.0), 0.0);
         assert_eq!(gain.from_unit_interval(1.0), 1.0);
         assert_eq!(gain.from_unit_interval(0.5), 0.5);
 
-        let low = CLASSIC_3BAND
-            .descriptor(ParamScope::Deck, "eq", "low")
-            .expect("eq/low");
-        assert_eq!(low.from_unit_interval(0.0), crate::EQ_MIN_DB);
-        assert_eq!(low.from_unit_interval(1.0), crate::EQ_MAX_DB);
+        let bell = CLASSIC_4BAND
+            .descriptor(ParamScope::Deck, "eq", "lowMid")
+            .expect("eq/lowMid");
+        assert_eq!(bell.from_unit_interval(0.0), crate::EQ_MID_MIN_DB);
+        assert_eq!(bell.from_unit_interval(1.0), crate::EQ_MAX_DB);
     }
 
     #[test]
     fn a_centred_control_lands_on_a_bipolar_params_centre() {
-        let filter = CLASSIC_3BAND
+        let filter = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "filter", "value")
             .expect("filter/value");
         assert_eq!(filter.from_unit_interval(0.5), 0.0);
@@ -1071,17 +1145,17 @@ mod tests {
 
     #[test]
     fn a_centred_eq_knob_reads_unity_rather_than_the_middle_of_the_range() {
-        let low = CLASSIC_3BAND
-            .descriptor(ParamScope::Deck, "eq", "low")
-            .expect("eq/low");
-        assert_eq!(low.from_unit_interval(0.5), 0.0);
-        assert_eq!(low.from_unit_interval(0.25), crate::EQ_MIN_DB / 2.0);
-        assert_eq!(low.from_unit_interval(0.75), crate::EQ_MAX_DB / 2.0);
+        let bell = CLASSIC_4BAND
+            .descriptor(ParamScope::Deck, "eq", "lowMid")
+            .expect("eq/lowMid");
+        assert_eq!(bell.from_unit_interval(0.5), 0.0);
+        assert_eq!(bell.from_unit_interval(0.25), crate::EQ_MID_MIN_DB / 2.0);
+        assert_eq!(bell.from_unit_interval(0.75), crate::EQ_MAX_DB / 2.0);
     }
 
     #[test]
     fn a_bipolar_taper_over_a_symmetric_range_stays_linear() {
-        let filter = CLASSIC_3BAND
+        let filter = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "filter", "value")
             .expect("filter/value");
         for step in 0..=100 {
@@ -1097,15 +1171,15 @@ mod tests {
 
     #[test]
     fn a_control_position_is_quantized_to_the_params_step() {
-        let low = CLASSIC_3BAND
-            .descriptor(ParamScope::Deck, "eq", "low")
-            .expect("eq/low");
-        // step is 0.5 dB over -26..6, so every result is a multiple of it.
+        let bell = CLASSIC_4BAND
+            .descriptor(ParamScope::Deck, "eq", "lowMid")
+            .expect("eq/lowMid");
+        // step is 0.5 dB over -30..6, so every result is a multiple of it.
         for step in 0..=127 {
-            let value = low.from_unit_interval(step as f64 / 127.0);
+            let value = bell.from_unit_interval(step as f64 / 127.0);
             assert_eq!(value, (value / 0.5).round() * 0.5, "at {step}");
             assert!(
-                (crate::EQ_MIN_DB..=crate::EQ_MAX_DB).contains(&value),
+                (crate::EQ_MID_MIN_DB..=crate::EQ_MAX_DB).contains(&value),
                 "at {step}"
             );
         }
@@ -1113,7 +1187,7 @@ mod tests {
 
     #[test]
     fn a_position_outside_the_unit_interval_is_clamped() {
-        let gain = CLASSIC_3BAND
+        let gain = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "fader", "gain")
             .expect("fader/gain");
         assert_eq!(gain.from_unit_interval(-1.0), 0.0);
@@ -1122,7 +1196,7 @@ mod tests {
 
     #[test]
     fn the_filter_descriptor_carries_the_dead_zone() {
-        let filter = CLASSIC_3BAND
+        let filter = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "filter", "value")
             .expect("filter/value");
         assert_eq!(filter.dead_zone, Some(crate::FILTER_DEAD_ZONE));
