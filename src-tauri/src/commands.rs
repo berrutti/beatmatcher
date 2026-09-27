@@ -52,6 +52,30 @@ fn crossfader_start_events(
     events
 }
 
+/// Where the master effects stood when recording started. Settings rather than performed
+/// moves, so nothing later in the session would ever say what the tail was rendered with.
+fn effect_start_events(
+    manifest: &'static session_core::MixerManifest,
+    monitor: &crate::audio::MasterMonitor,
+) -> Vec<(&'static str, serde_json::Value)> {
+    manifest
+        .master
+        .iter()
+        .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param.id)))
+        .filter_map(|(slot, param)| {
+            let value = monitor.effects.locked().get(slot, param)?;
+            Some((
+                "set_param",
+                serde_json::json!({
+                    "slot": slot,
+                    "param": param,
+                    "value": crate::recorder::f32_json(value),
+                }),
+            ))
+        })
+        .collect()
+}
+
 /// Where a deck's strip stood when recording started. A knob moved before the first event
 /// is otherwise lost, and a reader replays the manifest default in its place. Params
 /// already at their default are skipped, as `crossfader_start_events` skips thru.
@@ -165,6 +189,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         audio.monitor.xfader_position(),
         &xfader_assigns(audio),
     ));
+    events.extend(effect_start_events(audio.mixer(), &audio.monitor));
     for deck_id in crate::audio::LIVE_DECK_IDS {
         let Some(arc) = audio.strip(deck_id) else {
             continue;
@@ -509,13 +534,42 @@ pub(crate) fn set_deck_muted(
 }
 
 #[tauri::command]
+pub(crate) fn set_master_effect(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    slot: String,
+    param: String,
+    value: f32,
+) -> Result<(), String> {
+    engine.set_master_effect(&slot, &param, value)
+}
+
+#[tauri::command]
 pub(crate) fn set_mixer(
     engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
     id: String,
-) -> Result<(), String> {
+) -> Result<Vec<crate::engine_push::ParamChange>, String> {
+    if let Some(reason) = mixer_swap_refusal(engine.audio.is_recording(), sessions.is_playing()) {
+        return Err(reason.to_string());
+    }
     let manifest = session_core::manifest_by_id(&id)
         .ok_or_else(|| format!("no mixer '{id}' in this build"))?;
-    engine.audio.set_mixer(manifest)
+    Ok(engine
+        .audio
+        .set_mixer(manifest)
+        .into_iter()
+        .map(crate::engine_push::ParamChange::from)
+        .collect())
+}
+
+fn mixer_swap_refusal(recording: bool, session_playing: bool) -> Option<&'static str> {
+    if recording {
+        return Some("the mixer cannot change while recording: the session is stamped with the one it started on");
+    }
+    if session_playing {
+        return Some("the mixer cannot change while a session plays: it was checked against the one playing it");
+    }
+    None
 }
 
 #[tauri::command]
@@ -1496,6 +1550,14 @@ pub(crate) fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, 
 mod tests {
     use super::*;
     use audio::{CuePressOutcome, Deck};
+
+    #[test]
+    fn the_mixer_swaps_only_while_nothing_depends_on_it() {
+        assert_eq!(mixer_swap_refusal(false, false), None);
+        assert!(mixer_swap_refusal(true, false).is_some());
+        assert!(mixer_swap_refusal(false, true).is_some());
+        assert!(mixer_swap_refusal(true, true).is_some());
+    }
 
     #[test]
     fn record_start_stamps_the_jog_rotation_speed() {

@@ -40,6 +40,17 @@
   },
   "settings": {
     "title": "Einstellungen",
+    "panes": {
+      "audio": "Audio",
+      "mixer": "Mixer",
+      "decks": "Decks",
+      "control": "Steuerung",
+      "appearance": "Darstellung"
+    },
+    "filter": {
+      "placeholder": "Einstellungen filtern",
+      "noMatch": "Keine Einstellung passt dazu."
+    },
     "close": "Schließen",
     "limiter": {
       "title": "Master-Limiter",
@@ -117,6 +128,12 @@
       "title": "Standard-Deck-Anzahl",
       "unit": "Decks",
       "hint": "Anzahl aktiver Decks. Wirkt sofort und wird sitzungsübergreifend gespeichert."
+    },
+    "mixer": {
+      "title": "EQ",
+      "threeBand": "3 Bänder",
+      "fourBand": "4 Bänder",
+      "hint": "Die 3-Band-Variante hat ein Bass-Shelf, eine Mittenglocke und ein Höhen-Shelf. Die 4-Band-Variante teilt die Mitten und ihre äußeren Bänder regeln bis zur Stille. Die EQ-Regler werden zurückgesetzt; Fader und Filter behalten ihre Position."
     },
     "language": {
       "title": "Sprache",
@@ -263,7 +280,25 @@
     "assignA": "A",
     "assignB": "B",
     "assignHint": "Crossfader zuweisen: A oder B, keins zum Umgehen",
-    "xfaderHint": "Crossfader: Doppelklick zum Zentrieren"
+    "xfaderHint": "Crossfader: Doppelklick zum Zentrieren",
+    "echo": "Echo",
+    "echoToggle": "Diesen Kanal auf das Echo routen",
+    "sendHint": "Wie viel dieses Kanals das Echo speist",
+    "echoHint": {
+      "time": "Zeit zwischen den Wiederholungen",
+      "feedback": "Wie viel jeder Wiederholung die nächste speist",
+      "return": "Wie laut das Echo in den Mix zurückkehrt",
+      "lowCut": "Bass, der jeder Wiederholung entzogen wird, damit ein langer Nachhall klar bleibt"
+    },
+    "filter": "Filter",
+    "resonance": "Res",
+    "resonanceHint": "Filterresonanz, von mild bis wild, für alle Kanäle",
+    "echoLabel": {
+      "time": "Zeit",
+      "feedback": "Feedb",
+      "lowCut": "Low Cut",
+      "return": "Return"
+    }
   },
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",

@@ -155,6 +155,7 @@ pub fn run() {
             commands::set_pitch_range,
             commands::set_jog_rotation_speed,
             commands::set_fader_curve,
+            commands::set_master_effect,
             commands::set_mixer,
             commands::list_mixers,
             commands::set_xfader_position,

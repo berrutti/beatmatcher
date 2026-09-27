@@ -159,13 +159,9 @@ impl Biquad {
     }
 }
 
-const EQ_LOW_SHELF_HZ: f32 = 200.0;
-const EQ_MID_PEAK_HZ: f32 = 1000.0;
-const EQ_MID_Q: f32 = 0.4;
-const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
-
 pub(crate) struct Equalizer {
     sample_rate: f32,
+    voicing: &'static session_core::Eq3Voicing,
     low_stage1: [Biquad; 2],
     low_stage2: [Biquad; 2],
     mid: [Biquad; 2],
@@ -174,9 +170,10 @@ pub(crate) struct Equalizer {
 }
 
 impl Equalizer {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32, voicing: &'static session_core::Eq3Voicing) -> Self {
         Self {
             sample_rate,
+            voicing,
             low_stage1: [Biquad::identity(), Biquad::identity()],
             low_stage2: [Biquad::identity(), Biquad::identity()],
             mid: [Biquad::identity(), Biquad::identity()],
@@ -186,7 +183,7 @@ impl Equalizer {
     }
 
     pub(crate) fn set_low(&mut self, db: f32) {
-        let stage = Biquad::low_shelf(self.sample_rate, EQ_LOW_SHELF_HZ, db / 2.0);
+        let stage = Biquad::low_shelf(self.sample_rate, self.voicing.low_shelf_hz, db / 2.0);
         for (first, second) in self.low_stage1.iter_mut().zip(self.low_stage2.iter_mut()) {
             first.set_coefficients(stage);
             second.set_coefficients(stage);
@@ -194,14 +191,19 @@ impl Equalizer {
     }
 
     pub(crate) fn set_mid(&mut self, db: f32) {
-        let filter = Biquad::peaking(self.sample_rate, EQ_MID_PEAK_HZ, EQ_MID_Q, db);
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.mid_peak_hz,
+            self.voicing.mid_q,
+            db,
+        );
         for ch in &mut self.mid {
             ch.set_coefficients(filter);
         }
     }
 
     pub(crate) fn set_high(&mut self, db: f32) {
-        let stage = Biquad::high_shelf(self.sample_rate, EQ_HIGH_SHELF_HZ, db / 2.0);
+        let stage = Biquad::high_shelf(self.sample_rate, self.voicing.high_shelf_hz, db / 2.0);
         for (first, second) in self.high_stage1.iter_mut().zip(self.high_stage2.iter_mut()) {
             first.set_coefficients(stage);
             second.set_coefficients(stage);
@@ -220,33 +222,7 @@ impl Equalizer {
     }
 }
 
-const EQ4_LOW_HZ: f32 = 250.0;
-const EQ4_LOW_MID_HZ: f32 = 350.0;
-const EQ4_HIGH_MID_HZ: f32 = 2_000.0;
-const EQ4_HIGH_HZ: f32 = 2_500.0;
-const EQ4_MAX_BOOST_DB: f32 = 6.0;
-
-const EQ4_LOW_KILL_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
-const EQ4_HIGH_KILL_Q: f32 = 0.66;
-
-// No closed form fits the whole travel. The 0 dB entry is unreachable, `peaking` being
-// identity there, and only keeps the table monotonic.
-const EQ4_MID_Q_BY_DB: [(f32, f32); 11] = [
-    (-30.30, 0.564),
-    (-13.75, 0.785),
-    (-8.22, 1.020),
-    (-4.72, 1.230),
-    (-2.11, 1.419),
-    (0.0, 1.580),
-    (1.79, 1.744),
-    (3.35, 1.881),
-    (4.72, 1.996),
-    (5.95, 2.088),
-    (7.04, 2.152),
-];
-
-fn eq4_mid_q(db: f32) -> f32 {
-    let table = &EQ4_MID_Q_BY_DB;
+fn eq4_mid_q(table: &[(f32, f32)], db: f32) -> f32 {
     if db <= table[0].0 {
         return table[0].1;
     }
@@ -267,21 +243,23 @@ struct ShelfBand {
     shelf: [Biquad; 2],
     kill: [Biquad; 2],
     kill_mix: f32,
+    range: EqRange,
 }
 
 impl ShelfBand {
-    fn new(kill: Biquad) -> Self {
+    fn new(kill: Biquad, range: EqRange) -> Self {
         Self {
             shelf: [Biquad::identity(), Biquad::identity()],
             kill: [kill, kill],
             kill_mix: 0.0,
+            range,
         }
     }
 
-    fn set(&mut self, position: f32, shelf: impl Fn(f32) -> Biquad) {
-        let position = position.clamp(0.0, 1.0);
-        if position >= 0.5 {
-            let stage = shelf((position - 0.5) * 2.0 * EQ4_MAX_BOOST_DB);
+    fn set(&mut self, db: f32, shelf: impl Fn(f32) -> Biquad) {
+        let db = db.clamp(self.range.min_db, self.range.max_db);
+        if db >= 0.0 {
+            let stage = shelf(db);
             for channel in &mut self.shelf {
                 channel.set_coefficients(stage);
             }
@@ -291,7 +269,7 @@ impl ShelfBand {
             for channel in &mut self.shelf {
                 channel.set_coefficients(flat);
             }
-            self.kill_mix = (0.5 - position) * 2.0;
+            self.kill_mix = db / self.range.min_db;
         }
     }
 
@@ -304,8 +282,16 @@ impl ShelfBand {
     }
 }
 
+/// The deepest cut is where a shelf has fully become its kill filter.
+#[derive(Clone, Copy)]
+pub(crate) struct EqRange {
+    pub(crate) min_db: f32,
+    pub(crate) max_db: f32,
+}
+
 pub(crate) struct Equalizer4 {
     sample_rate: f32,
+    voicing: &'static session_core::Eq4Voicing,
     low: ShelfBand,
     low_mid: [Biquad; 2],
     high_mid: [Biquad; 2],
@@ -313,39 +299,55 @@ pub(crate) struct Equalizer4 {
 }
 
 impl Equalizer4 {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(
+        sample_rate: f32,
+        voicing: &'static session_core::Eq4Voicing,
+        low_range: EqRange,
+        high_range: EqRange,
+    ) -> Self {
+        let low_kill = Biquad::high_pass(sample_rate, voicing.low_hz, voicing.low_kill_q);
+        let high_kill = Biquad::low_pass(sample_rate, voicing.high_hz, voicing.high_kill_q);
         Self {
             sample_rate,
-            low: ShelfBand::new(Biquad::high_pass(sample_rate, EQ4_LOW_HZ, EQ4_LOW_KILL_Q)),
+            voicing,
+            low: ShelfBand::new(low_kill, low_range),
             low_mid: [Biquad::identity(), Biquad::identity()],
             high_mid: [Biquad::identity(), Biquad::identity()],
-            high: ShelfBand::new(Biquad::low_pass(sample_rate, EQ4_HIGH_HZ, EQ4_HIGH_KILL_Q)),
+            high: ShelfBand::new(high_kill, high_range),
         }
     }
 
-    pub(crate) fn set_low(&mut self, position: f32) {
-        let sample_rate = self.sample_rate;
-        self.low.set(position, |db| {
-            Biquad::low_shelf(sample_rate, EQ4_LOW_HZ, db)
-        });
+    pub(crate) fn set_low(&mut self, db: f32) {
+        let (sample_rate, hz) = (self.sample_rate, self.voicing.low_hz);
+        self.low
+            .set(db, |db| Biquad::low_shelf(sample_rate, hz, db));
     }
 
-    pub(crate) fn set_high(&mut self, position: f32) {
-        let sample_rate = self.sample_rate;
-        self.high.set(position, |db| {
-            Biquad::high_shelf(sample_rate, EQ4_HIGH_HZ, db)
-        });
+    pub(crate) fn set_high(&mut self, db: f32) {
+        let (sample_rate, hz) = (self.sample_rate, self.voicing.high_hz);
+        self.high
+            .set(db, |db| Biquad::high_shelf(sample_rate, hz, db));
     }
 
     pub(crate) fn set_low_mid(&mut self, db: f32) {
-        let filter = Biquad::peaking(self.sample_rate, EQ4_LOW_MID_HZ, eq4_mid_q(db), db);
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.low_mid_hz,
+            eq4_mid_q(self.voicing.mid_q_by_db, db),
+            db,
+        );
         for channel in &mut self.low_mid {
             channel.set_coefficients(filter);
         }
     }
 
     pub(crate) fn set_high_mid(&mut self, db: f32) {
-        let filter = Biquad::peaking(self.sample_rate, EQ4_HIGH_MID_HZ, eq4_mid_q(db), db);
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.high_mid_hz,
+            eq4_mid_q(self.voicing.mid_q_by_db, db),
+            db,
+        );
         for channel in &mut self.high_mid {
             channel.set_coefficients(filter);
         }
@@ -369,7 +371,7 @@ impl Equalizer4 {
 
 const FILTER_MIN_FREQ_HZ: f32 = 20.0;
 const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
-const FILTER_RESONANCE_Q: f32 = 2.0;
+pub(crate) const FILTER_RESONANCE_Q: f32 = 2.0;
 // Q used at sweep=0 (center/dead-zone boundary). Interpolated up to
 // FILTER_RESONANCE_Q as the knob sweeps toward the extremes. Butterworth (0.5)
 // gives a smooth, flat response at the entry point of the sweep with no
@@ -403,6 +405,8 @@ pub(crate) struct Filter {
     sample_rate: f32,
     target_knob: f32,
     current_knob: f32,
+    target_resonance: f32,
+    current_resonance: f32,
     smoothing_coeff: f32,
     coeff_refresh_counter: u32,
     // Two cascaded 2nd-order stages per channel give 4th-order (-24 dB/oct) rolloff.
@@ -425,6 +429,8 @@ impl Filter {
             sample_rate,
             target_knob: 0.0,
             current_knob: 0.0,
+            target_resonance: FILTER_RESONANCE_Q,
+            current_resonance: FILTER_RESONANCE_Q,
             smoothing_coeff,
             coeff_refresh_counter: 0,
             filters_a: [Biquad::identity(), Biquad::identity()],
@@ -438,6 +444,11 @@ impl Filter {
 
     pub(crate) fn set_knob(&mut self, v: f32) {
         self.target_knob = v.clamp(-1.0, 1.0);
+        self.coeff_refresh_counter = 0;
+    }
+
+    pub(crate) fn set_resonance(&mut self, q: f32) {
+        self.target_resonance = q.max(FILTER_CENTER_Q);
         self.coeff_refresh_counter = 0;
     }
 
@@ -463,7 +474,7 @@ impl Filter {
         }
 
         let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
-        let q = FILTER_CENTER_Q + (FILTER_RESONANCE_Q - FILTER_CENTER_Q) * sweep;
+        let q = FILTER_CENTER_Q + (self.current_resonance - FILTER_CENTER_Q) * sweep;
         let peak = resonant_peak(q);
         self.makeup = 1.0 / (peak * peak);
         let new_filter = if knob < 0.0 {
@@ -484,6 +495,11 @@ impl Filter {
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         self.current_knob =
             super::unit::approach(self.current_knob, self.target_knob, self.smoothing_coeff);
+        self.current_resonance = super::unit::approach(
+            self.current_resonance,
+            self.target_resonance,
+            self.smoothing_coeff,
+        );
 
         if self.coeff_refresh_counter == 0 {
             self.update_filters();
@@ -515,6 +531,167 @@ impl Filter {
             l * (1.0 - wet) + l_filtered * wet,
             r * (1.0 - wet) + r_filtered * wet,
         )
+    }
+}
+
+pub(crate) const ECHO_MAX_MS: f32 = 4000.0;
+
+/// Runaway is not a creative setting: at unity the tail grows without bound and the limiter
+/// is all that stands between the mixer and a held full-scale tone.
+const ECHO_MAX_FEEDBACK: f32 = 0.95;
+
+const ECHO_SMOOTHING_TAU_SEC: f32 = 0.020;
+
+const ECHO_TAP_CROSSFADE_SEC: f32 = 0.020;
+
+const ECHO_RING_OUT_GAIN: f32 = 0.001;
+
+pub(crate) struct Echo {
+    sample_rate: f32,
+    line: Vec<f32>,
+    write: usize,
+    delay_frames: usize,
+    target_delay_frames: usize,
+    previous_delay_frames: usize,
+    crossfade_frames: usize,
+    crossfade_remaining: usize,
+    feedback: f32,
+    feedback_target: f32,
+    return_level: f32,
+    return_target: f32,
+    smoothing_coeff: f32,
+    low_cut_hz: f32,
+    low_cut: [Biquad; 2],
+}
+
+impl Echo {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        let capacity = (sample_rate * ECHO_MAX_MS / 1000.0).ceil() as usize + 1;
+        let delay_frames = Self::frames_for(sample_rate, ECHO_MAX_MS);
+        Self {
+            sample_rate,
+            line: vec![0.0; capacity * 2],
+            write: 0,
+            delay_frames,
+            target_delay_frames: delay_frames,
+            previous_delay_frames: delay_frames,
+            crossfade_frames: ((sample_rate * ECHO_TAP_CROSSFADE_SEC) as usize).max(1),
+            crossfade_remaining: 0,
+            feedback: 0.0,
+            feedback_target: 0.0,
+            return_level: 0.0,
+            return_target: 0.0,
+            smoothing_coeff: 1.0 - (-1.0 / (sample_rate * ECHO_SMOOTHING_TAU_SEC)).exp(),
+            low_cut_hz: 0.0,
+            low_cut: [Biquad::identity(), Biquad::identity()],
+        }
+    }
+
+    pub(crate) fn settle(&mut self) {
+        self.feedback = self.feedback_target;
+        self.return_level = self.return_target;
+        self.delay_frames = self.target_delay_frames;
+        self.previous_delay_frames = self.target_delay_frames;
+        self.crossfade_remaining = 0;
+    }
+
+    fn frames_for(sample_rate: f32, ms: f32) -> usize {
+        let clamped = ms.clamp(1.0, ECHO_MAX_MS);
+        ((sample_rate * clamped / 1000.0) as usize).max(1)
+    }
+
+    /// Crossfades to a second tap rather than sliding the one, so a time change steps to the
+    /// new interval instead of repitching the tail through the move.
+    pub(crate) fn set_time_ms(&mut self, ms: f32) {
+        self.target_delay_frames = Self::frames_for(self.sample_rate, ms);
+    }
+
+    #[inline]
+    fn tap(&self, delay_frames: usize) -> (f32, f32) {
+        let frames = self.line.len() / 2;
+        let read = (self.write + frames - delay_frames % frames) % frames;
+        (self.line[read * 2], self.line[read * 2 + 1])
+    }
+
+    /// A drag sends a new time every block, so a new crossfade waits for the running one
+    /// rather than restarting it, which would jump back to a tap it had half left.
+    #[inline]
+    fn delayed(&mut self) -> (f32, f32) {
+        if self.crossfade_remaining == 0 && self.target_delay_frames != self.delay_frames {
+            self.previous_delay_frames = self.delay_frames;
+            self.delay_frames = self.target_delay_frames;
+            self.crossfade_remaining = self.crossfade_frames;
+        }
+        let (new_l, new_r) = self.tap(self.delay_frames);
+        if self.crossfade_remaining == 0 {
+            return (new_l, new_r);
+        }
+        let (old_l, old_r) = self.tap(self.previous_delay_frames);
+        let old_share = self.crossfade_remaining as f32 / self.crossfade_frames as f32;
+        self.crossfade_remaining -= 1;
+        (
+            new_l + (old_l - new_l) * old_share,
+            new_r + (old_r - new_r) * old_share,
+        )
+    }
+
+    /// In the feedback path only, so the first repeat is whole and each later one loses more
+    /// bass, which keeps a long tail from building under the next track.
+    pub(crate) fn set_low_cut(&mut self, hz: f32) {
+        if hz == self.low_cut_hz {
+            return;
+        }
+        self.low_cut_hz = hz;
+        let coefficients = Biquad::high_pass(self.sample_rate, hz, std::f32::consts::FRAC_1_SQRT_2);
+        for stage in &mut self.low_cut {
+            stage.set_coefficients(coefficients);
+        }
+    }
+
+    pub(crate) fn ring_out_frames(&self) -> usize {
+        let repeats = if self.feedback_target <= 0.0 {
+            1.0
+        } else {
+            (ECHO_RING_OUT_GAIN.ln() / self.feedback_target.ln())
+                .ceil()
+                .max(1.0)
+        };
+        (self.target_delay_frames as f32 * (repeats + 1.0)) as usize
+    }
+
+    pub(crate) fn set_feedback(&mut self, feedback: f32) {
+        self.feedback_target = feedback.clamp(0.0, ECHO_MAX_FEEDBACK);
+    }
+
+    pub(crate) fn set_return(&mut self, level: f32) {
+        self.return_target = level.clamp(0.0, 1.0);
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.feedback =
+            super::unit::approach(self.feedback, self.feedback_target, self.smoothing_coeff);
+        self.return_level =
+            super::unit::approach(self.return_level, self.return_target, self.smoothing_coeff);
+
+        let frames = self.line.len() / 2;
+        let (delayed_l, delayed_r) = self.delayed();
+
+        let fed_l = self.low_cut[0].process(delayed_l) * self.feedback;
+        let fed_r = self.low_cut[1].process(delayed_r) * self.feedback;
+        self.line[self.write * 2] = flush_denormal(l + fed_l);
+        self.line[self.write * 2 + 1] = flush_denormal(r + fed_r);
+        self.write = (self.write + 1) % frames;
+
+        (delayed_l * self.return_level, delayed_r * self.return_level)
+    }
+
+    pub(crate) fn mix_block(&mut self, send: &[f32], mix: &mut [f32]) {
+        for (frame, pair) in send.chunks_exact(2).enumerate() {
+            let (l, r) = self.process(pair[0], pair[1]);
+            mix[frame * 2] += l;
+            mix[frame * 2 + 1] += r;
+        }
     }
 }
 
@@ -904,12 +1081,29 @@ mod tests {
         }
     }
 
+    const EQ_MIN_DB: f32 = session_core::EQ_MIN_DB as f32;
+    const EQ_MAX_DB: f32 = session_core::EQ_MAX_DB as f32;
+
+    pub(super) fn classic_eq4(sample_rate: f32) -> Equalizer4 {
+        let slot = session_core::CLASSIC_4BAND
+            .strip_slot("eq")
+            .expect("an eq slot");
+        let session_core::Voicing::Eq4(voicing) = slot.voicing else {
+            panic!("the four band is voiced as one");
+        };
+        let range = EqRange {
+            min_db: EQ_MIN_DB,
+            max_db: EQ_MAX_DB,
+        };
+        Equalizer4::new(sample_rate, voicing, range, range)
+    }
+
     #[test]
     fn eq_at_its_detents_is_transparent() {
         let sr = 44100.0f32;
-        let mut eq = Equalizer4::new(sr);
-        eq.set_low(0.5);
-        eq.set_high(0.5);
+        let mut eq = classic_eq4(sr);
+        eq.set_low(0.0);
+        eq.set_high(0.0);
         for &s in sine_wave(1000.0, sr, 1024).iter() {
             let (l, _r) = eq.process(s, s);
             assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
@@ -926,7 +1120,7 @@ mod tests {
         let input: Vec<f32> = (0..8192)
             .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / sr).sin())
             .collect();
-        let mut eq = Equalizer4::new(sr);
+        let mut eq = classic_eq4(sr);
         set(&mut eq);
         let out: Vec<f32> = input.iter().map(|&s| eq.process(s, s).0).collect();
         rms(&out[4096..])
@@ -937,16 +1131,16 @@ mod tests {
         // An octave further out is another 12 dB down, which is the claim the manual makes
         // about the filter the shelf becomes.
         let at = |hz: f32, set: fn(&mut Equalizer4)| 20.0 * band_rms(hz, set).log10();
-        let one_octave = at(1250.0, |eq| eq.set_high(0.0));
-        let two_octaves = at(2500.0 * 2.0, |eq| eq.set_high(0.0));
+        let one_octave = at(1250.0, |eq| eq.set_high(EQ_MIN_DB));
+        let two_octaves = at(2500.0 * 2.0, |eq| eq.set_high(EQ_MIN_DB));
         assert!(
             (one_octave - two_octaves - 12.0).abs() < 3.0,
             "HI rolled {} dB over the octave",
             one_octave - two_octaves
         );
 
-        let flat_low = band_rms(80.0, |eq| eq.set_low(0.5));
-        let killed_low = band_rms(80.0, |eq| eq.set_low(0.0));
+        let flat_low = band_rms(80.0, |eq| eq.set_low(0.0));
+        let killed_low = band_rms(80.0, |eq| eq.set_low(EQ_MIN_DB));
         assert!(
             killed_low < flat_low * 0.2,
             "80 Hz was not rolled off by LO"
@@ -955,8 +1149,8 @@ mod tests {
 
     #[test]
     fn a_shelf_swept_the_other_way_boosts_its_band() {
-        let flat = band_rms(80.0, |eq| eq.set_low(0.5));
-        let boosted = band_rms(80.0, |eq| eq.set_low(1.0));
+        let flat = band_rms(80.0, |eq| eq.set_low(0.0));
+        let boosted = band_rms(80.0, |eq| eq.set_low(EQ_MAX_DB));
         assert!(boosted > flat * 1.5, "full LO boost did not reach +6 dB");
     }
 
@@ -973,6 +1167,144 @@ mod tests {
             });
             assert!(cut < flat * 0.5, "{hz} Hz was not cut by its own bell");
         }
+    }
+
+    const ECHO_SR: f32 = 48_000.0;
+
+    fn settled_echo(time_ms: f32, feedback: f32) -> Echo {
+        let mut echo = crate::audio::MasterEffects::for_manifest(&session_core::CLASSIC_4BAND)
+            .echo
+            .echo(ECHO_SR);
+        echo.set_time_ms(time_ms);
+        echo.set_feedback(feedback);
+        echo.set_return(1.0);
+        // Past the return and feedback ramps, so a measurement is of the echo and not of
+        // the smoother still climbing.
+        for _ in 0..ECHO_SR as usize {
+            echo.process(0.0, 0.0);
+        }
+        echo
+    }
+
+    fn impulse_response(echo: &mut Echo, frames: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames);
+        out.push(echo.process(1.0, 1.0).0);
+        for _ in 1..frames {
+            out.push(echo.process(0.0, 0.0).0);
+        }
+        out
+    }
+
+    #[test]
+    fn an_echo_repeats_one_delay_time_after_the_sound() {
+        let mut echo = settled_echo(100.0, 0.0);
+        let response = impulse_response(&mut echo, (ECHO_SR * 0.25) as usize);
+        let at = (ECHO_SR * 0.1) as usize;
+        assert!((response[at] - 1.0).abs() < 1e-3, "no repeat at 100 ms");
+        assert!(response[at - 1].abs() < 1e-6, "something arrived early");
+    }
+
+    #[test]
+    fn feedback_keeps_repeating_and_decays() {
+        let mut echo = settled_echo(100.0, 0.5);
+        let response = impulse_response(&mut echo, (ECHO_SR * 0.45) as usize);
+        let first = response[(ECHO_SR * 0.1) as usize];
+        let second = response[(ECHO_SR * 0.2) as usize];
+        let third = response[(ECHO_SR * 0.3) as usize];
+        assert!((second / first - 0.5).abs() < 0.05, "second repeat off");
+        assert!((third / second - 0.5).abs() < 0.05, "third repeat off");
+    }
+
+    #[test]
+    fn a_tail_outlives_the_signal_that_fed_it() {
+        let mut echo = settled_echo(50.0, 0.7);
+        for _ in 0..(ECHO_SR * 0.2) as usize {
+            echo.process(0.5, 0.5);
+        }
+        let mut loudest: f32 = 0.0;
+        for _ in 0..(ECHO_SR * 0.05) as usize {
+            let (l, _) = echo.process(0.0, 0.0);
+            loudest = loudest.max(l.abs());
+        }
+        assert!(loudest > 0.1, "the tail died with its input: {loudest}");
+    }
+
+    fn repeat_peak(echo: &mut Echo, hz: f32, repeat: usize, time_ms: f32) -> f32 {
+        let delay = (ECHO_SR * time_ms / 1000.0) as usize;
+        let burst = delay / 2;
+        let mut loudest: f32 = 0.0;
+        for frame in 0..delay * (repeat + 1) {
+            let input = if frame < burst {
+                (std::f32::consts::TAU * hz * frame as f32 / ECHO_SR).sin()
+            } else {
+                0.0
+            };
+            let (l, _) = echo.process(input, input);
+            let window = delay * repeat..delay * repeat + burst;
+            if window.contains(&frame) {
+                loudest = loudest.max(l.abs());
+            }
+        }
+        loudest
+    }
+
+    #[test]
+    fn the_low_cut_thins_later_repeats_and_spares_the_first() {
+        let mut first = settled_echo(200.0, 0.9);
+        first.set_low_cut(300.0);
+        let mut third = settled_echo(200.0, 0.9);
+        third.set_low_cut(300.0);
+        let mut third_uncut = settled_echo(200.0, 0.9);
+        third_uncut.set_low_cut(20.0);
+
+        assert!((repeat_peak(&mut first, 60.0, 1, 200.0) - 1.0).abs() < 0.05);
+        let cut = repeat_peak(&mut third, 60.0, 3, 200.0);
+        let uncut = repeat_peak(&mut third_uncut, 60.0, 3, 200.0);
+        assert!(
+            cut < uncut * 0.1,
+            "bass survived the loop: {cut} against {uncut}"
+        );
+    }
+
+    #[test]
+    fn dragging_the_time_does_not_click() {
+        let mut echo = settled_echo(300.0, 0.0);
+        let sine = |frame: usize| (std::f32::consts::TAU * 440.0 * frame as f32 / ECHO_SR).sin();
+        let mut frame = 0;
+        for _ in 0..ECHO_SR as usize {
+            echo.process(sine(frame), sine(frame));
+            frame += 1;
+        }
+        let mut previous = echo.process(sine(frame), sine(frame)).0;
+        let mut largest_step: f32 = 0.0;
+        for block in 0..100 {
+            echo.set_time_ms(300.0 - block as f32 * 2.5);
+            for _ in 0..480 {
+                frame += 1;
+                let (l, _) = echo.process(sine(frame), sine(frame));
+                largest_step = largest_step.max((l - previous).abs());
+                previous = l;
+            }
+        }
+        // A 440 Hz sine at full scale moves at most 0.058 per sample at 48 kHz.
+        assert!(largest_step < 0.08, "a time change clicked: {largest_step}");
+    }
+
+    #[test]
+    fn feedback_cannot_be_driven_to_runaway() {
+        let mut echo = settled_echo(20.0, 10.0);
+        for _ in 0..(ECHO_SR * 0.2) as usize {
+            echo.process(1.0, 1.0);
+        }
+        let mut loudest: f32 = 0.0;
+        for _ in 0..(ECHO_SR * 4.0) as usize {
+            let (l, _) = echo.process(0.0, 0.0);
+            loudest = loudest.max(l.abs());
+        }
+        assert!(
+            loudest.is_finite() && loudest < 40.0,
+            "ran away to {loudest}"
+        );
     }
 
     #[test]
@@ -1087,6 +1419,7 @@ mod tests {
 // shelf frequency, or a reordered cascade. These pin the actual output.
 #[cfg(test)]
 mod identity {
+    use super::tests::classic_eq4;
     use super::*;
 
     const SAMPLE_RATE: f32 = 44_100.0;
@@ -1131,11 +1464,11 @@ mod identity {
     }
 
     fn eq_probes() -> Vec<f32> {
-        let mut eq = Equalizer4::new(SAMPLE_RATE);
-        eq.set_low(0.85);
+        let mut eq = classic_eq4(SAMPLE_RATE);
+        eq.set_low(4.0);
         eq.set_low_mid(-8.0);
         eq.set_high_mid(3.0);
-        eq.set_high(0.2);
+        eq.set_high(-12.0);
         probe(|l, r| eq.process(l, r))
     }
 
@@ -1168,49 +1501,49 @@ mod identity {
 
     #[rustfmt::skip]
     const EXPECTED_EQ: &[f32] = &[
-        -9.997399151e-2, 1.718107909e-1, -6.014424562e-2, -1.970223337e-1,
-        5.473115668e-2, 1.243239045e-1, 8.724102378e-2, 2.147188336e-1,
-        1.137795299e-1, 2.083909512e-1, -1.164792478e-1, -8.377834409e-2,
-        9.985685349e-2, 1.569422930e-1, -2.293865383e-2, 2.588771470e-2,
-        2.288747430e-1, 6.231559813e-2, 1.934602559e-1, 1.872900724e-1,
-        6.874498725e-2, 8.780983090e-2, -2.978494018e-2, 1.353735924e-1,
-        2.300883532e-1, 2.110633999e-1, 1.472322345e-1, 2.144356370e-1,
-        -1.145520210e-1, 2.961839736e-2, 1.227668226e-1, -1.974418610e-1,
-        -1.065136939e-1, 7.657065988e-2, -8.436723053e-2, 1.707231551e-1,
-        4.726499319e-2, 2.264094800e-1, 1.293334067e-1, 2.781808376e-3,
-        -1.582397521e-1, 1.112278104e-1, -6.956391782e-2, 1.153812557e-1,
-        1.031207070e-1, 1.899891645e-1, 4.791659117e-2, 1.908360124e-1,
-        -2.005874366e-1, -1.220264211e-1, 9.087259322e-2, 2.238393873e-1,
-        1.206679046e-1, 2.004930973e-1, 2.427491099e-1, -2.173122764e-2,
-        -9.288167953e-2, -1.441591382e-1, -7.477489859e-2, -2.877187729e-2,
-        1.416819692e-1, 3.879734874e-2, 6.642691791e-2, -6.224900484e-2,
-        -2.152140737e-1, 1.045412719e-1, 1.460623145e-1, 2.117977738e-1,
-        9.981796145e-2, -4.339942709e-2, -2.169815302e-1, -4.453115165e-2,
-        -5.079244077e-2, -2.278728485e-1, 3.275789320e-2, -6.133064255e-2,
-        7.379576564e-2, -2.983230650e-1, -2.411209196e-1, -1.304185241e-1,
-        -2.543880343e-1, -2.090624571e-1, -1.726969890e-2, 1.721619964e-1,
-        1.253726482e-1, 8.132214844e-2, 5.935424566e-2, 7.266970724e-2,
-        -2.203676701e-1, -1.157215610e-1, 2.677558735e-2, 1.616063714e-1,
-        -1.267506182e-2, 9.929284453e-3, -1.354443133e-1, 1.515440941e-1,
-        -1.126899570e-1, -8.483917266e-2, -7.578897476e-2, -1.210056841e-1,
-        1.193516999e-1, -1.226907670e-1, -6.633365154e-2, 1.336234957e-1,
-        9.699971974e-2, 1.067896187e-2, -2.778427601e-1, -1.025955752e-1,
-        -9.627220035e-2, -1.384282112e-1, 1.237298995e-1, -3.671849519e-2,
-        -5.482363701e-2, 9.800714254e-2, 1.228266954e-2, 1.383764148e-1,
-        -1.796329468e-1, 1.226510108e-1, 1.325191855e-1, -2.443232089e-1,
-        -8.080874383e-2, 1.372865438e-1, -2.137154043e-1, -2.602519393e-1,
-        -5.451197177e-2, 9.060382843e-2, 1.377204657e-1, 1.899786741e-1,
-        3.142237663e-2, -5.527496338e-3, 1.855194569e-5, -1.647797525e-1,
-        -5.011386052e-2, -1.736856699e-1, 1.162838638e-1, -2.502012849e-1,
-        -1.644054949e-1, 1.868934333e-1, -2.932643890e-1, -2.987084985e-1,
-        -1.791358888e-1, 3.906442225e-2, -9.563064575e-2, 1.658844352e-1,
-        -1.096284389e-2, 1.911070943e-1, -9.341835976e-3, -9.982331097e-2,
-        1.750419438e-1, 7.973864675e-2, 1.733411849e-1, 3.791078180e-2,
-        5.870273709e-2, 1.000446081e-2, 1.837066710e-1, 4.792273045e-3,
-        2.531932890e-1, 1.754584908e-2, -4.011014104e-2, -8.841584623e-2,
-        1.144905314e-1, 3.888303041e-2, -1.435799152e-1, -1.602955014e-1,
-        -2.137265503e-1, -1.454526037e-1, 4.850776494e-2, -2.551958710e-2,
-        -6.987573206e-2, 7.620199025e-2,
+        -1.324709952e-1, 2.276586741e-1, -5.433481187e-2, -2.379948050e-1,
+        6.471173465e-2, 1.574465036e-1, 1.138727665e-1, 2.689629197e-1,
+        1.271901280e-1, 2.500383556e-1, -1.550689042e-1, -1.019197851e-1,
+        1.313577443e-1, 2.015821487e-1, -6.819458306e-2, 1.266416721e-2,
+        2.596150935e-1, 3.030305356e-2, 2.310652584e-1, 2.115294635e-1,
+        1.441571712e-1, 1.578044742e-1, -6.970494986e-3, 2.010465860e-1,
+        3.005047441e-1, 2.570427954e-1, 1.757200062e-1, 2.626730800e-1,
+        -1.439720094e-1, 6.137210876e-2, 1.960377395e-1, -2.334267795e-1,
+        -1.274943799e-1, 1.202696115e-1, -1.268526018e-1, 2.166930437e-1,
+        5.313330889e-2, 2.832038105e-1, 1.148962602e-1, -6.645712256e-2,
+        -1.839477867e-1, 1.811905056e-1, -9.397349507e-2, 1.502274871e-1,
+        1.285328418e-1, 2.401066273e-1, 7.862018049e-2, 2.544380426e-1,
+        -2.241368294e-1, -1.057844087e-1, 8.765471727e-2, 2.593964338e-1,
+        1.521619111e-1, 2.540917993e-1, 2.479580045e-1, -1.082621813e-1,
+        -1.356182396e-1, -1.958851069e-1, -8.063078672e-2, -1.596998423e-2,
+        1.214292049e-1, -3.255382180e-3, 8.150199801e-2, -9.668639302e-2,
+        -2.198381871e-1, 2.052933872e-1, 2.120500356e-1, 2.725176811e-1,
+        1.410623491e-1, -4.675435275e-2, -2.169142663e-1, 8.377179503e-3,
+        -2.959627286e-2, -2.856968939e-1, 8.358162642e-2, -5.843140185e-2,
+        1.673666835e-1, -3.346149921e-1, -2.608200312e-1, -1.147356629e-1,
+        -2.984780669e-1, -2.186537683e-1, -4.836743698e-3, 2.451847941e-1,
+        1.648519784e-1, 1.072576940e-1, 3.041353077e-2, 4.660047591e-2,
+        -2.255350053e-1, -9.727965295e-2, 1.647041366e-2, 1.858751178e-1,
+        1.753129065e-3, 2.507622540e-2, -2.204872072e-1, 1.709071696e-1,
+        -1.545617729e-1, -1.106580049e-1, -1.326831281e-1, -1.656599939e-1,
+        1.592531055e-1, -1.667588651e-1, -1.415540129e-1, 1.287261099e-1,
+        1.471493691e-1, 2.605446801e-2, -3.282814026e-1, -8.542001247e-2,
+        -1.457607001e-1, -2.035155445e-1, 1.696975827e-1, -6.341329217e-2,
+        -8.633554727e-2, 1.219843850e-1, -3.755034506e-2, 1.585929692e-1,
+        -2.014648616e-1, 2.014262974e-1, 2.003653646e-1, -2.982605696e-1,
+        -8.676282316e-2, 2.003021985e-1, -2.584623694e-1, -3.016157746e-1,
+        -1.377993822e-2, 1.736326516e-1, 1.773674488e-1, 2.430833578e-1,
+        9.681995213e-2, 3.630496562e-2, -4.581117630e-2, -2.483896911e-1,
+        -5.295423418e-2, -2.060673535e-1, 1.960297227e-1, -2.997342944e-1,
+        -2.315933108e-1, 2.480821013e-1, -3.156897724e-1, -3.158527017e-1,
+        -2.024295330e-1, 8.973081410e-2, -1.191698313e-1, 2.377606928e-1,
+        -7.887901366e-2, 1.930376142e-1, 1.721484959e-2, -1.215685979e-1,
+        1.906346530e-1, 5.894189700e-2, 2.603484690e-1, 5.236881971e-2,
+        1.129211336e-1, 2.876224741e-2, 2.012480199e-1, -4.520867765e-2,
+        2.515160739e-1, -6.503134966e-2, -7.599392533e-2, -1.303970367e-1,
+        8.108679950e-2, -4.619568586e-3, -1.347905248e-1, -1.542650610e-1,
+        -2.541981936e-1, -1.510358751e-1, 7.969618589e-2, -2.269930765e-2,
+        -6.818598509e-2, 1.188368946e-1,
     ];
 
     #[rustfmt::skip]

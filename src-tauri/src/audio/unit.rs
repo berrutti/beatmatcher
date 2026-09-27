@@ -1,6 +1,24 @@
-use super::dsp::{Equalizer, Equalizer4, Filter, FILTER_COEFF_REFRESH_INTERVAL};
+use super::dsp::{
+    EqRange, Equalizer, Equalizer4, Filter, FILTER_COEFF_REFRESH_INTERVAL, FILTER_RESONANCE_Q,
+};
+use session_core::{SlotDescriptor, Voicing};
 
 const GAIN_SMOOTHING_TAU_SEC: f32 = 0.010;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MasterSettings {
+    pub fader_curve: session_core::FaderCurve,
+    pub filter_resonance: f32,
+}
+
+impl Default for MasterSettings {
+    fn default() -> Self {
+        Self {
+            fader_curve: session_core::FaderCurve::default(),
+            filter_resonance: FILTER_RESONANCE_Q,
+        }
+    }
+}
 
 struct Smoothed {
     current: f32,
@@ -38,9 +56,61 @@ pub trait AudioUnit: Send {
     // out of `.bms` events. The strip forwards it to the unit filling the fader role.
     fn set_muted(&mut self, _muted: bool) {}
 
-    // Master scope, so it arrives outside the strip's own param space. The strip
-    // forwards it to the unit filling the fader role.
-    fn set_fader_curve(&mut self, _curve: session_core::FaderCurve) {}
+    // Master scope, so it arrives outside the strip's own param space.
+    fn apply_master(&mut self, _master: &MasterSettings) {}
+
+    fn send_gain(&self) -> f32 {
+        0.0
+    }
+
+    fn is_sending(&self) -> bool {
+        false
+    }
+}
+
+struct SendTap {
+    amount: f32,
+    active: bool,
+    gain: Smoothed,
+}
+
+impl SendTap {
+    fn resolve(&mut self) {
+        self.gain.set(if self.active { self.amount } else { 0.0 });
+    }
+}
+
+impl AudioUnit for SendTap {
+    fn set_param(&mut self, param: &str, value: f32) {
+        match param {
+            "amount" => self.amount = value.clamp(0.0, 1.0),
+            "active" => self.active = value != 0.0,
+            _ => return,
+        }
+        self.resolve();
+    }
+
+    fn param(&self, param: &str) -> Option<f32> {
+        match param {
+            "amount" => Some(self.amount),
+            "active" => Some(if self.active { 1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.gain.advance();
+        (l, r)
+    }
+
+    fn send_gain(&self) -> f32 {
+        self.gain.current
+    }
+
+    fn is_sending(&self) -> bool {
+        self.active && self.amount > 0.0
+    }
 }
 
 struct Eq3Band {
@@ -147,8 +217,6 @@ impl AudioUnit for Eq4Band {
             self.stale = true;
             self.since_refresh += 1;
         }
-        // Designing four biquads per sample is what the divider avoids; the
-        // `now == before` arm catches the last step so a settled EQ is exact.
         if self.stale && (self.since_refresh >= FILTER_COEFF_REFRESH_INTERVAL || now == before) {
             self.eq.set_low(now.0);
             self.eq.set_low_mid(now.1);
@@ -190,6 +258,10 @@ impl AudioUnit for SweepFilter {
         }
     }
 
+    fn apply_master(&mut self, master: &MasterSettings) {
+        self.filter.set_resonance(master.filter_resonance);
+    }
+
     #[inline]
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         self.filter.process(l, r)
@@ -229,8 +301,8 @@ impl AudioUnit for Fader {
         self.muted = muted;
     }
 
-    fn set_fader_curve(&mut self, curve: session_core::FaderCurve) {
-        self.curve = curve;
+    fn apply_master(&mut self, master: &MasterSettings) {
+        self.curve = master.fader_curve;
         self.resolve_gain();
     }
 
@@ -255,31 +327,49 @@ pub(crate) fn approach(current: f32, target: f32, coeff: f32) -> f32 {
     }
 }
 
-pub fn make_unit(unit_id: &str, sample_rate: f32) -> Option<Box<dyn AudioUnit>> {
-    match unit_id {
-        "eq3band" => Some(Box::new(Eq3Band {
-            eq: Equalizer::new(sample_rate),
+fn eq_range(slot: &SlotDescriptor, band: &str) -> Option<EqRange> {
+    let band = slot.param(band)?;
+    Some(EqRange {
+        min_db: band.min as f32,
+        max_db: band.max as f32,
+    })
+}
+
+pub fn make_unit(slot: &SlotDescriptor, sample_rate: f32) -> Option<Box<dyn AudioUnit>> {
+    match (slot.unit_id, &slot.voicing) {
+        ("eq3band", Voicing::Eq3(voicing)) => Some(Box::new(Eq3Band {
+            eq: Equalizer::new(sample_rate, voicing),
             low: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             high: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             since_refresh: 0,
             stale: false,
         })),
-        "eq4band" => Some(Box::new(Eq4Band {
-            eq: Equalizer4::new(sample_rate),
-            low: Smoothed::new(0.5, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+        ("eq4band", Voicing::Eq4(voicing)) => Some(Box::new(Eq4Band {
+            eq: Equalizer4::new(
+                sample_rate,
+                voicing,
+                eq_range(slot, "low")?,
+                eq_range(slot, "high")?,
+            ),
+            low: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             low_mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             high_mid: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
-            high: Smoothed::new(0.5, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+            high: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
             since_refresh: 0,
             stale: false,
         })),
-        "sweep_filter" => Some(Box::new(SweepFilter {
+        ("sweep_filter", Voicing::None) => Some(Box::new(SweepFilter {
             filter: Filter::new(sample_rate),
             knob: 0.0,
             active: false,
         })),
-        "fader" => Some(Box::new(Fader {
+        ("send_tap", Voicing::None) => Some(Box::new(SendTap {
+            amount: 0.0,
+            active: false,
+            gain: Smoothed::new(0.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
+        })),
+        ("fader", Voicing::None) => Some(Box::new(Fader {
             position: 1.0,
             curve: session_core::FaderCurve::default(),
             gain: Smoothed::new(1.0, sample_rate, GAIN_SMOOTHING_TAU_SEC),
@@ -300,7 +390,7 @@ mod tests {
         for manifest in session_core::MANIFESTS {
             for slot in manifest.strip {
                 assert!(
-                    make_unit(slot.unit_id, 44100.0).is_some(),
+                    make_unit(slot, 44100.0).is_some(),
                     "no unit '{}' for slot '{}' in '{}'",
                     slot.unit_id,
                     slot.slot,
@@ -329,17 +419,16 @@ mod tests {
 
     fn unit_for(slot: &str) -> Box<dyn AudioUnit> {
         let descriptor = CLASSIC_4BAND.strip_slot(slot).expect("slot");
-        make_unit(descriptor.unit_id, SAMPLE_RATE).expect("unit")
+        make_unit(descriptor, SAMPLE_RATE).expect("unit")
     }
 
     #[test]
     fn every_eq_band_reaches_the_unit() {
-        // The shelves travel 0..1 from a 0.5 detent; the bells are dB about zero.
         for (band, cut_to) in [
-            ("low", 0.0),
+            ("low", -20.0),
             ("lowMid", -20.0),
             ("highMid", -20.0),
-            ("high", 0.0),
+            ("high", -20.0),
         ] {
             let flat = rms_through(unit_for("eq").as_mut());
             let mut cut = unit_for("eq");
@@ -365,6 +454,39 @@ mod tests {
         swept.set_param("value", -0.8);
         swept.set_param("active", 1.0);
         assert!(rms_through(swept.as_mut()) < bypassed * 0.95);
+    }
+
+    #[test]
+    fn the_resonance_starts_at_the_tuned_q() {
+        for manifest in session_core::MANIFESTS {
+            let descriptor = manifest
+                .descriptor(ParamScope::Master, "filter", "resonance")
+                .expect("a resonance control");
+            assert_eq!(
+                descriptor.default as f32,
+                crate::audio::dsp::FILTER_RESONANCE_Q
+            );
+        }
+    }
+
+    #[test]
+    fn the_master_resonance_reaches_the_filter() {
+        let swept_at = |q: f32| {
+            let mut filter = unit_for("filter");
+            filter.set_param("value", -0.4);
+            filter.set_param("active", 1.0);
+            filter.apply_master(&MasterSettings {
+                filter_resonance: q,
+                ..MasterSettings::default()
+            });
+            rms_through(filter.as_mut())
+        };
+        let mild = swept_at(0.71);
+        let wild = swept_at(5.0);
+        assert!(
+            (mild - wild).abs() > mild * 0.1,
+            "resonance changed nothing: {mild} against {wild}"
+        );
     }
 
     #[test]
@@ -394,7 +516,10 @@ mod tests {
         let at = |curve| {
             let mut fader = unit_for("fader");
             fader.set_param("gain", HALF_THROW);
-            fader.set_fader_curve(curve);
+            fader.apply_master(&MasterSettings {
+                fader_curve: curve,
+                ..MasterSettings::default()
+            });
             (rms_through(fader.as_mut()), fader.param("gain"))
         };
         let (linear, throw) = at(session_core::FaderCurve::Linear);
@@ -417,7 +542,7 @@ mod tests {
     fn constructed_units_match_the_manifest_defaults() {
         for manifest in session_core::MANIFESTS {
             for slot in manifest.strip {
-                let unit = make_unit(slot.unit_id, SAMPLE_RATE).expect("unit");
+                let unit = make_unit(slot, SAMPLE_RATE).expect("unit");
                 for descriptor in slot.params {
                     assert_eq!(
                         unit.param(descriptor.id),
@@ -433,8 +558,56 @@ mod tests {
     }
 
     #[test]
+    fn a_strip_left_at_its_defaults_passes_the_signal_through_untouched() {
+        for manifest in session_core::MANIFESTS {
+            for slot in manifest.strip {
+                let mut unit = make_unit(slot, SAMPLE_RATE).expect("unit");
+                // Past the smoothers, so this is the resting state and not the ramp into it.
+                for frame in 0..SAMPLE_RATE as usize {
+                    let phase = frame as f32 / SAMPLE_RATE;
+                    let sample = (std::f32::consts::TAU * 440.0 * phase).sin() * 0.5;
+                    unit.process(sample, sample);
+                }
+                for frame in 0..1024 {
+                    let phase = (SAMPLE_RATE as usize + frame) as f32 / SAMPLE_RATE;
+                    let sample = (std::f32::consts::TAU * 440.0 * phase).sin() * 0.5;
+                    let (l, r) = unit.process(sample, sample);
+                    assert!(
+                        (l - sample).abs() < 1e-4 && (r - sample).abs() < 1e-4,
+                        "{} slot '{}' altered a resting signal: {sample} became {l}",
+                        manifest.id,
+                        slot.slot
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_eq_voiced_for_the_other_unit_is_refused() {
+        let four_band = CLASSIC_4BAND.strip_slot("eq").expect("eq slot");
+        let three_band = session_core::CLASSIC_3BAND
+            .strip_slot("eq")
+            .expect("eq slot");
+        let crossed = SlotDescriptor {
+            slot: four_band.slot,
+            unit_id: four_band.unit_id,
+            voicing: match three_band.voicing {
+                Voicing::Eq3(voicing) => Voicing::Eq3(voicing),
+                _ => panic!("the three band is voiced as one"),
+            },
+            params: four_band.params,
+        };
+        assert!(make_unit(&crossed, SAMPLE_RATE).is_none());
+    }
+
+    #[test]
     fn a_param_the_unit_does_not_have_reads_back_as_none() {
-        let unit = make_unit("fader", SAMPLE_RATE).expect("unit");
+        let unit = make_unit(
+            CLASSIC_4BAND.strip_slot("fader").expect("fader slot"),
+            SAMPLE_RATE,
+        )
+        .expect("unit");
         assert_eq!(unit.param("cutoff"), None);
     }
 }

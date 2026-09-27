@@ -38,6 +38,7 @@ export function useSessionTimeline(
       session.value.events,
       session.value.durationMs,
       PITCH_RANGE_OPTIONS,
+      session.value.mixerId,
       nameForPath,
       gridForPath
     );

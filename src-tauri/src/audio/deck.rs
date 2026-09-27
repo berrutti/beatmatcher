@@ -1,4 +1,4 @@
-use super::unit::{make_unit, AudioUnit};
+use super::unit::{make_unit, AudioUnit, MasterSettings};
 use crate::audio::atomic_f32::AtomicF32;
 use session_core::{MixerManifest, ParamScope};
 use std::sync::{
@@ -17,6 +17,7 @@ const XFADER_SMOOTHING_TAU_SEC: f32 = 0.010;
 pub struct RenderTargets<'a> {
     pub main: Option<&'a mut [f32]>,
     pub cue: Option<&'a mut [f32]>,
+    pub send: Option<&'a mut [f32]>,
 }
 
 struct Slot {
@@ -51,6 +52,7 @@ pub(crate) struct CarriedStrip {
     cue_active: bool,
     xfader_assign: session_core::XfaderAssign,
     xfader_position: f32,
+    master: MasterSettings,
 }
 
 pub struct ChannelStrip {
@@ -62,9 +64,12 @@ pub struct ChannelStrip {
     // the resolved gain one owner, since a missed re-resolve anywhere is audible.
     pub(crate) xfader_assign: session_core::XfaderAssign,
     xfader_position: f32,
+    master: MasterSettings,
     xfader_gain: f32,
     metered: (f32, f32),
+    sent: (f32, f32),
     xfader_gain_target: f32,
+    send_gain: f32,
     xfader_smooth_coeff: f32,
     pub(crate) next_render_frame: u64,
     level_l: Arc<AtomicF32>,
@@ -99,7 +104,7 @@ impl ChannelStrip {
             .enumerate()
             .map(|(index, descriptor)| {
                 let build = || {
-                    make_unit(descriptor.unit_id, sample_rate).unwrap_or_else(|| {
+                    make_unit(descriptor, sample_rate).unwrap_or_else(|| {
                         panic!(
                             "no unit '{}' for slot '{}'",
                             descriptor.unit_id, descriptor.slot
@@ -124,9 +129,12 @@ impl ChannelStrip {
             cue_active: false,
             xfader_assign: session_core::XfaderAssign::Thru,
             xfader_position: 0.0,
+            master: MasterSettings::default(),
             xfader_gain: 1.0,
             metered: (0.0, 0.0),
+            sent: (0.0, 0.0),
             xfader_gain_target: 1.0,
+            send_gain: 0.0,
             xfader_smooth_coeff: 1.0 - (-1.0 / (sample_rate * XFADER_SMOOTHING_TAU_SEC)).exp(),
             next_render_frame: 0,
             level_l: Arc::new(AtomicF32::default()),
@@ -137,9 +145,34 @@ impl ChannelStrip {
     }
 
     /// Master scope, so the strip's own param loop never reaches it.
-    pub(crate) fn set_fader_curve(&mut self, curve: session_core::FaderCurve) {
+    pub(crate) fn set_master(&mut self, master: MasterSettings) {
+        self.master = master;
+        for slot in &mut self.slots {
+            slot.main.apply_master(&master);
+            if let Some(cue) = slot.cue.as_mut() {
+                cue.apply_master(&master);
+            }
+        }
         self.restart_settle();
-        self.slots[self.fader_slot].main.set_fader_curve(curve);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn master(&self) -> MasterSettings {
+        self.master
+    }
+
+    pub(crate) fn set_fader_curve(&mut self, fader_curve: session_core::FaderCurve) {
+        self.set_master(MasterSettings {
+            fader_curve,
+            ..self.master
+        });
+    }
+
+    pub(crate) fn set_filter_resonance(&mut self, filter_resonance: f32) {
+        self.set_master(MasterSettings {
+            filter_resonance,
+            ..self.master
+        });
     }
 
     pub(crate) fn set_xfader_assign(&mut self, assign: session_core::XfaderAssign) {
@@ -202,9 +235,6 @@ impl ChannelStrip {
         self.settle_frames = self.settle_frames.saturating_sub(frames);
     }
 
-    /// What survives a change of mixer: every deck-scope address this strip holds, plus the
-    /// state that lives outside the slots. The receiving strip keeps only the addresses it
-    /// also has.
     pub(crate) fn carryable_params(&self) -> CarriedStrip {
         let mut params = Vec::new();
         for slot in &self.slots {
@@ -223,6 +253,7 @@ impl ChannelStrip {
             cue_active: self.cue_active,
             xfader_assign: self.xfader_assign,
             xfader_position: self.xfader_position,
+            master: self.master,
         }
     }
 
@@ -248,6 +279,7 @@ impl ChannelStrip {
         self.cue_active = carried.cue_active;
         self.xfader_assign = carried.xfader_assign;
         self.set_xfader_position(carried.xfader_position);
+        self.set_master(carried.master);
     }
 
     /// Both output paths, so the cue signal tracks the main one. An address the manifest
@@ -285,14 +317,30 @@ impl ChannelStrip {
         // over from performance mode would silence a deck for a whole session.
         self.set_xfader_assign(session_core::XfaderAssign::Thru);
         self.set_xfader_position(0.0);
-        self.set_fader_curve(session_core::FaderCurve::default());
+        self.set_master(MasterSettings::default());
     }
 
     #[inline]
     /// The channel's own level, read before the crossfader. Hardware channel meters do
     /// not follow the throw, and the cue sheet's audibility test reads the fader instead.
+    pub(crate) fn sent(&self) -> (f32, f32) {
+        self.sent
+    }
+
     pub(crate) fn metered(&self) -> (f32, f32) {
         self.metered
+    }
+
+    pub(crate) fn is_sending(&self) -> bool {
+        self.slots.iter().any(|slot| slot.main.is_sending())
+    }
+
+    fn resolve_send_gain(&mut self) {
+        self.send_gain = self
+            .slots
+            .iter()
+            .map(|slot| slot.main.send_gain())
+            .fold(0.0f32, f32::max);
     }
 
     pub fn process_main(&mut self, l: f32, r: f32) -> (f32, f32) {
@@ -300,6 +348,7 @@ impl ChannelStrip {
         for slot in &mut self.slots {
             (l, r) = slot.main.process(l, r);
         }
+        self.resolve_send_gain();
         // Kept pre-crossfader, because a channel meter reads the channel: on hardware it
         // does not drop when the throw moves away from it.
         self.metered = (l.abs(), r.abs());
@@ -310,7 +359,12 @@ impl ChannelStrip {
             self.xfader_gain_target,
             self.xfader_smooth_coeff,
         );
-        (l * self.xfader_gain, r * self.xfader_gain)
+        let (out_l, out_r) = (l * self.xfader_gain, r * self.xfader_gain);
+        // Taken after the crossfader, so fading a deck out takes its send with it and the
+        // echo it already fed keeps ringing.
+        let send = self.send_gain;
+        self.sent = (out_l * send, out_r * send);
+        (out_l, out_r)
     }
 
     // Everything before the manifest's cue tap, gated by cue_active. Always called so the
@@ -843,7 +897,11 @@ impl Deck {
         frames: usize,
         targets: RenderTargets<'_>,
     ) -> (f32, f32) {
-        let RenderTargets { main, cue } = targets;
+        let RenderTargets {
+            main,
+            cue,
+            mut send,
+        } = targets;
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         // A separate cue device gives this deck two callbacks per period. Anything consumed once
@@ -881,6 +939,11 @@ impl Deck {
                     sum_r += metered_r;
                     main[frame * 2] += ml;
                     main[frame * 2 + 1] += mr;
+                    if let Some(send) = send.as_deref_mut() {
+                        let (sl, sr) = strip.sent();
+                        send[frame * 2] += sl;
+                        send[frame * 2 + 1] += sr;
+                    }
 
                     let (l, r) = self.cue_tick();
                     let (cl, cr) = strip.process_cue(l, r);
@@ -897,6 +960,11 @@ impl Deck {
                     sum_r += metered_r;
                     main[frame * 2] += ml;
                     main[frame * 2 + 1] += mr;
+                    if let Some(send) = send.as_deref_mut() {
+                        let (sl, sr) = strip.sent();
+                        send[frame * 2] += sl;
+                        send[frame * 2 + 1] += sr;
+                    }
                 }
             }
             (None, Some(cue)) => {
@@ -1079,6 +1147,7 @@ mod tests {
                 RenderTargets {
                     main: Some(&mut main),
                     cue: if separate_cue { None } else { Some(&mut cue) },
+                    send: None,
                 },
             );
             if separate_cue {
@@ -1088,6 +1157,7 @@ mod tests {
                     RenderTargets {
                         main: None,
                         cue: Some(&mut cue),
+                        send: None,
                     },
                 );
             }
@@ -1115,6 +1185,7 @@ mod tests {
                 RenderTargets {
                     main: Some(&mut main),
                     cue: Some(&mut cue),
+                    send: None,
                 },
             );
 
@@ -1194,6 +1265,7 @@ mod tests {
                     RenderTargets {
                         main: Some(&mut main),
                         cue: None,
+                        send: None,
                     },
                 );
                 out.extend_from_slice(&main);
@@ -1512,6 +1584,105 @@ mod tests {
         assert!(deck.main_pos <= deck.total_frames as f64);
     }
 
+    fn sent_peak(set: impl Fn(&mut ChannelStrip)) -> f32 {
+        let mut strip = ChannelStrip::new(48_000.0);
+        set(&mut strip);
+        let mut peak: f32 = 0.0;
+        // Past the send and fader smoothers, so this is the settled tap.
+        for frame in 0..48_000 {
+            let phase = frame as f32 / 48_000.0;
+            let sample = (std::f32::consts::TAU * 440.0 * phase).sin() * 0.5;
+            strip.process_main(sample, sample);
+            if frame > 24_000 {
+                peak = peak.max(strip.sent().0.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn nothing_is_sent_until_the_send_is_switched_on() {
+        let idle = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 1.0);
+        });
+        assert!(idle < 1e-6, "a strip with no send fed the bus: {idle}");
+
+        let armed = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 1.0);
+            strip.set_param("send", "amount", 1.0);
+        });
+        assert!(armed < 1e-6, "an unswitched send fed the bus: {armed}");
+    }
+
+    #[test]
+    fn a_strip_is_sending_only_when_switched_on_and_turned_up() {
+        let mut strip = ChannelStrip::new(48_000.0);
+        assert!(!strip.is_sending());
+        strip.set_param("send", "amount", 0.5);
+        assert!(!strip.is_sending());
+        strip.set_param("send", "active", 1.0);
+        assert!(strip.is_sending());
+        strip.set_param("send", "amount", 0.0);
+        assert!(!strip.is_sending());
+    }
+
+    #[test]
+    fn the_send_is_taken_after_the_fader() {
+        let open = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 1.0);
+            strip.set_param("send", "amount", 1.0);
+            strip.set_param("send", "active", 1.0);
+        });
+        let faded = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 0.0);
+            strip.set_param("send", "amount", 1.0);
+            strip.set_param("send", "active", 1.0);
+        });
+        assert!(open > 0.4, "an open strip sent almost nothing: {open}");
+        assert!(
+            faded < open * 0.01,
+            "the fader did not take the send with it: {faded} against {open}"
+        );
+    }
+
+    #[test]
+    fn the_send_scales_with_its_own_amount() {
+        let full = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 1.0);
+            strip.set_param("send", "amount", 1.0);
+            strip.set_param("send", "active", 1.0);
+        });
+        let half = sent_peak(|strip| {
+            strip.set_param("fader", "gain", 1.0);
+            strip.set_param("send", "amount", 0.5);
+            strip.set_param("send", "active", 1.0);
+        });
+        assert!(
+            (half / full - 0.5).abs() < 0.05,
+            "half send gave {half} of {full}"
+        );
+    }
+
+    #[test]
+    fn the_send_does_not_change_what_the_strip_outputs() {
+        let mut dry = ChannelStrip::new(48_000.0);
+        dry.set_param("fader", "gain", 1.0);
+        let mut wet = ChannelStrip::new(48_000.0);
+        wet.set_param("fader", "gain", 1.0);
+        wet.set_param("send", "amount", 1.0);
+        wet.set_param("send", "active", 1.0);
+        for frame in 0..4_800 {
+            let phase = frame as f32 / 48_000.0;
+            let sample = (std::f32::consts::TAU * 440.0 * phase).sin() * 0.5;
+            let (dry_l, _) = dry.process_main(sample, sample);
+            let (wet_l, _) = wet.process_main(sample, sample);
+            assert!(
+                (dry_l - wet_l).abs() < 1e-6,
+                "the send altered the main path"
+            );
+        }
+    }
+
     #[test]
     fn a_param_outside_the_descriptors_range_lands_on_the_range() {
         let mut strip = ChannelStrip::new(48000.0);
@@ -1525,11 +1696,14 @@ mod tests {
         strip.set_param("eq", "highMid", -200.0);
         assert_eq!(
             strip.param("eq", "highMid"),
-            Some(session_core::EQ_MID_MIN_DB as f32)
+            Some(session_core::EQ_MIN_DB as f32)
         );
 
         strip.set_param("eq", "high", -200.0);
-        assert_eq!(strip.param("eq", "high"), Some(0.0));
+        assert_eq!(
+            strip.param("eq", "high"),
+            Some(session_core::EQ_MIN_DB as f32)
+        );
 
         strip.set_param("filter", "value", 4.0);
         assert_eq!(strip.param("filter", "value"), Some(1.0));
@@ -2079,6 +2253,7 @@ mod render_block_equivalence {
             RenderTargets {
                 main: targets.0.then_some(&mut main),
                 cue: targets.1.then_some(&mut cue),
+                send: None,
             },
         );
         (main, cue, level)
@@ -2197,6 +2372,7 @@ mod silence_early_out {
                 RenderTargets {
                     main: Some(&mut main),
                     cue: None,
+                    send: None,
                 },
             );
         }
@@ -2277,6 +2453,7 @@ mod silence_early_out {
             RenderTargets {
                 main: Some(&mut main),
                 cue: None,
+                send: None,
             },
         );
         assert!(

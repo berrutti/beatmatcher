@@ -6,7 +6,7 @@
     { "elapsed_ms": 0, "type": "load_track", "deck": "C", "path": "__SOURCE__" },
     { "elapsed_ms": 0, "type": "set_param", "deck": "C", "slot": "fader", "param": "gain", "value": 1.0 },
     { "elapsed_ms": 100, "type": "play", "deck": "C", "sec": 0.0 },
-    { "elapsed_ms": 300, "type": "set_param", "deck": "C", "slot": "eq", "param": "low", "value": 0.15 },
+    { "elapsed_ms": 300, "type": "set_param", "deck": "C", "slot": "eq", "param": "low", "value": -18.0 },
     { "elapsed_ms": 500, "type": "set_param", "deck": "C", "slot": "eq", "param": "lowMid", "value": 6.0 },
     { "elapsed_ms": 700, "type": "set_param", "deck": "C", "slot": "eq", "param": "highMid", "value": -12.0 },
     { "elapsed_ms": 900, "type": "set_param", "deck": "C", "slot": "filter", "param": "value", "value": 0.75 },

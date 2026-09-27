@@ -6,6 +6,8 @@ pub enum ParamUnit {
     Normalized,
     Bool,
     Ratio,
+    Milliseconds,
+    Hertz,
 }
 
 impl ParamUnit {
@@ -15,6 +17,8 @@ impl ParamUnit {
             Self::Normalized => "normalized",
             Self::Bool => "bool",
             Self::Ratio => "ratio",
+            Self::Milliseconds => "ms",
+            Self::Hertz => "hz",
         }
     }
 }
@@ -77,12 +81,60 @@ impl ParamDescriptor {
 pub struct SlotDescriptor {
     pub slot: &'static str,
     pub unit_id: &'static str,
+    pub voicing: Voicing,
     pub params: &'static [ParamDescriptor],
 }
 
 impl SlotDescriptor {
     pub fn param(&self, id: &str) -> Option<&ParamDescriptor> {
         self.params.iter().find(|param| param.id == id)
+    }
+}
+
+pub struct Eq3Voicing {
+    pub low_shelf_hz: f32,
+    pub mid_peak_hz: f32,
+    pub mid_q: f32,
+    pub high_shelf_hz: f32,
+}
+
+pub struct Eq4Voicing {
+    pub low_hz: f32,
+    pub low_mid_hz: f32,
+    pub high_mid_hz: f32,
+    pub high_hz: f32,
+    pub low_kill_q: f32,
+    pub high_kill_q: f32,
+    pub mid_q_by_db: &'static [(f32, f32)],
+}
+
+pub enum Voicing {
+    None,
+    Eq3(&'static Eq3Voicing),
+    Eq4(&'static Eq4Voicing),
+}
+
+impl Voicing {
+    fn hashed_values(&self) -> Vec<f32> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Eq3(eq) => vec![eq.low_shelf_hz, eq.mid_peak_hz, eq.mid_q, eq.high_shelf_hz],
+            Self::Eq4(eq) => {
+                let mut values = vec![
+                    eq.low_hz,
+                    eq.low_mid_hz,
+                    eq.high_mid_hz,
+                    eq.high_hz,
+                    eq.low_kill_q,
+                    eq.high_kill_q,
+                ];
+                for (db, q) in eq.mid_q_by_db {
+                    values.push(*db);
+                    values.push(*q);
+                }
+                values
+            }
+        }
     }
 }
 
@@ -275,6 +327,9 @@ impl MixerManifest {
             for slot in slots {
                 hash = fnv_bytes(hash, slot.slot.as_bytes());
                 hash = fnv_bytes(hash, slot.unit_id.as_bytes());
+                for value in slot.voicing.hashed_values() {
+                    hash = fnv_bytes(hash, &value.to_bits().to_le_bytes());
+                }
                 for param in slot.params {
                     hash = fnv_bytes(hash, param.id.as_bytes());
                     for value in [param.min, param.max, param.default, param.step] {
@@ -302,6 +357,7 @@ impl MixerManifest {
 const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "filter",
     unit_id: "sweep_filter",
+    voicing: Voicing::None,
     params: &[
         ParamDescriptor {
             id: "value",
@@ -331,6 +387,7 @@ const SWEEP_FILTER_SLOT: SlotDescriptor = SlotDescriptor {
 const FADER_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "fader",
     unit_id: "fader",
+    voicing: Voicing::None,
     params: &[ParamDescriptor {
         id: "gain",
         min: 0.0,
@@ -344,9 +401,93 @@ const FADER_SLOT: SlotDescriptor = SlotDescriptor {
     }],
 };
 
+const SEND_SLOT: SlotDescriptor = SlotDescriptor {
+    slot: "send",
+    unit_id: "send_tap",
+    voicing: Voicing::None,
+    params: &[
+        ParamDescriptor {
+            id: "amount",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step: 0.01,
+            unit: ParamUnit::Normalized,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        },
+        ParamDescriptor {
+            id: "active",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step: 1.0,
+            unit: ParamUnit::Bool,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: false,
+        },
+    ],
+};
+
+const ECHO_SLOT: SlotDescriptor = SlotDescriptor {
+    slot: "echo",
+    unit_id: "echo",
+    voicing: Voicing::None,
+    params: &[
+        ParamDescriptor {
+            id: "time",
+            min: 1.0,
+            max: 4000.0,
+            default: 500.0,
+            step: 1.0,
+            unit: ParamUnit::Milliseconds,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        },
+        ParamDescriptor {
+            id: "feedback",
+            min: 0.0,
+            max: 0.95,
+            default: 0.4,
+            step: 0.01,
+            unit: ParamUnit::Normalized,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        },
+        ParamDescriptor {
+            id: "lowCut",
+            min: 20.0,
+            max: 1000.0,
+            default: 150.0,
+            step: 1.0,
+            unit: ParamUnit::Hertz,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        },
+        // Unity by default, so the per-channel send is the only control a performance needs.
+        ParamDescriptor {
+            id: "return",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            step: 0.01,
+            unit: ParamUnit::Normalized,
+            taper: Taper::Linear,
+            dead_zone: None,
+            automatable: true,
+        },
+    ],
+};
+
 const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "gain",
     unit_id: "master_gain",
+    voicing: Voicing::None,
     params: &[ParamDescriptor {
         id: "gain",
         min: 0.0,
@@ -365,6 +506,7 @@ const MASTER_GAIN_SLOT: SlotDescriptor = SlotDescriptor {
 const XFADER_SLOT: SlotDescriptor = SlotDescriptor {
     slot: "xfader",
     unit_id: "xfader",
+    voicing: Voicing::None,
     params: &[ParamDescriptor {
         id: "position",
         min: -1.0,
@@ -552,7 +694,25 @@ impl JogRotationSpeed {
     }
 }
 
-const MASTER_SLOTS_V2: &[SlotDescriptor] = &[MASTER_GAIN_SLOT, XFADER_SLOT];
+const FILTER_MASTER_SLOT: SlotDescriptor = SlotDescriptor {
+    slot: "filter",
+    unit_id: "filter_master",
+    voicing: Voicing::None,
+    params: &[ParamDescriptor {
+        id: "resonance",
+        min: 0.71,
+        max: 5.0,
+        default: 2.0,
+        step: 0.01,
+        unit: ParamUnit::Ratio,
+        taper: Taper::Linear,
+        dead_zone: None,
+        automatable: true,
+    }],
+};
+
+const MASTER_SLOTS_V2: &[SlotDescriptor] =
+    &[MASTER_GAIN_SLOT, XFADER_SLOT, FILTER_MASTER_SLOT, ECHO_SLOT];
 
 pub static CLASSIC_3BAND: MixerManifest = MixerManifest {
     id: "classic-3band",
@@ -566,10 +726,18 @@ pub static CLASSIC_3BAND: MixerManifest = MixerManifest {
     ],
 };
 
+const CLASSIC_3BAND_EQ: Eq3Voicing = Eq3Voicing {
+    low_shelf_hz: 200.0,
+    mid_peak_hz: 1000.0,
+    mid_q: 0.4,
+    high_shelf_hz: 6_000.0,
+};
+
 const CLASSIC_3BAND_STRIP: &[SlotDescriptor] = &[
     SlotDescriptor {
         slot: "eq",
         unit_id: "eq3band",
+        voicing: Voicing::Eq3(&CLASSIC_3BAND_EQ),
         params: &[
             shelf_db_param("low"),
             shelf_db_param("highMid"),
@@ -578,6 +746,7 @@ const CLASSIC_3BAND_STRIP: &[SlotDescriptor] = &[
     },
     SWEEP_FILTER_SLOT,
     FADER_SLOT,
+    SEND_SLOT,
 ];
 
 const fn shelf_db_param(id: &'static str) -> ParamDescriptor {
@@ -607,40 +776,51 @@ pub static CLASSIC_4BAND: MixerManifest = MixerManifest {
     ],
 };
 
+const CLASSIC_4BAND_EQ: Eq4Voicing = Eq4Voicing {
+    low_hz: 250.0,
+    low_mid_hz: 350.0,
+    high_mid_hz: 2_000.0,
+    high_hz: 2_500.0,
+    low_kill_q: std::f32::consts::FRAC_1_SQRT_2,
+    high_kill_q: 0.66,
+    // No closed form fits the whole travel. The 0 dB entry is unreachable, `peaking` being
+    // identity there, and only keeps the table monotonic.
+    mid_q_by_db: &[
+        (-30.30, 0.564),
+        (-13.75, 0.785),
+        (-8.22, 1.020),
+        (-4.72, 1.230),
+        (-2.11, 1.419),
+        (0.0, 1.580),
+        (1.79, 1.744),
+        (3.35, 1.881),
+        (4.72, 1.996),
+        (5.95, 2.088),
+        (7.04, 2.152),
+    ],
+};
+
 const CLASSIC_4BAND_STRIP: &[SlotDescriptor] = &[
     SlotDescriptor {
         slot: "eq",
         unit_id: "eq4band",
+        voicing: Voicing::Eq4(&CLASSIC_4BAND_EQ),
         params: &[
-            shelf_param("low"),
-            mid_param("lowMid"),
-            mid_param("highMid"),
-            shelf_param("high"),
+            eq_band_param("low"),
+            eq_band_param("lowMid"),
+            eq_band_param("highMid"),
+            eq_band_param("high"),
         ],
     },
     SWEEP_FILTER_SLOT,
     FADER_SLOT,
+    SEND_SLOT,
 ];
 
-// A shelf reaching silence has no dB floor to quote, so the travel is the knob itself.
-const fn shelf_param(id: &'static str) -> ParamDescriptor {
+const fn eq_band_param(id: &'static str) -> ParamDescriptor {
     ParamDescriptor {
         id,
-        min: 0.0,
-        max: 1.0,
-        default: 0.5,
-        step: 0.01,
-        unit: ParamUnit::Normalized,
-        taper: Taper::Linear,
-        dead_zone: None,
-        automatable: true,
-    }
-}
-
-const fn mid_param(id: &'static str) -> ParamDescriptor {
-    ParamDescriptor {
-        id,
-        min: crate::EQ_MID_MIN_DB,
+        min: crate::EQ_MIN_DB,
         max: crate::EQ_MAX_DB,
         default: 0.0,
         step: 0.5,
@@ -772,7 +952,8 @@ mod tests {
         SlotDescriptor {
             slot: "eq",
             unit_id: "eq4band",
-            params: &[shelf_param("low"), mid_param("lowMid")],
+            voicing: Voicing::Eq4(&CLASSIC_4BAND_EQ),
+            params: &[eq_band_param("low"), eq_band_param("lowMid")],
         },
         SWEEP_FILTER_SLOT,
         FADER_SLOT,
@@ -786,11 +967,10 @@ mod tests {
     };
 
     #[test]
-    #[test]
     fn every_shipped_manifest_keeps_the_hash_its_sessions_carry() {
         let pinned: &[(&str, &str)] = &[
-            ("classic-3band", "503da2d79dee0d77"),
-            ("classic-4band", "f2dfcf4f3655a116"),
+            ("classic-3band", "986c74a626dffce2"),
+            ("classic-4band", "99675f4f39ce6290"),
         ];
         let shipped: Vec<&str> = MANIFESTS.iter().map(|manifest| manifest.id).collect();
         let listed: Vec<&str> = pinned.iter().map(|(id, _)| *id).collect();
@@ -814,7 +994,8 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "eq",
                 unit_id: "eq4band",
-                params: &[shelf_param("low")],
+                voicing: Voicing::Eq4(&CLASSIC_4BAND_EQ),
+                params: &[eq_band_param("low")],
             }],
             master: &[],
             eq_bands: &[],
@@ -830,6 +1011,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
+                voicing: Voicing::None,
                 params: &[ParamDescriptor {
                     id: "gain",
                     min: 0.0,
@@ -864,7 +1046,8 @@ mod tests {
             SlotDescriptor {
                 slot: "eq",
                 unit_id: "isolator",
-                params: &[shelf_param("low")],
+                voicing: Voicing::None,
+                params: &[eq_band_param("low")],
             },
             SWEEP_FILTER_SLOT,
             FADER_SLOT,
@@ -886,7 +1069,8 @@ mod tests {
             SlotDescriptor {
                 slot: "eq",
                 unit_id: "eq4band",
-                params: &[shelf_param("low"), mid_param("lowMid")],
+                voicing: Voicing::Eq4(&CLASSIC_4BAND_EQ),
+                params: &[eq_band_param("low"), eq_band_param("lowMid")],
             },
             FADER_SLOT,
         ];
@@ -929,9 +1113,7 @@ mod tests {
                     continue;
                 };
                 assert!(
-                    manifest
-                        .descriptor(ParamScope::Deck, slot, param)
-                        .is_some(),
+                    manifest.descriptor(ParamScope::Deck, slot, param).is_some(),
                     "{} routes {} to '{slot}/{param}', which it does not have",
                     manifest.id,
                     band.id()
@@ -947,7 +1129,6 @@ mod tests {
                 let Some((slot, _)) = lane.slot_param() else {
                     continue;
                 };
-                // A band the mixer does not have is inert, which the band test covers.
                 if slot == "eq" {
                     continue;
                 }
@@ -974,10 +1155,10 @@ mod tests {
     fn lane_specs_carry_the_published_ranges() {
         let cases: &[(EditableLane, f64, f64, f64)] = &[
             (EditableLane::Gain, 0.0, 1.0, 1.0),
-            (EditableLane::EqLow, 0.0, 1.0, 0.5),
-            (EditableLane::EqLowMid, -30.0, 6.0, 0.0),
-            (EditableLane::EqHighMid, -30.0, 6.0, 0.0),
-            (EditableLane::EqHigh, 0.0, 1.0, 0.5),
+            (EditableLane::EqLow, -26.0, 6.0, 0.0),
+            (EditableLane::EqLowMid, -26.0, 6.0, 0.0),
+            (EditableLane::EqHighMid, -26.0, 6.0, 0.0),
+            (EditableLane::EqHigh, -26.0, 6.0, 0.0),
             (EditableLane::Filter, -1.0, 1.0, 0.0),
             (EditableLane::Rate, 0.92, 1.08, 1.0),
             (
@@ -1000,10 +1181,7 @@ mod tests {
         let live = lane_spec_for(EditableLane::EqLowMid, &CLASSIC_4BAND, None, None);
         let older = lane_spec_for(EditableLane::EqLowMid, &OLDER, None, None);
 
-        assert_eq!(
-            (live.min, live.max),
-            (crate::EQ_MID_MIN_DB, crate::EQ_MAX_DB)
-        );
+        assert_eq!((live.min, live.max), (crate::EQ_MIN_DB, crate::EQ_MAX_DB));
         assert_eq!((older.min, older.max), (live.min, live.max));
 
         // Transport lanes are mixer-independent.
@@ -1061,6 +1239,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
+                voicing: Voicing::None,
                 params: &[fader_gain_param(1.0)],
             }],
             master: &[],
@@ -1072,6 +1251,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
+                voicing: Voicing::None,
                 params: &[fader_gain_param(0.8)],
             }],
             master: &[],
@@ -1083,6 +1263,7 @@ mod tests {
             strip: &[SlotDescriptor {
                 slot: "fader",
                 unit_id: "fader",
+                voicing: Voicing::None,
                 params: &[fader_gain_param(1.0)],
             }],
             master: &[],
@@ -1131,7 +1312,7 @@ mod tests {
         let bell = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "eq", "lowMid")
             .expect("eq/lowMid");
-        assert_eq!(bell.from_unit_interval(0.0), crate::EQ_MID_MIN_DB);
+        assert_eq!(bell.from_unit_interval(0.0), crate::EQ_MIN_DB);
         assert_eq!(bell.from_unit_interval(1.0), crate::EQ_MAX_DB);
     }
 
@@ -1149,7 +1330,7 @@ mod tests {
             .descriptor(ParamScope::Deck, "eq", "lowMid")
             .expect("eq/lowMid");
         assert_eq!(bell.from_unit_interval(0.5), 0.0);
-        assert_eq!(bell.from_unit_interval(0.25), crate::EQ_MID_MIN_DB / 2.0);
+        assert_eq!(bell.from_unit_interval(0.25), crate::EQ_MIN_DB / 2.0);
         assert_eq!(bell.from_unit_interval(0.75), crate::EQ_MAX_DB / 2.0);
     }
 
@@ -1174,12 +1355,12 @@ mod tests {
         let bell = CLASSIC_4BAND
             .descriptor(ParamScope::Deck, "eq", "lowMid")
             .expect("eq/lowMid");
-        // step is 0.5 dB over -30..6, so every result is a multiple of it.
+        // step is 0.5 dB over -26..6, so every result is a multiple of it.
         for step in 0..=127 {
             let value = bell.from_unit_interval(step as f64 / 127.0);
             assert_eq!(value, (value / 0.5).round() * 0.5, "at {step}");
             assert!(
-                (crate::EQ_MID_MIN_DB..=crate::EQ_MAX_DB).contains(&value),
+                (crate::EQ_MIN_DB..=crate::EQ_MAX_DB).contains(&value),
                 "at {step}"
             );
         }

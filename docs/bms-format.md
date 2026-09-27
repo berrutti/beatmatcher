@@ -6,7 +6,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 {
   "version": 2,
   "startedAt": "2026-06-06T14:00:00Z",
-  "mixer": { "id": "classic-3band", "hash": "a1b2c3d4e5f60718" },
+  "mixer": { "id": "classic-4band", "hash": "a1b2c3d4e5f60718" },
   "events": [
     { "elapsed_ms": 0,      "frame": 0, "type": "recording_start", "buffer_size_frames": 117.6, "sample_rate": 44100 },
     { "elapsed_ms": 0,      "type": "deck_snapshot", "deck": "A", "path": "/...", "position_sec": 12.3, "cue_point_sec": 0, "is_playing": false, "bpm": 128.0, "playback_rate": 1.0, "loop_active": false, "loop_end_sec": 0 },
@@ -24,7 +24,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 
 An older version is never rejected. Reading a session rewrites its events into the current vocabulary before anything interprets them, and the file on disk changes only when it is saved.
 
-`mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` means (slot order, unit ids, param ids, ranges, defaults, steps, dead zones) and excludes display labels. Rendering refuses a session whose mixer this build does not have or has since changed. A file with no `mixer` field replays on the classic mixer.
+`mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` means (slot order, unit ids, each slot's voicing, param ids, ranges, defaults, steps, dead zones) and excludes display labels and the EQ role table. Rendering refuses a session whose mixer this build does not have or has since changed. A file with no `mixer` field replays on `classic-4band`.
 
 ## Event types
 
@@ -57,21 +57,28 @@ An older version is never rejected. Reading a session rewrites its events into t
 
 Every mixer parameter is one `set_param` event addressed as **deck / slot / param**. `slot` is the position in the channel strip, so swapping the unit in a slot keeps existing automation pointing at the same place. Omitting `deck` addresses master scope.
 
-| slot     | param                  | scope  | value                                |
-| -------- | ---------------------- | ------ | ------------------------------------ |
-| `fader`  | `gain`                 | deck   | 0-1, channel fader                   |
-| `eq`     | `low` / `mid` / `high` | deck   | dB, -26 to +6                        |
-| `filter` | `value`                | deck   | -1 to +1, negative LPF, positive HPF |
-| `filter` | `active`               | deck   | 0 or 1, filter on/off                |
-| `gain`   | `gain`                 | master | 0-1, master output level             |
-| `xfader` | `position`             | master | -1 to +1, -1 full A, +1 full B       |
+| slot     | param                                 | scope  | value                                   |
+| -------- | ------------------------------------- | ------ | --------------------------------------- |
+| `fader`  | `gain`                                | deck   | 0-1, channel fader                      |
+| `eq`     | `low` / `lowMid` / `highMid` / `high` | deck   | dB, -26 to +6                           |
+| `filter` | `value`                               | deck   | -1 to +1, negative LPF, positive HPF    |
+| `filter` | `active`                              | deck   | 0 or 1, filter on/off                   |
+| `send`   | `amount`                              | deck   | 0-1, how much of the channel feeds echo |
+| `send`   | `active`                              | deck   | 0 or 1, send on/off                     |
+| `gain`   | `gain`                                | master | 0-1, master output level                |
+| `xfader` | `position`                            | master | -1 to +1, -1 full A, +1 full B          |
+| `filter` | `resonance`                           | master | Q, 0.71 to 5, every channel's filter    |
+| `echo`   | `time`                                | master | ms, 1 to 4000                           |
+| `echo`   | `feedback`                            | master | 0 to 0.95                               |
+| `echo`   | `lowCut`                              | master | Hz, 20 to 1000, in the feedback path    |
+| `echo`   | `return`                              | master | 0-1, echo level in the mix              |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
 { "elapsed_ms": 4900.0, "type": "set_param", "slot": "gain", "param": "gain", "value": 0.7943 }
 ```
 
-The table above is the `classic-3band-v2` manifest. Addresses and ranges come from whichever manifest the `mixer` header names, so `isolator-3band` reads `eq` bands as 0-1 kill amounts instead of dB. A `set_param` naming an address that manifest lacks is ignored.
+The table above is the `classic-4band` manifest. Addresses and ranges come from whichever manifest the `mixer` header names. `classic-3band` has no `lowMid`, and its middle band answers to `highMid`. A `set_param` naming an address that manifest lacks is ignored.
 
 ## Crossfader
 
@@ -85,8 +92,6 @@ The table above is the `classic-3band-v2` manifest. Addresses and ranges come fr
 `assign` is `a`, `b`, or `thru`. An unrecognized value reads as `thru`, the default, which multiplies the channel by exactly 1 wherever the crossfader sits.
 
 The curve is constant power, with both buses at -3 dB when centred and the ends at exactly 0 and 1.
-
-The crossfader arrived in the `-v2` manifests. `classic-3band` and `isolator-3band` stay frozen at their original shape, because the header hash covers master slots and adding one would have refused every session recorded before it.
 
 ## Channel fader curve
 
@@ -102,7 +107,7 @@ Recording writes the curve once at `recording_start`, because nothing else in th
 
 ## Mixer state at record start
 
-`recording_start` is followed by a `set_param` for every strip param that is not at its manifest default, one per deck. A knob moved before recording began is otherwise lost, and a reader replays the manifest default in its place: an engaged filter read as bypassed, so a whole sweep was silent in the render. Params already at their default are skipped, for the same reason a `thru` crossfader assign is.
+`recording_start` is followed by a `set_param` for every strip param that is not at its manifest default, one per deck, and one for every master effect param (echo and filter resonance) whatever its value. A knob moved before recording began is otherwise lost, and a reader replays the manifest default in its place: an engaged filter read as bypassed, so a whole sweep was silent in the render. Params already at their default are skipped, for the same reason a `thru` crossfader assign is.
 
 ## Jog wheel
 
@@ -124,6 +129,15 @@ Nothing is compensated. `elapsed_ms` is stamped in Rust when the command arrives
 Where that is follows from block rendering: the audio callback renders a whole block under one deck lock, so a command arriving part-way through cannot alter frames already written and takes effect on the next callback. A recorded event carries `frame`, read under the same lock as the mutation, and the renderer dispatches there verbatim. An event without `frame` was synthesized rather than performed, a clip edit or a session older than the stamp, and dispatches at `elapsed_ms`. `frame` counts at the recording's `sample_rate`, so a render at another rate scales it.
 
 The delay is between zero and one buffer, not a fixed offset: measured at 35 frames on a 128-frame buffer. Adding a fixed buffer to every event puts every deck out, which is why the frame is recorded rather than inferred.
+
+## Changing the vocabulary
+
+- **The event vocabulary is the public API.** Sessions must re-render deterministically, so param ids are an ABI and automation lanes are a view of the vocabulary.
+- **An old spelling stays in the reader forever.** When an event type is renamed, the reader keeps accepting the old name, and the test pinning that alias is not the rename's to delete. A diff that removes a string literal from `event.rs`, `sim.rs`, `timeline.rs` or `clip_edit.rs` is a format change, and needs evidence that no shipped build ever wrote it.
+- **A categorical value is its own event, never a number on a `set_param`.** Named alternatives travel by name, as `set_xfader_assign` and `set_fader_curve` do. Encoding them as 0, 1, 2 would invent a range, a taper and a unit that mean nothing.
+- **A setting that changes how a recorded value sounds is stamped at `recording_start`**, as the fader curve, the jog rotation speed and the master effects are.
+- **A manifest is frozen only once it has shipped.** Before treating a hash as sacred, check whether any file carrying it has left the building.
+- **Saving serializes in the frontend** from `{ ...session.raw, events }`, never through Rust's typed event, so unknown fields and top-level metadata survive.
 
 ## Offline render
 

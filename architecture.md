@@ -60,6 +60,35 @@ returning a struct comes back as `unknown`, and those take `invoke<T>('name', ar
 hand-written mirror: `DeckSyncPayload`, `TrackInfo`, `LoopOutResult` and the other transport
 commands. Using `invoke` where the generator did type the return throws away the check.
 
+## Engine contracts
+
+- **The loop model is exactly three variables.** `cue_point` is both the CUE bookmark and the loop-in position. `main_pos` is the playhead and `loop_end` is loop-out. `loop_active` is independent of whether a region is defined, so reloop can re-enter one, and only loop-in or a new track clears the region.
+- **Rust owns every transport decision.** Commands return a `DeckSyncPayload` the frontend applies verbatim. Quantization and all loop and position maths live in the command layer, never in `deck.rs` methods and never in JS.
+- **CUE is routing, not transport.** `cue_pos` always advances while playing, and only the output is silenced when cue is off.
+- **`DeckSim` and `DeckState` are two deliberate models** of the same commands, analytic and per-frame. They model time differently, so they are not merged behind a trait. The parity tests in `session_playback.rs` are the guard: the exhaustive `variant_catalog` match fails to compile until a new variant is classified.
+- **`cue_mix` cannot work when main and cue are separate streams**, because the cue callback has no master signal there.
+
+## Timing
+
+- **The live scheduler waits on the master output-frame clock**, never on wall-clock sleep. The OS clock and the soundcard clock are different oscillators, so a one-time error becomes a permanent phase offset.
+- **A command lands on the next callback.** An event that starts or repositions a playing deck is advanced by `overshoot * rate * nudge` to line up with decks already playing. A bare `play` on an already playing deck is not compensated, because that clicks.
+- **A scrub starts every deck on one buffer.** Setup runs under brief per-deck locks with `is_playing = false`, then the flags flip under all the locks at once. A new scrub sets the old task's cancel flag and awaits its handle before touching the engine.
+- **The recording and its start events share one anchor.** `arm_capture` picks the frame, the capture tap skips buffers that start before it, and `Recorder::start` stamps the same value. Every event carries the frame read under the lock that made the write, and nothing stamps from the free-running clock.
+- **A logged `jog` carries the frame it was drained at**, and a replay puts its ticks straight into the filter at that frame. Nothing about the wheel depends on a block length. `offline_render.rs::live_parity` is the guard: it renders the live block path and the offline renderer over the same events and asserts byte equality across uneven block schedules.
+- **A render plays a discarded lead-in before frame zero.** A snapshot restores targets, never filter state, so zeroed delay lines would pass every cut in full for the first milliseconds. The lead-in is a whole number of coefficient-refresh intervals, because the live callback advances that counter a whole buffer at a time.
+- **Biquad coefficients are solved in f64 and narrowed once.** f32 coefficient maths lands one ulp apart between optimisation levels, and a resonant cascade grows that into audible differences over a sweep.
+
+## Loading
+
+Decode, playback and waveform analysis are three independent tracks. Decode gates playability and nothing else. The reduction runs on its own thread fed by the decoder, so the waveform paints while the file is still being read. A change that makes one of the three wait on another is wrong however green the suite is.
+
+- **A track is decoded once**, by `load_track`, and every caller shares it through a per-path `OnceCell`.
+- **One app-wide permit pool sized to the core count bounds every decode.** Bounding only some producers of a contended resource is worse than bounding none.
+- **The analysis outlives the load.** `load_track` returns before the reduction ends, so two loads on one deck can overlap. Every load carries an id, and anything the analysis writes to a deck checks it first.
+- **Waveform points travel as raw band levels.** The frontend divides by the track reference in `waveformColumns`, because a streaming reduction cannot know the reference until its last point.
+- **Session playback is refused while loading, never queued**, and the gate opens once snapshots are built.
+- **Nothing is gated on the file's rate matching the device's.** A shared device's nominal rate can change between runs, so each buffer carries the rate it was computed at and conversions happen where two meet.
+
 ## Audio signal chain (per deck)
 
 ```mermaid
@@ -74,6 +103,8 @@ graph LR
     Decode["Decode + Resample\n(io.rs)"]:::io
     Deck["Deck\n(playback position,\ncue/loop logic,\nspectral bands)"]:::deck
     ChannelStrip["ChannelStrip\n(manifest slots in order,\nthen the crossfader)"]:::strip
+    Send["Send bus\n(tapped after\nthe crossfader)"]:::strip
+    Echo["Master echo\n(returned into\nthe mix)"]:::master
     MasterMix["Master Mix\n(limiter, gain,\nmetering)"]:::master
     Outputs["Output Devices\n(main + cue)"]:::out
 
@@ -81,6 +112,9 @@ graph LR
     Decode --> Deck
     Deck -- "main_tick()\ncue_tick()" --> ChannelStrip
     ChannelStrip -- "process_main()\nprocess_cue()" --> MasterMix
+    ChannelStrip -- "sent()" --> Send
+    Send --> Echo
+    Echo --> MasterMix
     MasterMix --> Outputs
 ```
 
@@ -89,6 +123,8 @@ graph LR
 ## One block, two callers
 
 A block of audio is produced in one place, whether it is heard now or rendered from a `.bms` later. `mix_channels` walks the same `(Deck, ChannelStrip)` pairs and `master_block` applies gain and the limiter over the result. The live callback adds the cue mix and the recording tap. The offline render adds neither.
+
+Each strip adds its send to a send bus as it renders. The echo returns into the mix before `master_block`, so its tail is gained and limited with everything else rather than sitting outside the limiter.
 
 ```mermaid
 flowchart TD
@@ -102,13 +138,16 @@ flowchart TD
 (offline_render.rs)"]:::offline
     Mix["mix_channels
 (deck.render_block per pair)"]:::shared
+    Echo["echo return
+(send bus through the delay line)"]:::shared
     Master["master_block
 (gain, limiter)"]:::shared
     Cue["cue mix + capture tap"]:::live
 
     Callback --> Mix
     Render --> Mix
-    Mix --> Master
+    Mix --> Echo
+    Echo --> Master
     Master --> Cue
 ```
 
@@ -116,12 +155,30 @@ The offline render works through the timeline in chunks of the buffer size the `
 
 ## Mixer manifest
 
-A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes it as an ordered list of slots, each naming a unit id that `audio/unit.rs` builds into an `AudioUnit`, plus a `cue_tap` slot and the master slots. `MIXER` in `audio/mod.rs` is the one manifest the live engine builds. The offline renderer builds whichever the `.bms` header names.
+A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes it as an ordered list of slots, each naming a unit id that `audio/unit.rs` builds into an `AudioUnit`, plus a `cue_tap` slot and the master slots. `MIXER` in `audio/mod.rs` is the manifest the live engine starts on, and it can be swapped at runtime (below). The offline renderer builds whichever the `.bms` header names.
 
-- **A slot is a position, not a unit.** `eq` is the second stage of the strip whatever fills it, so `classic-3band` and `isolator-3band` share addresses while reading their values in different ranges.
+- **A slot is a position, not a unit.** `eq` is the second stage of the strip whatever fills it, so `classic-3band` and `classic-4band` share `eq/low` while different units fill it.
 - **Every param carries its own range**, so nothing outside the manifest restates a min, max, step or default. `from_unit_interval` places a MIDI control on it and `clamp` bounds a `.bms` value.
 - **`process_cue` taps before the `cue_tap` slot**, so the headphone feed is everything up to that point. The crossfader is applied after it, which is why a deck faded away is still audible in headphones.
+- **A slot carries its voicing**, the frequencies and Q its unit is built with (`Voicing` in `param.rs`). Two EQs on the same dB scale sound different because of it, so it is hashed like the ranges. `make_unit` refuses a slot voiced for a different unit.
+- **EQ bands are addressed by role.** `eq_bands` maps `EqBand::Low`, `LowMid`, `HighMid` and `High` to whichever params a mixer has, so a controller mapping written against the roles drives a three-band and a four-band EQ unchanged. The table is outside `content_hash`, because routing a control does not change what a recorded value means.
 - **`content_hash` covers everything that changes what a `set_param` means.** `resolve_manifest` refuses a session whose mixer this build does not have or has since changed, and the shipped hashes are pinned by test because a `.bms` on disk carries them.
+
+## Changing mixer at runtime
+
+`AppAudio::set_mixer` rebuilds every strip on the new manifest without touching the streams. The streams hold `Arc<Mutex<ChannelStrip>>` and never see a manifest, so a strip built outside the lock and swapped inside it is the whole change.
+
+A value crosses only when the receiving descriptor has the same min, max, default and step. Sharing an address is not enough. The engine applies that rule and returns every value the new strips hold, and the mixer store replaces its own values with them. The settings that apply to the whole mixer (`MasterSettings`: the fader curve and the filter resonance) are carried across with the strip.
+
+A swap is refused while recording, because the `.bms` is stamped with the mixer it started on, and while a session plays, because the session was checked against the mixer playing it.
+
+## Master effects
+
+The echo and the filter resonance are master-scope params, addressed as `echo/time`, `echo/feedback`, `echo/lowCut`, `echo/return` and `filter/resonance`. `MasterEffects` in `audio/master.rs` is their one table of addresses, and `apply_master_effect` is the one path a change takes: it stores the value and pushes the resonance to every strip. The live engine keeps a `MasterEffects` behind the monitor, and each callback copies the echo settings out once per block. The offline render owns one outright and applies it as events arrive.
+
+- **Each channel feeds the echo through its own send**, an amount plus an on switch, tapped after the crossfader. Pulling a fader down stops feeding the echo and leaves the tail ringing.
+- **Recording stamps where every master effect stood** at `recording_start`, and session snapshots carry them, so a render or a scrub that starts mid-session hears the settings that were live. A render's discarded lead-in also lasts as long as the echo takes to decay when a deck is sending, capped at 20 s and at the audio each deck has to replay.
+- **`AudioUnit` has one hook for settings that apply to the whole mixer**, `apply_master(&MasterSettings)`. The fader reads the curve and the sweep filter reads the resonance. A new master setting adds a field, not a trait method.
 
 ## Engine to UI
 
@@ -207,12 +264,6 @@ Two orderings run over that list, and they are deliberately not the same one:
 
 `composables/useTimelineGestures.ts` is the interaction layer. On pointer-down it hit-tests the scene, picks a gesture from the hit plus modifiers, and drives the drag, emitting semantic intents that the controller reacts to. Gesture visuals in progress (the draw line, a clip ghost, the filter preview) are pushed back as overlay `SceneItem`s, so the renderer draws them like anything else.
 
-## Collection column widths
-
-A resizable column holds a unitless share, never a pixel width. Its rendered width is its share over the sum of the visible resizable shares, so those columns fill whatever space they are given by construction. A drag trades share between two adjacent columns and leaves every other column's share untouched. `bpm` and `added` sit outside the system at fixed pixel widths, their content never needing an adjustable one.
-
-`table-layout: fixed` updates a `<col>`'s width attribute from a `calc()` but does not re-lay-out the table, so shares are resolved to pixels in JS rather than handed to the browser as an expression.
-
 ## Performer state broadcast
 
 `src-tauri/src/broadcast.rs` publishes each live deck's beat state (bpm, beat offset, position, rate, nudge, `current_beat`) every 50 ms for an external app to phase-sync to: an atomically-replaced `state.json` in the app data dir on all platforms, plus a Unix domain socket (`beatmatcher.sock`, newline-delimited JSON) on unix. Best-effort: a slow socket reader drops frames, not the connection, and a sink setup failure disables broadcasting instead of aborting startup. The beat math is `session_core::current_beat`, the same function the phase ring uses via WASM.
@@ -223,28 +274,7 @@ A resizable column holds a unitless share, never a pixel width. Its rendered wid
 
 Decoding a message and reading a mapping file are separate modules, each importing only the addressing vocabulary it uses. That vocabulary, the byte constants and `Source`/`Key`/`Resolution`/`Half`, is its own module because both need it. The connection, the device registry and dispatch into the engine stay in `mod.rs`.
 
-A **mapping** is a JSON file in `src-tauri/mappings/`, listing bindings that each pair a **source** with an **action**:
-
-- A source is a control change or a note. Its resolution says how to read the value: `7bit`, `14bit` (low half on the controller 32 above the high one), `centre_delta` (signed speed either side of 64, what a jog platter reports), or `signed_step` (1 or 127 per detent, what a browse encoder reports).
-- An action is one entry in a closed enum: a mixer parameter addressed as deck/slot/param, the crossfader, a transport button, the tempo fader, the jog, or browse.
-
-`channel` counts from 1, the way the hardware's documentation and the console monitor do. The wire counts from 0 and the loader subtracts.
-
-`match` claims a device by port-name substring. `decks` is `fixed` when the surface names its own decks and `assigned` when the user picks one deck for the whole device.
-
-Most surfaces lay the same controls out per deck, one MIDI channel each. `per_deck` maps each deck to its channel and `deck_bindings` are written once and expanded across it, so neither the deck nor the channel is retyped per copy. That matters because a mistyped deck letter is a _valid_ address on another deck, which the collision check cannot see and which reads as the wrong deck's control moving. Anything that does not fit the pattern stays in `bindings` with its channel and deck written out.
-
-A positional control is placed on its parameter's range by the mixer manifest (`ParamDescriptor::from_unit_interval`), so a binding carries no range of its own. A mapping whose bindings collide on one key is refused, because a silent collision moves the wrong deck's control and reads as broken hardware.
-
-### Contributing a mapping
-
-Bind against the device rather than its documentation. Dev builds log every incoming message to the browser console as raw bytes plus a decode, so connecting a controller in Settings and moving one control at a time is how addresses are found.
-
-Encoders are the trap. Read one through a **full revolution** before deciding what it reports, because an absolute angle, a signed step and a speed are indistinguishable over a small nudge.
-
-A control no action covers needs a new enum variant, and adding one fails to compile until every interpreter handles it. The vocabulary a mapping file can address should grow deliberately.
-
-`version` is bumped when the file shape gains something an older build cannot see. A file declaring a newer version is refused, and so is one that uses the deck template while declaring a version that predates it, because the older build would find no bindings and present a dead controller rather than an error.
+The mapping file format and how to contribute one are in [CONTRIBUTING.md](CONTRIBUTING.md#controller-mappings).
 
 ## Further reading
 

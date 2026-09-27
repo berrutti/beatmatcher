@@ -15,62 +15,49 @@
         }}</span>
 
         <div class="mixer__eq">
-          <div v-for="spec in mixer.eqSpecs" :key="spec.param" class="mixer__eq-band">
-            <input
-              type="range"
-              class="mixer__eq-slider"
-              :min="spec.min"
-              :max="spec.max"
-              :step="spec.step"
-              :value="mixer.paramValue(deckId, keyOf(spec))"
-              orient="vertical"
-              :style="{ '--eq-accent': decks.decks[deckId].accent }"
-              v-tooltip="$t('mixer.eqHint')"
-              v-slider-reset="{
-                enabled: settings.sliderClickResets,
-                reset: () => onReset(deckId, spec)
-              }"
-              @input="(e) => onInput(deckId, spec, e)"
-              @dblclick="onReset(deckId, spec)"
-            />
-            <span class="mixer__eq-label">{{ bandLabel(spec.param) }}</span>
+          <div v-for="spec in eqBands" :key="spec.param" class="mixer__eq-band">
+            <span class="mixer__knob-label mixer__eq-label">{{ bandLabel(spec.param) }}</span>
+            <ChannelKnob :deck-id="deckId" :spec="spec" :size="28" :tooltip="$t('mixer.eqHint')" />
           </div>
         </div>
 
-        <div class="mixer__filter">
-          <button
-            class="mixer__filter-btn"
-            :class="{ 'mixer__filter-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
-            :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            tabindex="-1"
-            v-tooltip="$t('mixer.filterToggle')"
-            @click="mixer.swarmToggleParam(deckId, FILTER_ACTIVE)"
-          >
-            F
-          </button>
-          <input
-            type="range"
-            class="mixer__filter-slider"
-            :min="mixer.filterSpec.min"
-            :max="mixer.filterSpec.max"
-            :step="mixer.filterSpec.step"
-            :value="mixer.paramValue(deckId, FILTER_VALUE)"
-            :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            v-tooltip="$t('mixer.filterHint')"
-            v-slider-reset="{
-              enabled: settings.sliderClickResets,
-              reset: () => onReset(deckId, mixer.filterSpec)
-            }"
-            @input="(e) => onInput(deckId, mixer.filterSpec, e)"
-            @dblclick="onReset(deckId, mixer.filterSpec)"
-          />
-          <button
-            class="mixer__filter-btn mixer__filter-btn--ghost"
-            aria-hidden="true"
-            tabindex="-1"
-          >
-            F
-          </button>
+        <div class="mixer__fx">
+          <div v-if="mixer.filterSpec" class="mixer__fx-unit">
+            <button
+              class="mixer__fx-btn"
+              :class="{ 'mixer__fx-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
+              :style="{ '--fader-accent': decks.decks[deckId].accent }"
+              tabindex="-1"
+              v-tooltip="$t('mixer.filterToggle')"
+              @click="mixer.swarmToggleParam(deckId, FILTER_ACTIVE)"
+            >
+              F
+            </button>
+            <ChannelKnob
+              :deck-id="deckId"
+              :spec="mixer.filterSpec"
+              :size="30"
+              :tooltip="$t('mixer.filterHint')"
+            />
+          </div>
+          <div v-if="mixer.sendSpec" class="mixer__fx-unit">
+            <ChannelKnob
+              :deck-id="deckId"
+              :spec="mixer.sendSpec"
+              :size="30"
+              :tooltip="$t('mixer.sendHint')"
+            />
+            <button
+              class="mixer__fx-btn"
+              :class="{ 'mixer__fx-btn--active': mixer.paramActive(deckId, SEND_ACTIVE) }"
+              :style="{ '--fader-accent': decks.decks[deckId].accent }"
+              tabindex="-1"
+              v-tooltip="$t('mixer.echoToggle')"
+              @click="mixer.swarmToggleParam(deckId, SEND_ACTIVE)"
+            >
+              S
+            </button>
+          </div>
         </div>
 
         <div class="mixer__fader-row">
@@ -132,6 +119,25 @@
       </div>
     </div>
 
+    <div class="mixer__master">
+      <div v-if="mixer.resonanceSpec" class="mixer__master-group">
+        <span class="mixer__master-label">{{ $t('mixer.filter') }}</span>
+        <div class="mixer__master-control">
+          <MasterEffectKnob :spec="mixer.resonanceSpec" :tooltip="$t('mixer.resonanceHint')" />
+          <span class="mixer__knob-label">{{ $t('mixer.resonance') }}</span>
+          <span class="mixer__knob-value">{{ masterDisplay(mixer.resonanceSpec) }}</span>
+        </div>
+      </div>
+      <div v-if="echoControls.length" class="mixer__master-group">
+        <span class="mixer__master-label">{{ $t('mixer.echo') }}</span>
+        <div v-for="spec in echoControls" :key="spec.param" class="mixer__master-control">
+          <MasterEffectKnob :spec="spec" :tooltip="$t(`mixer.echoHint.${spec.param}`)" />
+          <span class="mixer__knob-label">{{ $t(`mixer.echoLabel.${spec.param}`) }}</span>
+          <span class="mixer__knob-value">{{ masterDisplay(spec) }}</span>
+        </div>
+      </div>
+    </div>
+
     <div class="mixer__xfader">
       <span class="mixer__xfader-end">{{ $t('mixer.assignA') }}</span>
       <input
@@ -160,13 +166,16 @@ import {
   useMixerStore,
   paramKey,
   FADER_GAIN,
-  FILTER_VALUE,
   FILTER_ACTIVE,
+  SEND_ACTIVE,
   type XfaderSide
 } from '@renderer/stores/mixer';
+import ChannelKnob from '@renderer/components/mixer/ChannelKnob.vue';
+import MasterEffectKnob from '@renderer/components/mixer/MasterEffectKnob.vue';
+import { eqBandsInLayoutOrder, echoControlsInLayoutOrder } from '@renderer/utils/mixerLayout';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { DeckId } from '@renderer/utils/types';
-import { reactive, watch, onUnmounted } from 'vue';
+import { computed, reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 
@@ -180,6 +189,9 @@ const BAND_LABELS: Record<string, string> = {
   highMid: 'HM',
   high: 'H'
 };
+
+const eqBands = computed(() => eqBandsInLayoutOrder(mixer.eqSpecs));
+const echoControls = computed(() => echoControlsInLayoutOrder(mixer.echoSpecs));
 
 function bandLabel(param: string): string {
   return BAND_LABELS[param] ?? param.slice(0, 2).toUpperCase();
@@ -253,6 +265,20 @@ function keyOf(spec: MixerParamSpec): string {
 function onInput(deckId: DeckId, spec: MixerParamSpec, event: Event) {
   if (!(event.target instanceof HTMLInputElement)) return;
   mixer.swarmAdjust(deckId, keyOf(spec), parseFloat(event.target.value));
+}
+
+function masterDisplay(spec: MixerParamSpec): string {
+  const value = mixer.masterEffectValue(spec);
+  switch (spec.unit) {
+    case 'ms':
+      return `${Math.round(value)} ms`;
+    case 'hz':
+      return `${Math.round(value)} Hz`;
+    case 'ratio':
+      return `Q ${value.toFixed(2)}`;
+    default:
+      return `${Math.round(value * 100)}%`;
+  }
 }
 
 function onReset(deckId: DeckId, spec: MixerParamSpec) {
@@ -358,125 +384,47 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 
 .mixer__eq {
   display: flex;
-  gap: 0.3em;
+  flex-direction: column;
+  gap: 0.15em;
 }
 
 .mixer__eq-band {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.2em;
-}
-
-.mixer__eq-slider {
-  --slider-thumb-length: 14px;
-  -webkit-appearance: none;
-  appearance: none;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 20px;
-  height: 9em;
-  cursor: pointer;
-  background: transparent;
-  padding: 0;
-}
-
-.mixer__eq-slider::-webkit-slider-runnable-track {
-  width: 3px;
-  background: #161616;
-  border: 1px solid #2c2c2c;
-  border-radius: 1px;
-}
-
-.mixer__eq-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: var(--slider-thumb-length);
-  background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(0, 0, 0, 0.35) 0px,
-      rgba(0, 0, 0, 0.35) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
-    linear-gradient(to right, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
-  border-radius: 1px;
-  border-top: 1px solid #999;
-  border-bottom: 1px solid #2a2a2a;
-  border-left: 1px solid #5a5a5a;
-  border-right: 1px solid #5a5a5a;
-  cursor: grab;
-  margin-left: -7.5px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
-}
-
-.mixer__eq-slider:disabled {
-  opacity: var(--disabled-opacity);
-  cursor: default;
-}
-
-.mixer__eq-slider:disabled::-webkit-slider-thumb {
-  cursor: default;
-}
-
-.mixer__eq-label {
-  font-size: 0.5em;
-  color: var(--color-muted);
-  letter-spacing: 0.04em;
-}
-
-.mixer__filter {
-  display: flex;
-  flex-direction: row;
   align-items: center;
   gap: 0.3em;
 }
 
-.mixer__filter-slider {
-  --slider-thumb-length: 13px;
-  -webkit-appearance: none;
-  appearance: none;
-  width: 6.5em;
-  height: 18px;
-  cursor: pointer;
-  background: transparent;
-  padding: 0;
+.mixer__eq-label {
+  width: 2em;
+  text-align: right;
 }
 
-.mixer__filter-slider::-webkit-slider-runnable-track {
-  height: 3px;
-  background: #161616;
-  border: 1px solid #2c2c2c;
-  border-radius: 1px;
+.mixer__knob-label {
+  font-size: 0.5em;
+  color: var(--color-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.mixer__filter-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: var(--slider-thumb-length);
-  height: 18px;
-  background:
-    repeating-linear-gradient(
-      to right,
-      rgba(0, 0, 0, 0.35) 0px,
-      rgba(0, 0, 0, 0.35) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
-    linear-gradient(to bottom, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
-  border-radius: 1px;
-  border-left: 1px solid #999;
-  border-right: 1px solid #2a2a2a;
-  border-top: 1px solid #5a5a5a;
-  border-bottom: 1px solid #5a5a5a;
-  cursor: grab;
-  margin-top: -8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+.mixer__knob-value {
+  font-size: 0.5em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
 }
 
-.mixer__filter-btn {
+.mixer__fx {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+}
+
+.mixer__fx-unit {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+}
+
+.mixer__fx-btn {
   background: transparent;
   border: 1px solid var(--color-border);
   color: var(--color-muted);
@@ -493,24 +441,19 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
     color 0.1s;
 }
 
-.mixer__filter-btn:hover:not(.mixer__filter-btn--active) {
+.mixer__fx-btn:hover:not(.mixer__fx-btn--active) {
   border-color: var(--color-border-hover);
   color: var(--color-text);
   background: var(--toggle-hover-fill);
 }
 
-.mixer__filter-btn--ghost {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.mixer__filter-btn--active {
+.mixer__fx-btn--active {
   border-color: var(--fader-accent);
   color: var(--fader-accent);
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill), transparent);
 }
 
-.mixer__filter-btn--active:hover {
+.mixer__fx-btn--active:hover {
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
 }
 
@@ -656,6 +599,39 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 
 .mixer__assign-btn--active:hover {
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
+}
+
+.mixer__master {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1.6em;
+  padding: 0.3em 0.8em 0;
+}
+
+.mixer__master-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7em;
+}
+
+.mixer__master-label {
+  font-size: 0.5em;
+  font-weight: 700;
+  color: var(--color-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  align-self: center;
+}
+
+.mixer__master-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15em;
+  min-width: 3.2em;
 }
 
 .mixer__xfader {

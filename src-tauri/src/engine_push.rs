@@ -23,6 +23,17 @@ pub struct ParamChange {
     value: f32,
 }
 
+impl From<crate::audio::StripValue> for ParamChange {
+    fn from(strip: crate::audio::StripValue) -> Self {
+        Self {
+            deck: strip.deck,
+            slot: strip.slot.to_string(),
+            param: strip.param.to_string(),
+            value: strip.value,
+        }
+    }
+}
+
 /// Transport carries more than one number and does not reach the UI as a param, so it
 /// rides its own event rather than being flattened into `ParamChange`.
 #[derive(Clone, serde::Serialize)]

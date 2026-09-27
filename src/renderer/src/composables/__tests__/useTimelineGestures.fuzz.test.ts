@@ -103,6 +103,7 @@ function fuzzCases(count: number): Case[] {
       events,
       DURATION_MS,
       PITCH_RANGE_OPTIONS,
+      'classic-4band',
       (path) => path,
       () => null
     ).clips;

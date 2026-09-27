@@ -40,6 +40,17 @@
   },
   "settings": {
     "title": "Configuración",
+    "panes": {
+      "audio": "Audio",
+      "mixer": "Mezclador",
+      "decks": "Decks",
+      "control": "Control",
+      "appearance": "Apariencia"
+    },
+    "filter": {
+      "placeholder": "Filtrar ajustes",
+      "noMatch": "Ningún ajuste coincide."
+    },
     "close": "Cerrar",
     "limiter": {
       "title": "Limitador de salida",
@@ -117,6 +128,12 @@
       "title": "Número de decks por defecto",
       "unit": "decks",
       "hint": "Número de decks activos. Tiene efecto inmediato y se recuerda entre sesiones."
+    },
+    "mixer": {
+      "title": "EQ",
+      "threeBand": "3 bandas",
+      "fourBand": "4 bandas",
+      "hint": "La de 3 bandas tiene un shelf de graves, una campana de medios y un shelf de agudos. La de 4 bandas divide los medios y sus bandas externas llegan hasta el silencio. Cambiarla reinicia los mandos de EQ; faders y filtros mantienen su posición."
     },
     "language": {
       "title": "Idioma",
@@ -263,7 +280,25 @@
     "assignA": "A",
     "assignB": "B",
     "assignHint": "Asignar al crossfader: A o B, ninguno para omitir",
-    "xfaderHint": "Crossfader: doble clic para centrar"
+    "xfaderHint": "Crossfader: doble clic para centrar",
+    "echo": "Eco",
+    "echoToggle": "Enviar este canal al eco",
+    "sendHint": "Cuánto de este canal alimenta el eco",
+    "echoHint": {
+      "time": "Tiempo entre repeticiones",
+      "feedback": "Cuánto de cada repetición alimenta la siguiente",
+      "return": "Cuánto vuelve el eco a la mezcla",
+      "lowCut": "Graves que se quitan de cada repetición, para que una cola larga no embarre"
+    },
+    "filter": "Filtro",
+    "resonance": "Res",
+    "resonanceHint": "Resonancia del filtro, de suave a extrema, para todos los canales",
+    "echoLabel": {
+      "time": "Tiempo",
+      "feedback": "Realim",
+      "lowCut": "Corte bajo",
+      "return": "Retorno"
+    }
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",

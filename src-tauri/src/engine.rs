@@ -632,6 +632,28 @@ impl Engine {
             .log_param_at(self.master_frame(), None, "gain", "gain", gain);
     }
 
+    /// Clamped against the manifest so a value reaching the engine from a mapping or a
+    /// `.bms` cannot outrun what the descriptor promises.
+    pub(crate) fn set_master_effect(
+        &self,
+        slot: &str,
+        param: &str,
+        value: f32,
+    ) -> Result<(), String> {
+        let descriptor = self
+            .audio
+            .mixer()
+            .descriptor(session_core::ParamScope::Master, slot, param)
+            .ok_or_else(|| format!("this mixer has no {slot}/{param}"))?;
+        let clamped = descriptor.clamp(f64::from(value)) as f32;
+        if !self.audio.set_master_effect(slot, param, clamped) {
+            return Err(format!("{slot}/{param} is not a master effect"));
+        }
+        self.recorder
+            .log_param_at(self.master_frame(), None, slot, param, clamped);
+        Ok(())
+    }
+
     pub(crate) fn set_fader_curve(&self, curve: session_core::FaderCurve) {
         self.audio.monitor.set_fader_curve(curve);
         let frame = self
@@ -1328,6 +1350,22 @@ mod loop_and_quantize {
         let engine = engine_mid_callback();
         engine.set_beat_grid("A", Some(128.0), 0.1).expect("deck A");
         assert_eq!(logged(engine, "set_beat_grid")["frame"], 4096);
+    }
+
+    #[test]
+    fn the_send_switch_from_the_ui_reaches_the_strip_on_either_mixer() {
+        for manifest in [&session_core::CLASSIC_4BAND, &session_core::CLASSIC_3BAND] {
+            let engine = Engine::for_testing(48_000);
+            engine.audio.set_mixer(manifest);
+            engine
+                .set_deck_param(ParamOrigin::Ui, "A", "send", "amount", 0.8)
+                .expect("send amount");
+            engine
+                .set_deck_param(ParamOrigin::Ui, "A", "send", "active", 1.0)
+                .expect("send switch");
+            let strip = engine.audio.strip("A").expect("deck A");
+            assert!(strip.locked().is_sending(), "{}", manifest.id);
+        }
     }
 
     #[test]

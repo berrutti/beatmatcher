@@ -69,7 +69,7 @@ fn track_cache() -> SampleCache {
 }
 
 fn clips_for(events: &[SessionEvent]) -> Vec<Clip> {
-    build_timeline(events, 12_000.0, &PITCH_OPTS).clips
+    build_timeline(events, 12_000.0, &PITCH_OPTS, &session_core::CLASSIC_4BAND).clips
 }
 
 struct Reconstructed {

@@ -473,6 +473,7 @@ mod tests {
     const STAMPED_STRIP: &[session_core::SlotDescriptor] = &[session_core::SlotDescriptor {
         slot: "fader",
         unit_id: "fader",
+        voicing: session_core::Voicing::None,
         params: &[session_core::ParamDescriptor {
             id: "gain",
             min: 0.0,

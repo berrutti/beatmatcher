@@ -97,6 +97,13 @@ pub struct SessionLibrary {
 }
 
 impl SessionLibrary {
+    pub(crate) fn is_playing(&self) -> bool {
+        self.playback_handle
+            .locked()
+            .as_ref()
+            .is_some_and(|handle| !handle.inner().is_finished())
+    }
+
     pub fn new() -> Self {
         Self {
             playback_cancel: std::sync::Mutex::new(None),
@@ -322,10 +329,25 @@ fn reset_all(audio: &audio::AppAudio) {
         }
     }
     audio.monitor.set_master_gain(DEFAULT_MASTER_GAIN);
+    reset_master_effects(audio);
+}
+
+fn reset_master_effects(audio: &audio::AppAudio) {
+    for slot in audio.mixer().master {
+        for param in slot.params {
+            audio.set_master_effect(slot.slot, param.id, param.default as f32);
+        }
+    }
 }
 
 fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     audio.monitor.set_master_gain(sim.master_gain);
+    reset_master_effects(audio);
+    for (address, value) in &sim.master_params {
+        if let Some((slot, param)) = address.split_once('/') {
+            audio.set_master_effect(slot, param, *value);
+        }
+    }
     for id in crate::audio::LIVE_DECK_IDS {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
@@ -413,6 +435,15 @@ fn apply_event_live(
                         strip_arc.locked().set_xfader_position(value as f32);
                     }
                 }
+            }
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot,
+                param,
+                value,
+                ..
+            } => {
+                audio.set_master_effect(slot, param, value as f32);
             }
             SessionCommand::SetFaderCurve { curve } => {
                 for id in crate::audio::LIVE_DECK_IDS {
@@ -752,6 +783,27 @@ pub(crate) fn stop_session_playback(
 mod tests {
     use super::*;
     use crate::audio::{ChannelStrip, Deck};
+
+    #[test]
+    fn a_playback_counts_as_playing_until_its_task_ends() {
+        let sessions = SessionLibrary::new();
+        assert!(!sessions.is_playing());
+
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        *sessions.playback_handle.locked() = Some(tauri::async_runtime::spawn(async move {
+            finished.await.ok();
+        }));
+        assert!(sessions.is_playing());
+
+        finish.send(()).ok();
+        for _ in 0..200 {
+            if !sessions.is_playing() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!sessions.is_playing());
+    }
     use std::collections::{HashMap, HashSet};
 
     const SR: u32 = 44100;

@@ -4,7 +4,7 @@
       :value="modelValue"
       class="search__input"
       type="text"
-      :placeholder="$t('search.placeholder')"
+      :placeholder="placeholder ?? $t('search.placeholder')"
       spellcheck="false"
       @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       @pointerdown="onPointerDown"
@@ -27,6 +27,7 @@ import { useCollectionStore } from '@renderer/stores/collection';
 const { modelValue, fullWidth = false } = defineProps<{
   modelValue: string;
   fullWidth?: boolean;
+  placeholder?: string;
 }>();
 
 const emit = defineEmits<{

@@ -18,15 +18,14 @@ pub use lane_edit::{
     move_filter_active_span, normalize_gesture_samples, original_value_at, rate_lane_spec,
     relocate_event_paths, reset_lane_from, resize_filter_active_span, set_rate_at, set_rate_span,
     splice_lane_events, toggle_filter_active_range, EditableLane, LaneDisplay, LaneSpec,
-    ResetExtent, EQ_MAX_DB, EQ_MID_MIN_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
+    ResetExtent, EQ_MAX_DB, EQ_MIN_DB, FILTER_DEAD_ZONE, MIN_GESTURE_MS,
 };
 pub use param::{
     is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
-    FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest, ParamDescriptor, ParamScope,
-    EqBand, ParamUnit, SlotDescriptor, Taper, XfaderAssign, CLASSIC_3BAND, CLASSIC_4BAND,
-    FADER_GAIN,
-    JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER, JOG_SCRUB_SEC_PER_TICK_AT_33,
-    JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
+    Eq3Voicing, Eq4Voicing, EqBand, FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest,
+    ParamDescriptor, ParamScope, ParamUnit, SlotDescriptor, Taper, Voicing, XfaderAssign,
+    CLASSIC_3BAND, CLASSIC_4BAND, FADER_GAIN, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER,
+    JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
@@ -57,9 +56,11 @@ mod wasm {
         events_json: &str,
         duration_ms: f64,
         pitch_options: &[f64],
+        mixer_id: &str,
     ) -> Result<String, JsError> {
         let events = parse_events(events_json)?;
-        let result = crate::build_timeline(&events, duration_ms, pitch_options);
+        let result =
+            crate::build_timeline(&events, duration_ms, pitch_options, resolve_mixer(mixer_id));
         serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
     }
 
@@ -146,6 +147,31 @@ mod wasm {
 
     /// A mixer's deck-scope params, keyed `"slot/param"`, so knobs take their range from
     /// the running manifest. An unknown id falls back to the classic mixer.
+    #[wasm_bindgen(js_name = masterParams)]
+    pub fn master_params(id: &str) -> String {
+        let manifest = resolve_mixer(id);
+        let map: serde_json::Map<String, serde_json::Value> = manifest
+            .master
+            .iter()
+            .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param)))
+            .map(|(slot, param)| {
+                (
+                    format!("{slot}/{}", param.id),
+                    serde_json::json!({
+                        "slot": slot,
+                        "param": param.id,
+                        "min": param.min,
+                        "max": param.max,
+                        "defaultValue": param.default,
+                        "step": param.step,
+                        "unit": param.unit.id(),
+                    }),
+                )
+            })
+            .collect();
+        serde_json::Value::Object(map).to_string()
+    }
+
     #[wasm_bindgen(js_name = mixerParams)]
     pub fn mixer_params(id: &str) -> String {
         let manifest = resolve_mixer(id);
@@ -163,6 +189,7 @@ mod wasm {
                         "max": param.max,
                         "defaultValue": param.default,
                         "step": param.step,
+                        "unit": param.unit.id(),
                     }),
                 )
             })
@@ -186,7 +213,6 @@ mod wasm {
     pub fn edit_constants() -> String {
         serde_json::json!({
             "eqMinDb": crate::EQ_MIN_DB,
-            "eqMidMinDb": crate::EQ_MID_MIN_DB,
             "eqMaxDb": crate::EQ_MAX_DB,
             "filterDeadZone": crate::FILTER_DEAD_ZONE,
             "defaultMasterGain": crate::DEFAULT_MASTER_GAIN,

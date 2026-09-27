@@ -76,7 +76,6 @@ describe('mixer writes under fuzzed input', () => {
       const deck = DECKS[Math.floor(random() * DECKS.length)];
       const band = BANDS[Math.floor(random() * BANDS.length)];
       const key = paramKey('eq', band);
-      // The shelves and the bells carry different ranges, so it is per band.
       const { min, max } = rangeOf('eq', band);
       store.setParam(deck, key, wildValue(random));
 

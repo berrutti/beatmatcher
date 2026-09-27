@@ -55,6 +55,7 @@ function builtFor(events: SessionEvent[]) {
     events,
     10_000,
     PITCH_RANGE_OPTIONS,
+    'classic-4band',
     (path) => `name:${path}`,
     () => null
   );
@@ -85,6 +86,7 @@ describe('buildTimeline', () => {
       events,
       10_000,
       PITCH_RANGE_OPTIONS,
+      'classic-4band',
       (path) => path,
       () => ({ bpm: 128, beatOffsetSec: 0.25 })
     );
@@ -252,7 +254,7 @@ describe('reference-preserving no-ops', () => {
 describe('shared constants', () => {
   it('exposes the shared edit constants', () => {
     const constants = editConstants();
-    expect(constants.eqMidMinDb).toBeLessThan(constants.eqMaxDb);
+    expect(constants.eqMinDb).toBeLessThan(constants.eqMaxDb);
     expect(constants.filterDeadZone).toBeGreaterThan(0);
     expect(constants.defaultMasterGain).toBeGreaterThan(0);
     expect(constants.defaultMasterGain).toBeLessThanOrEqual(1);
@@ -284,22 +286,13 @@ describe('shared constants', () => {
     }
   });
 
-  it('the bell lanes take their range from the mixer constants', () => {
+  it('every eq lane takes its range from the mixer constants', () => {
     const constants = editConstants();
-    for (const key of ['eqLowMid', 'eqHighMid'] as const) {
-      expect(laneSpecFor(key, CLASSIC).min).toBe(constants.eqMidMinDb);
+    for (const key of ['eqLow', 'eqLowMid', 'eqHighMid', 'eqHigh'] as const) {
+      expect(laneSpecFor(key, CLASSIC).min).toBe(constants.eqMinDb);
       expect(laneSpecFor(key, CLASSIC).max).toBe(constants.eqMaxDb);
+      expect(laneSpecFor(key, CLASSIC).defaultValue).toBe(0);
       expect(laneSpecFor(key, CLASSIC).unit).toBe('db');
-    }
-  });
-
-  it('the shelf lanes are knob travel rather than dB', () => {
-    for (const key of ['eqLow', 'eqHigh'] as const) {
-      const spec = laneSpecFor(key, CLASSIC);
-      expect(spec.min).toBe(0);
-      expect(spec.max).toBe(1);
-      expect(spec.defaultValue).toBe(0.5);
-      expect(spec.unit).toBe('normalized');
     }
   });
 
@@ -311,13 +304,13 @@ describe('shared constants', () => {
     const params = mixerParams(CLASSIC);
     const constants = editConstants();
 
-    expect(params['eq/lowMid'].min).toBe(constants.eqMidMinDb);
+    expect(params['eq/lowMid'].min).toBe(constants.eqMinDb);
     expect(params['eq/lowMid'].max).toBe(constants.eqMaxDb);
     expect(params['eq/lowMid'].defaultValue).toBe(0);
 
-    expect(params['eq/low'].min).toBe(0);
-    expect(params['eq/low'].max).toBe(1);
-    expect(params['eq/low'].defaultValue).toBe(0.5);
+    expect(params['eq/low'].min).toBe(constants.eqMinDb);
+    expect(params['eq/low'].max).toBe(constants.eqMaxDb);
+    expect(params['eq/low'].defaultValue).toBe(0);
 
     expect(params['fader/gain'].defaultValue).toBe(1);
     expect(params['filter/value'].min).toBe(-1);

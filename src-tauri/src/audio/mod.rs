@@ -3,6 +3,7 @@ mod atomic_f32;
 mod deck;
 mod dsp;
 mod io;
+mod master;
 mod recording;
 mod session_apply;
 mod stream;
@@ -29,9 +30,7 @@ mod mixer_swap {
         strip.locked().set_param("filter", "value", -0.6);
         strip.locked().set_param("filter", "active", 1.0);
 
-        audio
-            .set_mixer(&session_core::CLASSIC_3BAND)
-            .expect("swap to the three band");
+        audio.set_mixer(&session_core::CLASSIC_3BAND);
 
         let held = strip.locked();
         assert_eq!(held.param("fader", "gain"), Some(0.42));
@@ -45,20 +44,81 @@ mod mixer_swap {
         let strip = audio.strip("A").expect("deck A");
         assert!(strip.locked().set_param("eq", "lowMid", -4.0));
 
-        audio
-            .set_mixer(&session_core::CLASSIC_3BAND)
-            .expect("swap to the three band");
+        audio.set_mixer(&session_core::CLASSIC_3BAND);
 
-        // The three band has no low-mid, and its low is dB where the four band's was travel.
         assert!(!strip.locked().set_param("eq", "lowMid", -4.0));
         assert_eq!(strip.locked().param("eq", "low"), Some(0.0));
+    }
+
+    #[test]
+    fn a_swap_reports_every_value_the_new_strips_hold() {
+        let audio = engine();
+        audio
+            .strip("A")
+            .expect("deck A")
+            .locked()
+            .set_param("fader", "gain", 0.42);
+
+        let values = audio.set_mixer(&session_core::CLASSIC_3BAND);
+
+        let reported = |slot: &str, param: &str| {
+            values
+                .iter()
+                .find(|value| value.deck == "A" && value.slot == slot && value.param == param)
+                .map(|value| value.value)
+        };
+        assert_eq!(reported("fader", "gain"), Some(0.42));
+        assert_eq!(reported("eq", "low"), Some(0.0));
+        assert_eq!(reported("eq", "lowMid"), None);
+        let per_deck: usize = session_core::CLASSIC_3BAND
+            .strip
+            .iter()
+            .map(|slot| slot.params.len())
+            .sum();
+        assert_eq!(values.len(), per_deck * LIVE_DECK_IDS.len());
+    }
+
+    fn tone_through(strip: &mut ChannelStrip) -> Vec<f32> {
+        (0..4_800)
+            .map(|frame| {
+                let sample = (std::f32::consts::TAU * 100.0 * frame as f32 / 48_000.0).sin();
+                strip.process_main(sample, sample).0
+            })
+            .collect()
+    }
+
+    fn configured(strip: &mut ChannelStrip) {
+        strip.set_param("fader", "gain", 0.5);
+        strip.set_param("filter", "value", -0.5);
+        strip.set_param("filter", "active", 1.0);
+    }
+
+    #[test]
+    fn a_swap_keeps_the_master_settings_on_the_rebuilt_strips() {
+        let audio = engine();
+        {
+            let strip = audio.strip("A").expect("deck A");
+            let mut strip = strip.locked();
+            configured(&mut strip);
+            strip.set_fader_curve(session_core::FaderCurve::Exponential);
+        }
+        audio.set_master_effect("filter", "resonance", 4.0);
+
+        audio.set_mixer(&session_core::CLASSIC_3BAND);
+
+        let mut expected = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND, 48_000.0);
+        configured(&mut expected);
+        expected.set_fader_curve(session_core::FaderCurve::Exponential);
+        expected.set_filter_resonance(4.0);
+        let rebuilt = tone_through(&mut audio.strip("A").expect("deck A").locked());
+        assert_eq!(rebuilt, tone_through(&mut expected));
     }
 
     #[test]
     fn the_engine_reports_the_mixer_it_was_switched_to() {
         let audio = engine();
         assert_eq!(audio.mixer().id, MIXER.id);
-        audio.set_mixer(&session_core::CLASSIC_3BAND).expect("swap");
+        audio.set_mixer(&session_core::CLASSIC_3BAND);
         assert_eq!(audio.mixer().id, "classic-3band");
     }
 }
@@ -66,6 +126,7 @@ mod mixer_swap {
 #[cfg(test)]
 pub(crate) use deck::RenderTargets;
 pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, RenderFrame, SpectralBands};
+pub(crate) use dsp::Echo;
 pub(crate) use dsp::Limiter;
 pub(crate) use dsp::{master_block, master_output, FILTER_CROSSFADE_TAU_SEC};
 pub use io::TrackTags;
@@ -73,6 +134,7 @@ pub use io::{
     decode_audio, decode_audio_streaming, read_cover_art, read_tags, resample_linear,
     resample_packets, DecodedPacket,
 };
+pub(crate) use master::{apply_master_effect, MasterEffects};
 pub(crate) use session_apply::{apply_deck_command, LoadedSamples};
 pub use stream::MasterMonitor;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;
@@ -121,14 +183,20 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
-// The one mixer the live engine builds. The offline renderer builds whichever a `.bms`
-// names (see `session_core::MANIFESTS`), but nothing selects another at runtime.
 pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_4BAND;
 
 pub(crate) use dsp::FILTER_COEFF_REFRESH_INTERVAL;
 
 /// Every deck that reaches the live mixer. The edit deck is deliberately absent.
 pub(crate) const LIVE_DECK_IDS: [&str; 4] = ["A", "B", "C", "D"];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripValue {
+    pub deck: String,
+    pub slot: &'static str,
+    pub param: &'static str,
+    pub value: f32,
+}
 
 /// Session view only, so it never reaches the mixer, a recording or a broadcast.
 pub(crate) const EDIT_DECK_ID: &str = "E";
@@ -245,7 +313,7 @@ impl AppAudio {
             default_device_id,
             main_stream: Mutex::new(None),
             cue_stream: Mutex::new(None),
-            monitor: Monitor::new(),
+            monitor: Monitor::new(MIXER),
             recording: Mutex::new(None),
             save_progress: Arc::new(AtomicU32::new(SAVE_IDLE)),
             mixer: Mutex::new(MIXER),
@@ -331,16 +399,13 @@ impl AppAudio {
         *self.mixer.locked()
     }
 
-    /// Rebuilds every strip on another manifest without touching the streams, which hold the
-    /// strips behind their own locks and never see a manifest. Addresses both mixers carry
-    /// keep their value, so levels and the filter survive; an EQ band does not, because the
-    /// same number means something different on each.
-    pub fn set_mixer(&self, manifest: &'static session_core::MixerManifest) -> Result<(), String> {
-        if self.recording.locked().is_some() {
-            return Err("the mixer cannot change while recording: the session is stamped with the one it started on".to_string());
-        }
+    pub fn is_recording(&self) -> bool {
+        self.recording.locked().is_some()
+    }
+
+    pub fn set_mixer(&self, manifest: &'static session_core::MixerManifest) -> Vec<StripValue> {
         if self.mixer().id == manifest.id {
-            return Ok(());
+            return self.strip_values();
         }
 
         for strip in self.strips.values() {
@@ -355,7 +420,37 @@ impl AppAudio {
             *strip.locked() = rebuilt;
         }
         *self.mixer.locked() = manifest;
-        Ok(())
+        self.strip_values()
+    }
+
+    /// Reports whether the address is a master effect setting, so a caller can refuse the rest.
+    pub fn set_master_effect(&self, slot: &str, param: &str, value: f32) -> bool {
+        let mut effects = self.monitor.effects.locked();
+        apply_master_effect(&mut effects, &self.strips, slot, param, value)
+    }
+
+    pub fn strip_values(&self) -> Vec<StripValue> {
+        let manifest = self.mixer();
+        let mut values = Vec::new();
+        for deck in LIVE_DECK_IDS {
+            let Some(strip) = self.strip(deck) else {
+                continue;
+            };
+            let strip = strip.locked();
+            for slot in manifest.strip {
+                for descriptor in slot.params {
+                    if let Some(value) = strip.param(slot.slot, descriptor.id) {
+                        values.push(StripValue {
+                            deck: deck.to_string(),
+                            slot: slot.slot,
+                            param: descriptor.id,
+                            value,
+                        });
+                    }
+                }
+            }
+        }
+        values
     }
 
     pub fn set_bpm_range(&self, min: u32, max: u32) {

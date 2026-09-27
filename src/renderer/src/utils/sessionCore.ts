@@ -27,7 +27,8 @@ import init, {
   faderCurveGain as wasmFaderCurveGain,
   editConstants as wasmEditConstants,
   laneSpecs as wasmLaneSpecs,
-  mixerParams as wasmMixerParams
+  mixerParams as wasmMixerParams,
+  masterParams as wasmMasterParams
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
@@ -66,6 +67,7 @@ export function buildTimeline(
   events: SessionEvent[],
   durationMs: number,
   pitchOptions: readonly number[],
+  mixerId: string,
   nameForPath: (path: string) => string,
   gridForPath: (path: string) => { bpm: number; beatOffsetSec: number } | null
 ): {
@@ -81,7 +83,9 @@ export function buildTimeline(
     deckLanes: Record<string, DeckLanes>;
     masterLanes: MasterLanes;
     deckJog: Record<string, LanePoint[]>;
-  }>(wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions)));
+  }>(
+    wasmBuildTimeline(JSON.stringify(events), durationMs, new Float64Array(pitchOptions), mixerId)
+  );
   return {
     // The grid belongs to the track, not the recording, so it is looked up by path.
     // Recorded values are the fallback for a track missing from the collection.
@@ -153,7 +157,6 @@ export function faderCurveGain(curve: string, position: number): number {
 
 export type EditConstants = {
   eqMinDb: number;
-  eqMidMinDb: number;
   eqMaxDb: number;
   filterDeadZone: number;
   defaultMasterGain: number;
@@ -201,7 +204,18 @@ export type MixerParamSpec = {
   max: number;
   defaultValue: number;
   step: number;
+  unit: string;
 };
+
+const masterParamCache = new Map<string, Record<string, MixerParamSpec>>();
+
+export function masterParams(mixerId: string): Record<string, MixerParamSpec> {
+  const cached = masterParamCache.get(mixerId);
+  if (cached) return cached;
+  const specs = parse<Record<string, MixerParamSpec>>(wasmMasterParams(mixerId));
+  masterParamCache.set(mixerId, specs);
+  return specs;
+}
 
 const mixerParamCache = new Map<string, Record<string, MixerParamSpec>>();
 
