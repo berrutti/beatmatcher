@@ -38,6 +38,7 @@ rfd = "0.15"
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 base64 = "0.22"
 dirs = "6"
+ts-rs = "10.1.0"
 
 # Optimize all dependencies (symphonia, cpal, etc.) even in dev builds.
 # Our own code stays unoptimized for fast recompiles and usable stack traces.

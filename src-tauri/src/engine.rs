@@ -11,9 +11,7 @@ use std::sync::Arc;
 pub(crate) struct LoopOutResult {
     pub(crate) start_sec: f64,
     pub(crate) end_sec: f64,
-    pub(crate) beats: i64,
-    // Some when a late quantized press seeked, so the frontend resyncs its position cache.
-    pub(crate) seek_to_sec: Option<f64>,
+    pub(crate) beats: i32,
 }
 
 #[derive(serde::Serialize)]
@@ -71,7 +69,6 @@ pub(crate) fn loop_out_core(
     }
     let start_sec = in_frames / sr;
     let end_sec = out_frames / sr;
-    let was_past_end = deck_state.quantize && deck_state.main_pos > out_frames;
     audio::apply_deck_command(
         &session_core::SessionCommand::LoopOut {
             deck: "",
@@ -84,13 +81,11 @@ pub(crate) fn loop_out_core(
         0.0,
         &mut |path: &str| Err(format!("a live command cannot load {path}")),
     )?;
-    let seek_to_sec = was_past_end.then(|| deck_state.main_pos / sr);
     let beats = crate::deck_sync::beats_between(start_sec, end_sec, bpm);
     Ok(Some(LoopOutResult {
         start_sec,
         end_sec,
         beats,
-        seek_to_sec,
     }))
 }
 
@@ -477,25 +472,27 @@ impl Engine {
         Ok(payload)
     }
 
+    /// `None` when the press defined no region. The payload carries the seek a late
+    /// quantized press performs, so nothing outside here recomputes the position.
     pub(crate) fn loop_out(
         &self,
         origin: ParamOrigin,
         deck: &str,
-    ) -> Result<Option<LoopOutResult>, String> {
+    ) -> Result<Option<DeckSyncPayload>, String> {
         let deck_arc = self.deck(deck)?;
         let strip_arc = self
             .audio
             .strip(deck)
             .ok_or_else(|| format!("unknown deck: {deck}"))?;
-        let (result, quantize, frame) = {
+        let (result, payload, quantize, frame) = {
             let mut deck_state = deck_arc.locked();
             let mut strip = strip_arc.locked();
             let quantize = deck_state.quantize;
-            (
-                loop_out_core(&mut deck_state, &mut strip)?,
-                quantize,
-                deck_state.render_frame(),
-            )
+            let result = loop_out_core(&mut deck_state, &mut strip)?;
+            let payload = result
+                .as_ref()
+                .map(|_| DeckSyncPayload::from_deck(&deck_state, false));
+            (result, payload, quantize, deck_state.render_frame())
         };
         if let Some(region) = &result {
             self.recorder.log_at(
@@ -511,7 +508,7 @@ impl Engine {
             );
             self.engine_push.mark_transport(origin, deck, false);
         }
-        Ok(result)
+        Ok(payload)
     }
 
     pub(crate) fn set_loop_active(
@@ -1077,14 +1074,27 @@ mod loop_and_quantize {
         let result = loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
             .unwrap()
             .unwrap();
-        assert!(
-            result.seek_to_sec.is_some(),
-            "expected seek compensation for late press"
-        );
-        let compensated = result.seek_to_sec.unwrap();
+        let compensated = deck_state.main_pos / SR_F;
         assert!(compensated >= result.start_sec);
         assert!(compensated < result.end_sec);
-        assert!((deck_state.main_pos - compensated * SR_F).abs() < 1.0);
+    }
+
+    // The frontend applies the payload and nothing else, so the compensation is only
+    // real if it reaches the payload's position.
+    #[test]
+    fn a_late_quantized_loop_out_reports_a_position_inside_the_region_it_defined() {
+        let mut deck_state = deck_with_grid(10.0);
+        deck_state.quantize = true;
+        deck_state.cue_point = 0.0;
+        deck_state.main_pos = beat_dur() * 4.0 + beat_dur() * 0.05;
+        loop_out_core(&mut deck_state, &mut ChannelStrip::new(SR_F as f32))
+            .unwrap()
+            .unwrap();
+        let payload = DeckSyncPayload::from_deck(&deck_state, false);
+        let region = payload.loop_region.expect("the region the press defined");
+        assert!(payload.position_sec >= region.start_sec);
+        assert!(payload.position_sec < region.end_sec);
+        assert_eq!(region.beats, 4);
     }
 
     #[test]

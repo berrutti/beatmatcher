@@ -18,7 +18,8 @@ export const STORAGE_KEYS = {
   browserColumns: 'beatmatcher.ui.browser-columns',
   skipDiscardConfirm: 'beatmatcher.ui.skip-recovery-discard-confirm',
 
-  midiDeckAssignments: 'beatmatcher.midi.deck-assignments'
+  midiDeckAssignments: 'beatmatcher.midi.deck-assignments',
+  midiDeviceMappings: 'beatmatcher.midi.device-mappings'
 } as const;
 
 export function storageGet<T>(key: string, fallback: T): T {

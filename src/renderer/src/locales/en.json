@@ -89,7 +89,8 @@
       "rescan": "Rescan",
       "noDevices": "No MIDI devices connected.",
       "unmapped": "No mapping for this device",
-      "hint": "Every connected device is online at once. A device that plays a single deck needs one chosen here."
+      "hint": "Every connected device is online at once. A device that plays a single deck needs one chosen here.",
+      "drives": "Drives deck"
     },
     "bpmRange": {
       "title": "BPM detection range",
@@ -148,6 +149,85 @@
       "loopIn": "Loop in",
       "loopOut": "Loop out",
       "conflict": "'{key}' is already used by {deck} / {cmd}"
+    },
+    "mapping": {
+      "title": "MIDI mapping",
+      "edit": "Edit mapping",
+      "hint": "Click a control, then move the one on your controller. Double-click to unbind. The device does not drive the decks while this is open.",
+      "global": "Global",
+      "deck": "Deck",
+      "mixer": "Mixer",
+      "file": "Mapping file",
+      "assigned": "Bound to the deck this device is assigned to",
+      "copy": "Copy JSON",
+      "copied": "Copied",
+      "action": {
+        "deck_param": "Mixer parameter",
+        "play_toggle": "Play",
+        "cue_toggle": "Headphone cue",
+        "transport_cue": "CUE",
+        "loop_in": "Loop in",
+        "loop_out": "Loop out",
+        "loop_exit_or_reloop": "Loop exit / reloop",
+        "quantize_toggle": "Quantize",
+        "shift": "Shift",
+        "eject": "Eject",
+        "load": "Load",
+        "tempo_fader": "Tempo fader",
+        "jog": "Jog wheel",
+        "xfader_position": "Crossfader",
+        "browse": "Browse",
+        "enter": "Enter",
+        "back": "Back",
+        "toggle_view": "Switch view"
+      },
+      "param": {
+        "eq": {
+          "low": "EQ low",
+          "mid": "EQ mid",
+          "high": "EQ high"
+        },
+        "filter": {
+          "value": "Filter"
+        },
+        "fader": {
+          "gain": "Channel fader"
+        }
+      },
+      "resolution": {
+        "7bit": "7-bit",
+        "14bit": "14-bit",
+        "centre_delta": "platter",
+        "signed_step": "encoder"
+      },
+      "save": "Save mapping…",
+      "saved": "Saved to {path}",
+      "collision": "{count} controls share an address. The mapping is refused until they differ.",
+      "folder": "Save this next to the mapping files in src-tauri/mappings and rebuild to use your controller.",
+      "identity": "Device",
+      "name": "Name",
+      "claims": "Claims port names containing",
+      "claimsHint": "A short substring both revisions of the port name share. Comma-separated for more than one.",
+      "scope": {
+        "fixed": "Names its own decks",
+        "assigned": "Plays one deck"
+      },
+      "scopeHint": {
+        "fixed": "A controller with a section per deck. Bindings carry the deck they move.",
+        "assigned": "A single player. The user picks which deck it drives in the device list."
+      },
+      "reset": "Start over",
+      "move": {
+        "button": "Press a button on your controller. Esc to cancel",
+        "positional": "Sweep a fader or knob end to end. Esc to cancel",
+        "relative": "Turn the wheel or encoder. Esc to cancel"
+      },
+      "button": {
+        "momentary": "press + release",
+        "trigger": "press only"
+      },
+      "needsRelease": "This action undoes itself when the button is released, so a press-only control cannot drive it.",
+      "create": "Create new…"
     }
   },
   "browser": {

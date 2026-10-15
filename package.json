@@ -20,6 +20,7 @@
     "format": "prettier . --write --list-different && cargo fmt --manifest-path src-tauri/Cargo.toml",
     "format:check": "prettier . --check && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "generate:commands": "node scripts/generate-command-types.mjs && prettier --write --log-level silent src/renderer/src/tauriCommands.ts",
+    "generate:bindings": "cargo test --manifest-path src-tauri/Cargo.toml --lib export_bindings",
     "icon": "tauri icon build/icon.png",
     "lint": "eslint . && node scripts/no-section-comments.mjs && node scripts/no-deep-selectors.mjs",
     "lint:ci": "eslint . --max-warnings=0 && node scripts/no-section-comments.mjs && node scripts/no-deep-selectors.mjs",
