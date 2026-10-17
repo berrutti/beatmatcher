@@ -52,18 +52,18 @@ fn crossfader_start_events(
     events
 }
 
-/// Where the master effects stood when recording started. Settings rather than performed
-/// moves, so nothing later in the session would ever say what the tail was rendered with.
+/// Settings rather than performed moves, so nothing later in the session would ever say
+/// what the tail was rendered with.
 fn effect_start_events(
     manifest: &'static session_core::MixerManifest,
-    monitor: &crate::audio::MasterMonitor,
+    master: &crate::audio::MasterSettings,
 ) -> Vec<(&'static str, serde_json::Value)> {
     manifest
         .master
         .iter()
         .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param.id)))
         .filter_map(|(slot, param)| {
-            let value = monitor.effects.locked().get(slot, param)?;
+            let value = master.get(slot, param)?;
             Some((
                 "set_param",
                 serde_json::json!({
@@ -168,6 +168,7 @@ fn deck_snapshot_event(
 /// Everything a session has to say about the state it started from, in the order it
 /// is written. A reader applies all of it before the first performed move.
 fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json::Value)> {
+    let master = audio.master();
     let mut events = vec![
         (
             "recording_start",
@@ -181,7 +182,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         // session would ever say which curve the fader moves were played on.
         (
             "set_fader_curve",
-            serde_json::json!({ "curve": audio.monitor.fader_curve().as_str() }),
+            serde_json::json!({ "curve": master.strips.fader_curve.as_str() }),
         ),
         jog_speed_start_event(audio.jog_rotation_speed()),
     ];
@@ -189,7 +190,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         audio.monitor.xfader_position(),
         &xfader_assigns(audio),
     ));
-    events.extend(effect_start_events(audio.mixer(), &audio.monitor));
+    events.extend(effect_start_events(audio.mixer(), &master));
     for deck_id in crate::audio::LIVE_DECK_IDS {
         let Some(arc) = audio.strip(deck_id) else {
             continue;
@@ -549,35 +550,17 @@ pub(crate) fn set_mixer(
     sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
     id: String,
 ) -> Result<Vec<crate::engine_push::ParamChange>, String> {
-    if let Some(reason) = mixer_swap_refusal(engine.audio.is_recording(), sessions.is_playing()) {
-        return Err(reason.to_string());
+    if sessions.is_playing() {
+        return Err("the mixer cannot change while a session plays: it was checked against the one playing it".to_string());
     }
     let manifest = session_core::manifest_by_id(&id)
         .ok_or_else(|| format!("no mixer '{id}' in this build"))?;
     Ok(engine
         .audio
-        .set_mixer(manifest)
+        .set_mixer(manifest)?
         .into_iter()
         .map(crate::engine_push::ParamChange::from)
         .collect())
-}
-
-fn mixer_swap_refusal(recording: bool, session_playing: bool) -> Option<&'static str> {
-    if recording {
-        return Some("the mixer cannot change while recording: the session is stamped with the one it started on");
-    }
-    if session_playing {
-        return Some("the mixer cannot change while a session plays: it was checked against the one playing it");
-    }
-    None
-}
-
-#[tauri::command]
-pub(crate) fn list_mixers() -> Vec<String> {
-    session_core::MANIFESTS
-        .iter()
-        .map(|manifest| manifest.id.to_string())
-        .collect()
 }
 
 #[tauri::command]
@@ -1550,14 +1533,6 @@ pub(crate) fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, 
 mod tests {
     use super::*;
     use audio::{CuePressOutcome, Deck};
-
-    #[test]
-    fn the_mixer_swaps_only_while_nothing_depends_on_it() {
-        assert_eq!(mixer_swap_refusal(false, false), None);
-        assert!(mixer_swap_refusal(true, false).is_some());
-        assert!(mixer_swap_refusal(false, true).is_some());
-        assert!(mixer_swap_refusal(true, true).is_some());
-    }
 
     #[test]
     fn record_start_stamps_the_jog_rotation_speed() {

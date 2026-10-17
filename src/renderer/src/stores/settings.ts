@@ -20,9 +20,7 @@ export type JogRotationSpeedOption = (typeof JOG_ROTATION_SPEED_OPTIONS)[number]
 export const FADER_CURVE_OPTIONS = ['exponential', 'linear', 'logarithmic'] as const;
 export type FaderCurveOption = (typeof FADER_CURVE_OPTIONS)[number];
 
-export const DEFAULT_MIXER_ID = 'classic-4band';
-
-export const LIVE_MIXER_ID = 'classic-4band';
+export const LIVE_MIXER_ID = 'classic-3band';
 
 type Stored = {
   keybindings?: Keybindings;

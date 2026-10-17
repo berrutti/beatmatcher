@@ -1929,17 +1929,17 @@ mod tests {
     #[test]
     fn routes_eq_params_to_their_band_lane() {
         let events = vec![
-            SessionEvent::param(100.0, Some("A"), "eq", "low", 0.25),
+            SessionEvent::param(100.0, Some("A"), "eq", "low", -6.0),
             SessionEvent::param(200.0, Some("A"), "eq", "lowMid", 2.0),
             SessionEvent::param(300.0, Some("A"), "eq", "highMid", -3.0),
-            SessionEvent::param(400.0, Some("A"), "eq", "high", 0.75),
+            SessionEvent::param(400.0, Some("A"), "eq", "high", 4.0),
         ];
         let LanesBuild { deck_lanes, .. } =
             build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
-        assert_eq!(deck_lanes["A"].eq_low[1].value, 0.25);
+        assert_eq!(deck_lanes["A"].eq_low[1].value, -6.0);
         assert_eq!(deck_lanes["A"].eq_low_mid[1].value, 2.0);
         assert_eq!(deck_lanes["A"].eq_high_mid[1].value, -3.0);
-        assert_eq!(deck_lanes["A"].eq_high[1].value, 0.75);
+        assert_eq!(deck_lanes["A"].eq_high[1].value, 4.0);
     }
 
     #[test]

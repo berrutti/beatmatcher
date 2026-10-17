@@ -12,7 +12,7 @@ pub use clip_edit::{
     DeleteRange, Edge, MoveResult, TransportBlock, TrimResult, MIN_BLOCK_MS,
 };
 pub use cue::{build_cue_points, CuePoint};
-pub use event::{port_events, SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
+pub use event::{SessionCommand, SessionEvent, SessionFile, BMS_VERSION};
 pub use lane_edit::{
     decimate_steps, delete_filter_active_span, filter_active_at, lane_move_span, lane_spec_for,
     move_filter_active_span, normalize_gesture_samples, original_value_at, rate_lane_spec,
@@ -22,10 +22,11 @@ pub use lane_edit::{
 };
 pub use param::{
     is_fader_gain, jog_settled_fraction, manifest_by_id, resolve_manifest, xfader_gains,
-    Eq3Voicing, Eq4Voicing, EqBand, FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest,
+    Eq3Voicing, Eq4Voicing, FaderCurve, JogRotationSpeed, MixerHeader, MixerManifest,
     ParamDescriptor, ParamScope, ParamUnit, SlotDescriptor, Taper, Voicing, XfaderAssign,
     CLASSIC_3BAND, CLASSIC_4BAND, FADER_GAIN, JOG_FILTER_TAU_SEC, JOG_PAUSED_MULTIPLIER,
     JOG_SCRUB_SEC_PER_TICK_AT_33, JOG_SHIFT_MULTIPLIER, MANIFESTS, REQUIRED_STRIP_ROLES,
+    SEND_AMOUNT,
 };
 pub use sim::{
     build_snapshots, current_beat, event_sim_order, sim_apply_event, sim_pos,
@@ -138,6 +139,7 @@ mod wasm {
                         "defaultValue": spec.default_value,
                         "epsilon": spec.epsilon,
                         "unit": display.unit,
+                        "available": lane.exists_on(mixer),
                     }),
                 )
             })
@@ -145,19 +147,26 @@ mod wasm {
         serde_json::Value::Object(map).to_string()
     }
 
-    /// A mixer's deck-scope params, keyed `"slot/param"`, so knobs take their range from
-    /// the running manifest. An unknown id falls back to the classic mixer.
-    #[wasm_bindgen(js_name = masterParams)]
-    pub fn master_params(id: &str) -> String {
-        let manifest = resolve_mixer(id);
-        let map: serde_json::Map<String, serde_json::Value> = manifest
-            .master
+    #[wasm_bindgen(js_name = mixerIds)]
+    pub fn mixer_ids() -> String {
+        let ids: Vec<&str> = crate::MANIFESTS.iter().map(|manifest| manifest.id).collect();
+        serde_json::json!(ids).to_string()
+    }
+
+    fn param_specs(mixer: &'static crate::MixerManifest, scope: crate::ParamScope) -> String {
+        let (scope_id, slots) = match scope {
+            crate::ParamScope::Deck => ("deck", mixer.strip),
+            crate::ParamScope::Master => ("master", mixer.master),
+        };
+        let map: serde_json::Map<String, serde_json::Value> = slots
             .iter()
             .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param)))
             .map(|(slot, param)| {
                 (
                     format!("{slot}/{}", param.id),
                     serde_json::json!({
+                        "mixerId": mixer.id,
+                        "scope": scope_id,
                         "slot": slot,
                         "param": param.id,
                         "min": param.min,
@@ -170,31 +179,56 @@ mod wasm {
             })
             .collect();
         serde_json::Value::Object(map).to_string()
+    }
+
+    #[wasm_bindgen(js_name = masterParams)]
+    pub fn master_params(id: &str) -> String {
+        param_specs(resolve_mixer(id), crate::ParamScope::Master)
     }
 
     #[wasm_bindgen(js_name = mixerParams)]
     pub fn mixer_params(id: &str) -> String {
-        let manifest = resolve_mixer(id);
-        let map: serde_json::Map<String, serde_json::Value> = manifest
-            .strip
-            .iter()
-            .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param)))
-            .map(|(slot, param)| {
-                (
-                    format!("{slot}/{}", param.id),
-                    serde_json::json!({
-                        "slot": slot,
-                        "param": param.id,
-                        "min": param.min,
-                        "max": param.max,
-                        "defaultValue": param.default,
-                        "step": param.step,
-                        "unit": param.unit.id(),
-                    }),
-                )
-            })
-            .collect();
-        serde_json::Value::Object(map).to_string()
+        param_specs(resolve_mixer(id), crate::ParamScope::Deck)
+    }
+
+    fn descriptor(
+        mixer_id: &str,
+        scope: &str,
+        slot: &str,
+        param: &str,
+    ) -> Result<&'static crate::ParamDescriptor, JsError> {
+        let scope = match scope {
+            "deck" => crate::ParamScope::Deck,
+            "master" => crate::ParamScope::Master,
+            other => return Err(JsError::new(&format!("unknown scope: {other}"))),
+        };
+        resolve_mixer(mixer_id)
+            .descriptor(scope, slot, param)
+            .ok_or_else(|| JsError::new(&format!("{mixer_id} has no {slot}/{param}")))
+    }
+
+    #[wasm_bindgen(js_name = paramTravel)]
+    pub fn param_travel(
+        mixer_id: &str,
+        scope: &str,
+        slot: &str,
+        param: &str,
+        value: f64,
+    ) -> Result<f64, JsError> {
+        Ok(descriptor(mixer_id, scope, slot, param)?.to_unit_interval(value))
+    }
+
+    /// The mapping a MIDI control goes through, so a knob on screen and one on a
+    /// controller land on the same value.
+    #[wasm_bindgen(js_name = paramAtTravel)]
+    pub fn param_at_travel(
+        mixer_id: &str,
+        scope: &str,
+        slot: &str,
+        param: &str,
+        travel: f64,
+    ) -> Result<f64, JsError> {
+        Ok(descriptor(mixer_id, scope, slot, param)?.from_unit_interval(travel))
     }
 
     #[wasm_bindgen(js_name = bmsVersion)]

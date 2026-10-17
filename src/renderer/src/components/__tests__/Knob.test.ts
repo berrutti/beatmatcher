@@ -5,6 +5,8 @@ import Knob from '@renderer/components/Knob.vue';
 import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 
 const SEND: MixerParamSpec = {
+  mixerId: 'classic-4band',
+  scope: 'deck',
   slot: 'send',
   param: 'amount',
   min: 0,
@@ -74,6 +76,24 @@ describe('knob', () => {
   it('stops at the end of its travel however far it is dragged', () => {
     const top = knob(0.9);
     drag(top.element, 500, 0);
+    expect(emitted('input').at(-1)?.[0]).toBe(1);
+  });
+
+  it('returns to its starting value when the pointer returns to where it pressed', () => {
+    const turned = knob(0.5);
+    turned.element.dispatchEvent(pointer('pointerdown', 10, 100));
+    window.dispatchEvent(pointer('pointermove', 10, -300));
+    window.dispatchEvent(pointer('pointermove', 10, 100));
+    window.dispatchEvent(pointer('pointerup', 10, 100));
+    expect(emitted('input').at(-1)?.[0]).toBe(0.5);
+  });
+
+  it('holds at the end until the pointer comes back past it', () => {
+    const turned = knob(0.5);
+    turned.element.dispatchEvent(pointer('pointerdown', 10, 100));
+    window.dispatchEvent(pointer('pointermove', 10, -300));
+    window.dispatchEvent(pointer('pointermove', 10, -100));
+    window.dispatchEvent(pointer('pointerup', 10, -100));
     expect(emitted('input').at(-1)?.[0]).toBe(1);
   });
 

@@ -281,24 +281,12 @@
     "assignB": "B",
     "assignHint": "Crossfader zuweisen: A oder B, keins zum Umgehen",
     "xfaderHint": "Crossfader: Doppelklick zum Zentrieren",
-    "echo": "Echo",
-    "echoToggle": "Diesen Kanal auf das Echo routen",
-    "sendHint": "Wie viel dieses Kanals das Echo speist",
-    "echoHint": {
-      "time": "Zeit zwischen den Wiederholungen",
-      "feedback": "Wie viel jeder Wiederholung die nächste speist",
-      "return": "Wie laut das Echo in den Mix zurückkehrt",
-      "lowCut": "Bass, der jeder Wiederholung entzogen wird, damit ein langer Nachhall klar bleibt"
-    },
-    "filter": "Filter",
-    "resonance": "Res",
-    "resonanceHint": "Filterresonanz, von mild bis wild, für alle Kanäle",
-    "echoLabel": {
-      "time": "Zeit",
-      "feedback": "Feedb",
-      "lowCut": "Low Cut",
-      "return": "Return"
-    }
+    "reverb": "Hall",
+    "sendHint": "Wie viel dieses Kanals den Hall speist",
+    "tail": "Länge",
+    "tailHint": "Wie lange der Hall nachklingt",
+    "resonance": "Resonanz",
+    "resonanceHint": "Filterresonanz, von mild bis wild, für alle Kanäle"
   },
   "session": {
     "dropHint": "Aufgezeichnete Session hier ablegen oder klicken zum Öffnen",

@@ -1,4 +1,3 @@
-// A press that travels this far is a drag, not a click.
 export const CLICK_SLOP_PX = 3;
 
 // Where a range input's thumb sits along its track, in the track's own axis.

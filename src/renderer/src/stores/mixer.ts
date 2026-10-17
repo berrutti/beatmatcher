@@ -31,7 +31,6 @@ export function paramKey(slot: string, param: string): string {
 
 export const FADER_GAIN = paramKey('fader', 'gain');
 export const SEND_AMOUNT = paramKey('send', 'amount');
-export const SEND_ACTIVE = paramKey('send', 'active');
 export const FILTER_VALUE = paramKey('filter', 'value');
 export const FILTER_ACTIVE = paramKey('filter', 'active');
 
@@ -75,9 +74,7 @@ export const useMixerStore = defineStore('mixer', () => {
     Object.values(deckParams.value).filter((spec) => spec.slot === 'eq')
   );
 
-  const echoSpecs = computed(() =>
-    Object.values(masterParams(mixerId.value)).filter((spec) => spec.slot === 'echo')
-  );
+  const tailSpec = computed(() => masterParams(mixerId.value)[paramKey('reverb', 'tail')]);
 
   const resonanceSpec = computed(
     () => masterParams(mixerId.value)[paramKey('filter', 'resonance')]
@@ -341,8 +338,6 @@ export const useMixerStore = defineStore('mixer', () => {
     for (const deckId of LIVE_DECKS) setParam(deckId, FILTER_ACTIVE, 1);
   }
 
-  // Keyed on the settings arriving rather than the value, because the preference names the
-  // launch and flipping the switch mid-set must not reach into a live mixer either way.
   async function restoreMixerThenFilters(): Promise<void> {
     if (mixerId.value !== LIVE_MIXER_ID) {
       await switchEngineMixer(mixerId.value);
@@ -350,6 +345,8 @@ export const useMixerStore = defineStore('mixer', () => {
     engageFiltersIfPreferred();
   }
 
+  // Keyed on the settings arriving rather than the value, because the preference names the
+  // launch and flipping the switch mid-set must not reach into a live mixer either way.
   watch(
     () => useSettingsStore().hydrated,
     (hydrated) => {
@@ -557,7 +554,7 @@ export const useMixerStore = defineStore('mixer', () => {
     faderSpec,
     filterSpec,
     sendSpec,
-    echoSpecs,
+    tailSpec,
     resonanceSpec,
     masterEffectValue,
     setMasterEffect,

@@ -15,126 +15,17 @@ pub use analysis::{
 };
 pub(crate) use deck::DeckRestore;
 #[cfg(test)]
-mod mixer_swap {
-    use super::*;
-
-    fn engine() -> AppAudio {
-        AppAudio::unrouted(48_000, "test".to_string())
-    }
-
-    #[test]
-    fn swapping_the_mixer_keeps_the_addresses_both_carry() {
-        let audio = engine();
-        let strip = audio.strip("A").expect("deck A");
-        strip.locked().set_param("fader", "gain", 0.42);
-        strip.locked().set_param("filter", "value", -0.6);
-        strip.locked().set_param("filter", "active", 1.0);
-
-        audio.set_mixer(&session_core::CLASSIC_3BAND);
-
-        let held = strip.locked();
-        assert_eq!(held.param("fader", "gain"), Some(0.42));
-        assert_eq!(held.param("filter", "value"), Some(-0.6));
-        assert_eq!(held.param("filter", "active"), Some(1.0));
-    }
-
-    #[test]
-    fn swapping_the_mixer_rebuilds_the_eq_on_the_new_manifest() {
-        let audio = engine();
-        let strip = audio.strip("A").expect("deck A");
-        assert!(strip.locked().set_param("eq", "lowMid", -4.0));
-
-        audio.set_mixer(&session_core::CLASSIC_3BAND);
-
-        assert!(!strip.locked().set_param("eq", "lowMid", -4.0));
-        assert_eq!(strip.locked().param("eq", "low"), Some(0.0));
-    }
-
-    #[test]
-    fn a_swap_reports_every_value_the_new_strips_hold() {
-        let audio = engine();
-        audio
-            .strip("A")
-            .expect("deck A")
-            .locked()
-            .set_param("fader", "gain", 0.42);
-
-        let values = audio.set_mixer(&session_core::CLASSIC_3BAND);
-
-        let reported = |slot: &str, param: &str| {
-            values
-                .iter()
-                .find(|value| value.deck == "A" && value.slot == slot && value.param == param)
-                .map(|value| value.value)
-        };
-        assert_eq!(reported("fader", "gain"), Some(0.42));
-        assert_eq!(reported("eq", "low"), Some(0.0));
-        assert_eq!(reported("eq", "lowMid"), None);
-        let per_deck: usize = session_core::CLASSIC_3BAND
-            .strip
-            .iter()
-            .map(|slot| slot.params.len())
-            .sum();
-        assert_eq!(values.len(), per_deck * LIVE_DECK_IDS.len());
-    }
-
-    fn tone_through(strip: &mut ChannelStrip) -> Vec<f32> {
-        (0..4_800)
-            .map(|frame| {
-                let sample = (std::f32::consts::TAU * 100.0 * frame as f32 / 48_000.0).sin();
-                strip.process_main(sample, sample).0
-            })
-            .collect()
-    }
-
-    fn configured(strip: &mut ChannelStrip) {
-        strip.set_param("fader", "gain", 0.5);
-        strip.set_param("filter", "value", -0.5);
-        strip.set_param("filter", "active", 1.0);
-    }
-
-    #[test]
-    fn a_swap_keeps_the_master_settings_on_the_rebuilt_strips() {
-        let audio = engine();
-        {
-            let strip = audio.strip("A").expect("deck A");
-            let mut strip = strip.locked();
-            configured(&mut strip);
-            strip.set_fader_curve(session_core::FaderCurve::Exponential);
-        }
-        audio.set_master_effect("filter", "resonance", 4.0);
-
-        audio.set_mixer(&session_core::CLASSIC_3BAND);
-
-        let mut expected = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND, 48_000.0);
-        configured(&mut expected);
-        expected.set_fader_curve(session_core::FaderCurve::Exponential);
-        expected.set_filter_resonance(4.0);
-        let rebuilt = tone_through(&mut audio.strip("A").expect("deck A").locked());
-        assert_eq!(rebuilt, tone_through(&mut expected));
-    }
-
-    #[test]
-    fn the_engine_reports_the_mixer_it_was_switched_to() {
-        let audio = engine();
-        assert_eq!(audio.mixer().id, MIXER.id);
-        audio.set_mixer(&session_core::CLASSIC_3BAND);
-        assert_eq!(audio.mixer().id, "classic-3band");
-    }
-}
-
-#[cfg(test)]
 pub(crate) use deck::RenderTargets;
 pub use deck::{logged_jog_ticks, ChannelStrip, CuePressOutcome, Deck, RenderFrame, SpectralBands};
-pub(crate) use dsp::Echo;
 pub(crate) use dsp::Limiter;
+pub(crate) use dsp::Reverb;
 pub(crate) use dsp::{master_block, master_output, FILTER_CROSSFADE_TAU_SEC};
 pub use io::TrackTags;
 pub use io::{
     decode_audio, decode_audio_streaming, read_cover_art, read_tags, resample_linear,
     resample_packets, DecodedPacket,
 };
-pub(crate) use master::{apply_master_effect, MasterEffects};
+pub(crate) use master::{apply_to_strips, MasterSettings};
 pub(crate) use session_apply::{apply_deck_command, LoadedSamples};
 pub use stream::MasterMonitor;
 pub(crate) use stream::DEFAULT_MASTER_GAIN;
@@ -183,7 +74,7 @@ pub struct DeviceInfo {
     pub channels: usize,
 }
 
-pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_4BAND;
+pub(crate) const MIXER: &session_core::MixerManifest = &session_core::CLASSIC_3BAND;
 
 pub(crate) use dsp::FILTER_COEFF_REFRESH_INTERVAL;
 
@@ -399,38 +290,72 @@ impl AppAudio {
         *self.mixer.locked()
     }
 
-    pub fn is_recording(&self) -> bool {
-        self.recording.locked().is_some()
+    pub fn set_mixer(
+        &self,
+        manifest: &'static session_core::MixerManifest,
+    ) -> Result<Vec<StripValue>, String> {
+        // Held through the swap, so a recording cannot start between this check and the
+        // rebuild and be stamped with a mixer its strips are not on.
+        let recording = self.recording.locked();
+        if recording.is_some() {
+            return Err("the mixer cannot change while recording: the session is stamped with the one it started on".to_string());
+        }
+        let mut mixer = self.mixer.locked();
+        if mixer.id != manifest.id {
+            let master = self.monitor.master.locked();
+            for strip in self.strips.values() {
+                let carried = strip.locked().carried();
+                let mut rebuilt =
+                    ChannelStrip::from_manifest(manifest, self.device_sample_rate as f32);
+                rebuilt.restore(&carried);
+                rebuilt.apply_master(&master.strips);
+                // Built outside the lock, swapped inside it, so the audio thread sees one strip
+                // or the other and never a half-built one.
+                *strip.locked() = rebuilt;
+            }
+            *mixer = manifest;
+        }
+        Ok(self.strip_values(manifest))
     }
 
-    pub fn set_mixer(&self, manifest: &'static session_core::MixerManifest) -> Vec<StripValue> {
-        if self.mixer().id == manifest.id {
-            return self.strip_values();
-        }
-
-        for strip in self.strips.values() {
-            let carried = {
-                let current = strip.locked();
-                current.carryable_params()
-            };
-            let mut rebuilt = ChannelStrip::from_manifest(manifest, self.device_sample_rate as f32);
-            rebuilt.restore(&carried);
-            // Built outside the lock, swapped inside it, so the audio thread sees one strip
-            // or the other and never a half-built one.
-            *strip.locked() = rebuilt;
-        }
-        *self.mixer.locked() = manifest;
-        self.strip_values()
+    pub fn master(&self) -> MasterSettings {
+        *self.monitor.master.locked()
     }
 
-    /// Reports whether the address is a master effect setting, so a caller can refuse the rest.
     pub fn set_master_effect(&self, slot: &str, param: &str, value: f32) -> bool {
-        let mut effects = self.monitor.effects.locked();
-        apply_master_effect(&mut effects, &self.strips, slot, param, value)
+        self.update_master(|master| master.set(slot, param, value))
     }
 
-    pub fn strip_values(&self) -> Vec<StripValue> {
-        let manifest = self.mixer();
+    pub fn set_fader_curve(&self, curve: session_core::FaderCurve) {
+        self.update_master(|master| {
+            master.strips.fader_curve = curve;
+            true
+        });
+    }
+
+    pub fn reset_master(&self) {
+        let defaults = MasterSettings::for_manifest(self.mixer());
+        self.update_master(|master| {
+            *master = defaults;
+            true
+        });
+    }
+
+    fn update_master(&self, change: impl FnOnce(&mut MasterSettings) -> bool) -> bool {
+        let mut master = self.monitor.master.locked();
+        let strips_before = master.strips;
+        if !change(&mut master) {
+            return false;
+        }
+        // Pushed while the settings are still locked, so two writers cannot leave the strips
+        // on the older of their values.
+        if master.strips != strips_before {
+            apply_to_strips(&self.strips, &master.strips);
+        }
+        true
+    }
+
+    fn strip_values(&self, manifest: &session_core::MixerManifest) -> Vec<StripValue> {
         let mut values = Vec::new();
         for deck in LIVE_DECK_IDS {
             let Some(strip) = self.strip(deck) else {
@@ -759,5 +684,164 @@ impl AppAudio {
         } else {
             Err("not recording".to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod mixer_swap {
+    use super::recording::Recording;
+    use super::unit::StripSettings;
+    use super::*;
+
+    fn engine() -> AppAudio {
+        AppAudio::unrouted(48_000, "test".to_string())
+    }
+
+    fn engine_on_the_four_band() -> AppAudio {
+        let audio = engine();
+        audio
+            .set_mixer(&session_core::CLASSIC_4BAND)
+            .expect("swap to the four band");
+        audio
+    }
+
+    fn swap_to_the_three_band(audio: &AppAudio) -> Vec<StripValue> {
+        audio
+            .set_mixer(&session_core::CLASSIC_3BAND)
+            .expect("swap to the three band")
+    }
+
+    #[test]
+    fn swapping_the_mixer_keeps_the_addresses_both_carry() {
+        let audio = engine_on_the_four_band();
+        let strip = audio.strip("A").expect("deck A");
+        strip.locked().set_param("fader", "gain", 0.42);
+        strip.locked().set_param("filter", "value", -0.6);
+        strip.locked().set_param("filter", "active", 1.0);
+
+        swap_to_the_three_band(&audio);
+
+        let held = strip.locked();
+        assert_eq!(held.param("fader", "gain"), Some(0.42));
+        assert_eq!(held.param("filter", "value"), Some(-0.6));
+        assert_eq!(held.param("filter", "active"), Some(1.0));
+    }
+
+    #[test]
+    fn swapping_the_mixer_rebuilds_the_eq_on_the_new_manifest() {
+        let audio = engine_on_the_four_band();
+        let strip = audio.strip("A").expect("deck A");
+        assert!(strip.locked().set_param("eq", "lowMid", -4.0));
+
+        swap_to_the_three_band(&audio);
+
+        assert!(!strip.locked().set_param("eq", "lowMid", -4.0));
+        assert_eq!(strip.locked().param("eq", "low"), Some(0.0));
+    }
+
+    #[test]
+    fn a_swap_reports_every_value_the_new_strips_hold() {
+        let audio = engine_on_the_four_band();
+        audio
+            .strip("A")
+            .expect("deck A")
+            .locked()
+            .set_param("fader", "gain", 0.42);
+
+        let values = swap_to_the_three_band(&audio);
+
+        let reported = |slot: &str, param: &str| {
+            values
+                .iter()
+                .find(|value| value.deck == "A" && value.slot == slot && value.param == param)
+                .map(|value| value.value)
+        };
+        assert_eq!(reported("fader", "gain"), Some(0.42));
+        assert_eq!(reported("eq", "low"), Some(0.0));
+        assert_eq!(reported("eq", "lowMid"), None);
+        let per_deck: usize = session_core::CLASSIC_3BAND
+            .strip
+            .iter()
+            .map(|slot| slot.params.len())
+            .sum();
+        assert_eq!(values.len(), per_deck * LIVE_DECK_IDS.len());
+    }
+
+    #[test]
+    fn the_mixer_cannot_change_while_recording() {
+        let audio = engine();
+        *audio.recording.locked() = Some(Recording {
+            thread: std::thread::spawn(|| Ok(())),
+            temp_path: String::new(),
+        });
+
+        assert!(audio.set_mixer(&session_core::CLASSIC_4BAND).is_err());
+        assert_eq!(audio.mixer().id, MIXER.id);
+    }
+
+    fn tone_through(strip: &mut ChannelStrip) -> Vec<f32> {
+        (0..4_800)
+            .map(|frame| {
+                let sample = (std::f32::consts::TAU * 100.0 * frame as f32 / 48_000.0).sin();
+                strip.process_main(sample, sample).0
+            })
+            .collect()
+    }
+
+    fn configured(strip: &mut ChannelStrip) {
+        strip.set_param("fader", "gain", 0.5);
+        strip.set_param("filter", "value", -0.5);
+        strip.set_param("filter", "active", 1.0);
+    }
+
+    #[test]
+    fn a_swap_keeps_the_master_settings_on_the_rebuilt_strips() {
+        let audio = engine_on_the_four_band();
+        configured(&mut audio.strip("A").expect("deck A").locked());
+        audio.set_fader_curve(session_core::FaderCurve::Exponential);
+        audio.set_master_effect("filter", "resonance", 4.0);
+
+        swap_to_the_three_band(&audio);
+
+        let mut expected = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND, 48_000.0);
+        configured(&mut expected);
+        expected.apply_master(&StripSettings {
+            fader_curve: session_core::FaderCurve::Exponential,
+            filter_resonance: 4.0,
+        });
+        let rebuilt = tone_through(&mut audio.strip("A").expect("deck A").locked());
+        assert_eq!(rebuilt, tone_through(&mut expected));
+    }
+
+    #[test]
+    fn the_engine_reports_the_mixer_it_was_switched_to() {
+        let audio = engine();
+        assert_eq!(audio.mixer().id, MIXER.id);
+        audio
+            .set_mixer(&session_core::CLASSIC_4BAND)
+            .expect("swap to the four band");
+        assert_eq!(audio.mixer().id, "classic-4band");
+    }
+
+    #[test]
+    fn the_fader_curve_is_reported_from_where_the_strips_got_it() {
+        let audio = engine();
+        audio.set_fader_curve(session_core::FaderCurve::Logarithmic);
+        assert_eq!(
+            audio.master().strips.fader_curve,
+            session_core::FaderCurve::Logarithmic
+        );
+    }
+
+    #[test]
+    fn resetting_the_master_returns_every_setting_to_the_mixers_default() {
+        let audio = engine();
+        audio.set_fader_curve(session_core::FaderCurve::Logarithmic);
+        audio.set_master_effect("reverb", "tail", 5_000.0);
+        audio.set_master_effect("filter", "resonance", 4.0);
+
+        audio.reset_master();
+
+        assert_eq!(audio.master(), MasterSettings::for_manifest(MIXER));
     }
 }

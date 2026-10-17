@@ -281,24 +281,12 @@
     "assignB": "B",
     "assignHint": "Asignar al crossfader: A o B, ninguno para omitir",
     "xfaderHint": "Crossfader: doble clic para centrar",
-    "echo": "Eco",
-    "echoToggle": "Enviar este canal al eco",
-    "sendHint": "Cuánto de este canal alimenta el eco",
-    "echoHint": {
-      "time": "Tiempo entre repeticiones",
-      "feedback": "Cuánto de cada repetición alimenta la siguiente",
-      "return": "Cuánto vuelve el eco a la mezcla",
-      "lowCut": "Graves que se quitan de cada repetición, para que una cola larga no embarre"
-    },
-    "filter": "Filtro",
-    "resonance": "Res",
-    "resonanceHint": "Resonancia del filtro, de suave a extrema, para todos los canales",
-    "echoLabel": {
-      "time": "Tiempo",
-      "feedback": "Realim",
-      "lowCut": "Corte bajo",
-      "return": "Retorno"
-    }
+    "reverb": "Reverb",
+    "sendHint": "Cuánto de este canal alimenta la reverb",
+    "tail": "Cola",
+    "tailHint": "Cuánto dura la cola de la reverb",
+    "resonance": "Resonancia",
+    "resonanceHint": "Resonancia del filtro, de suave a extrema, para todos los canales"
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",

@@ -157,7 +157,6 @@ pub fn run() {
             commands::set_fader_curve,
             commands::set_master_effect,
             commands::set_mixer,
-            commands::list_mixers,
             commands::set_xfader_position,
             commands::set_xfader_assign,
             commands::set_cue_active,

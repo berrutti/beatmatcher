@@ -281,24 +281,12 @@
     "assignB": "B",
     "assignHint": "Assign to crossfader: A or B, neither to bypass",
     "xfaderHint": "Crossfader: double-click to centre",
-    "echo": "Echo",
-    "echoToggle": "Route this channel to the echo",
-    "sendHint": "How much of this channel feeds the echo",
-    "echoHint": {
-      "time": "Time between repeats",
-      "feedback": "How much of each repeat feeds the next",
-      "return": "How loud the echo returns to the mix",
-      "lowCut": "Bass taken out of each repeat, so a long tail stays clear"
-    },
-    "filter": "Filter",
-    "resonance": "Res",
-    "resonanceHint": "Filter resonance, from mild to wild, for every channel",
-    "echoLabel": {
-      "time": "Time",
-      "feedback": "Fdbk",
-      "lowCut": "Low cut",
-      "return": "Return"
-    }
+    "reverb": "Reverb",
+    "sendHint": "How much of this channel feeds the reverb",
+    "tail": "Tail",
+    "tailHint": "How long the reverb rings",
+    "resonance": "Resonance",
+    "resonanceHint": "Filter resonance, from mild to wild, for every channel"
   },
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",

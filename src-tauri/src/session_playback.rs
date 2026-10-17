@@ -97,13 +97,6 @@ pub struct SessionLibrary {
 }
 
 impl SessionLibrary {
-    pub(crate) fn is_playing(&self) -> bool {
-        self.playback_handle
-            .locked()
-            .as_ref()
-            .is_some_and(|handle| !handle.inner().is_finished())
-    }
-
     pub fn new() -> Self {
         Self {
             playback_cancel: std::sync::Mutex::new(None),
@@ -120,6 +113,13 @@ impl SessionLibrary {
             snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
             files: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub(crate) fn is_playing(&self) -> bool {
+        self.playback_handle
+            .locked()
+            .as_ref()
+            .is_some_and(|handle| !handle.inner().is_finished())
     }
 }
 
@@ -329,20 +329,13 @@ fn reset_all(audio: &audio::AppAudio) {
         }
     }
     audio.monitor.set_master_gain(DEFAULT_MASTER_GAIN);
-    reset_master_effects(audio);
-}
-
-fn reset_master_effects(audio: &audio::AppAudio) {
-    for slot in audio.mixer().master {
-        for param in slot.params {
-            audio.set_master_effect(slot.slot, param.id, param.default as f32);
-        }
-    }
+    audio.reset_master();
 }
 
 fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     audio.monitor.set_master_gain(sim.master_gain);
-    reset_master_effects(audio);
+    audio.reset_master();
+    audio.set_fader_curve(sim.fader_curve);
     for (address, value) in &sim.master_params {
         if let Some((slot, param)) = address.split_once('/') {
             audio.set_master_effect(slot, param, *value);
@@ -359,7 +352,6 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
             }
             s.set_xfader_assign(snap.xfader_assign);
             s.set_xfader_position(sim.xfader_position);
-            s.set_fader_curve(sim.fader_curve);
         }
         if let Some(deck_arc) = audio.deck(id) {
             deck_arc
@@ -445,13 +437,7 @@ fn apply_event_live(
             } => {
                 audio.set_master_effect(slot, param, value as f32);
             }
-            SessionCommand::SetFaderCurve { curve } => {
-                for id in crate::audio::LIVE_DECK_IDS {
-                    if let Some(strip_arc) = audio.strip(id) {
-                        strip_arc.locked().set_fader_curve(curve);
-                    }
-                }
-            }
+            SessionCommand::SetFaderCurve { curve } => audio.set_fader_curve(curve),
             SessionCommand::SetJogRotationSpeed { speed } => {
                 for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(deck_arc) = audio.deck(id) {
@@ -568,7 +554,8 @@ pub(crate) async fn update_session_events(
         .files
         .locked()
         .get(&path)
-        .and_then(|session| session.mixer.clone());
+        .map(|session| session.mixer.clone())
+        .ok_or_else(|| format!("session '{path}' is not loaded"))?;
 
     index_session(
         &sessions,
@@ -634,7 +621,7 @@ pub(crate) async fn start_session_playback(
 
     // Refused rather than replayed against the wrong scales, which would differ from
     // the offline render. Hosting beats an id match, so pre-versioned sessions play.
-    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+    let manifest = session_core::resolve_manifest(&session.mixer)?;
     if !engine.audio.mixer().can_host(manifest) {
         return Err(format!(
             "this session was recorded on mixer '{}', which this build cannot play live",
@@ -783,6 +770,7 @@ pub(crate) fn stop_session_playback(
 mod tests {
     use super::*;
     use crate::audio::{ChannelStrip, Deck};
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn a_playback_counts_as_playing_until_its_task_ends() {
@@ -804,7 +792,6 @@ mod tests {
         }
         assert!(!sessions.is_playing());
     }
-    use std::collections::{HashMap, HashSet};
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;

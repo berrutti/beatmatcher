@@ -104,7 +104,7 @@ graph LR
     Deck["Deck\n(playback position,\ncue/loop logic,\nspectral bands)"]:::deck
     ChannelStrip["ChannelStrip\n(manifest slots in order,\nthen the crossfader)"]:::strip
     Send["Send bus\n(tapped after\nthe crossfader)"]:::strip
-    Echo["Master echo\n(returned into\nthe mix)"]:::master
+    Reverb["Master reverb\n(returned into\nthe mix)"]:::master
     MasterMix["Master Mix\n(limiter, gain,\nmetering)"]:::master
     Outputs["Output Devices\n(main + cue)"]:::out
 
@@ -113,8 +113,8 @@ graph LR
     Deck -- "main_tick()\ncue_tick()" --> ChannelStrip
     ChannelStrip -- "process_main()\nprocess_cue()" --> MasterMix
     ChannelStrip -- "sent()" --> Send
-    Send --> Echo
-    Echo --> MasterMix
+    Send --> Reverb
+    Reverb --> MasterMix
     MasterMix --> Outputs
 ```
 
@@ -124,7 +124,7 @@ graph LR
 
 A block of audio is produced in one place, whether it is heard now or rendered from a `.bms` later. `mix_channels` walks the same `(Deck, ChannelStrip)` pairs and `master_block` applies gain and the limiter over the result. The live callback adds the cue mix and the recording tap. The offline render adds neither.
 
-Each strip adds its send to a send bus as it renders. The echo returns into the mix before `master_block`, so its tail is gained and limited with everything else rather than sitting outside the limiter.
+Each strip adds its send to a send bus as it renders. The reverb returns into the mix before `master_block`, so its tail is gained and limited with everything else rather than sitting outside the limiter.
 
 ```mermaid
 flowchart TD
@@ -138,16 +138,16 @@ flowchart TD
 (offline_render.rs)"]:::offline
     Mix["mix_channels
 (deck.render_block per pair)"]:::shared
-    Echo["echo return
-(send bus through the delay line)"]:::shared
+    Reverb["reverb return
+(send bus through the comb and allpass lines)"]:::shared
     Master["master_block
 (gain, limiter)"]:::shared
     Cue["cue mix + capture tap"]:::live
 
     Callback --> Mix
     Render --> Mix
-    Mix --> Echo
-    Echo --> Master
+    Mix --> Reverb
+    Reverb --> Master
     Master --> Cue
 ```
 
@@ -158,10 +158,10 @@ The offline render works through the timeline in chunks of the buffer size the `
 A `ChannelStrip` is not a fixed chain. `session_core::MixerManifest` describes it as an ordered list of slots, each naming a unit id that `audio/unit.rs` builds into an `AudioUnit`, plus a `cue_tap` slot and the master slots. `MIXER` in `audio/mod.rs` is the manifest the live engine starts on, and it can be swapped at runtime (below). The offline renderer builds whichever the `.bms` header names.
 
 - **A slot is a position, not a unit.** `eq` is the second stage of the strip whatever fills it, so `classic-3band` and `classic-4band` share `eq/low` while different units fill it.
-- **Every param carries its own range**, so nothing outside the manifest restates a min, max, step or default. `from_unit_interval` places a MIDI control on it and `clamp` bounds a `.bms` value.
+- **Every param carries its own range**, so nothing outside the manifest restates a min, max, step or default. `from_unit_interval` places a MIDI control or an on-screen knob on it through the param's taper and `clamp` bounds a `.bms` value.
 - **`process_cue` taps before the `cue_tap` slot**, so the headphone feed is everything up to that point. The crossfader is applied after it, which is why a deck faded away is still audible in headphones.
 - **A slot carries its voicing**, the frequencies and Q its unit is built with (`Voicing` in `param.rs`). Two EQs on the same dB scale sound different because of it, so it is hashed like the ranges. `make_unit` refuses a slot voiced for a different unit.
-- **EQ bands are addressed by role.** `eq_bands` maps `EqBand::Low`, `LowMid`, `HighMid` and `High` to whichever params a mixer has, so a controller mapping written against the roles drives a three-band and a four-band EQ unchanged. The table is outside `content_hash`, because routing a control does not change what a recorded value means.
+- **EQ bands share their param names across mixers.** The three-band's middle band is `highMid`, so a controller mapping naming `eq/low`, `eq/highMid` and `eq/high` drives a three-band and a four-band EQ unchanged, and only the four-band's `lowMid` goes unmapped.
 - **`content_hash` covers everything that changes what a `set_param` means.** `resolve_manifest` refuses a session whose mixer this build does not have or has since changed, and the shipped hashes are pinned by test because a `.bms` on disk carries them.
 
 ## Changing mixer at runtime
@@ -174,10 +174,10 @@ A swap is refused while recording, because the `.bms` is stamped with the mixer 
 
 ## Master effects
 
-The echo and the filter resonance are master-scope params, addressed as `echo/time`, `echo/feedback`, `echo/lowCut`, `echo/return` and `filter/resonance`. `MasterEffects` in `audio/master.rs` is their one table of addresses, and `apply_master_effect` is the one path a change takes: it stores the value and pushes the resonance to every strip. The live engine keeps a `MasterEffects` behind the monitor, and each callback copies the echo settings out once per block. The offline render owns one outright and applies it as events arrive.
+The reverb and the filter resonance are master-scope params, addressed as `reverb/tail` and `filter/resonance`. `MasterSettings` in `audio/master.rs` is their one table of addresses and also holds the fader curve, and `AppAudio::update_master` is the one path a live change takes: it stores the value and pushes the strip settings (fader curve and resonance) to every strip when they changed. The live engine keeps a `MasterSettings` behind the monitor, and each callback copies the reverb settings out once per block, skipping a block rather than waiting when a setter holds the lock. The offline render owns one outright and applies it as events arrive.
 
-- **Each channel feeds the echo through its own send**, an amount plus an on switch, tapped after the crossfader. Pulling a fader down stops feeding the echo and leaves the tail ringing.
-- **Recording stamps where every master effect stood** at `recording_start`, and session snapshots carry them, so a render or a scrub that starts mid-session hears the settings that were live. A render's discarded lead-in also lasts as long as the echo takes to decay when a deck is sending, capped at 20 s and at the audio each deck has to replay.
+- **Each channel feeds the reverb through its own send knob**, tapped after the crossfader. Pulling a fader down stops feeding the reverb and leaves the tail ringing.
+- **Recording stamps where every master effect stood** at `recording_start`, and session snapshots carry them, so a render or a scrub that starts mid-session hears the settings that were live. A render's discarded lead-in also lasts as long as the reverb takes to decay when a deck is sending, capped at the audio each deck has to replay.
 - **`AudioUnit` has one hook for settings that apply to the whole mixer**, `apply_master(&MasterSettings)`. The fader reads the curve and the sweep filter reads the resonance. A new master setting adds a field, not a trait method.
 
 ## Engine to UI

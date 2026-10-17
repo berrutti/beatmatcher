@@ -322,13 +322,13 @@
             <div class="settings__section-label">{{ $t('settings.mixer.title') }}</div>
             <div class="settings__row">
               <button
-                v-for="option in MIXER_OPTIONS"
-                :key="option.id"
+                v-for="id in MIXER_IDS"
+                :key="id"
                 class="btn-secondary settings__chip"
-                :class="{ 'settings__chip--active': mixer.mixerId === option.id }"
-                @click="mixer.setMixer(option.id)"
+                :class="{ 'settings__chip--active': mixer.mixerId === id }"
+                @click="mixer.setMixer(id)"
               >
-                {{ $t(option.label) }}
+                {{ MIXER_LABELS[id] ?? id }}
               </button>
             </div>
             <p class="settings__hint">
@@ -460,7 +460,7 @@ import {
   type JogRotationSpeedOption,
   type FaderCurveOption
 } from '@renderer/stores/settings';
-import { faderCurveGain } from '@renderer/utils/sessionCore';
+import { faderCurveGain, mixerIds } from '@renderer/utils/sessionCore';
 import { useDecksStore, DECKS_DISPOSITION } from '@renderer/stores/decks';
 import { WAVEFORM_STYLE_OPTIONS, type DeckId } from '@renderer/utils/types';
 import { useMixerStore } from '@renderer/stores/mixer';
@@ -584,10 +584,12 @@ const settings = useSettingsStore();
 const decks = useDecksStore();
 const mixer = useMixerStore();
 
-const MIXER_OPTIONS = [
-  { id: 'classic-3band', label: 'settings.mixer.threeBand' },
-  { id: 'classic-4band', label: 'settings.mixer.fourBand' }
-] as const;
+const MIXER_IDS = mixerIds();
+
+const MIXER_LABELS = computed((): Record<string, string> => ({
+  'classic-3band': t('settings.mixer.threeBand'),
+  'classic-4band': t('settings.mixer.fourBand')
+}));
 const midi = useMidiStore();
 
 const COMMAND_LAYOUT: [Command, Command][] = [

@@ -1037,12 +1037,12 @@ mod tests {
     #[test]
     fn a_snapshot_carries_the_master_effect_settings() {
         let events = [
-            SessionEvent::param(0.0, None, "echo", "time", 250.0),
+            SessionEvent::param(0.0, None, "reverb", "tail", 250.0),
             SessionEvent::param(0.0, None, "filter", "resonance", 3.5),
         ];
         let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
         let last = snaps.last().expect("a snapshot");
-        assert_eq!(last.master_params.get("echo/time"), Some(&250.0));
+        assert_eq!(last.master_params.get("reverb/tail"), Some(&250.0));
         assert_eq!(last.master_params.get("filter/resonance"), Some(&3.5));
     }
 

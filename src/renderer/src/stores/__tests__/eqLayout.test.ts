@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
-import { knobOrigin, knobTravel } from '@renderer/utils/knob';
+import { mixerParams, paramTravel, type MixerParamSpec } from '@renderer/utils/sessionCore';
 
 const MIXERS = ['classic-3band', 'classic-4band'] as const;
 
@@ -13,15 +12,7 @@ describe('eq band layout', () => {
     const bands = eqBands(mixerId);
     expect(bands.length).toBeGreaterThan(0);
     for (const spec of bands) {
-      expect(knobTravel(spec, spec.defaultValue), `${mixerId} ${spec.param}`).toBe(0.5);
-    }
-  });
-
-  it.each(MIXERS)('every band on %s lights its arc from the rest point', (mixerId) => {
-    for (const spec of eqBands(mixerId)) {
-      expect(knobOrigin(spec), `${mixerId} ${spec.param}`).toBe(
-        knobTravel(spec, spec.defaultValue)
-      );
+      expect(paramTravel(spec, spec.defaultValue), `${mixerId} ${spec.param}`).toBe(0.5);
     }
   });
 

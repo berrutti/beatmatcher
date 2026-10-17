@@ -41,6 +41,17 @@ function lanesFrom<Key extends string>(
   return kept.length === 0 ? [...fallback] : kept;
 }
 
+// A lane the session's mixer lacks is hidden rather than dropped from the stored choice, so it
+// returns in a session whose mixer has it.
+export function lanesOnMixer<Key extends string>(
+  lanes: readonly Key[],
+  exists: (lane: Key) => boolean,
+  fallback: readonly Key[]
+): Key[] {
+  const kept = lanes.filter(exists);
+  return kept.length === 0 ? fallback.filter(exists) : kept;
+}
+
 export function lanesForDeck(stored: Record<string, unknown>, deck: string): DeckLaneKey[] {
   return lanesFrom(DECK_LANE_KEYS, stored[deck], DEFAULT_DECK_LANES);
 }

@@ -11,8 +11,6 @@ pub const MIN_GESTURE_MS: f64 = 50.0;
 // Public: the native DSP and the frontend mixer read these from here.
 pub const EQ_MAX_DB: f64 = 6.0;
 pub const EQ_MIN_DB: f64 = -26.0;
-
-pub const EQ_MID_MIN_DB: f64 = -30.0;
 pub const FILTER_DEAD_ZONE: f64 = 0.05;
 
 // Fallback range when no clip-specific one is given. Rate is transport, so it
@@ -109,6 +107,14 @@ impl EditableLane {
         mixer.descriptor(self.scope(), slot, param)
     }
 
+    pub fn exists_on(&self, mixer: &'static MixerManifest) -> bool {
+        self.slot_param().is_none()
+            || self
+                .descriptor(mixer)
+                .or_else(|| self.canonical_descriptor())
+                .is_some()
+    }
+
     /// Lets the frozen v1 manifests, which have no crossfader slot, still draw the lane.
     fn canonical_descriptor(&self) -> Option<&'static ParamDescriptor> {
         match self {
@@ -147,9 +153,10 @@ pub struct LaneSpec {
 // decimation tolerance for the editor, not a property of the audio parameter.
 fn lane_epsilon(lane: EditableLane) -> f64 {
     match lane {
-        EditableLane::EqLowMid | EditableLane::EqHighMid => 0.25,
-        // Normalized travel, not dB, so the gesture epsilon is a fraction of the knob.
-        EditableLane::EqLow | EditableLane::EqHigh => 0.005,
+        EditableLane::EqLow
+        | EditableLane::EqLowMid
+        | EditableLane::EqHighMid
+        | EditableLane::EqHigh => 0.25,
         EditableLane::Rate => 0.0005,
         EditableLane::Jog => 0.1,
         _ => 0.01,
@@ -830,6 +837,46 @@ pub fn relocate_event_paths(
 mod tests {
     use super::*;
     use crate::param::CLASSIC_4BAND;
+
+    #[test]
+    fn every_eq_lane_keeps_points_at_one_tolerance() {
+        for mixer in crate::param::MANIFESTS {
+            let tolerances: Vec<f64> = [
+                EditableLane::EqLow,
+                EditableLane::EqLowMid,
+                EditableLane::EqHighMid,
+                EditableLane::EqHigh,
+            ]
+            .into_iter()
+            .filter(|lane| lane.exists_on(mixer))
+            .map(|lane| lane_spec_for(lane, mixer, None, None).epsilon)
+            .collect();
+            assert!(
+                tolerances.windows(2).all(|pair| pair[0] == pair[1]),
+                "{}: {tolerances:?}",
+                mixer.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_lane_exists_on_the_four_band() {
+        for lane in EditableLane::ALL {
+            assert!(lane.exists_on(&CLASSIC_4BAND), "{}", lane.key());
+        }
+    }
+
+    #[test]
+    fn the_three_band_has_no_low_mid_lane_and_every_other() {
+        for lane in EditableLane::ALL {
+            assert_eq!(
+                lane.exists_on(&crate::param::CLASSIC_3BAND),
+                lane != EditableLane::EqLowMid,
+                "{}",
+                lane.key()
+            );
+        }
+    }
 
     #[test]
     fn all_lanes_round_trip_through_their_key() {

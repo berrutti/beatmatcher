@@ -28,7 +28,10 @@ import init, {
   editConstants as wasmEditConstants,
   laneSpecs as wasmLaneSpecs,
   mixerParams as wasmMixerParams,
-  masterParams as wasmMasterParams
+  masterParams as wasmMasterParams,
+  mixerIds as wasmMixerIds,
+  paramTravel as wasmParamTravel,
+  paramAtTravel as wasmParamAtTravel
 } from '@core/session_core.js';
 import wasmUrl from '@core/session_core_bg.wasm?url';
 
@@ -181,6 +184,7 @@ export type LaneSpec = {
   defaultValue: number;
   epsilon: number;
   unit: LaneUnit;
+  available: boolean;
 };
 
 type LaneUnit = 'db' | 'normalized' | 'bool' | 'ratio' | 'percent';
@@ -198,6 +202,8 @@ export function laneSpecs(mixerId: string): Record<EditableLaneKey, LaneSpec> {
 }
 
 export type MixerParamSpec = {
+  mixerId: string;
+  scope: 'deck' | 'master';
   slot: string;
   param: string;
   min: number;
@@ -206,6 +212,10 @@ export type MixerParamSpec = {
   step: number;
   unit: string;
 };
+
+export function mixerIds(): string[] {
+  return parse<string[]>(wasmMixerIds());
+}
 
 const masterParamCache = new Map<string, Record<string, MixerParamSpec>>();
 
@@ -225,6 +235,14 @@ export function mixerParams(mixerId: string): Record<string, MixerParamSpec> {
   const specs = parse<Record<string, MixerParamSpec>>(wasmMixerParams(mixerId));
   mixerParamCache.set(mixerId, specs);
   return specs;
+}
+
+export function paramTravel(spec: MixerParamSpec, value: number): number {
+  return wasmParamTravel(spec.mixerId, spec.scope, spec.slot, spec.param, value);
+}
+
+export function paramAtTravel(spec: MixerParamSpec, travel: number): number {
+  return wasmParamAtTravel(spec.mixerId, spec.scope, spec.slot, spec.param, travel);
 }
 
 export function moveTransportBlock(

@@ -450,7 +450,7 @@ mod tests {
 
         let round_tripped: session_core::SessionFile =
             serde_json::from_value(parsed).expect("parses back as a session");
-        assert!(session_core::resolve_manifest(round_tripped.mixer.as_ref()).is_ok());
+        assert!(session_core::resolve_manifest(&round_tripped.mixer).is_ok());
     }
 
     #[test]
@@ -467,7 +467,6 @@ mod tests {
         cue_tap: "fader",
         strip: STAMPED_STRIP,
         master: &[],
-        eq_bands: &[],
     };
 
     const STAMPED_STRIP: &[session_core::SlotDescriptor] = &[session_core::SlotDescriptor {

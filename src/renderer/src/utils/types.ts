@@ -8,8 +8,6 @@ export type SessionEvent = {
   path?: string;
   sec?: number;
   gain?: number;
-  band?: string;
-  db?: number;
   // On `set_param` events, `value` carries 0/1 for a toggle.
   slot?: string;
   param?: string;

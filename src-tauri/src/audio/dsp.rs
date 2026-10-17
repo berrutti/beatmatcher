@@ -223,18 +223,17 @@ impl Equalizer {
 }
 
 fn eq4_mid_q(table: &[(f32, f32)], db: f32) -> f32 {
-    if db <= table[0].0 {
-        return table[0].1;
-    }
-    for pair in table.windows(2) {
-        let (low_db, low_q) = pair[0];
-        let (high_db, high_q) = pair[1];
-        if db <= high_db {
-            let span = high_db - low_db;
-            return low_q + (high_q - low_q) * (db - low_db) / span;
+    let above = table.partition_point(|&(entry_db, _)| entry_db < db);
+    let below = above.checked_sub(1).and_then(|index| table.get(index));
+    match (below, table.get(above)) {
+        (Some(&(low_db, low_q)), Some(&(high_db, high_q))) => {
+            low_q + (high_q - low_q) * (db - low_db) / (high_db - low_db)
         }
+        (Some(&(_, q)), None) | (None, Some(&(_, q))) => q,
+        // Unreachable on a validated manifest. Butterworth keeps the bell finite rather
+        // than panicking on the audio thread.
+        (None, None) => std::f32::consts::FRAC_1_SQRT_2,
     }
-    table[table.len() - 1].1
 }
 
 /// The crossfade below the detent is what the analogue stage does: it sweeps its filter's
@@ -282,7 +281,6 @@ impl ShelfBand {
     }
 }
 
-/// The deepest cut is where a shelf has fully become its kill filter.
 #[derive(Clone, Copy)]
 pub(crate) struct EqRange {
     pub(crate) min_db: f32,
@@ -534,156 +532,141 @@ impl Filter {
     }
 }
 
-pub(crate) const ECHO_MAX_MS: f32 = 4000.0;
+// Freeverb's tunings, by Jezar at Dreampoint, public domain.
+const REVERB_TUNING_SR: f32 = 44_100.0;
+const REVERB_COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+const REVERB_ALLPASSES: [usize; 4] = [556, 441, 341, 225];
+// The right channel's lines run this much longer, which is what makes the tail wide.
+const REVERB_STEREO_SPREAD: usize = 23;
+const REVERB_ALLPASS_FEEDBACK: f32 = 0.5;
+const REVERB_DAMPING: f32 = 0.2;
+// Freeverb's allpasses are not true allpasses: each raises the average power 7/3 times, so
+// the four come back about 14.7 dB above what entered them.
+const REVERB_OUTPUT_GAIN: f32 = 9.0 / 49.0;
 
-/// Runaway is not a creative setting: at unity the tail grows without bound and the limiter
-/// is all that stands between the mixer and a held full-scale tone.
-const ECHO_MAX_FEEDBACK: f32 = 0.95;
+const REVERB_SMOOTHING_TAU_SEC: f32 = 0.020;
 
-const ECHO_SMOOTHING_TAU_SEC: f32 = 0.020;
-
-const ECHO_TAP_CROSSFADE_SEC: f32 = 0.020;
-
-const ECHO_RING_OUT_GAIN: f32 = 0.001;
-
-pub(crate) struct Echo {
-    sample_rate: f32,
+struct Comb {
     line: Vec<f32>,
-    write: usize,
-    delay_frames: usize,
-    target_delay_frames: usize,
-    previous_delay_frames: usize,
-    crossfade_frames: usize,
-    crossfade_remaining: usize,
+    index: usize,
+    damped: f32,
     feedback: f32,
     feedback_target: f32,
-    return_level: f32,
-    return_target: f32,
-    smoothing_coeff: f32,
-    low_cut_hz: f32,
-    low_cut: [Biquad; 2],
 }
 
-impl Echo {
-    pub(crate) fn new(sample_rate: f32) -> Self {
-        let capacity = (sample_rate * ECHO_MAX_MS / 1000.0).ceil() as usize + 1;
-        let delay_frames = Self::frames_for(sample_rate, ECHO_MAX_MS);
+impl Comb {
+    fn new(length: usize) -> Self {
         Self {
-            sample_rate,
-            line: vec![0.0; capacity * 2],
-            write: 0,
-            delay_frames,
-            target_delay_frames: delay_frames,
-            previous_delay_frames: delay_frames,
-            crossfade_frames: ((sample_rate * ECHO_TAP_CROSSFADE_SEC) as usize).max(1),
-            crossfade_remaining: 0,
+            line: vec![0.0; length],
+            index: 0,
+            damped: 0.0,
             feedback: 0.0,
             feedback_target: 0.0,
-            return_level: 0.0,
-            return_target: 0.0,
-            smoothing_coeff: 1.0 - (-1.0 / (sample_rate * ECHO_SMOOTHING_TAU_SEC)).exp(),
-            low_cut_hz: 0.0,
-            low_cut: [Biquad::identity(), Biquad::identity()],
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, input: f32, smoothing_coeff: f32) -> f32 {
+        self.feedback = super::unit::approach(self.feedback, self.feedback_target, smoothing_coeff);
+        let level = (1.0 - self.feedback * self.feedback).sqrt();
+        let output = self.line[self.index];
+        self.damped =
+            flush_denormal(output * (1.0 - REVERB_DAMPING) + self.damped * REVERB_DAMPING);
+        self.line[self.index] = flush_denormal(input * level + self.damped * self.feedback);
+        self.index = (self.index + 1) % self.line.len();
+        output
+    }
+}
+
+struct Allpass {
+    line: Vec<f32>,
+    index: usize,
+}
+
+impl Allpass {
+    fn new(length: usize) -> Self {
+        Self {
+            line: vec![0.0; length],
+            index: 0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, input: f32) -> f32 {
+        let delayed = self.line[self.index];
+        self.line[self.index] = flush_denormal(input + delayed * REVERB_ALLPASS_FEEDBACK);
+        self.index = (self.index + 1) % self.line.len();
+        delayed - input
+    }
+}
+
+pub(crate) struct Reverb {
+    sample_rate: f32,
+    tail_ms: f32,
+    combs: [[Comb; REVERB_COMBS.len()]; 2],
+    allpasses: [[Allpass; REVERB_ALLPASSES.len()]; 2],
+    smoothing_coeff: f32,
+}
+
+impl Reverb {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        let length = |tuning: usize, channel: usize| {
+            let samples = (tuning + channel * REVERB_STEREO_SPREAD) as f32;
+            ((samples * sample_rate / REVERB_TUNING_SR).round() as usize).max(1)
+        };
+        Self {
+            sample_rate,
+            tail_ms: 0.0,
+            combs: std::array::from_fn(|channel| {
+                std::array::from_fn(|index| Comb::new(length(REVERB_COMBS[index], channel)))
+            }),
+            allpasses: std::array::from_fn(|channel| {
+                std::array::from_fn(|index| Allpass::new(length(REVERB_ALLPASSES[index], channel)))
+            }),
+            smoothing_coeff: 1.0 - (-1.0 / (sample_rate * REVERB_SMOOTHING_TAU_SEC)).exp(),
         }
     }
 
     pub(crate) fn settle(&mut self) {
-        self.feedback = self.feedback_target;
-        self.return_level = self.return_target;
-        self.delay_frames = self.target_delay_frames;
-        self.previous_delay_frames = self.target_delay_frames;
-        self.crossfade_remaining = 0;
-    }
-
-    fn frames_for(sample_rate: f32, ms: f32) -> usize {
-        let clamped = ms.clamp(1.0, ECHO_MAX_MS);
-        ((sample_rate * clamped / 1000.0) as usize).max(1)
-    }
-
-    /// Crossfades to a second tap rather than sliding the one, so a time change steps to the
-    /// new interval instead of repitching the tail through the move.
-    pub(crate) fn set_time_ms(&mut self, ms: f32) {
-        self.target_delay_frames = Self::frames_for(self.sample_rate, ms);
-    }
-
-    #[inline]
-    fn tap(&self, delay_frames: usize) -> (f32, f32) {
-        let frames = self.line.len() / 2;
-        let read = (self.write + frames - delay_frames % frames) % frames;
-        (self.line[read * 2], self.line[read * 2 + 1])
-    }
-
-    /// A drag sends a new time every block, so a new crossfade waits for the running one
-    /// rather than restarting it, which would jump back to a tap it had half left.
-    #[inline]
-    fn delayed(&mut self) -> (f32, f32) {
-        if self.crossfade_remaining == 0 && self.target_delay_frames != self.delay_frames {
-            self.previous_delay_frames = self.delay_frames;
-            self.delay_frames = self.target_delay_frames;
-            self.crossfade_remaining = self.crossfade_frames;
+        for comb in self.combs.iter_mut().flatten() {
+            comb.feedback = comb.feedback_target;
         }
-        let (new_l, new_r) = self.tap(self.delay_frames);
-        if self.crossfade_remaining == 0 {
-            return (new_l, new_r);
-        }
-        let (old_l, old_r) = self.tap(self.previous_delay_frames);
-        let old_share = self.crossfade_remaining as f32 / self.crossfade_frames as f32;
-        self.crossfade_remaining -= 1;
-        (
-            new_l + (old_l - new_l) * old_share,
-            new_r + (old_r - new_r) * old_share,
-        )
     }
 
-    /// In the feedback path only, so the first repeat is whole and each later one loses more
-    /// bass, which keeps a long tail from building under the next track.
-    pub(crate) fn set_low_cut(&mut self, hz: f32) {
-        if hz == self.low_cut_hz {
-            return;
-        }
-        self.low_cut_hz = hz;
-        let coefficients = Biquad::high_pass(self.sample_rate, hz, std::f32::consts::FRAC_1_SQRT_2);
-        for stage in &mut self.low_cut {
-            stage.set_coefficients(coefficients);
+    pub(crate) fn set_tail_ms(&mut self, ms: f32) {
+        self.tail_ms = ms.max(1.0);
+        let tail_frames = self.tail_ms * self.sample_rate / 1000.0;
+        for comb in self.combs.iter_mut().flatten() {
+            comb.feedback_target = 10f32.powf(-3.0 * comb.line.len() as f32 / tail_frames);
         }
     }
 
     pub(crate) fn ring_out_frames(&self) -> usize {
-        let repeats = if self.feedback_target <= 0.0 {
-            1.0
-        } else {
-            (ECHO_RING_OUT_GAIN.ln() / self.feedback_target.ln())
-                .ceil()
-                .max(1.0)
-        };
-        (self.target_delay_frames as f32 * (repeats + 1.0)) as usize
-    }
-
-    pub(crate) fn set_feedback(&mut self, feedback: f32) {
-        self.feedback_target = feedback.clamp(0.0, ECHO_MAX_FEEDBACK);
-    }
-
-    pub(crate) fn set_return(&mut self, level: f32) {
-        self.return_target = level.clamp(0.0, 1.0);
+        let longest = self
+            .combs
+            .iter()
+            .flatten()
+            .map(|comb| comb.line.len())
+            .max()
+            .unwrap_or(0);
+        (self.tail_ms * self.sample_rate / 1000.0) as usize + longest
     }
 
     #[inline]
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
-        self.feedback =
-            super::unit::approach(self.feedback, self.feedback_target, self.smoothing_coeff);
-        self.return_level =
-            super::unit::approach(self.return_level, self.return_target, self.smoothing_coeff);
-
-        let frames = self.line.len() / 2;
-        let (delayed_l, delayed_r) = self.delayed();
-
-        let fed_l = self.low_cut[0].process(delayed_l) * self.feedback;
-        let fed_r = self.low_cut[1].process(delayed_r) * self.feedback;
-        self.line[self.write * 2] = flush_denormal(l + fed_l);
-        self.line[self.write * 2 + 1] = flush_denormal(r + fed_r);
-        self.write = (self.write + 1) % frames;
-
-        (delayed_l * self.return_level, delayed_r * self.return_level)
+        let input = (l + r) * 0.5 / (REVERB_COMBS.len() as f32).sqrt();
+        let smoothing_coeff = self.smoothing_coeff;
+        let mut out = [0.0f32; 2];
+        for (channel, sum) in out.iter_mut().enumerate() {
+            *sum = self.combs[channel]
+                .iter_mut()
+                .map(|comb| comb.process(input, smoothing_coeff))
+                .sum();
+            for allpass in &mut self.allpasses[channel] {
+                *sum = allpass.process(*sum);
+            }
+        }
+        (out[0] * REVERB_OUTPUT_GAIN, out[1] * REVERB_OUTPUT_GAIN)
     }
 
     pub(crate) fn mix_block(&mut self, send: &[f32], mix: &mut [f32]) {
@@ -1128,8 +1111,6 @@ mod tests {
 
     #[test]
     fn a_shelf_swept_to_its_end_rolls_its_band_off_at_12_db_per_octave() {
-        // An octave further out is another 12 dB down, which is the claim the manual makes
-        // about the filter the shelf becomes.
         let at = |hz: f32, set: fn(&mut Equalizer4)| 20.0 * band_rms(hz, set).log10();
         let one_octave = at(1250.0, |eq| eq.set_high(EQ_MIN_DB));
         let two_octaves = at(2500.0 * 2.0, |eq| eq.set_high(EQ_MIN_DB));
@@ -1156,155 +1137,138 @@ mod tests {
 
     #[test]
     fn each_bell_reaches_its_own_centre() {
-        for (hz, set) in [(350.0f32, 0), (2000.0, 1)] {
+        let bells: [(f32, fn(&mut Equalizer4, f32)); 2] = [
+            (350.0, Equalizer4::set_low_mid),
+            (2000.0, Equalizer4::set_high_mid),
+        ];
+        for (hz, set) in bells {
             let flat = band_rms(hz, |_| {});
-            let cut = band_rms(hz, |eq| {
-                if set == 0 {
-                    eq.set_low_mid(-20.0)
-                } else {
-                    eq.set_high_mid(-20.0)
-                }
-            });
+            let cut = band_rms(hz, |eq| set(eq, -20.0));
             assert!(cut < flat * 0.5, "{hz} Hz was not cut by its own bell");
         }
     }
 
-    const ECHO_SR: f32 = 48_000.0;
-
-    fn settled_echo(time_ms: f32, feedback: f32) -> Echo {
-        let mut echo = crate::audio::MasterEffects::for_manifest(&session_core::CLASSIC_4BAND)
-            .echo
-            .echo(ECHO_SR);
-        echo.set_time_ms(time_ms);
-        echo.set_feedback(feedback);
-        echo.set_return(1.0);
-        // Past the return and feedback ramps, so a measurement is of the echo and not of
-        // the smoother still climbing.
-        for _ in 0..ECHO_SR as usize {
-            echo.process(0.0, 0.0);
-        }
-        echo
+    #[test]
+    fn the_mid_q_follows_its_table_and_holds_at_either_end() {
+        let table = [(-10.0, 1.0), (0.0, 2.0)];
+        assert_eq!(eq4_mid_q(&table, -20.0), 1.0);
+        assert_eq!(eq4_mid_q(&table, -5.0), 1.5);
+        assert_eq!(eq4_mid_q(&table, 0.0), 2.0);
+        assert_eq!(eq4_mid_q(&table, 6.0), 2.0);
     }
 
-    fn impulse_response(echo: &mut Echo, frames: usize) -> Vec<f32> {
+    const REVERB_SR: f32 = 48_000.0;
+
+    fn settled_reverb(tail_ms: f32) -> Reverb {
+        let mut reverb = Reverb::new(REVERB_SR);
+        reverb.set_tail_ms(tail_ms);
+        reverb.settle();
+        reverb
+    }
+
+    fn impulse_response(reverb: &mut Reverb, seconds: f32) -> Vec<f32> {
+        let frames = (REVERB_SR * seconds) as usize;
         let mut out = Vec::with_capacity(frames);
-        out.push(echo.process(1.0, 1.0).0);
+        out.push(reverb.process(1.0, 1.0).0);
         for _ in 1..frames {
-            out.push(echo.process(0.0, 0.0).0);
+            out.push(reverb.process(0.0, 0.0).0);
         }
         out
     }
 
-    #[test]
-    fn an_echo_repeats_one_delay_time_after_the_sound() {
-        let mut echo = settled_echo(100.0, 0.0);
-        let response = impulse_response(&mut echo, (ECHO_SR * 0.25) as usize);
-        let at = (ECHO_SR * 0.1) as usize;
-        assert!((response[at] - 1.0).abs() < 1e-3, "no repeat at 100 ms");
-        assert!(response[at - 1].abs() < 1e-6, "something arrived early");
+    fn level_db(response: &[f32], from_sec: f32, to_sec: f32) -> f32 {
+        let window = &response[(REVERB_SR * from_sec) as usize..(REVERB_SR * to_sec) as usize];
+        let power = window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32;
+        10.0 * power.max(1e-30).log10()
     }
 
     #[test]
-    fn feedback_keeps_repeating_and_decays() {
-        let mut echo = settled_echo(100.0, 0.5);
-        let response = impulse_response(&mut echo, (ECHO_SR * 0.45) as usize);
-        let first = response[(ECHO_SR * 0.1) as usize];
-        let second = response[(ECHO_SR * 0.2) as usize];
-        let third = response[(ECHO_SR * 0.3) as usize];
-        assert!((second / first - 0.5).abs() < 0.05, "second repeat off");
-        assert!((third / second - 0.5).abs() < 0.05, "third repeat off");
-    }
-
-    #[test]
-    fn a_tail_outlives_the_signal_that_fed_it() {
-        let mut echo = settled_echo(50.0, 0.7);
-        for _ in 0..(ECHO_SR * 0.2) as usize {
-            echo.process(0.5, 0.5);
+    fn a_reverb_with_nothing_sent_is_silent() {
+        let mut reverb = settled_reverb(2_000.0);
+        for _ in 0..REVERB_SR as usize {
+            assert_eq!(reverb.process(0.0, 0.0), (0.0, 0.0));
         }
-        let mut loudest: f32 = 0.0;
-        for _ in 0..(ECHO_SR * 0.05) as usize {
-            let (l, _) = echo.process(0.0, 0.0);
-            loudest = loudest.max(l.abs());
-        }
-        assert!(loudest > 0.1, "the tail died with its input: {loudest}");
-    }
-
-    fn repeat_peak(echo: &mut Echo, hz: f32, repeat: usize, time_ms: f32) -> f32 {
-        let delay = (ECHO_SR * time_ms / 1000.0) as usize;
-        let burst = delay / 2;
-        let mut loudest: f32 = 0.0;
-        for frame in 0..delay * (repeat + 1) {
-            let input = if frame < burst {
-                (std::f32::consts::TAU * hz * frame as f32 / ECHO_SR).sin()
-            } else {
-                0.0
-            };
-            let (l, _) = echo.process(input, input);
-            let window = delay * repeat..delay * repeat + burst;
-            if window.contains(&frame) {
-                loudest = loudest.max(l.abs());
-            }
-        }
-        loudest
     }
 
     #[test]
-    fn the_low_cut_thins_later_repeats_and_spares_the_first() {
-        let mut first = settled_echo(200.0, 0.9);
-        first.set_low_cut(300.0);
-        let mut third = settled_echo(200.0, 0.9);
-        third.set_low_cut(300.0);
-        let mut third_uncut = settled_echo(200.0, 0.9);
-        third_uncut.set_low_cut(20.0);
-
-        assert!((repeat_peak(&mut first, 60.0, 1, 200.0) - 1.0).abs() < 0.05);
-        let cut = repeat_peak(&mut third, 60.0, 3, 200.0);
-        let uncut = repeat_peak(&mut third_uncut, 60.0, 3, 200.0);
+    fn the_tail_falls_sixty_db_over_its_length() {
+        let response = impulse_response(&mut settled_reverb(1_000.0), 1.3);
+        let early = level_db(&response, 0.1, 0.2);
+        let halfway = level_db(&response, 0.6, 0.7) - early;
+        let past = level_db(&response, 1.1, 1.2) - early;
         assert!(
-            cut < uncut * 0.1,
-            "bass survived the loop: {cut} against {uncut}"
+            (-45.0..-20.0).contains(&halfway),
+            "halfway down {halfway} dB"
+        );
+        assert!(
+            past < -45.0,
+            "a tail of 1 s was only {past} dB down after it"
         );
     }
 
     #[test]
-    fn dragging_the_time_does_not_click() {
-        let mut echo = settled_echo(300.0, 0.0);
-        let sine = |frame: usize| (std::f32::consts::TAU * 440.0 * frame as f32 / ECHO_SR).sin();
-        let mut frame = 0;
-        for _ in 0..ECHO_SR as usize {
-            echo.process(sine(frame), sine(frame));
-            frame += 1;
-        }
-        let mut previous = echo.process(sine(frame), sine(frame)).0;
-        let mut largest_step: f32 = 0.0;
-        for block in 0..100 {
-            echo.set_time_ms(300.0 - block as f32 * 2.5);
-            for _ in 0..480 {
-                frame += 1;
-                let (l, _) = echo.process(sine(frame), sine(frame));
-                largest_step = largest_step.max((l - previous).abs());
-                previous = l;
-            }
-        }
-        // A 440 Hz sine at full scale moves at most 0.058 per sample at 48 kHz.
-        assert!(largest_step < 0.08, "a time change clicked: {largest_step}");
+    fn a_longer_tail_rings_longer() {
+        let short = impulse_response(&mut settled_reverb(500.0), 2.0);
+        let long = impulse_response(&mut settled_reverb(3_000.0), 2.0);
+        let late = |response: &[f32]| level_db(response, 1.0, 2.0) - level_db(response, 0.1, 0.2);
+        assert!(
+            late(&long) > late(&short) + 20.0,
+            "{} against {}",
+            late(&long),
+            late(&short)
+        );
+    }
+
+    fn steady_level_db(tail_ms: f32) -> f32 {
+        let mut reverb = settled_reverb(tail_ms);
+        let mut seed: u32 = 1;
+        let mut low = 0.0f32;
+        // Mostly below 1 kHz, where music carries its weight and damping takes little.
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            low += 0.1 * ((seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0 - low);
+            low
+        };
+        let (sent, returned): (Vec<f32>, Vec<f32>) = (0..(REVERB_SR * 3.0) as usize)
+            .map(|_| {
+                let sample = noise();
+                (sample, reverb.process(sample, sample).0)
+            })
+            .unzip();
+        level_db(&returned, 2.0, 3.0) - level_db(&sent, 2.0, 3.0)
     }
 
     #[test]
-    fn feedback_cannot_be_driven_to_runaway() {
-        let mut echo = settled_echo(20.0, 10.0);
-        for _ in 0..(ECHO_SR * 0.2) as usize {
-            echo.process(1.0, 1.0);
-        }
-        let mut loudest: f32 = 0.0;
-        for _ in 0..(ECHO_SR * 4.0) as usize {
-            let (l, _) = echo.process(0.0, 0.0);
-            loudest = loudest.max(l.abs());
-        }
+    fn the_tail_changes_how_long_it_rings_and_not_how_loud() {
+        let short = steady_level_db(500.0);
+        let long = steady_level_db(5_000.0);
+        assert!((short - long).abs() < 3.0, "{short} dB against {long} dB");
         assert!(
-            loudest.is_finite() && loudest < 40.0,
-            "ran away to {loudest}"
+            (-6.0..3.0).contains(&long),
+            "a full send returned at {long} dB"
         );
+    }
+
+    #[test]
+    fn a_tail_at_or_below_zero_still_dies() {
+        let response = impulse_response(&mut settled_reverb(-100.0), 1.0);
+        let half = (REVERB_SR * 0.5) as usize;
+        assert!(response[half..].iter().all(|sample| sample.abs() < 1e-6));
+    }
+
+    #[test]
+    fn the_left_and_right_tails_differ() {
+        let mut reverb = settled_reverb(2_000.0);
+        reverb.process(1.0, 1.0);
+        let differs = (0..(REVERB_SR * 0.2) as usize)
+            .map(|_| reverb.process(0.0, 0.0))
+            .any(|(l, r)| (l - r).abs() > 1e-4);
+        assert!(differs);
+    }
+
+    #[test]
+    fn the_ring_out_lasts_at_least_the_tail() {
+        assert!(settled_reverb(2_000.0).ring_out_frames() >= (REVERB_SR * 2.0) as usize);
     }
 
     #[test]

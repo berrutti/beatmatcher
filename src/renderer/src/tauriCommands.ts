@@ -25,7 +25,6 @@ type Commands = {
   };
   list_audio_devices: { args: Record<string, never>; returns: unknown[] };
   list_midi_devices: { args: Record<string, never>; returns: unknown[] };
-  list_mixers: { args: Record<string, never>; returns: string[] };
   list_recoverable: { args: Record<string, never>; returns: unknown[] };
   load_track: {
     args: { deck: string; path: string; analyze: boolean; beatOffsetSec: number; loadId: number };

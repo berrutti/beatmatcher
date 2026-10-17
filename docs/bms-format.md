@@ -21,10 +21,7 @@ A `.bms` file is a JSON document (UTF-8, pretty-printed) saved alongside or inst
 `elapsed_ms` is milliseconds since the recording started, at full f64 precision. `startedAt` is an ISO-8601 wall-clock timestamp. `frame` is output frames since the first one the recorder captured, and it counts from a different origin than `elapsed_ms`.
 
 `version` is a required integer, bumped only when the event vocabulary changes. A new event type does not bump it, because a reader that does not know a type ignores it. The number lives in `BMS_VERSION` in session-core.
-
-An older version is never rejected. Reading a session rewrites its events into the current vocabulary before anything interprets them, and the file on disk changes only when it is saved.
-
-`mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` means (slot order, unit ids, each slot's voicing, param ids, ranges, defaults, steps, dead zones) and excludes display labels and the EQ role table. Rendering refuses a session whose mixer this build does not have or has since changed. A file with no `mixer` field replays on `classic-4band`.
+`mixer` names the mixer manifest the session was played on. `hash` covers everything that changes what a `set_param` means (slot order, unit ids, each slot's voicing, param ids, ranges, defaults, steps, dead zones) and excludes display labels. Rendering refuses a session whose mixer this build does not have or has since changed.
 
 ## Event types
 
@@ -57,21 +54,17 @@ An older version is never rejected. Reading a session rewrites its events into t
 
 Every mixer parameter is one `set_param` event addressed as **deck / slot / param**. `slot` is the position in the channel strip, so swapping the unit in a slot keeps existing automation pointing at the same place. Omitting `deck` addresses master scope.
 
-| slot     | param                                 | scope  | value                                   |
-| -------- | ------------------------------------- | ------ | --------------------------------------- |
-| `fader`  | `gain`                                | deck   | 0-1, channel fader                      |
-| `eq`     | `low` / `lowMid` / `highMid` / `high` | deck   | dB, -26 to +6                           |
-| `filter` | `value`                               | deck   | -1 to +1, negative LPF, positive HPF    |
-| `filter` | `active`                              | deck   | 0 or 1, filter on/off                   |
-| `send`   | `amount`                              | deck   | 0-1, how much of the channel feeds echo |
-| `send`   | `active`                              | deck   | 0 or 1, send on/off                     |
-| `gain`   | `gain`                                | master | 0-1, master output level                |
-| `xfader` | `position`                            | master | -1 to +1, -1 full A, +1 full B          |
-| `filter` | `resonance`                           | master | Q, 0.71 to 5, every channel's filter    |
-| `echo`   | `time`                                | master | ms, 1 to 4000                           |
-| `echo`   | `feedback`                            | master | 0 to 0.95                               |
-| `echo`   | `lowCut`                              | master | Hz, 20 to 1000, in the feedback path    |
-| `echo`   | `return`                              | master | 0-1, echo level in the mix              |
+| slot     | param                                 | scope  | value                                         |
+| -------- | ------------------------------------- | ------ | --------------------------------------------- |
+| `fader`  | `gain`                                | deck   | 0-1, channel fader                            |
+| `eq`     | `low` / `lowMid` / `highMid` / `high` | deck   | dB, -26 to +6                                 |
+| `filter` | `value`                               | deck   | -1 to +1, negative LPF, positive HPF          |
+| `filter` | `active`                              | deck   | 0 or 1, filter on/off                         |
+| `send`   | `amount`                              | deck   | 0-1, how much of the channel feeds the reverb |
+| `gain`   | `gain`                                | master | 0-1, master output level                      |
+| `xfader` | `position`                            | master | -1 to +1, -1 full A, +1 full B                |
+| `filter` | `resonance`                           | master | Q, 0.71 to 5, every channel's filter          |
+| `reverb` | `tail`                                | master | ms, 200 to 10000, time to fall 60 dB          |
 
 ```json
 { "elapsed_ms": 4200.0, "type": "set_param", "deck": "A", "slot": "eq", "param": "low", "value": -6.0 }
@@ -107,7 +100,7 @@ Recording writes the curve once at `recording_start`, because nothing else in th
 
 ## Mixer state at record start
 
-`recording_start` is followed by a `set_param` for every strip param that is not at its manifest default, one per deck, and one for every master effect param (echo and filter resonance) whatever its value. A knob moved before recording began is otherwise lost, and a reader replays the manifest default in its place: an engaged filter read as bypassed, so a whole sweep was silent in the render. Params already at their default are skipped, for the same reason a `thru` crossfader assign is.
+`recording_start` is followed by a `set_param` for every strip param that is not at its manifest default, one per deck, and one for every master effect param (reverb and filter resonance) whatever its value. A knob moved before recording began is otherwise lost, and a reader replays the manifest default in its place: an engaged filter read as bypassed, so a whole sweep was silent in the render. Params already at their default are skipped, for the same reason a `thru` crossfader assign is.
 
 ## Jog wheel
 

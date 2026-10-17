@@ -14,7 +14,7 @@
   >
     <svg class="knob__arcs" viewBox="0 0 40 40" aria-hidden="true">
       <path class="knob__track" :d="arcPath(0, 1)" />
-      <path class="knob__value" :d="arcPath(knobOrigin(spec), travel)" />
+      <path class="knob__value" :d="arcPath(origin, travel)" />
     </svg>
     <div class="knob__cap" :style="{ transform: `rotate(${capDegrees}deg)` }">
       <span class="knob__pointer" />
@@ -24,8 +24,7 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import type { MixerParamSpec } from '@renderer/utils/sessionCore';
-import { knobOrigin, knobTravel, valueAtTravel } from '@renderer/utils/knob';
+import { paramAtTravel, paramTravel, type MixerParamSpec } from '@renderer/utils/sessionCore';
 import { CLICK_SLOP_PX } from '@renderer/utils/sliderThumb';
 
 const {
@@ -51,11 +50,13 @@ const emit = defineEmits<{ input: [value: number]; reset: [] }>();
 const SWEEP_DEGREES = 270;
 const START_DEGREES = 135;
 const ARC_RADIUS = 17;
-const DRAG_PX_FOR_FULL_TRAVEL = 200;
+// The thumb travel of the EQ sliders the knobs replaced: 9em at 14px, less a 14px thumb.
+const DRAG_PX_FOR_FULL_TRAVEL = 112;
 const FINE_DRAG_SCALE = 0.2;
 const WHEEL_TRAVEL = 0.02;
 
-const travel = computed(() => knobTravel(spec, value));
+const travel = computed(() => paramTravel(spec, value));
+const origin = computed(() => paramTravel(spec, spec.defaultValue));
 const capDegrees = computed(() => SWEEP_DEGREES * travel.value - SWEEP_DEGREES / 2);
 
 function pointAt(position: number): string {
@@ -78,14 +79,14 @@ let press: {
   x: number;
   y: number;
   lastY: number;
-  travel: number;
+  startTravel: number;
+  dragged: number;
   lastValue: number;
 } | null = null;
 
-function emitAt(position: number) {
+function emitDragged() {
   if (!press) return;
-  press.travel = Math.max(0, Math.min(1, position));
-  const next = valueAtTravel(spec, press.travel);
+  const next = paramAtTravel(spec, press.startTravel + press.dragged);
   if (next === press.lastValue) return;
   press.lastValue = next;
   emit('input', next);
@@ -102,9 +103,9 @@ function onPointerMove(event: PointerEvent) {
     document.body.classList.add('slider-dragging');
   }
   const scale = event.shiftKey ? FINE_DRAG_SCALE : 1;
-  const delta = ((press.lastY - event.clientY) / DRAG_PX_FOR_FULL_TRAVEL) * scale;
+  press.dragged += ((press.lastY - event.clientY) / DRAG_PX_FOR_FULL_TRAVEL) * scale;
   press.lastY = event.clientY;
-  emitAt(press.travel + delta);
+  emitDragged();
 }
 
 function endPress() {
@@ -129,7 +130,8 @@ function onPointerDown(event: PointerEvent) {
     x: event.clientX,
     y: event.clientY,
     lastY: event.clientY,
-    travel: travel.value,
+    startTravel: travel.value,
+    dragged: 0,
     lastValue: value
   };
   window.addEventListener('pointermove', onPointerMove);
@@ -144,7 +146,7 @@ function onDoubleClick() {
 
 function onWheel(event: WheelEvent) {
   if (event.deltaY === 0) return;
-  const next = valueAtTravel(spec, travel.value - Math.sign(event.deltaY) * WHEEL_TRAVEL);
+  const next = paramAtTravel(spec, travel.value - Math.sign(event.deltaY) * WHEEL_TRAVEL);
   if (next !== value) emit('input', next);
 }
 
