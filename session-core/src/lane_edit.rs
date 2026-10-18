@@ -9,8 +9,8 @@ use std::collections::HashMap;
 pub const MIN_GESTURE_MS: f64 = 50.0;
 
 // Public: the native DSP and the frontend mixer read these from here.
-pub const EQ_MIN_DB: f64 = -26.0;
 pub const EQ_MAX_DB: f64 = 6.0;
+pub const EQ_MIN_DB: f64 = -26.0;
 pub const FILTER_DEAD_ZONE: f64 = 0.05;
 
 // Fallback range when no clip-specific one is given. Rate is transport, so it
@@ -35,7 +35,8 @@ pub struct LaneDisplay {
 pub enum EditableLane {
     Gain,
     EqLow,
-    EqMid,
+    EqLowMid,
+    EqHighMid,
     EqHigh,
     Filter,
     Rate,
@@ -45,13 +46,14 @@ pub enum EditableLane {
 }
 
 impl EditableLane {
-    pub const ALL: [EditableLane; 9] = [
+    pub const ALL: [EditableLane; 10] = [
         Self::Gain,
         Self::Filter,
         Self::Rate,
         Self::Jog,
         Self::EqLow,
-        Self::EqMid,
+        Self::EqLowMid,
+        Self::EqHighMid,
         Self::EqHigh,
         Self::MasterGain,
         Self::Xfader,
@@ -61,7 +63,8 @@ impl EditableLane {
         match self {
             Self::Gain => "gain",
             Self::EqLow => "eqLow",
-            Self::EqMid => "eqMid",
+            Self::EqLowMid => "eqLowMid",
+            Self::EqHighMid => "eqHighMid",
             Self::EqHigh => "eqHigh",
             Self::Filter => "filter",
             Self::Rate => "rate",
@@ -80,7 +83,8 @@ impl EditableLane {
         Some(match self {
             Self::Gain => ("fader", "gain"),
             Self::EqLow => ("eq", "low"),
-            Self::EqMid => ("eq", "mid"),
+            Self::EqLowMid => ("eq", "lowMid"),
+            Self::EqHighMid => ("eq", "highMid"),
             Self::EqHigh => ("eq", "high"),
             Self::Filter => ("filter", "value"),
             Self::MasterGain => ("gain", "gain"),
@@ -101,6 +105,14 @@ impl EditableLane {
     pub fn descriptor(&self, mixer: &'static MixerManifest) -> Option<&'static ParamDescriptor> {
         let (slot, param) = self.slot_param()?;
         mixer.descriptor(self.scope(), slot, param)
+    }
+
+    pub fn exists_on(&self, mixer: &'static MixerManifest) -> bool {
+        self.slot_param().is_none()
+            || self
+                .descriptor(mixer)
+                .or_else(|| self.canonical_descriptor())
+                .is_some()
     }
 
     /// Lets the frozen v1 manifests, which have no crossfader slot, still draw the lane.
@@ -141,7 +153,10 @@ pub struct LaneSpec {
 // decimation tolerance for the editor, not a property of the audio parameter.
 fn lane_epsilon(lane: EditableLane) -> f64 {
     match lane {
-        EditableLane::EqLow | EditableLane::EqMid | EditableLane::EqHigh => 0.25,
+        EditableLane::EqLow
+        | EditableLane::EqLowMid
+        | EditableLane::EqHighMid
+        | EditableLane::EqHigh => 0.25,
         EditableLane::Rate => 0.0005,
         EditableLane::Jog => 0.1,
         _ => 0.01,
@@ -821,7 +836,47 @@ pub fn relocate_event_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::param::CLASSIC_3BAND;
+    use crate::param::CLASSIC_4BAND;
+
+    #[test]
+    fn every_eq_lane_keeps_points_at_one_tolerance() {
+        for mixer in crate::param::MANIFESTS {
+            let tolerances: Vec<f64> = [
+                EditableLane::EqLow,
+                EditableLane::EqLowMid,
+                EditableLane::EqHighMid,
+                EditableLane::EqHigh,
+            ]
+            .into_iter()
+            .filter(|lane| lane.exists_on(mixer))
+            .map(|lane| lane_spec_for(lane, mixer, None, None).epsilon)
+            .collect();
+            assert!(
+                tolerances.windows(2).all(|pair| pair[0] == pair[1]),
+                "{}: {tolerances:?}",
+                mixer.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_lane_exists_on_the_four_band() {
+        for lane in EditableLane::ALL {
+            assert!(lane.exists_on(&CLASSIC_4BAND), "{}", lane.key());
+        }
+    }
+
+    #[test]
+    fn the_three_band_has_no_low_mid_lane_and_every_other() {
+        for lane in EditableLane::ALL {
+            assert_eq!(
+                lane.exists_on(&crate::param::CLASSIC_3BAND),
+                lane != EditableLane::EqLowMid,
+                "{}",
+                lane.key()
+            );
+        }
+    }
 
     #[test]
     fn all_lanes_round_trip_through_their_key() {
@@ -849,13 +904,13 @@ mod tests {
     }
 
     fn gain_at(events: &[SessionEvent], ms: f64) -> f64 {
-        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_4BAND, None, None);
         original_value_at(events, &spec, "A", ms)
     }
 
     #[test]
     fn splice_restores_value_when_points_are_unordered() {
-        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_4BAND, None, None);
         let events = vec![spec.make_event(0.0, 0.7, "A")];
         // Temporally last point is (500, 0.97). Last in input order is (100, 0.7),
         // which equals the value to restore.
@@ -937,7 +992,7 @@ mod tests {
 
     #[test]
     fn splice_gain_applies_inside_range_and_restores_after() {
-        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_4BAND, None, None);
         let events = vec![SessionEvent::param(1000.0, Some("A"), "fader", "gain", 0.8)];
         let points = vec![lane_point(5000.0, 0.4), lane_point(6000.0, 0.4)];
         let out = splice_lane_events(&events, &spec, "A", 5000.0, 8000.0, &points);
@@ -948,7 +1003,7 @@ mod tests {
 
     #[test]
     fn splice_rejects_too_short_gesture() {
-        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Gain, &CLASSIC_4BAND, None, None);
         let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
         let out = splice_lane_events(
             &events,
@@ -963,7 +1018,7 @@ mod tests {
 
     #[test]
     fn a_drawn_filter_value_keeps_its_shape_through_the_dead_zone() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         assert!((spec.clamp_value(0.03) - 0.03).abs() < 1e-9);
         assert!((spec.clamp_value(0.5) - 0.5).abs() < 1e-9);
         assert_eq!(spec.clamp_value(2.0), 1.0);
@@ -971,7 +1026,7 @@ mod tests {
 
     #[test]
     fn reset_lane_from_returns_the_lane_to_its_default() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -996,7 +1051,7 @@ mod tests {
 
     #[test]
     fn reset_lane_to_end_wipes_later_moves_even_from_a_flat_stretch() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1018,7 +1073,7 @@ mod tests {
 
     #[test]
     fn reset_lane_until_here_wipes_earlier_moves_and_keeps_the_rest() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1041,7 +1096,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_does_nothing_where_the_lane_is_already_at_its_default() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1058,7 +1113,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_flattens_the_whole_excursion_around_the_click() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1083,7 +1138,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_reaches_a_move_too_small_to_be_audible() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1104,7 +1159,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_takes_a_drop_recorded_on_the_same_millisecond() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = vec![
             SessionEvent::param(1000.0, Some("A"), "filter", "value", 0.3),
             SessionEvent::param(4000.0, Some("A"), "filter", "value", 0.9),
@@ -1119,7 +1174,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_stops_at_a_crossing_no_event_landed_on() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1144,7 +1199,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_stops_where_the_curve_crosses_the_default() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1169,7 +1224,7 @@ mod tests {
 
     #[test]
     fn reset_lane_this_move_leaves_a_later_excursion_alone() {
-        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_3BAND, None, None);
+        let spec = lane_spec_for(EditableLane::Filter, &CLASSIC_4BAND, None, None);
         let events = splice_lane_events(
             &[],
             &spec,
@@ -1422,7 +1477,7 @@ mod tests {
 #[cfg(test)]
 mod fuzz {
     use super::*;
-    use crate::param::CLASSIC_3BAND;
+    use crate::param::CLASSIC_4BAND;
 
     fn rng(seed: &mut u64) -> u64 {
         *seed ^= *seed << 13;
@@ -1530,7 +1585,7 @@ mod fuzz {
 
         for round in 0..4000 {
             let lane = EditableLane::ALL[round % EditableLane::ALL.len()];
-            let spec = lane_spec_for(lane, &CLASSIC_3BAND, None, None);
+            let spec = lane_spec_for(lane, &CLASSIC_4BAND, None, None);
             let pick = |seed: &mut u64| {
                 spec.min + (rng(seed) % 101) as f64 / 100.0 * (spec.max - spec.min)
             };

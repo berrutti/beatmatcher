@@ -8,8 +8,6 @@ export type SessionEvent = {
   path?: string;
   sec?: number;
   gain?: number;
-  band?: string;
-  db?: number;
   // On `set_param` events, `value` carries 0/1 for a toggle.
   slot?: string;
   param?: string;
@@ -40,7 +38,8 @@ export const DECK_LANE_KEYS = [
   'filter',
   'rate',
   'eqLow',
-  'eqMid',
+  'eqLowMid',
+  'eqHighMid',
   'eqHigh',
   'jog'
 ] as const;
@@ -135,7 +134,8 @@ export type FilterActiveSpan = { startMs: number; endMs: number };
 export type DeckLanes = {
   gain: LanePoint[];
   eqLow: LanePoint[];
-  eqMid: LanePoint[];
+  eqLowMid: LanePoint[];
+  eqHighMid: LanePoint[];
   eqHigh: LanePoint[];
   filter: LanePoint[];
   rate: LanePoint[];

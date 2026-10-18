@@ -204,7 +204,7 @@ import { useTimelineGestures } from '@renderer/composables/useTimelineGestures';
 import { buildScene } from '@renderer/composables/useTimelineScene';
 import { useSessionStore } from '@renderer/stores/session';
 import { useSessionEditStore } from '@renderer/stores/sessionEdit';
-import { DEFAULT_MIXER_ID } from '@renderer/stores/settings';
+import { LIVE_MIXER_ID } from '@renderer/stores/settings';
 import BpmModal from '@renderer/components/modals/BpmModal.vue';
 import type { BpmContext } from '@renderer/utils/timelineIntents';
 
@@ -239,13 +239,14 @@ const canvasEl = ref<HTMLCanvasElement | null>(null);
 
 const camera = useTimelineView(
   () => props.durationMs,
-  () => sessionStore.session?.mixerId ?? DEFAULT_MIXER_ID
+  () => sessionStore.session?.mixerId ?? LIVE_MIXER_ID
 );
 const controller = useTimelineController({
   camera,
   getClips: () => props.clips,
   emitSeek: (ms) => emit('seek', ms),
-  requestRender: scheduleRender
+  requestRender: scheduleRender,
+  getMixerId: () => sessionStore.session?.mixerId ?? LIVE_MIXER_ID
 });
 const { deckMenu, lanePicker, filterMenu } = controller;
 

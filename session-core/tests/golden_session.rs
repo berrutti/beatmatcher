@@ -69,7 +69,7 @@ fn track_cache() -> SampleCache {
 }
 
 fn clips_for(events: &[SessionEvent]) -> Vec<Clip> {
-    build_timeline(events, 12_000.0, &PITCH_OPTS).clips
+    build_timeline(events, 12_000.0, &PITCH_OPTS, &session_core::CLASSIC_4BAND).clips
 }
 
 struct Reconstructed {
@@ -225,7 +225,7 @@ fn golden_session_derives_edits_and_reconstructs() {
 
     // Edit 3: draw gain 0.3 on deck A over [4000, 6000]. The recorded 0.5 at
     // 4000 is consumed and restored at 6000.
-    let spec = lane_spec_for(EditableLane::Gain, &session_core::CLASSIC_3BAND, None, None);
+    let spec = lane_spec_for(EditableLane::Gain, &session_core::CLASSIC_4BAND, None, None);
     let events = splice_lane_events(
         &events,
         &spec,

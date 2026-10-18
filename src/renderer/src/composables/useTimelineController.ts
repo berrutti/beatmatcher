@@ -1,6 +1,14 @@
 import { ref } from 'vue';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
-import { lanesForDeck, lanesForMaster, toggleLane } from '@renderer/utils/laneSelection';
+import {
+  DEFAULT_DECK_LANES,
+  DEFAULT_MASTER_LANES,
+  lanesForDeck,
+  lanesForMaster,
+  lanesOnMixer,
+  toggleLane
+} from '@renderer/utils/laneSelection';
+import { laneSpecs } from '@renderer/utils/sessionCore';
 import {
   DEFAULT_WAVEFORM_HEIGHT,
   defaultLaneHeight,
@@ -49,6 +57,7 @@ export function useTimelineController(opts: {
   getClips: () => Clip[];
   emitSeek: (ms: number) => void;
   requestRender: () => void;
+  getMixerId: () => string;
 }) {
   const decks = useDecksStore();
   const editStore = useSessionEditStore();
@@ -72,17 +81,25 @@ export function useTimelineController(opts: {
   const lanePicker = ref<LanePicker | null>(null);
   const filterMenu = ref<FilterMenu | null>(null);
 
+  function laneExists(lane: EditableLaneKey): boolean {
+    return laneSpecs(opts.getMixerId())[lane].available;
+  }
+
   function lanesFor(deck: string): DeckLaneKey[] {
-    return lanesForDeck(storedDeckLanes.value, deck);
+    return lanesOnMixer(lanesForDeck(storedDeckLanes.value, deck), laneExists, DEFAULT_DECK_LANES);
   }
 
   function masterLanesFor(): MasterLaneKey[] {
-    return lanesForMaster(storedMasterLanes.value);
+    return lanesOnMixer(lanesForMaster(storedMasterLanes.value), laneExists, DEFAULT_MASTER_LANES);
   }
 
   // Left open, because a stack is built by toggling several in a row.
   function toggleMasterLane(lane: MasterLaneKey): void {
-    storedMasterLanes.value = toggleLane(MASTER_LANE_KEYS, masterLanesFor(), lane);
+    storedMasterLanes.value = toggleLane(
+      MASTER_LANE_KEYS,
+      lanesForMaster(storedMasterLanes.value),
+      lane
+    );
     storageSet(STORAGE_KEYS.sessionMasterLane, storedMasterLanes.value);
     opts.requestRender();
   }
@@ -90,7 +107,7 @@ export function useTimelineController(opts: {
   function toggleDeckLane(deck: string, lane: DeckLaneKey): void {
     storedDeckLanes.value = {
       ...storedDeckLanes.value,
-      [deck]: toggleLane(DECK_LANE_KEYS, lanesFor(deck), lane)
+      [deck]: toggleLane(DECK_LANE_KEYS, lanesForDeck(storedDeckLanes.value, deck), lane)
     };
     storageSet(STORAGE_KEYS.sessionDeckLane, storedDeckLanes.value);
     opts.requestRender();
@@ -99,7 +116,9 @@ export function useTimelineController(opts: {
   // Row-agnostic views of the two selections, for a picker that serves both row
   // kinds and should not have to know which one it is looking at.
   function laneKeysForRow(deck: string): readonly EditableLaneKey[] {
-    return deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS;
+    const keys: readonly EditableLaneKey[] =
+      deck === MASTER_ROW_ID ? MASTER_LANE_KEYS : DECK_LANE_KEYS;
+    return keys.filter(laneExists);
   }
 
   function lanesForRow(deck: string): readonly EditableLaneKey[] {

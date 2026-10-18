@@ -17,13 +17,9 @@ pub struct SessionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub band: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub db: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,72 +116,20 @@ impl SessionEvent {
             && self.param.as_deref() == Some(param)
     }
 
-    fn port_v1_to_v2(&mut self) -> bool {
-        let deck_scoped = self.deck.is_some();
-        let (slot, param, value) = match self.event_type.as_str() {
-            "set_volume" if deck_scoped => ("fader".to_string(), "gain".to_string(), self.gain),
-            "set_eq" if deck_scoped => match (self.band.clone(), self.db) {
-                (Some(band), Some(db)) => ("eq".to_string(), band, Some(db)),
-                _ => return false,
-            },
-            "set_filter" if deck_scoped => ("filter".to_string(), "value".to_string(), self.value),
-            "set_filter_active" if deck_scoped => (
-                "filter".to_string(),
-                "active".to_string(),
-                self.active.map(|active| if active { 1.0 } else { 0.0 }),
-            ),
-            // Master scope, so it carries no deck and the master slot is named "gain".
-            "set_master_gain" if !deck_scoped => {
-                ("gain".to_string(), "gain".to_string(), self.gain)
-            }
-            _ => return false,
-        };
-        let Some(value) = value else {
-            return false;
-        };
-        self.event_type = "set_param".to_string();
-        self.slot = Some(slot);
-        self.param = Some(param);
-        self.value = Some(value);
-        true
-    }
-}
-
-fn port_v1_events(events: &mut [SessionEvent]) -> usize {
-    let mut ported = 0;
-    for event in events.iter_mut() {
-        if event.port_v1_to_v2() {
-            ported += 1;
-        }
-    }
-    ported
-}
-
-pub fn port_events(events: &mut [SessionEvent], from_version: u32) -> usize {
-    match from_version {
-        1 => port_v1_events(events),
-        _ => 0,
-    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct SessionFile {
     pub version: u32,
     pub events: Vec<SessionEvent>,
-    // Absent in sessions recorded before manifests existed.
-    #[serde(default)]
-    pub mixer: Option<crate::param::MixerHeader>,
+    pub mixer: crate::param::MixerHeader,
 }
 
 pub const BMS_VERSION: u32 = 2;
 
 impl SessionFile {
-    /// Read a `.bms` only through here: plain deserialization drops an older session's
-    /// mixer moves in silence.
     pub fn parse(json: &str) -> Result<Self, serde_json::Error> {
-        let mut file: Self = serde_json::from_str(json)?;
-        port_events(&mut file.events, file.version);
-        Ok(file)
+        serde_json::from_str(json)
     }
 }
 
@@ -568,186 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn the_v1_vocabulary_ports_onto_classic_slots() {
-        let mut events = vec![
-            SessionEvent {
-                gain: Some(0.0),
-                ..make_event("set_volume")
-            },
-            SessionEvent {
-                band: Some("low".to_string()),
-                db: Some(-2.5),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                value: Some(0.35),
-                ..make_event("set_filter")
-            },
-            SessionEvent {
-                active: Some(true),
-                ..make_event("set_filter_active")
-            },
-        ];
-        assert_eq!(port_events(&mut events, 1), 4);
-
-        assert!(events[0].is_param(Some("A"), "fader", "gain"));
-        assert_eq!(events[0].value, Some(0.0));
-        assert!(events[1].is_param(Some("A"), "eq", "low"));
-        assert_eq!(events[1].value, Some(-2.5));
-        assert!(events[2].is_param(Some("A"), "filter", "value"));
-        assert_eq!(events[2].value, Some(0.35));
-        assert!(events[3].is_param(Some("A"), "filter", "active"));
-        assert_eq!(events[3].value, Some(1.0));
-
-        for event in &events {
-            assert!(
-                event.command().is_some(),
-                "{:?} still does not replay",
-                event
-            );
-        }
-    }
-
-    #[test]
-    fn every_ported_address_exists_on_the_classic_mixer() {
-        let mut events = vec![
-            SessionEvent {
-                gain: Some(0.8),
-                ..make_event("set_volume")
-            },
-            SessionEvent {
-                band: Some("mid".to_string()),
-                db: Some(3.0),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                band: Some("high".to_string()),
-                db: Some(3.0),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                value: Some(-0.5),
-                ..make_event("set_filter")
-            },
-            SessionEvent {
-                active: Some(false),
-                ..make_event("set_filter_active")
-            },
-        ];
-        port_events(&mut events, 1);
-        let manifest = crate::param::resolve_manifest(None).expect("a headerless session");
-        for event in &events {
-            let slot = event.slot.as_deref().expect("ported to a slot");
-            let param = event.param.as_deref().expect("ported to a param");
-            assert!(
-                manifest
-                    .descriptor(crate::ParamScope::Deck, slot, param)
-                    .is_some(),
-                "{slot}/{param} is not on {}",
-                manifest.id
-            );
-        }
-    }
-
-    #[test]
-    fn the_current_vocabulary_is_left_alone() {
-        let mut events = vec![
-            SessionEvent::param(0.0, Some("A"), "eq", "low", -6.0),
-            make_event("play"),
-            make_event("set_nudge"),
-        ];
-        let before = serde_json::to_string(&events).expect("serialize");
-        assert_eq!(port_events(&mut events, 1), 0);
-        assert_eq!(serde_json::to_string(&events).expect("serialize"), before);
-    }
-
-    #[test]
-    fn a_v1_event_missing_its_value_is_not_ported() {
-        let mut events = vec![
-            make_event("set_volume"),
-            SessionEvent {
-                db: Some(-3.0),
-                ..make_event("set_eq")
-            },
-            SessionEvent {
-                gain: Some(0.5),
-                deck: None,
-                ..make_event("set_volume")
-            },
-        ];
-        assert_eq!(port_events(&mut events, 1), 0);
-        assert_eq!(events[0].event_type, "set_volume");
-        assert_eq!(events[1].event_type, "set_eq");
-        assert_eq!(events[2].event_type, "set_volume");
-    }
-
-    #[test]
-    fn the_v1_master_gain_ports_onto_the_master_slot() {
-        let mut events = vec![SessionEvent {
-            gain: Some(0.6),
-            deck: None,
-            ..make_event("set_master_gain")
-        }];
-        assert_eq!(port_events(&mut events, 1), 1);
-        assert!(events[0].is_param(None, "gain", "gain"));
-        assert_eq!(events[0].value, Some(0.6));
-        assert!(events[0].command().is_some(), "it has to replay");
-    }
-
-    #[test]
-    fn a_deck_scoped_v1_event_still_needs_its_deck() {
-        let mut events = vec![SessionEvent {
-            gain: Some(0.5),
-            deck: None,
-            ..make_event("set_volume")
-        }];
-        assert_eq!(port_events(&mut events, 1), 0);
-        assert_eq!(events[0].event_type, "set_volume");
-    }
-
-    #[test]
-    fn an_explicit_null_deck_reads_as_no_deck() {
-        let mut events: Vec<SessionEvent> = serde_json::from_str(
-            r#"[
-                {"elapsed_ms": 1, "type": "set_volume", "deck": null, "gain": 0.5},
-                {"elapsed_ms": 2, "type": "set_master_gain", "deck": null, "gain": 0.6}
-            ]"#,
-        )
-        .expect("a session with null decks");
-        assert_eq!(port_events(&mut events, 1), 1);
-        assert_eq!(events[0].event_type, "set_volume");
-        assert!(events[1].is_param(None, "gain", "gain"));
-    }
-
-    #[test]
-    fn a_current_version_is_never_ported() {
-        let mut events = vec![SessionEvent {
-            gain: Some(0.5),
-            ..make_event("set_volume")
-        }];
-        assert_eq!(port_events(&mut events, BMS_VERSION), 0);
-        assert_eq!(events[0].event_type, "set_volume");
-    }
-
-    #[test]
-    fn parsing_a_session_ports_it() {
-        let json = r#"{"version":1,"events":[
-            {"elapsed_ms":1.0,"type":"set_volume","deck":"A","gain":0.25},
-            {"elapsed_ms":2.0,"type":"set_eq","deck":"B","band":"high","db":2.0}
-        ]}"#;
-        let session = SessionFile::parse(json).expect("parse");
-        assert!(session.events[0].is_param(Some("A"), "fader", "gain"));
-        assert!(session.events[1].is_param(Some("B"), "eq", "high"));
-    }
-
-    #[test]
     fn every_replayable_type_converts() {
         let full = SessionEvent {
             path: Some("/a.wav".to_string()),
             sec: Some(1.0),
             gain: Some(0.5),
-            band: Some("low".to_string()),
-            db: Some(-6.0),
             value: Some(-0.5),
             active: Some(true),
             rate: Some(1.02),

@@ -52,6 +52,30 @@ fn crossfader_start_events(
     events
 }
 
+/// Settings rather than performed moves, so nothing later in the session would ever say
+/// what the tail was rendered with.
+fn effect_start_events(
+    manifest: &'static session_core::MixerManifest,
+    master: &crate::audio::MasterSettings,
+) -> Vec<(&'static str, serde_json::Value)> {
+    manifest
+        .master
+        .iter()
+        .flat_map(|slot| slot.params.iter().map(move |param| (slot.slot, param.id)))
+        .filter_map(|(slot, param)| {
+            let value = master.get(slot, param)?;
+            Some((
+                "set_param",
+                serde_json::json!({
+                    "slot": slot,
+                    "param": param,
+                    "value": crate::recorder::f32_json(value),
+                }),
+            ))
+        })
+        .collect()
+}
+
 /// Where a deck's strip stood when recording started. A knob moved before the first event
 /// is otherwise lost, and a reader replays the manifest default in its place. Params
 /// already at their default are skipped, as `crossfader_start_events` skips thru.
@@ -144,6 +168,7 @@ fn deck_snapshot_event(
 /// Everything a session has to say about the state it started from, in the order it
 /// is written. A reader applies all of it before the first performed move.
 fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json::Value)> {
+    let master = audio.master();
     let mut events = vec![
         (
             "recording_start",
@@ -157,7 +182,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         // session would ever say which curve the fader moves were played on.
         (
             "set_fader_curve",
-            serde_json::json!({ "curve": audio.monitor.fader_curve().as_str() }),
+            serde_json::json!({ "curve": master.strips.fader_curve.as_str() }),
         ),
         jog_speed_start_event(audio.jog_rotation_speed()),
     ];
@@ -165,6 +190,7 @@ fn start_events(audio: &crate::audio::AppAudio) -> Vec<(&'static str, serde_json
         audio.monitor.xfader_position(),
         &xfader_assigns(audio),
     ));
+    events.extend(effect_start_events(audio.mixer(), &master));
     for deck_id in crate::audio::LIVE_DECK_IDS {
         let Some(arc) = audio.strip(deck_id) else {
             continue;
@@ -506,6 +532,35 @@ pub(crate) fn set_deck_muted(
         .locked()
         .set_muted(muted);
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_master_effect(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    slot: String,
+    param: String,
+    value: f32,
+) -> Result<(), String> {
+    engine.set_master_effect(&slot, &param, value)
+}
+
+#[tauri::command]
+pub(crate) fn set_mixer(
+    engine: tauri::State<'_, crate::engine::Engine>,
+    sessions: tauri::State<'_, crate::session_playback::SessionLibrary>,
+    id: String,
+) -> Result<Vec<crate::engine_push::ParamChange>, String> {
+    if sessions.is_playing() {
+        return Err("the mixer cannot change while a session plays: it was checked against the one playing it".to_string());
+    }
+    let manifest = session_core::manifest_by_id(&id)
+        .ok_or_else(|| format!("no mixer '{id}' in this build"))?;
+    Ok(engine
+        .audio
+        .set_mixer(manifest)?
+        .into_iter()
+        .map(crate::engine_push::ParamChange::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -1536,13 +1591,12 @@ mod tests {
 
     #[test]
     fn record_start_stamps_a_filter_that_was_already_engaged() {
-        let events =
-            strip_start_events(&session_core::CLASSIC_3BAND_V2, "A", |slot, param| {
-                match (slot, param) {
-                    ("filter", "active") => Some(1.0),
-                    _ => None,
-                }
-            });
+        let events = strip_start_events(&session_core::CLASSIC_4BAND, "A", |slot, param| {
+            match (slot, param) {
+                ("filter", "active") => Some(1.0),
+                _ => None,
+            }
+        });
         assert_eq!(
             events,
             vec![(
@@ -1554,15 +1608,14 @@ mod tests {
 
     #[test]
     fn record_start_stamps_every_moved_strip_param() {
-        let events =
-            strip_start_events(&session_core::CLASSIC_3BAND_V2, "B", |slot, param| {
-                match (slot, param) {
-                    ("eq", "low") => Some(-6.0),
-                    ("filter", "value") => Some(0.4),
-                    ("fader", "gain") => Some(0.75),
-                    _ => None,
-                }
-            });
+        let events = strip_start_events(&session_core::CLASSIC_4BAND, "B", |slot, param| {
+            match (slot, param) {
+                ("eq", "low") => Some(-6.0),
+                ("filter", "value") => Some(0.4),
+                ("fader", "gain") => Some(0.75),
+                _ => None,
+            }
+        });
         let moved: Vec<_> = events
             .iter()
             .map(|(_, payload)| (payload["slot"].clone(), payload["param"].clone()))
@@ -1579,7 +1632,7 @@ mod tests {
 
     #[test]
     fn an_untouched_strip_stamps_nothing() {
-        let manifest = &session_core::CLASSIC_3BAND_V2;
+        let manifest = &session_core::CLASSIC_4BAND;
         let events = strip_start_events(manifest, "A", |slot, param| {
             manifest
                 .strip_slot(slot)

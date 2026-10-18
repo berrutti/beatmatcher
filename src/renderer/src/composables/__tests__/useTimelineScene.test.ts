@@ -23,7 +23,7 @@ const { buildScene } = await import('@renderer/composables/useTimelineScene');
 type SceneInput = Parameters<typeof buildScene>[0];
 
 const vc = {
-  mixerId: 'classic-3band',
+  mixerId: 'classic-4band',
   laneOriginY: 16,
   scrollViewport: { top: 0, bottom: 1000 },
   view: { start: 0, duration: 1000 },

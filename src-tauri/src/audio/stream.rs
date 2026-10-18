@@ -1,5 +1,7 @@
 use super::deck::{ChannelStrip, Deck, RenderTargets};
 use super::dsp::Limiter;
+use super::dsp::Reverb;
+use super::master::MasterSettings;
 use crate::audio::atomic_f32::AtomicF32;
 use crate::lock::LockIgnoringPoison;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -24,10 +26,8 @@ pub struct MasterMonitor {
     pub level_r: Arc<AtomicF32>,
     pub master_gain: Arc<AtomicF32>,
     pub cue_mix: Arc<AtomicF32>,
-    // Here and not on the strips, which carry only the gain it resolves to against their assign.
     pub xfader_position: Arc<AtomicF32>,
-    // A Mutex and not an atomic because it is categorical, and the audio thread never reads it.
-    pub fader_curve: Arc<Mutex<session_core::FaderCurve>>,
+    pub(crate) master: Arc<Mutex<MasterSettings>>,
     pub limiter_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub record_tx: Arc<Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>>,
     // The soundcard's clock, not the OS one: they are different oscillators, so anything
@@ -37,7 +37,6 @@ pub struct MasterMonitor {
     // averaging across a buffer-size change reports one the callback never delivered.
     period_frames: Arc<std::sync::atomic::AtomicU64>,
     period_callbacks: Arc<std::sync::atomic::AtomicU64>,
-    // Only the callback can know it: whether the buffer in flight reaches the file is decided there.
     capture_start: Arc<std::sync::atomic::AtomicU64>,
     // The first frame the recording may contain. A buffer whose decks rendered before arming
     // holds audio the session snapshot has no state for.
@@ -47,14 +46,14 @@ pub struct MasterMonitor {
 pub(crate) const NOT_CAPTURING: u64 = u64::MAX;
 
 impl MasterMonitor {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(manifest: &session_core::MixerManifest) -> Self {
         Self {
             level_l: Arc::new(AtomicF32::default()),
             level_r: Arc::new(AtomicF32::default()),
             master_gain: Arc::new(AtomicF32::new(DEFAULT_MASTER_GAIN)),
             cue_mix: Arc::new(AtomicF32::default()),
             xfader_position: Arc::new(AtomicF32::default()),
-            fader_curve: Arc::new(Mutex::new(session_core::FaderCurve::default())),
+            master: Arc::new(Mutex::new(MasterSettings::for_manifest(manifest))),
             limiter_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             record_tx: Arc::new(Mutex::new(None)),
             output_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -115,6 +114,14 @@ impl MasterMonitor {
         self.cue_mix.set(mix.clamp(0.0, 1.0));
     }
 
+    // Skipped while a setter holds the lock: the change lands a buffer later rather than
+    // stalling the callback.
+    fn refresh_reverb(&self, reverb: &mut Reverb) {
+        if let Some(master) = self.master.try_locked() {
+            master.reverb.apply_to(reverb);
+        }
+    }
+
     /// Reports whether the throw actually moved, so a caller can skip re-resolving every
     /// strip and logging an event for a value the mixer is already at.
     pub fn set_xfader_position(&self, position: f32) -> bool {
@@ -124,14 +131,6 @@ impl MasterMonitor {
 
     pub fn xfader_position(&self) -> f32 {
         self.xfader_position.get()
-    }
-
-    pub fn set_fader_curve(&self, curve: session_core::FaderCurve) {
-        *self.fader_curve.locked() = curve;
-    }
-
-    pub fn fader_curve(&self) -> session_core::FaderCurve {
-        *self.fader_curve.locked()
     }
 
     pub fn set_limiter_enabled(&self, enabled: bool) {
@@ -155,6 +154,7 @@ pub(crate) fn mix_channels(
     buffer_start: u64,
     main: &mut [f32],
     mut cue: Option<&mut [f32]>,
+    mut send: Option<&mut [f32]>,
 ) {
     for (deck_arc, strip_arc) in channels {
         let mut deck = deck_arc.locked();
@@ -167,6 +167,7 @@ pub(crate) fn mix_channels(
             RenderTargets {
                 main: Some(main),
                 cue: cue.as_deref_mut(),
+                send: send.as_deref_mut(),
             },
         );
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
@@ -337,6 +338,8 @@ pub(crate) fn build_stream(
     );
     let mut limiter = Limiter::new(config.sample_rate().0 as f32);
     let mut scratch: Vec<f32> = Vec::new();
+    let mut reverb = starting_reverb(monitor.as_ref(), config.sample_rate().0 as f32);
+    let mut send_buf: Vec<f32> = Vec::new();
     build_float_stream(device, config, stream_config, move |data| {
         let mut ctx = MixContext {
             channels: &channels,
@@ -345,6 +348,8 @@ pub(crate) fn build_stream(
             monitor: monitor.as_ref(),
             limiter: &mut limiter,
             scratch: &mut scratch,
+            reverb: &mut reverb,
+            send_buf: &mut send_buf,
         };
         fill_output(data, output_channels, &mut ctx);
     })
@@ -375,6 +380,8 @@ pub(crate) fn build_cue_stream(
     let mut cue_buf: Vec<f32> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
     let mut limiter = Limiter::new(config.sample_rate().0 as f32);
+    let mut reverb = starting_reverb(monitor.as_ref(), config.sample_rate().0 as f32);
+    let mut send_buf: Vec<f32> = Vec::new();
     build_float_stream(device, config, stream_config, move |data| match &monitor {
         Some(m) => fill_cue_with_master_tap(
             data,
@@ -385,6 +392,8 @@ pub(crate) fn build_cue_stream(
             &mut master_mix,
             &mut cue_buf,
             &mut limiter,
+            &mut reverb,
+            &mut send_buf,
         ),
         None => {
             let mut ctx = MixContext {
@@ -394,6 +403,8 @@ pub(crate) fn build_cue_stream(
                 monitor: None,
                 limiter: &mut limiter,
                 scratch: &mut scratch,
+                reverb: &mut reverb,
+                send_buf: &mut send_buf,
             };
             fill_output(data, output_channels, &mut ctx)
         }
@@ -408,6 +419,8 @@ struct CombinedMixContext<'a> {
     cue_buf: &'a mut Vec<f32>,
     main_scratch: &'a mut Vec<f32>,
     limiter: &'a mut Limiter,
+    reverb: &'a mut Reverb,
+    send_buf: &'a mut Vec<f32>,
 }
 
 pub(crate) struct CombinedStreamParams {
@@ -448,6 +461,8 @@ pub(crate) fn build_combined_stream(
     let mut cue_buf: Vec<f32> = Vec::new();
     let mut main_scratch: Vec<f32> = Vec::new();
     let mut limiter = Limiter::new(config.sample_rate().0 as f32);
+    let mut reverb = starting_reverb(Some(&monitor), config.sample_rate().0 as f32);
+    let mut send_buf: Vec<f32> = Vec::new();
     build_float_stream(device, config, stream_config, move |data| {
         let mut ctx = CombinedMixContext {
             channels: &channels,
@@ -457,6 +472,8 @@ pub(crate) fn build_combined_stream(
             cue_buf: &mut cue_buf,
             main_scratch: &mut main_scratch,
             limiter: &mut limiter,
+            reverb: &mut reverb,
+            send_buf: &mut send_buf,
         };
         fill_output_combined(data, output_channels, &mut ctx);
     })
@@ -471,6 +488,15 @@ struct MixContext<'a> {
     // Reused across callbacks: allocating per callback would put `malloc` on the
     // audio thread, which is not real-time safe.
     scratch: &'a mut Vec<f32>,
+    reverb: &'a mut Reverb,
+    send_buf: &'a mut Vec<f32>,
+}
+
+fn starting_reverb(monitor: Option<&MasterMonitor>, sample_rate: f32) -> Reverb {
+    match monitor {
+        Some(monitor) => monitor.master.locked().reverb.reverb(sample_rate),
+        None => Reverb::new(sample_rate),
+    }
 }
 
 fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_>) {
@@ -481,11 +507,18 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
         monitor,
         limiter,
         scratch,
+        reverb,
+        send_buf,
     } = ctx;
     let (is_cue, channel_offset) = (*is_cue, *channel_offset);
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
     scratch.resize(frames * 2, 0.0);
+    send_buf.resize(frames * 2, 0.0);
+    send_buf.fill(0.0);
+    if let Some(monitor) = monitor.as_ref() {
+        monitor.refresh_reverb(reverb);
+    }
     let buffer_start = monitor.as_ref().map(|m| m.claim_output_frames(frames));
 
     for (deck_arc, strip_arc) in channels.iter() {
@@ -498,29 +531,28 @@ fn fill_output(data: &mut [f32], output_channels: usize, ctx: &mut MixContext<'_
             RenderTargets {
                 main: None,
                 cue: Some(scratch),
+                send: None,
             }
         } else {
             RenderTargets {
                 main: Some(scratch),
                 cue: None,
+                send: Some(send_buf),
             }
         };
         deck.set_next_render_frame(buffer_start.unwrap_or_default() + frames as u64);
         strip.set_next_render_frame(buffer_start.unwrap_or_default() + frames as u64);
         let (sum_l, sum_r) = deck.render_block(&mut strip, frames, targets);
-        for i in 0..frames {
-            mix_frame(
-                data,
-                i,
-                output_channels,
-                channel_offset,
-                scratch[i * 2],
-                scratch[i * 2 + 1],
-            );
-        }
+        mix_stereo_block(data, scratch, output_channels, channel_offset);
         if !is_cue {
             strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
         }
+    }
+
+    if !is_cue {
+        scratch.fill(0.0);
+        reverb.mix_block(send_buf, scratch);
+        mix_stereo_block(data, scratch, output_channels, channel_offset);
     }
 
     if let Some(m) = monitor {
@@ -564,6 +596,8 @@ fn fill_cue_with_master_tap(
     master_mix: &mut Vec<f32>,
     cue_buf: &mut Vec<f32>,
     limiter: &mut Limiter,
+    reverb: &mut Reverb,
+    send_buf: &mut Vec<f32>,
 ) {
     data.fill(0.0);
     let frames = data.len() / output_channels.max(1);
@@ -573,7 +607,20 @@ fn fill_cue_with_master_tap(
     cue_buf.resize(frames * 2, 0.0);
     cue_buf.fill(0.0);
 
-    mix_channels(channels, frames, buffer_start, master_mix, Some(cue_buf));
+    send_buf.resize(frames * 2, 0.0);
+    send_buf.fill(0.0);
+    monitor.refresh_reverb(reverb);
+    mix_channels(
+        channels,
+        frames,
+        buffer_start,
+        master_mix,
+        Some(cue_buf),
+        Some(send_buf),
+    );
+    // Returned before the master stage, so the reverb is gained and limited with the mix it
+    // belongs to rather than sitting outside it.
+    reverb.mix_block(send_buf, master_mix);
 
     let gain = monitor.master_gain.get();
     let use_limiter = monitor.limiter_enabled.load(Ordering::Relaxed);
@@ -589,6 +636,24 @@ fn fill_cue_with_master_tap(
         mix_frame(data, i, output_channels, cue_offset, out_l, out_r);
     }
     tap_master_output(master_mix, frames, 2, 0, monitor, buffer_start);
+}
+
+fn mix_stereo_block(
+    data: &mut [f32],
+    stereo: &[f32],
+    output_channels: usize,
+    channel_offset: usize,
+) {
+    for (frame, pair) in stereo.chunks_exact(2).enumerate() {
+        mix_frame(
+            data,
+            frame,
+            output_channels,
+            channel_offset,
+            pair[0],
+            pair[1],
+        );
+    }
 }
 
 #[inline]
@@ -630,6 +695,9 @@ fn fill_output_combined(
     ctx.cue_buf.fill(0.0);
 
     ctx.main_scratch.resize(frames * 2, 0.0);
+    ctx.send_buf.resize(frames * 2, 0.0);
+    ctx.send_buf.fill(0.0);
+    ctx.monitor.refresh_reverb(ctx.reverb);
 
     for (deck_arc, strip_arc) in ctx.channels {
         let mut deck = deck_arc.locked();
@@ -644,21 +712,17 @@ fn fill_output_combined(
             RenderTargets {
                 main: Some(ctx.main_scratch),
                 cue: Some(ctx.cue_buf),
+                send: Some(ctx.send_buf),
             },
         );
-        for i in 0..frames {
-            mix_frame(
-                data,
-                i,
-                output_channels,
-                ctx.main_offset,
-                ctx.main_scratch[i * 2],
-                ctx.main_scratch[i * 2 + 1],
-            );
-        }
+        mix_stereo_block(data, ctx.main_scratch, output_channels, ctx.main_offset);
 
         strip.store_level(sum_l / frames as f32, sum_r / frames as f32);
     }
+
+    ctx.main_scratch.fill(0.0);
+    ctx.reverb.mix_block(ctx.send_buf, ctx.main_scratch);
+    mix_stereo_block(data, ctx.main_scratch, output_channels, ctx.main_offset);
 
     let gain = ctx.monitor.master_gain.get();
 
@@ -769,7 +833,7 @@ mod tests {
 
     #[test]
     fn the_tap_skips_buffers_that_start_before_the_armed_frame() {
-        let monitor = MasterMonitor::new();
+        let monitor = MasterMonitor::new(&session_core::CLASSIC_4BAND);
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(8);
         *monitor.record_tx.lock().unwrap() = Some(tx);
         monitor.arm_capture(256);
@@ -790,7 +854,7 @@ mod tests {
     #[test]
     fn the_master_clock_is_a_buffer_ahead_of_a_deck_that_has_not_rendered() {
         const FRAMES: usize = 128;
-        let monitor = MasterMonitor::new();
+        let monitor = MasterMonitor::new(&session_core::CLASSIC_4BAND);
         let mut deck = Deck::empty(44_100);
 
         let first = monitor.claim_output_frames(FRAMES);
@@ -811,7 +875,7 @@ mod tests {
 
     #[test]
     fn setting_the_crossfader_reports_whether_it_actually_moved() {
-        let monitor = MasterMonitor::new();
+        let monitor = MasterMonitor::new(&session_core::CLASSIC_4BAND);
 
         assert!(monitor.set_xfader_position(0.5));
         assert!(!monitor.set_xfader_position(0.5));
@@ -820,6 +884,86 @@ mod tests {
         assert!(monitor.set_xfader_position(4.0));
         assert!(!monitor.set_xfader_position(2.0));
         assert_eq!(monitor.xfader_position(), 1.0);
+    }
+
+    const REVERB_SR: u32 = 48_000;
+    const REVERB_BLOCK: usize = 4_800;
+
+    fn sending_channels(send_on: bool) -> ChannelPairs {
+        let mut deck = Deck::loaded_for_testing(REVERB_SR, 1.0);
+        deck.is_playing = true;
+        let mut strip = ChannelStrip::new(REVERB_SR as f32);
+        strip.set_param("fader", "gain", 1.0);
+        strip.set_param("send", "amount", if send_on { 1.0 } else { 0.0 });
+        vec![(Arc::new(Mutex::new(deck)), Arc::new(Mutex::new(strip)))]
+    }
+
+    fn reverb_monitor() -> MasterMonitor {
+        let monitor = MasterMonitor::new(&session_core::CLASSIC_4BAND);
+        monitor.limiter_enabled.store(false, Ordering::Relaxed);
+        monitor
+    }
+
+    fn master_output(send_on: bool) -> Vec<f32> {
+        let channels = sending_channels(send_on);
+        let monitor = reverb_monitor();
+        let mut data = vec![0.0f32; REVERB_BLOCK * 2];
+        let (mut limiter, mut scratch, mut send_buf) =
+            (Limiter::new(REVERB_SR as f32), Vec::new(), Vec::new());
+        let mut reverb = monitor.master.locked().reverb.reverb(REVERB_SR as f32);
+        let mut ctx = MixContext {
+            channels: &channels,
+            is_cue: false,
+            channel_offset: 0,
+            monitor: Some(&monitor),
+            limiter: &mut limiter,
+            scratch: &mut scratch,
+            reverb: &mut reverb,
+            send_buf: &mut send_buf,
+        };
+        fill_output(&mut data, 2, &mut ctx);
+        data
+    }
+
+    fn combined_output(send_on: bool) -> Vec<f32> {
+        let channels = sending_channels(send_on);
+        let monitor = reverb_monitor();
+        let mut data = vec![0.0f32; REVERB_BLOCK * 4];
+        let (mut cue_buf, mut main_scratch, mut send_buf) = (Vec::new(), Vec::new(), Vec::new());
+        let mut limiter = Limiter::new(REVERB_SR as f32);
+        let mut reverb = monitor.master.locked().reverb.reverb(REVERB_SR as f32);
+        let mut ctx = CombinedMixContext {
+            channels: &channels,
+            main_offset: 0,
+            cue_offset: 2,
+            monitor: &monitor,
+            cue_buf: &mut cue_buf,
+            main_scratch: &mut main_scratch,
+            limiter: &mut limiter,
+            reverb: &mut reverb,
+            send_buf: &mut send_buf,
+        };
+        fill_output_combined(&mut data, 4, &mut ctx);
+        data
+    }
+
+    fn difference(left: &[f32], right: &[f32]) -> f32 {
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn the_master_stream_returns_the_reverb() {
+        let heard = difference(&master_output(true), &master_output(false));
+        assert!(heard > 0.01, "the reverb never reached the master: {heard}");
+    }
+
+    #[test]
+    fn the_combined_stream_returns_the_reverb() {
+        let heard = difference(&combined_output(true), &combined_output(false));
+        assert!(heard > 0.01, "the reverb never reached the master: {heard}");
     }
 
     #[test]

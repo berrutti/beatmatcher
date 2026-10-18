@@ -1,3 +1,5 @@
+export const CLICK_SLOP_PX = 3;
+
 // Where a range input's thumb sits along its track, in the track's own axis.
 // The caller resolves that axis from the DOM; this only does the arithmetic.
 export type ThumbGeometry = {

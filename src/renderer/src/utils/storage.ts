@@ -7,6 +7,8 @@ export const STORAGE_KEYS = {
   metadataOverrides: 'beatmatcher.library.metadata-overrides',
 
   deckCount: 'beatmatcher.ui.deck-count',
+  mixerId: 'beatmatcher.ui.mixer-id',
+  settingsPane: 'beatmatcher.ui.settings-pane',
   bigLibrary: 'beatmatcher.ui.big-library',
   showWaveformStrip: 'beatmatcher.ui.show-waveform-strip',
   locale: 'beatmatcher.ui.locale',

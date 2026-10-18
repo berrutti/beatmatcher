@@ -7,7 +7,12 @@ import { DECKS_DISPOSITION, TWO_DECK_DISPOSITION } from './decks';
 import type { DeckId } from '@renderer/utils/types';
 import { storageGet, storageSet, STORAGE_KEYS } from '@renderer/utils/storage';
 import { useSettingsStore, LIVE_MIXER_ID } from '@renderer/stores/settings';
-import { editConstants, mixerParams, type MixerParamSpec } from '@renderer/utils/sessionCore';
+import {
+  editConstants,
+  masterParams,
+  mixerParams,
+  type MixerParamSpec
+} from '@renderer/utils/sessionCore';
 
 const SAVE_POLL_MS = 200;
 
@@ -25,6 +30,7 @@ export function paramKey(slot: string, param: string): string {
 }
 
 export const FADER_GAIN = paramKey('fader', 'gain');
+export const SEND_AMOUNT = paramKey('send', 'amount');
 export const FILTER_VALUE = paramKey('filter', 'value');
 export const FILTER_ACTIVE = paramKey('filter', 'active');
 
@@ -59,31 +65,40 @@ export const useMixerStore = defineStore('mixer', () => {
     E: 'thru' // the edit deck never reaches the live mixer
   });
 
-  // The live engine builds every strip on this one manifest. Ranges, steps and
-  // defaults come from its descriptors rather than being restated here.
-  const deckParams = mixerParams(LIVE_MIXER_ID);
+  const storedMixer = storageGet<string>(STORAGE_KEYS.mixerId, LIVE_MIXER_ID);
+  const mixerId = ref<string>(storedMixer);
 
-  // Left to right on the strip. Where a control sits is a layout decision, so it is stated
-  // here rather than read off the manifest. A band this omits still renders, after these.
-  const EQ_BAND_ORDER = ['low', 'mid', 'high'];
+  const deckParams = computed(() => mixerParams(mixerId.value));
 
-  function specsForSlot(slot: string, order: string[]): MixerParamSpec[] {
-    const rank = (spec: MixerParamSpec) => {
-      const index = order.indexOf(spec.param);
-      return index === -1 ? order.length : index;
-    };
-    return Object.values(deckParams)
-      .filter((spec) => spec.slot === slot)
-      .sort((left, right) => rank(left) - rank(right));
+  const eqSpecs = computed(() =>
+    Object.values(deckParams.value).filter((spec) => spec.slot === 'eq')
+  );
+
+  const tailSpec = computed(() => masterParams(mixerId.value)[paramKey('reverb', 'tail')]);
+
+  const resonanceSpec = computed(
+    () => masterParams(mixerId.value)[paramKey('filter', 'resonance')]
+  );
+
+  const masterEffectValues = reactive<Record<string, number>>({});
+
+  function masterEffectValue(spec: MixerParamSpec): number {
+    return masterEffectValues[paramKey(spec.slot, spec.param)] ?? spec.defaultValue;
   }
 
-  const eqSpecs = specsForSlot('eq', EQ_BAND_ORDER);
-  const filterSpec = deckParams[FILTER_VALUE];
-  const faderSpec = deckParams[FADER_GAIN];
+  function setMasterEffect(spec: MixerParamSpec, value: number): void {
+    const clamped = Math.max(spec.min, Math.min(spec.max, value));
+    masterEffectValues[paramKey(spec.slot, spec.param)] = clamped;
+    call('set_master_effect', { slot: spec.slot, param: spec.param, value: clamped });
+  }
+
+  const filterSpec = computed(() => deckParams.value[FILTER_VALUE]);
+  const sendSpec = computed(() => deckParams.value[SEND_AMOUNT]);
+  const faderSpec = computed(() => deckParams.value[FADER_GAIN]);
 
   function defaultParams(): Record<string, number> {
     return Object.fromEntries(
-      Object.entries(deckParams).map(([key, spec]) => [key, spec.defaultValue])
+      Object.entries(deckParams.value).map(([key, spec]) => [key, spec.defaultValue])
     );
   }
 
@@ -98,7 +113,7 @@ export const useMixerStore = defineStore('mixer', () => {
   });
 
   function paramValue(deckId: DeckId, key: string): number {
-    return params[deckId][key] ?? deckParams[key]?.defaultValue ?? 0;
+    return params[deckId][key] ?? deckParams.value[key]?.defaultValue ?? 0;
   }
 
   function paramActive(deckId: DeckId, key: string): boolean {
@@ -106,7 +121,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   function setParam(deckId: DeckId, key: string, value: number): void {
-    const spec = deckParams[key];
+    const spec = deckParams.value[key];
     if (!spec) return;
     params[deckId][key] = Math.max(spec.min, Math.min(spec.max, value));
     call('set_deck_param', {
@@ -119,6 +134,19 @@ export const useMixerStore = defineStore('mixer', () => {
 
   function toggleParam(deckId: DeckId, key: string): void {
     setParam(deckId, key, paramActive(deckId, key) ? 0 : 1);
+  }
+
+  async function switchEngineMixer(id: string): Promise<void> {
+    const values = await invoke<ParamChange[]>('set_mixer', { id });
+    mixerId.value = id;
+    for (const deckId of DECKS_DISPOSITION) params[deckId] = {};
+    values.forEach(applyEngineParam);
+  }
+
+  async function setMixer(id: string): Promise<void> {
+    if (id === mixerId.value) return;
+    await switchEngineMixer(id);
+    storageSet(STORAGE_KEYS.mixerId, id);
   }
 
   const storedCount = storageGet<number>(STORAGE_KEYS.deckCount, 4);
@@ -221,7 +249,7 @@ export const useMixerStore = defineStore('mixer', () => {
   }
 
   function paramDefault(key: string): number {
-    return deckParams[key]?.defaultValue ?? 0;
+    return deckParams.value[key]?.defaultValue ?? 0;
   }
 
   function swarmAffected(deckId: DeckId): DeckId[] {
@@ -279,7 +307,7 @@ export const useMixerStore = defineStore('mixer', () => {
       return;
     }
     const key = paramKey(change.slot, change.param);
-    if (deckParams[key]) params[change.deck][key] = change.value;
+    if (deckParams.value[key]) params[change.deck][key] = change.value;
   }
 
   listen<ParamChange[]>('engine-params', (event) => {
@@ -298,7 +326,7 @@ export const useMixerStore = defineStore('mixer', () => {
     setXfaderPosition(0);
     for (const deckId of LIVE_DECKS) {
       setXfaderAssign(deckId, 'thru');
-      for (const key of Object.keys(deckParams)) setParam(deckId, key, paramDefault(key));
+      for (const key of Object.keys(deckParams.value)) setParam(deckId, key, paramDefault(key));
       cueActive[deckId] = false;
       call('set_cue_active', { deck: deckId, active: false });
     }
@@ -310,12 +338,19 @@ export const useMixerStore = defineStore('mixer', () => {
     for (const deckId of LIVE_DECKS) setParam(deckId, FILTER_ACTIVE, 1);
   }
 
+  async function restoreMixerThenFilters(): Promise<void> {
+    if (mixerId.value !== LIVE_MIXER_ID) {
+      await switchEngineMixer(mixerId.value);
+    }
+    engageFiltersIfPreferred();
+  }
+
   // Keyed on the settings arriving rather than the value, because the preference names the
   // launch and flipping the switch mid-set must not reach into a live mixer either way.
   watch(
     () => useSettingsStore().hydrated,
     (hydrated) => {
-      if (hydrated) engageFiltersIfPreferred();
+      if (hydrated) restoreMixerThenFilters().catch(() => engageFiltersIfPreferred());
     },
     { immediate: true }
   );
@@ -518,6 +553,13 @@ export const useMixerStore = defineStore('mixer', () => {
     eqSpecs,
     faderSpec,
     filterSpec,
+    sendSpec,
+    tailSpec,
+    resonanceSpec,
+    masterEffectValue,
+    setMasterEffect,
+    mixerId,
+    setMixer,
     cueActive,
     cueChannelOffset,
     cueDeviceId,

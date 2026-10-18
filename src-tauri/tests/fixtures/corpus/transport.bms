@@ -1,6 +1,7 @@
 {
   "version": 2,
   "startedAt": "2026-01-01T00:00:00Z",
+  "mixer": { "id": "classic-4band", "hash": "4a8d9895950238aa" },
   "events": [
     { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
     { "elapsed_ms": 0, "type": "load_track", "deck": "A", "path": "__SOURCE__" },

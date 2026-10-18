@@ -1,14 +1,15 @@
 {
   "version": 2,
   "startedAt": "2026-01-01T00:00:00Z",
+  "mixer": { "id": "classic-4band", "hash": "4a8d9895950238aa" },
   "events": [
     { "elapsed_ms": 0, "type": "recording_start", "buffer_size_frames": 512 },
     { "elapsed_ms": 0, "type": "load_track", "deck": "C", "path": "__SOURCE__" },
     { "elapsed_ms": 0, "type": "set_param", "deck": "C", "slot": "fader", "param": "gain", "value": 1.0 },
     { "elapsed_ms": 100, "type": "play", "deck": "C", "sec": 0.0 },
-    { "elapsed_ms": 300, "type": "set_param", "deck": "C", "slot": "eq", "param": "low", "value": -26.0 },
-    { "elapsed_ms": 500, "type": "set_param", "deck": "C", "slot": "eq", "param": "mid", "value": 6.0 },
-    { "elapsed_ms": 700, "type": "set_param", "deck": "C", "slot": "eq", "param": "high", "value": -12.0 },
+    { "elapsed_ms": 300, "type": "set_param", "deck": "C", "slot": "eq", "param": "low", "value": -18.0 },
+    { "elapsed_ms": 500, "type": "set_param", "deck": "C", "slot": "eq", "param": "lowMid", "value": 6.0 },
+    { "elapsed_ms": 700, "type": "set_param", "deck": "C", "slot": "eq", "param": "highMid", "value": -12.0 },
     { "elapsed_ms": 900, "type": "set_param", "deck": "C", "slot": "filter", "param": "value", "value": 0.75 },
     { "elapsed_ms": 900, "type": "set_param", "deck": "C", "slot": "filter", "param": "active", "value": 1 },
     { "elapsed_ms": 1300, "type": "set_param", "deck": "C", "slot": "filter", "param": "value", "value": -0.9 },

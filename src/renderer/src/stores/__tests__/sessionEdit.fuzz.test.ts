@@ -29,7 +29,6 @@ vi.mock('@renderer/stores/settings', async (importOriginal) => {
 import { useSessionStore } from '../session';
 import { useSessionEditStore } from '../sessionEdit';
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_MIXER_ID } from '../settings';
 import type { SessionEvent } from '@renderer/utils/types';
 import { DECK_LANE_KEYS } from '@renderer/utils/types';
 
@@ -61,7 +60,7 @@ async function loadSession(events: SessionEvent[]) {
   store.session = {
     version: 2,
     startedAt: '2026-06-11T00:00:00Z',
-    mixerId: DEFAULT_MIXER_ID,
+    mixerId: 'classic-4band',
     events,
     durationMs: 60_100,
     filename: 'mix.bms',

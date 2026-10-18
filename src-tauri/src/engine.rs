@@ -624,21 +624,35 @@ impl Engine {
         Ok(())
     }
 
-    /// One switch, every channel, as on a mixer: the strips each hold their own
-    /// copy because the taper is applied before the fader's own smoothing.
     pub(crate) fn set_master_gain(&self, gain: f32) {
         self.audio.monitor.set_master_gain(gain);
         self.recorder
             .log_param_at(self.master_frame(), None, "gain", "gain", gain);
     }
 
+    pub(crate) fn set_master_effect(
+        &self,
+        slot: &str,
+        param: &str,
+        value: f32,
+    ) -> Result<(), String> {
+        let descriptor = self
+            .audio
+            .mixer()
+            .descriptor(session_core::ParamScope::Master, slot, param)
+            .ok_or_else(|| format!("this mixer has no {slot}/{param}"))?;
+        let clamped = descriptor.clamp(f64::from(value)) as f32;
+        if !self.audio.set_master_effect(slot, param, clamped) {
+            return Err(format!("{slot}/{param} is not a master effect"));
+        }
+        self.recorder
+            .log_param_at(self.master_frame(), None, slot, param, clamped);
+        Ok(())
+    }
+
     pub(crate) fn set_fader_curve(&self, curve: session_core::FaderCurve) {
-        self.audio.monitor.set_fader_curve(curve);
-        let frame = self
-            .for_each_strip(|strip| strip.set_fader_curve(curve))
-            .unwrap_or_else(|| {
-                crate::audio::RenderFrame::from_master_clock(self.audio.monitor.output_frames())
-            });
+        self.audio.set_fader_curve(curve);
+        let frame = self.master_frame();
         self.recorder.log_at(
             frame,
             "set_fader_curve",
@@ -1331,6 +1345,34 @@ mod loop_and_quantize {
     }
 
     #[test]
+    fn a_master_effect_past_its_range_lands_on_the_range() {
+        let engine = Engine::for_testing(48_000);
+        engine
+            .set_master_effect("reverb", "tail", 1_000_000.0)
+            .expect("reverb tail");
+        let tail = engine
+            .audio
+            .mixer()
+            .descriptor(session_core::ParamScope::Master, "reverb", "tail")
+            .expect("declared")
+            .max as f32;
+        assert_eq!(engine.audio.master().reverb.tail_ms, tail);
+    }
+
+    #[test]
+    fn the_send_from_the_ui_reaches_the_strip_on_either_mixer() {
+        for manifest in [&session_core::CLASSIC_4BAND, &session_core::CLASSIC_3BAND] {
+            let engine = Engine::for_testing(48_000);
+            engine.audio.set_mixer(manifest).expect("swap");
+            engine
+                .set_deck_param(ParamOrigin::Ui, "A", "send", "amount", 0.8)
+                .expect("send amount");
+            let strip = engine.audio.strip("A").expect("deck A");
+            assert!(strip.locked().is_sending(), "{}", manifest.id);
+        }
+    }
+
+    #[test]
     fn a_fader_curve_logs_the_frame_the_strips_will_render_at() {
         let engine = engine_mid_callback();
         engine.set_fader_curve(session_core::FaderCurve::Linear);
@@ -1353,7 +1395,7 @@ mod loop_and_quantize {
 
     #[test]
     fn a_strip_reports_whether_an_address_reached_a_unit() {
-        let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, 48_000.0);
+        let mut strip = ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, 48_000.0);
         assert!(strip.set_param("eq", "low", -6.0));
         assert!(!strip.set_param("eq", "presence", -6.0));
         assert!(!strip.set_param("reverb", "mix", 0.5));

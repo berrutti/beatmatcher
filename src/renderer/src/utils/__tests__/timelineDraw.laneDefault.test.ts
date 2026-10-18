@@ -6,7 +6,7 @@ import type { DeckLanes, LanePoint } from '@renderer/utils/types';
 type Stroke = { alpha: number; color: string; from: [number, number]; to: [number, number] };
 type Fill = { color: string; x: number; y: number; w: number; h: number };
 
-const MIXER = 'classic-3band';
+const MIXER = 'classic-4band';
 const CANVAS_W = 500;
 const VIEW_MS = 10_000;
 const LANE: SublaneLayout = { key: 'gain', top: 100, height: 80 };
@@ -20,7 +20,8 @@ function deckLanes(
   return {
     gain,
     eqLow: [],
-    eqMid: [],
+    eqLowMid: [],
+    eqHighMid: [],
     eqHigh: [],
     filter,
     rate: [],

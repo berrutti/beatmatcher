@@ -1,13 +1,10 @@
 import type { ObjectDirective } from 'vue';
-import { pressIsOnThumb, type ThumbGeometry } from '@renderer/utils/sliderThumb';
+import { CLICK_SLOP_PX, pressIsOnThumb, type ThumbGeometry } from '@renderer/utils/sliderThumb';
 
 export type SliderResetBinding = {
   enabled: boolean;
   reset: () => void;
 };
-
-// A press that travels this far is a drag, not a click.
-const CLICK_SLOP_PX = 3;
 
 type Press = {
   value: string;

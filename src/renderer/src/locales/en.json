@@ -40,6 +40,17 @@
   },
   "settings": {
     "title": "Settings",
+    "panes": {
+      "audio": "Audio",
+      "mixer": "Mixer",
+      "decks": "Decks",
+      "control": "Control",
+      "appearance": "Appearance"
+    },
+    "filter": {
+      "placeholder": "Filter settings",
+      "noMatch": "No settings match that."
+    },
     "close": "Close",
     "limiter": {
       "title": "Master limiter",
@@ -117,6 +128,12 @@
       "title": "Default deck count",
       "unit": "decks",
       "hint": "Number of active decks. Takes effect immediately and is remembered across sessions."
+    },
+    "mixer": {
+      "title": "EQ",
+      "threeBand": "3 band",
+      "fourBand": "4 band",
+      "hint": "The 3 band is a low shelf, a mid bell and a high shelf. The 4 band splits the mid in two and its outer bands sweep all the way to silence. Changing this resets the EQ knobs; faders and filters keep their positions."
     },
     "language": {
       "title": "Language",
@@ -263,7 +280,13 @@
     "assignA": "A",
     "assignB": "B",
     "assignHint": "Assign to crossfader: A or B, neither to bypass",
-    "xfaderHint": "Crossfader: double-click to centre"
+    "xfaderHint": "Crossfader: double-click to centre",
+    "reverb": "Reverb",
+    "sendHint": "How much of this channel feeds the reverb",
+    "tail": "Tail",
+    "tailHint": "How long the reverb rings",
+    "resonance": "Resonance",
+    "resonanceHint": "Filter resonance, from mild to wild, for every channel"
   },
   "session": {
     "dropHint": "Drop a recorded session here, or click to open",
@@ -273,7 +296,8 @@
       "filter": "Filter",
       "rate": "Pitch",
       "eqLow": "EQ Low",
-      "eqMid": "EQ Mid",
+      "eqLowMid": "EQ Low Mid",
+      "eqHighMid": "EQ High Mid",
       "eqHigh": "EQ High",
       "jog": "Jog",
       "masterGain": "Master",

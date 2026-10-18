@@ -1,4 +1,5 @@
 // log10(9x + 1) compresses loud signals and expands quiet ones.
+// 9 rather than a constant tuned for loudness-normalised audio: mastered files play 15 to 17 dB hotter.
 const VU_LOG_SCALE = 9;
 
 // Attack is instant.

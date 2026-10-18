@@ -20,7 +20,8 @@ function deckLanes(filter: LanePoint[]): DeckLanes {
   return {
     gain: [],
     eqLow: [],
-    eqMid: [],
+    eqLowMid: [],
+    eqHighMid: [],
     eqHigh: [],
     filter,
     rate: [],
@@ -82,7 +83,7 @@ function strokesFor(points: LanePoint[], viewStart: number, viewEnd: number): St
     [LANE],
     viewStart,
     viewEnd,
-    'classic-3band',
+    'classic-4band',
     [],
     new Map(),
     '#ffffff'

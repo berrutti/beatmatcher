@@ -5,9 +5,8 @@ import { call } from '@renderer/tauriCommands';
 import { listen } from '@tauri-apps/api/event';
 import type { TrackWaveform, WaveformRegion } from '@renderer/utils/timelineDraw';
 import { DECKS_DISPOSITION } from '@renderer/stores/decks';
-import { DEFAULT_MIXER_ID, useSettingsStore } from '@renderer/stores/settings';
+import { useSettingsStore } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
-import { portEvents } from '@renderer/utils/bmsCompatibility';
 import { bmsVersion } from '@renderer/utils/sessionCore';
 
 export type ParsedSession = {
@@ -263,7 +262,7 @@ export const useSessionStore = defineStore('session', () => {
     let raw: {
       version: number;
       startedAt: string;
-      mixer?: { id?: string };
+      mixer: { id: string };
       events: SessionEvent[];
     };
     try {
@@ -273,7 +272,7 @@ export const useSessionStore = defineStore('session', () => {
       return false;
     }
 
-    const events: SessionEvent[] = portEvents(raw.events ?? [], raw.version);
+    const events: SessionEvent[] = raw.events ?? [];
     // Max, not last: a .bms with sub-ms ordering drift is not strictly sorted.
     let durationMs = 0;
     for (const event of events) {
@@ -285,9 +284,7 @@ export const useSessionStore = defineStore('session', () => {
     session.value = {
       version: bmsVersion(),
       startedAt: raw.startedAt ?? '',
-      // Sessions written before manifests existed have no header, and every one
-      // of those was played on the classic mixer.
-      mixerId: raw.mixer?.id ?? DEFAULT_MIXER_ID,
+      mixerId: raw.mixer.id,
       events,
       durationMs,
       filename,

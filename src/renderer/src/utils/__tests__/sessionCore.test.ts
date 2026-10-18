@@ -21,7 +21,7 @@ import {
 import { PITCH_RANGE_OPTIONS } from '@renderer/stores/settings';
 import type { SessionEvent } from '@renderer/utils/types';
 
-const CLASSIC = 'classic-3band';
+const CLASSIC = 'classic-4band';
 
 // The rate range only bounds the rate lane, so a gain splice takes the lane's own.
 function spliceGain(events: SessionEvent[]) {
@@ -41,8 +41,6 @@ function spliceGain(events: SessionEvent[]) {
     rate.max
   );
 }
-const ISOLATOR = 'isolator-3band';
-
 function simpleSession(): SessionEvent[] {
   return [
     { elapsed_ms: 0, type: 'load_track', deck: 'A', path: '/tracks/one.mp3' },
@@ -57,6 +55,7 @@ function builtFor(events: SessionEvent[]) {
     events,
     10_000,
     PITCH_RANGE_OPTIONS,
+    'classic-4band',
     (path) => `name:${path}`,
     () => null
   );
@@ -87,6 +86,7 @@ describe('buildTimeline', () => {
       events,
       10_000,
       PITCH_RANGE_OPTIONS,
+      'classic-4band',
       (path) => path,
       () => ({ bpm: 128, beatOffsetSec: 0.25 })
     );
@@ -286,27 +286,13 @@ describe('shared constants', () => {
     }
   });
 
-  it('the eq lane range is the same one the mixer constants publish', () => {
+  it('every eq lane takes its range from the mixer constants', () => {
     const constants = editConstants();
-    for (const key of ['eqLow', 'eqMid', 'eqHigh'] as const) {
+    for (const key of ['eqLow', 'eqLowMid', 'eqHighMid', 'eqHigh'] as const) {
       expect(laneSpecFor(key, CLASSIC).min).toBe(constants.eqMinDb);
       expect(laneSpecFor(key, CLASSIC).max).toBe(constants.eqMaxDb);
-    }
-  });
-
-  it('lane specs follow the mixer they are asked for', () => {
-    for (const key of ['eqLow', 'eqMid', 'eqHigh'] as const) {
-      const isolator = laneSpecFor(key, ISOLATOR);
-      expect(isolator.min).toBe(0);
-      expect(isolator.max).toBe(1);
-      expect(isolator.defaultValue).toBe(1);
-      expect(isolator.unit).toBe('normalized');
+      expect(laneSpecFor(key, CLASSIC).defaultValue).toBe(0);
       expect(laneSpecFor(key, CLASSIC).unit).toBe('db');
-    }
-
-    // Transport and master lanes are mixer-independent.
-    for (const key of ['rate', 'masterGain', 'gain', 'filter'] as const) {
-      expect(laneSpecFor(key, ISOLATOR)).toEqual(laneSpecFor(key, CLASSIC));
     }
   });
 
@@ -314,27 +300,24 @@ describe('shared constants', () => {
     expect(laneSpecs('no-such-mixer')).toEqual(laneSpecs(CLASSIC));
   });
 
-  it("publishes each mixer's own param ranges", () => {
-    const classic = mixerParams('classic-3band');
-    const isolator = mixerParams('isolator-3band');
+  it("publishes the mixer's own param ranges", () => {
+    const params = mixerParams(CLASSIC);
     const constants = editConstants();
 
-    expect(classic['eq/low'].min).toBe(constants.eqMinDb);
-    expect(classic['eq/low'].max).toBe(constants.eqMaxDb);
-    expect(classic['eq/low'].defaultValue).toBe(0);
+    expect(params['eq/lowMid'].min).toBe(constants.eqMinDb);
+    expect(params['eq/lowMid'].max).toBe(constants.eqMaxDb);
+    expect(params['eq/lowMid'].defaultValue).toBe(0);
 
-    expect(isolator['eq/low'].min).toBe(0);
-    expect(isolator['eq/low'].max).toBe(1);
-    expect(isolator['eq/low'].defaultValue).toBe(1);
+    expect(params['eq/low'].min).toBe(constants.eqMinDb);
+    expect(params['eq/low'].max).toBe(constants.eqMaxDb);
+    expect(params['eq/low'].defaultValue).toBe(0);
 
-    for (const params of [classic, isolator]) {
-      expect(params['fader/gain'].defaultValue).toBe(1);
-      expect(params['filter/value'].min).toBe(-1);
-    }
+    expect(params['fader/gain'].defaultValue).toBe(1);
+    expect(params['filter/value'].min).toBe(-1);
   });
 
   it('falls back to the classic mixer for an unknown id', () => {
-    expect(mixerParams('no-such-mixer')).toEqual(mixerParams('classic-3band'));
+    expect(mixerParams('no-such-mixer')).toEqual(mixerParams(CLASSIC));
   });
 
   it('only the rate lane takes a caller-supplied range', () => {

@@ -1,6 +1,46 @@
 <template>
-  <div class="mixer">
+  <div class="mixer" :style="{ '--mixer-knob-size': `${KNOB_SIZE}px` }">
     <div class="mixer__channels">
+      <div class="mixer__master">
+        <span class="mixer__channel-label" aria-hidden="true">&nbsp;</span>
+        <div class="mixer__knobs">
+          <div v-if="mixer.sendSpec" class="mixer__knob-row mixer__knob-row--send">
+            <div v-if="mixer.tailSpec" class="mixer__master-knob">
+              <Knob
+                :spec="mixer.tailSpec"
+                :value="mixer.masterEffectValue(mixer.tailSpec)"
+                :size="KNOB_SIZE"
+                :click-resets="settings.sliderClickResets"
+                :tooltip="`${$t('mixer.tailHint')}: ${masterDisplay(mixer.tailSpec)}`"
+                @input="(value) => mixer.setMasterEffect(mixer.tailSpec, value)"
+                @reset="mixer.setMasterEffect(mixer.tailSpec, mixer.tailSpec.defaultValue)"
+              />
+              <span class="mixer__knob-label mixer__master-label">{{ $t('mixer.tail') }}</span>
+            </div>
+            <span v-else class="mixer__knob-spacer" />
+          </div>
+          <div v-for="spec in eqBands" :key="spec.param" class="mixer__knob-row">
+            <span class="mixer__knob-spacer" />
+          </div>
+          <div v-if="mixer.resonanceSpec" class="mixer__knob-row mixer__knob-row--filter">
+            <div class="mixer__master-knob">
+              <Knob
+                :spec="mixer.resonanceSpec"
+                :value="mixer.masterEffectValue(mixer.resonanceSpec)"
+                :size="KNOB_SIZE"
+                :click-resets="settings.sliderClickResets"
+                :tooltip="`${$t('mixer.resonanceHint')}: ${masterDisplay(mixer.resonanceSpec)}`"
+                @input="(value) => mixer.setMasterEffect(mixer.resonanceSpec, value)"
+                @reset="
+                  mixer.setMasterEffect(mixer.resonanceSpec, mixer.resonanceSpec.defaultValue)
+                "
+              />
+              <span class="mixer__knob-label mixer__master-label">{{ $t('mixer.resonance') }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div
         v-for="deckId in DECKS_DISPOSITION"
         :key="deckId"
@@ -14,67 +54,46 @@
           deckId
         }}</span>
 
-        <div class="mixer__eq">
-          <div v-for="spec in mixer.eqSpecs" :key="spec.param" class="mixer__eq-band">
-            <input
-              type="range"
-              class="mixer__eq-slider"
-              :min="spec.min"
-              :max="spec.max"
-              :step="spec.step"
-              :value="mixer.paramValue(deckId, keyOf(spec))"
-              orient="vertical"
-              :style="{ '--eq-accent': decks.decks[deckId].accent }"
-              v-tooltip="$t('mixer.eqHint')"
-              v-slider-reset="{
-                enabled: settings.sliderClickResets,
-                reset: () => onReset(deckId, spec)
-              }"
-              @input="(e) => onInput(deckId, spec, e)"
-              @dblclick="onReset(deckId, spec)"
+        <div class="mixer__knobs">
+          <div v-if="mixer.sendSpec" class="mixer__knob-row mixer__knob-row--send">
+            <span class="mixer__knob-label mixer__knob-side">{{ $t('mixer.reverb') }}</span>
+            <ChannelKnob
+              :deck-id="deckId"
+              :spec="mixer.sendSpec"
+              :size="KNOB_SIZE"
+              :tooltip="$t('mixer.sendHint')"
             />
-            <span class="mixer__eq-label">{{ spec.param[0].toUpperCase() }}</span>
+          </div>
+          <div v-for="spec in eqBands" :key="spec.param" class="mixer__knob-row">
+            <span class="mixer__knob-label mixer__knob-side">{{ bandLabel(spec.param) }}</span>
+            <ChannelKnob
+              :deck-id="deckId"
+              :spec="spec"
+              :size="KNOB_SIZE"
+              :tooltip="$t('mixer.eqHint')"
+            />
+          </div>
+          <div v-if="mixer.filterSpec" class="mixer__knob-row mixer__knob-row--filter">
+            <button
+              class="mixer__fx-btn mixer__knob-side"
+              :class="{ 'mixer__fx-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
+              :style="{ '--fader-accent': decks.decks[deckId].accent }"
+              tabindex="-1"
+              v-tooltip="$t('mixer.filterToggle')"
+              @click="mixer.swarmToggleParam(deckId, FILTER_ACTIVE)"
+            >
+              F
+            </button>
+            <ChannelKnob
+              :deck-id="deckId"
+              :spec="mixer.filterSpec"
+              :size="KNOB_SIZE"
+              :tooltip="$t('mixer.filterHint')"
+            />
           </div>
         </div>
 
-        <div class="mixer__filter">
-          <button
-            class="mixer__filter-btn"
-            :class="{ 'mixer__filter-btn--active': mixer.paramActive(deckId, FILTER_ACTIVE) }"
-            :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            tabindex="-1"
-            v-tooltip="$t('mixer.filterToggle')"
-            @click="mixer.swarmToggleParam(deckId, FILTER_ACTIVE)"
-          >
-            F
-          </button>
-          <input
-            type="range"
-            class="mixer__filter-slider"
-            :min="mixer.filterSpec.min"
-            :max="mixer.filterSpec.max"
-            :step="mixer.filterSpec.step"
-            :value="mixer.paramValue(deckId, FILTER_VALUE)"
-            :style="{ '--fader-accent': decks.decks[deckId].accent }"
-            v-tooltip="$t('mixer.filterHint')"
-            v-slider-reset="{
-              enabled: settings.sliderClickResets,
-              reset: () => onReset(deckId, mixer.filterSpec)
-            }"
-            @input="(e) => onInput(deckId, mixer.filterSpec, e)"
-            @dblclick="onReset(deckId, mixer.filterSpec)"
-          />
-          <button
-            class="mixer__filter-btn mixer__filter-btn--ghost"
-            aria-hidden="true"
-            tabindex="-1"
-          >
-            F
-          </button>
-        </div>
-
         <div class="mixer__fader-row">
-          <div class="mixer__ghost_meter"></div>
           <input
             type="range"
             class="mixer__fader"
@@ -105,16 +124,6 @@
           </div>
         </div>
 
-        <button
-          class="mixer__cue-btn"
-          :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
-          v-tooltip="$t('mixer.cueHint')"
-          tabindex="-1"
-          @click="mixer.swarmSetCue(deckId, !mixer.cueActive[deckId])"
-        >
-          {{ $t('mixer.cue') }}
-        </button>
-
         <div class="mixer__assign" v-tooltip="$t('mixer.assignHint')">
           <button
             v-for="option in XFADER_ASSIGNS"
@@ -129,6 +138,16 @@
             {{ option.short }}
           </button>
         </div>
+
+        <button
+          class="mixer__cue-btn"
+          :class="{ 'mixer__cue-btn--active': mixer.cueActive[deckId] }"
+          v-tooltip="$t('mixer.cueHint')"
+          tabindex="-1"
+          @click="mixer.swarmSetCue(deckId, !mixer.cueActive[deckId])"
+        >
+          {{ $t('mixer.cue') }}
+        </button>
       </div>
     </div>
 
@@ -160,19 +179,36 @@ import {
   useMixerStore,
   paramKey,
   FADER_GAIN,
-  FILTER_VALUE,
   FILTER_ACTIVE,
   type XfaderSide
 } from '@renderer/stores/mixer';
+import ChannelKnob from '@renderer/components/mixer/ChannelKnob.vue';
+import Knob from '@renderer/components/Knob.vue';
+import { eqBandsInLayoutOrder } from '@renderer/utils/mixerLayout';
 import { useSettingsStore } from '@renderer/stores/settings';
 import type { DeckId } from '@renderer/utils/types';
-import { reactive, watch, onUnmounted } from 'vue';
+import { computed, reactive, watch, onUnmounted } from 'vue';
 import { vuParam, smoothParam, stepPeak, type PeakState } from '@renderer/utils/meter';
 import type { MixerParamSpec } from '@renderer/utils/sessionCore';
 
 const decks = useDecksStore();
 const mixer = useMixerStore();
 const settings = useSettingsStore();
+
+const KNOB_SIZE = 28;
+
+const BAND_LABELS: Record<string, string> = {
+  low: 'L',
+  lowMid: 'LM',
+  highMid: 'HM',
+  high: 'H'
+};
+
+const eqBands = computed(() => eqBandsInLayoutOrder(mixer.eqSpecs));
+
+function bandLabel(param: string): string {
+  return BAND_LABELS[param] ?? param.slice(0, 2).toUpperCase();
+}
 
 const XFADER_ASSIGNS: { value: XfaderSide; short: string; label: string }[] = [
   { value: 'a', short: 'A', label: 'mixer.assignA' },
@@ -244,6 +280,18 @@ function onInput(deckId: DeckId, spec: MixerParamSpec, event: Event) {
   mixer.swarmAdjust(deckId, keyOf(spec), parseFloat(event.target.value));
 }
 
+function masterDisplay(spec: MixerParamSpec): string {
+  const value = mixer.masterEffectValue(spec);
+  switch (spec.unit) {
+    case 'ms':
+      return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} s`;
+    case 'ratio':
+      return `Q ${value.toFixed(2)}`;
+    default:
+      return `${Math.round(value * 100)}%`;
+  }
+}
+
 function onReset(deckId: DeckId, spec: MixerParamSpec) {
   mixer.swarmReset(deckId, keyOf(spec), spec.defaultValue);
 }
@@ -251,6 +299,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 
 <style scoped>
 .mixer {
+  --mixer-master-width: 4.5em;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -258,8 +307,8 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.4em;
-  padding: 0.3em;
+  gap: 0.15em;
+  padding: 0.15em 0.3em;
   width: 100%;
 }
 
@@ -286,7 +335,7 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.25em;
+  gap: 0.2em;
   border-radius: 4px;
   border: 1px solid transparent;
   opacity: 1;
@@ -345,127 +394,43 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   letter-spacing: 0.03em;
 }
 
-.mixer__eq {
-  display: flex;
-  gap: 0.3em;
-}
-
-.mixer__eq-band {
+.mixer__knobs {
   display: flex;
   flex-direction: column;
+  gap: 0;
+  width: 100%;
+}
+
+/* Three columns with the knob in the middle, so it centres on the strip whatever its
+   label is, while the label still takes up space and cannot run into the next channel. */
+.mixer__knob-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.2em;
 }
 
-.mixer__eq-slider {
-  --slider-thumb-length: 14px;
-  -webkit-appearance: none;
-  appearance: none;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 20px;
-  height: 9em;
-  cursor: pointer;
-  background: transparent;
-  padding: 0;
+.mixer__knob-row--send {
+  margin-bottom: 0.15em;
 }
 
-.mixer__eq-slider::-webkit-slider-runnable-track {
-  width: 3px;
-  background: #161616;
-  border: 1px solid #2c2c2c;
-  border-radius: 1px;
+.mixer__knob-row--filter {
+  margin-top: 0.15em;
 }
 
-.mixer__eq-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: var(--slider-thumb-length);
-  background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(0, 0, 0, 0.35) 0px,
-      rgba(0, 0, 0, 0.35) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
-    linear-gradient(to right, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
-  border-radius: 1px;
-  border-top: 1px solid #999;
-  border-bottom: 1px solid #2a2a2a;
-  border-left: 1px solid #5a5a5a;
-  border-right: 1px solid #5a5a5a;
-  cursor: grab;
-  margin-left: -7.5px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+.mixer__knob-side {
+  justify-self: end;
+  margin-right: 0.35em;
+  white-space: nowrap;
 }
 
-.mixer__eq-slider:disabled {
-  opacity: var(--disabled-opacity);
-  cursor: default;
-}
-
-.mixer__eq-slider:disabled::-webkit-slider-thumb {
-  cursor: default;
-}
-
-.mixer__eq-label {
+.mixer__knob-label {
   font-size: 0.5em;
   color: var(--color-muted);
   letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.mixer__filter {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.3em;
-}
-
-.mixer__filter-slider {
-  --slider-thumb-length: 13px;
-  -webkit-appearance: none;
-  appearance: none;
-  width: 6.5em;
-  height: 18px;
-  cursor: pointer;
-  background: transparent;
-  padding: 0;
-}
-
-.mixer__filter-slider::-webkit-slider-runnable-track {
-  height: 3px;
-  background: #161616;
-  border: 1px solid #2c2c2c;
-  border-radius: 1px;
-}
-
-.mixer__filter-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: var(--slider-thumb-length);
-  height: 18px;
-  background:
-    repeating-linear-gradient(
-      to right,
-      rgba(0, 0, 0, 0.35) 0px,
-      rgba(0, 0, 0, 0.35) 1px,
-      transparent 1px,
-      transparent 3px
-    ),
-    linear-gradient(to bottom, #4a4a4a, #808080 30%, #808080 70%, #4a4a4a);
-  border-radius: 1px;
-  border-left: 1px solid #999;
-  border-right: 1px solid #2a2a2a;
-  border-top: 1px solid #5a5a5a;
-  border-bottom: 1px solid #5a5a5a;
-  cursor: grab;
-  margin-top: -8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
-}
-
-.mixer__filter-btn {
+.mixer__fx-btn {
   background: transparent;
   border: 1px solid var(--color-border);
   color: var(--color-muted);
@@ -482,41 +447,38 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
     color 0.1s;
 }
 
-.mixer__filter-btn:hover:not(.mixer__filter-btn--active) {
+.mixer__fx-btn:hover:not(.mixer__fx-btn--active) {
   border-color: var(--color-border-hover);
   color: var(--color-text);
   background: var(--toggle-hover-fill);
 }
 
-.mixer__filter-btn--ghost {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.mixer__filter-btn--active {
+.mixer__fx-btn--active {
   border-color: var(--fader-accent);
   color: var(--fader-accent);
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill), transparent);
 }
 
-.mixer__filter-btn--active:hover {
+.mixer__fx-btn--active:hover {
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
 }
 
 .mixer__fader-row {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: stretch;
-  gap: 3px;
+  width: 100%;
   flex: 1;
   min-height: 0;
 }
 
-.mixer__ghost_meter {
-  width: 5px;
-  height: 100%;
-  position: relative;
-  overflow: hidden;
+.mixer__fader {
+  grid-column: 2;
+}
+
+.mixer__meter {
+  justify-self: start;
+  margin-left: 3px;
 }
 
 .mixer__meter {
@@ -611,7 +573,6 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
 .mixer__assign {
   display: flex;
   gap: 1px;
-  margin-top: 0.35em;
 }
 
 .mixer__assign-btn {
@@ -647,12 +608,46 @@ function onReset(deckId: DeckId, spec: MixerParamSpec) {
   background: color-mix(in srgb, var(--fader-accent) var(--toggle-on-fill-hover), transparent);
 }
 
+/* Built from the strip's own title and knob rows, so every knob lands on a strip knob's row. */
+.mixer__master {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2em;
+  width: var(--mixer-master-width);
+}
+
+.mixer__master-knob {
+  grid-column: 2;
+  position: relative;
+  display: flex;
+}
+
+/* Out of the flow, so the label sits under its knob without making the row taller than
+   the strip rows it lines up with. */
+.mixer__master-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 0.3em;
+  white-space: nowrap;
+}
+
+.mixer__knob-spacer {
+  grid-column: 2;
+  width: var(--mixer-knob-size);
+  height: var(--mixer-knob-size);
+}
+
+/* Offset by the master column, so the crossfader stays centred under the strips. */
 .mixer__xfader {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.6em;
-  padding: 0.5em 0.8em 0.2em;
+  padding: 0.15em 0.8em 0 calc(0.8em + var(--mixer-master-width));
 }
 
 .mixer__xfader-end {

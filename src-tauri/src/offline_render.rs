@@ -131,13 +131,16 @@ struct Mixer {
     limiter: Option<Limiter>,
     sample_rate: u32,
     block: Vec<f32>,
+    send: Vec<f32>,
+    reverb: crate::audio::Reverb,
+    master: crate::audio::MasterSettings,
 }
 
 impl Mixer {
     fn new(session: &SessionFile, request: &RenderRequest) -> Result<Self, String> {
         // Refused rather than rendered on a best guess: a mixer this build cannot
         // reproduce would diverge from the recording without saying so.
-        let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+        let manifest = session_core::resolve_manifest(&session.mixer)?;
         let sample_rate = request.sample_rate;
         let decks: HashMap<String, Arc<Mutex<Deck>>> = crate::audio::LIVE_DECK_IDS
             .iter()
@@ -161,6 +164,7 @@ impl Mixer {
             })
             .collect();
         let channels = crate::audio::channel_pairs(&decks, &strips);
+        let master = crate::audio::MasterSettings::for_manifest(manifest);
         Ok(Self {
             decks,
             strips,
@@ -171,23 +175,122 @@ impl Mixer {
                 .then(|| Limiter::new(sample_rate as f32)),
             sample_rate,
             block: Vec::new(),
+            send: Vec::new(),
+            reverb: master.reverb.reverb(request.sample_rate as f32),
+            master,
         })
     }
 
+    fn update_master(&mut self, change: impl FnOnce(&mut crate::audio::MasterSettings) -> bool) {
+        let before = self.master;
+        if !change(&mut self.master) {
+            return;
+        }
+        if self.master.strips != before.strips {
+            crate::audio::apply_to_strips(&self.strips, &self.master.strips);
+        }
+        if self.master.reverb != before.reverb {
+            self.master.reverb.apply_to(&mut self.reverb);
+        }
+    }
+
     fn apply(&mut self, cmd: SessionCommand<'_>) -> Result<(), String> {
-        apply_event(
-            cmd,
-            &self.decks,
-            &self.strips,
-            &mut self.master_gain,
-            &mut self.xfader_position,
-            self.sample_rate,
-        )
+        if let SessionCommand::SetParam {
+            scope: session_core::ParamScope::Master,
+            slot,
+            param,
+            value,
+            ..
+        } = cmd
+        {
+            if (slot, param) == ("gain", "gain") {
+                self.master_gain = (value as f32).clamp(0.0, 1.0);
+            }
+            if (slot, param) == ("xfader", "position") {
+                self.xfader_position = (value as f32).clamp(-1.0, 1.0);
+                resolve_xfader_gains(&self.strips, self.xfader_position);
+            }
+            self.update_master(|master| master.set(slot, param, value as f32));
+            return Ok(());
+        }
+
+        if let SessionCommand::SetFaderCurve { curve } = cmd {
+            self.update_master(|master| {
+                master.strips.fader_curve = curve;
+                true
+            });
+            return Ok(());
+        }
+
+        let decks = &self.decks;
+        let strips = &self.strips;
+        let sr = self.sample_rate;
+
+        if let SessionCommand::SetJogRotationSpeed { speed } = cmd {
+            for deck in decks.values() {
+                deck.locked().set_jog_rotation_speed(speed);
+            }
+            return Ok(());
+        }
+
+        let id = cmd
+            .deck_id()
+            .expect("master-scope commands are handled above; the rest target a deck");
+        let deck_arc = decks.get(id).ok_or_else(|| format!("unknown deck: {id}"))?;
+        let strip_arc = strips
+            .get(id)
+            .ok_or_else(|| format!("unknown deck: {id}"))?;
+        let mut deck = deck_arc.locked();
+        let mut strip = strip_arc.locked();
+
+        let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
+            let (raw, channels, native_sr) =
+                audio::decode_audio(path).map_err(|e| format!("{path}: {e}"))?;
+            let resampled = if native_sr == sr {
+                raw
+            } else {
+                audio::resample_linear(&raw, channels, native_sr, sr)
+            };
+            Ok((Arc::new(resampled), channels))
+        };
+
+        // The offline renderer never compensates for buffer-aligned overshoot
+        // (no live audio thread to catch up with), so overshoot is always 0.
+        audio::apply_deck_command(&cmd, &mut deck, &mut strip, sr, 0.0, &mut load_samples)
+    }
+
+    fn reverb_lead_in(&self, restored: &std::collections::BTreeSet<String>) -> usize {
+        let mut history = f64::INFINITY;
+        let mut sending = false;
+        for id in restored {
+            let (Some(deck_arc), Some(strip_arc)) = (self.decks.get(id), self.strips.get(id))
+            else {
+                continue;
+            };
+            let deck = deck_arc.locked();
+            if !deck.is_playing {
+                continue;
+            }
+            if !strip_arc.locked().is_sending() {
+                continue;
+            }
+            sending = true;
+            let looping = deck.loop_active && deck.loop_end > deck.cue_point;
+            if !looping {
+                history = history.min(deck.main_pos / deck.playback_rate.max(f64::EPSILON));
+            }
+        }
+        if !sending {
+            return 0;
+        }
+        (self.reverb.ring_out_frames() as f64).min(history) as usize
     }
 
     /// Rendering a mid-play start from zeroed delay lines passes every cut in full until
     /// they fill, which clips the first milliseconds. Playing the lead-in settles them.
     fn warm_up(&mut self, frames: usize, restored: &std::collections::BTreeSet<String>) {
+        let interval = crate::audio::FILTER_COEFF_REFRESH_INTERVAL as usize;
+        let frames = frames.max(self.reverb_lead_in(restored) / interval * interval);
         let mut resume: Vec<(String, f64, f64)> = Vec::new();
         for (id, deck_arc) in self.decks.iter() {
             let mut deck = deck_arc.locked();
@@ -216,7 +319,17 @@ impl Mixer {
     fn render_block(&mut self, frames: usize, out: &mut [f32]) {
         self.block.clear();
         self.block.resize(frames * 2, 0.0);
-        crate::audio::mix_channels(&self.channels, frames, 0, &mut self.block, None);
+        self.send.clear();
+        self.send.resize(frames * 2, 0.0);
+        crate::audio::mix_channels(
+            &self.channels,
+            frames,
+            0,
+            &mut self.block,
+            None,
+            Some(&mut self.send),
+        );
+        self.reverb.mix_block(&self.send, &mut self.block);
         crate::audio::master_block(self.limiter.as_mut(), self.master_gain, &mut self.block);
         out[..frames * 2].copy_from_slice(&self.block[..frames * 2]);
     }
@@ -419,72 +532,6 @@ fn resolve_xfader_gains(strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>, posi
     }
 }
 
-fn apply_event(
-    cmd: SessionCommand<'_>,
-    decks: &HashMap<String, Arc<Mutex<Deck>>>,
-    strips: &HashMap<String, Arc<Mutex<ChannelStrip>>>,
-    master_gain: &mut f32,
-    xfader_position: &mut f32,
-    sr: u32,
-) -> Result<(), String> {
-    if let SessionCommand::SetParam {
-        scope: session_core::ParamScope::Master,
-        slot,
-        param,
-        value,
-        ..
-    } = cmd
-    {
-        if (slot, param) == ("gain", "gain") {
-            *master_gain = (value as f32).clamp(0.0, 1.0);
-        }
-        if (slot, param) == ("xfader", "position") {
-            *xfader_position = (value as f32).clamp(-1.0, 1.0);
-            resolve_xfader_gains(strips, *xfader_position);
-        }
-        return Ok(());
-    }
-
-    if let SessionCommand::SetFaderCurve { curve } = cmd {
-        for strip in strips.values() {
-            strip.locked().set_fader_curve(curve);
-        }
-        return Ok(());
-    }
-
-    if let SessionCommand::SetJogRotationSpeed { speed } = cmd {
-        for deck in decks.values() {
-            deck.locked().set_jog_rotation_speed(speed);
-        }
-        return Ok(());
-    }
-
-    let id = cmd
-        .deck_id()
-        .expect("master-scope commands are handled above; the rest target a deck");
-    let deck_arc = decks.get(id).ok_or_else(|| format!("unknown deck: {id}"))?;
-    let strip_arc = strips
-        .get(id)
-        .ok_or_else(|| format!("unknown deck: {id}"))?;
-    let mut deck = deck_arc.locked();
-    let mut strip = strip_arc.locked();
-
-    let mut load_samples = |path: &str| -> Result<(Arc<Vec<f32>>, usize), String> {
-        let (raw, channels, native_sr) =
-            audio::decode_audio(path).map_err(|e| format!("{path}: {e}"))?;
-        let resampled = if native_sr == sr {
-            raw
-        } else {
-            audio::resample_linear(&raw, channels, native_sr, sr)
-        };
-        Ok((Arc::new(resampled), channels))
-    };
-
-    // The offline renderer never compensates for buffer-aligned overshoot
-    // (no live audio thread to catch up with), so overshoot is always 0.
-    audio::apply_deck_command(&cmd, &mut deck, &mut strip, sr, 0.0, &mut load_samples)
-}
-
 // The DSP tests elsewhere are property tests, so they still pass after a change
 // to a filter Q or a reordered cascade. This pins the actual numbers.
 #[cfg(test)]
@@ -540,7 +587,7 @@ mod golden {
     // Touches every mixer param so the golden covers the whole strip.
     fn session_json(source: &str) -> String {
         format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512}},
 {{"elapsed_ms":0,"type":"load_track","deck":"A","path":"{source}"}},
 {{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"fader","param":"gain","value":0.9}},
@@ -593,68 +640,68 @@ mod golden {
         [2.630639374e-1, -3.169808686e-1],
         [2.778584361e-1, 2.599554658e-1],
         [1.199561059e-1, 9.051184356e-2],
-        [-3.077802658e-1, -1.747040898e-1],
-        [-1.145710796e-1, -1.490677148e-1],
-        [-4.322971031e-2, 4.089599550e-1],
-        [-4.079864323e-1, 1.038797647e-1],
-        [-3.111304045e-1, 4.160404503e-1],
-        [8.504120260e-2, 3.949375451e-1],
-        [2.472828329e-1, -1.466651410e-1],
-        [-1.265672445e-1, -4.162990302e-2],
-        [8.418314904e-2, -4.566646740e-2],
-        [3.379801810e-1, -1.751496941e-1],
-        [2.572137415e-1, 1.397007108e-1],
-        [-5.188094974e-1, -3.864068389e-1],
-        [1.001082659e-1, 3.066422641e-1],
-        [-3.183873594e-1, -2.930020988e-1],
-        [6.623950601e-1, -2.894285694e-2],
-        [-5.504006147e-1, 3.365463316e-1],
-        [2.436423451e-1, -1.820044816e-1],
-        [-2.725796402e-1, -2.141011059e-1],
-        [-2.475399338e-2, 3.952913731e-2],
-        [2.377858758e-1, 4.166907445e-2],
-        [-3.863437101e-2, -7.498165220e-2],
-        [-5.463384092e-2, 6.266194582e-2],
-        [5.252602696e-2, -1.508348733e-1],
-        [-6.825695932e-2, -3.166125156e-3],
-        [3.206776083e-2, 3.881371394e-2],
-        [8.299936540e-3, 6.443333346e-3],
-        [8.714703843e-3, 4.418504983e-2],
-        [4.952292424e-3, 4.516364634e-2],
-        [1.934513077e-2, -2.869571000e-2],
-        [-2.942347433e-3, 1.239200938e-3],
-        [2.563439310e-2, -3.655426903e-3],
-        [5.346446857e-2, 1.295961346e-2],
-        [7.123460528e-3, -3.236354142e-2],
-        [4.754809663e-2, 2.793182433e-2],
-        [4.079668317e-3, 7.647953928e-2],
-        [3.110685945e-2, 2.182356268e-2],
-        [5.639165640e-3, -9.200138971e-3],
-        [4.481986165e-3, 1.607963629e-2],
-        [-1.911190338e-2, -8.816975169e-3],
-        [2.006791160e-2, 7.147463970e-3],
-        [1.586014405e-2, 2.582454495e-2],
-        [-5.003605038e-3, -3.876974573e-3],
-        [-8.927010000e-2, 1.957294531e-2],
-        [-5.769169331e-2, 3.835865995e-3],
-        [1.211852729e-1, 4.413880780e-2],
-        [-9.242881089e-3, -1.964726113e-2],
-        [1.353925560e-2, 3.620174900e-2],
-        [9.161094204e-3, -2.258346789e-2],
-        [-9.212646633e-3, 5.041530356e-2],
-        [1.372825168e-2, 4.315775353e-3],
-        [1.138431206e-2, 8.952293429e-4],
-        [2.932137810e-2, -1.080498472e-2],
-        [6.521692849e-4, -1.283199526e-2],
-        [2.981103724e-3, 6.534612039e-4],
-        [-1.133259200e-2, -5.414074287e-3],
-        [-2.035196871e-2, -3.285568953e-2],
-        [1.629276201e-2, 2.407642454e-2],
-        [-1.251673978e-2, -2.065220149e-3],
-        [7.465696683e-8, 2.723108139e-8],
-        [1.661349353e-15, 3.652238515e-16],
-        [2.084038930e-23, 1.968222947e-24],
-        [1.230860793e-30, 1.818664110e-30],
+        [-3.075743616e-1, -1.747097075e-1],
+        [-1.193102300e-1, -1.428960115e-1],
+        [-4.417712986e-2, 4.101592004e-1],
+        [-4.111072123e-1, 1.023748517e-1],
+        [-3.071229756e-1, 4.204761386e-1],
+        [3.191803768e-2, 3.605215549e-1],
+        [2.681013942e-1, -1.440747380e-1],
+        [-1.890712529e-1, -1.201997399e-1],
+        [1.165864244e-1, -6.333184242e-2],
+        [2.685455680e-1, -3.902175128e-1],
+        [1.833430678e-1, 1.948842555e-1],
+        [-5.150128007e-1, -4.423256218e-1],
+        [1.188099533e-1, 3.916529417e-1],
+        [-2.856792212e-1, -4.683185518e-1],
+        [5.723206401e-1, -2.199184336e-2],
+        [-5.155327320e-1, 2.422267348e-1],
+        [5.049065128e-2, -2.626670301e-1],
+        [-2.194065452e-1, -1.592178047e-1],
+        [7.574484497e-2, 7.792817801e-2],
+        [2.826722860e-1, 1.135210916e-1],
+        [5.353898276e-3, -4.777231812e-2],
+        [-1.105051339e-1, 4.753684625e-2],
+        [6.776744127e-2, -2.062667012e-1],
+        [-9.212751687e-2, 8.175618015e-3],
+        [7.939689793e-3, 6.425978243e-2],
+        [-4.920336418e-3, -1.274240552e-3],
+        [5.632584449e-3, 5.550981686e-2],
+        [2.090523252e-3, 9.257730842e-2],
+        [4.357047379e-2, -5.676444247e-2],
+        [-3.738932312e-3, -2.161871083e-2],
+        [1.728128269e-2, 2.801319025e-2],
+        [8.713318408e-2, 1.151413657e-3],
+        [1.776256785e-2, -4.868899658e-2],
+        [4.225517064e-2, 3.559757397e-2],
+        [-6.670523435e-3, 7.470596582e-2],
+        [6.380668283e-2, 3.314920887e-2],
+        [1.768244058e-2, 2.530402690e-2],
+        [7.249879651e-3, -1.853450388e-2],
+        [1.105615287e-3, 2.163038123e-3],
+        [7.900738157e-3, 5.713405088e-2],
+        [-1.176320482e-2, 5.971311405e-2],
+        [7.828545757e-3, -6.685355213e-3],
+        [-1.183792278e-1, -6.657056045e-3],
+        [-8.538641781e-2, -1.497154590e-2],
+        [1.399293840e-1, 6.607346982e-2],
+        [2.548500197e-3, -1.327041350e-2],
+        [1.185409259e-2, 7.141728699e-2],
+        [1.181686856e-2, -3.871371225e-2],
+        [2.775457874e-2, 2.863723785e-2],
+        [1.034202613e-2, 1.081607118e-2],
+        [2.167642489e-2, 2.110228688e-2],
+        [4.100618884e-2, -2.969739400e-2],
+        [1.236797590e-2, -1.545147132e-2],
+        [1.661412604e-2, -6.394477561e-3],
+        [-1.180273388e-2, -3.980316222e-3],
+        [-5.154652894e-2, -4.408063367e-2],
+        [2.409071103e-2, 5.022254586e-2],
+        [-2.832783200e-2, 1.128211152e-3],
+        [-6.613354753e-9, -2.180202685e-9],
+        [3.136710242e-18, 4.913461627e-19],
+        [2.033231928e-28, 5.403506052e-28],
+        [0.000000000e0, 0.000000000e0],
         [0.000000000e0, 0.000000000e0],
         [0.000000000e0, 0.000000000e0],
         [0.000000000e0, 0.000000000e0],
@@ -766,7 +813,7 @@ mod ordering {
 
     #[test]
     fn a_stop_and_a_play_on_one_frame_order_the_way_the_editor_orders_them() {
-        let json = r#"{"version":2,"events":[
+        let json = r#"{"version":2,"mixer":{"id":"classic-4band","hash":"4a8d9895950238aa"},"events":[
             {"elapsed_ms":1000.0,"frame":44100,"type":"play","deck":"A"},
             {"elapsed_ms":1000.0,"frame":44100,"type":"stop","deck":"A"}
         ]}"#;
@@ -775,7 +822,7 @@ mod ordering {
 
     #[test]
     fn a_snapshot_still_leads_its_frame() {
-        let json = r#"{"version":2,"events":[
+        let json = r#"{"version":2,"mixer":{"id":"classic-4band","hash":"4a8d9895950238aa"},"events":[
             {"elapsed_ms":0.0,"frame":0,"type":"play","deck":"A"},
             {"elapsed_ms":0.0,"frame":0,"type":"deck_snapshot","deck":"A","path":"x"}
         ]}"#;
@@ -880,7 +927,7 @@ pub(crate) mod corpus {
     const DIGESTS: &[(&str, Digest)] = &[
         ("transport", Digest { frames: 145530, peak: 4.050901532e-1, rms: 1.631384939e-1, probes: [-2.738414407e-1, -9.195664525e-2, 0.000000000e0, 1.988919973e-1, 1.242127642e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
         ("loops", Digest { frames: 176400, peak: 3.812613487e-1, rms: 1.845077127e-1, probes: [5.432673171e-2, 1.991462111e-1, 1.169061381e-2, 3.311527371e-1, -1.449688673e-1, 1.871924698e-1, 0.000000000e0, 0.000000000e0] }),
-        ("mixer", Digest { frames: 154350, peak: 8.762779832e-1, rms: 1.417507827e-1, probes: [2.880876362e-1, -1.891480237e-1, 1.531948522e-2, 5.469006646e-5, -3.012417257e-1, 2.342958748e-2, 0.000000000e0, 0.000000000e0] }),
+        ("mixer", Digest { frames: 154350, peak: 6.354443431e-1, rms: 1.472654045e-1, probes: [3.210835159e-1, 5.034118146e-2, 1.158550307e-1, 6.047018105e-4, -1.344581395e-1, 3.774372488e-2, 0.000000000e0, 0.000000000e0] }),
         ("rate_and_multideck", Digest { frames: 145530, peak: 6.103462577e-1, rms: 1.669194251e-1, probes: [-8.195396513e-2, -3.098741472e-1, 1.221538559e-1, 9.315679222e-2, -7.356053591e-2, 0.000000000e0, 0.000000000e0, 0.000000000e0] }),
     ];
 
@@ -946,7 +993,7 @@ mod param_addressing {
     use super::*;
 
     fn render(events: &str) -> Vec<f32> {
-        let json = format!(r#"{{"version":2,"events":[{events}]}}"#)
+        let json = format!(r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[{events}]}}"#)
             .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&json).expect("parse session");
         render_session(
@@ -1039,37 +1086,8 @@ mod param_addressing {
     }
 
     #[test]
-    fn the_resolved_manifest_is_the_one_the_renderer_builds() {
-        let render_on = |manifest: &session_core::MixerManifest| {
-            let header = serde_json::to_string(&manifest.header()).expect("header");
-            let json = format!(
-                r#"{{"version":2,"mixer":{header},"events":[{PREAMBLE}
-{{"elapsed_ms":100,"type":"set_param","deck":"A","slot":"eq","param":"low","value":0.0}},
-{STOP}]}}"#
-            )
-            .replace("__SOURCE__", &source_wav_path());
-            let session: SessionFile = serde_json::from_str(&json).expect("parse session");
-            render_session(
-                &session,
-                RenderRequest {
-                    sample_rate: SAMPLE_RATE,
-                    min_frames: 0,
-                    limiter: MasterLimiter::On,
-                },
-            )
-            .expect("render")
-        };
-        // 0.0 is a flat shelf on the classic mixer and a full kill on the
-        // isolator, so the same event has to produce different audio.
-        assert_ne!(
-            render_on(&session_core::CLASSIC_3BAND),
-            render_on(&session_core::ISOLATOR_3BAND)
-        );
-    }
-
-    #[test]
     fn a_session_stamped_with_the_current_mixer_renders() {
-        let header = serde_json::to_string(&session_core::CLASSIC_3BAND.header()).expect("header");
+        let header = serde_json::to_string(&session_core::CLASSIC_4BAND.header()).expect("header");
         let stamped = format!(r#"{{"version":2,"mixer":{header},"events":[{PREAMBLE}{STOP}]}}"#)
             .replace("__SOURCE__", &source_wav_path());
         let session: SessionFile = serde_json::from_str(&stamped).expect("parse session");
@@ -1118,7 +1136,8 @@ mod master_limiter {
     // Noise at 0.6 through both shelves at their +6 dB maximum, at full master
     // gain, drives the mix past full scale.
     fn loud_session() -> SessionFile {
-        let json = r#"{"version":2,"events":[
+        let json =
+            r#"{"version":2,"mixer":{"id":"classic-4band","hash":"4a8d9895950238aa"},"events":[
 {"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512},
 {"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"},
 {"elapsed_ms":0,"type":"set_param","slot":"gain","param":"gain","value":1.0},
@@ -1127,7 +1146,7 @@ mod master_limiter {
 {"elapsed_ms":50,"type":"play","deck":"A","sec":0.0},
 {"elapsed_ms":400,"type":"stop","deck":"A"}
 ]}"#
-        .replace("__SOURCE__", &source_wav_path());
+            .replace("__SOURCE__", &source_wav_path());
         serde_json::from_str(&json).expect("parse session")
     }
 
@@ -1202,7 +1221,7 @@ mod recorded_limiter {
 
     fn session_with(stamp: &str) -> SessionFile {
         let json = format!(
-            r#"{{"version":2,"events":[{{"elapsed_ms":0,"type":"recording_start"{stamp}}}]}}"#
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[{{"elapsed_ms":0,"type":"recording_start"{stamp}}}]}}"#
         );
         serde_json::from_str(&json).expect("parse session")
     }
@@ -1239,7 +1258,7 @@ mod warm_up {
 
     fn render_snapshot_mid_play() -> Vec<f32> {
         let json = format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":128,"sample_rate":{SAMPLE_RATE}}},
 {{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"value","value":-0.9}},
 {{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"filter","param":"active","value":1}},
@@ -1257,6 +1276,81 @@ mod warm_up {
             },
         )
         .expect("render")
+    }
+
+    fn render_sending_mid_play(send_amount: u8) -> Vec<f32> {
+        let json = format!(
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":128,"sample_rate":{SAMPLE_RATE}}},
+{{"elapsed_ms":0,"type":"set_param","slot":"reverb","param":"tail","value":3000}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"send","param":"amount","value":{send_amount}}},
+{{"elapsed_ms":0,"type":"deck_snapshot","deck":"A","path":"__SOURCE__","position_sec":2.5,"cue_point_sec":0.0,"bpm":120.0,"playback_rate":1.0,"loop_active":false,"loop_end_sec":0.0,"is_playing":true,"gain":1.0}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        render_session(
+            &session,
+            RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: SAMPLE_RATE as usize,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("render")
+    }
+
+    #[test]
+    fn a_sending_deck_near_the_top_of_its_track_resumes_where_it_was() {
+        let json = format!(
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
+{{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":128,"sample_rate":{SAMPLE_RATE}}},
+{{"elapsed_ms":0,"type":"set_param","slot":"reverb","param":"tail","value":10000}},
+{{"elapsed_ms":0,"type":"set_param","deck":"A","slot":"send","param":"amount","value":1}},
+{{"elapsed_ms":0,"type":"deck_snapshot","deck":"A","path":"__SOURCE__","position_sec":0.2,"cue_point_sec":0.0,"bpm":120.0,"playback_rate":1.0,"loop_active":false,"loop_end_sec":0.0,"is_playing":true,"gain":1.0}}
+]}}"#
+        )
+        .replace("__SOURCE__", &source_wav_path());
+        let session: SessionFile = serde_json::from_str(&json).expect("parse session");
+        let mut mixer = Mixer::new(
+            &session,
+            &RenderRequest {
+                sample_rate: SAMPLE_RATE,
+                min_frames: 0,
+                limiter: MasterLimiter::Off,
+            },
+        )
+        .expect("mixer");
+        for event in &session.events {
+            if let Some(cmd) = event.command() {
+                mixer.apply(cmd).expect("apply");
+            }
+        }
+        let restored = std::collections::BTreeSet::from(["A".to_string()]);
+        mixer.warm_up(warmup_frames(SAMPLE_RATE), &restored);
+
+        let deck = mixer.decks["A"].locked();
+        assert!(deck.is_playing, "the lead-in ran the deck off its track");
+        assert!((deck.main_pos - 0.2 * f64::from(SAMPLE_RATE)).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_mid_play_start_opens_with_the_reverb_of_what_played_before_it() {
+        // Shorter than the shortest comb, so a reverb fed only from frame zero is still silent.
+        const OPENING: usize = 1024;
+        let sending = render_sending_mid_play(1);
+        let dry = render_sending_mid_play(0);
+        let reverb: Vec<f32> = sending[..OPENING * 2]
+            .iter()
+            .zip(&dry[..OPENING * 2])
+            .map(|(wet, dry)| wet - dry)
+            .collect();
+        assert!(
+            rms(&reverb) > rms(&dry[..OPENING * 2]) * 0.25,
+            "the render opened without the tail the send had built: {} against {}",
+            rms(&reverb),
+            rms(&dry[..OPENING * 2])
+        );
     }
 
     /// A one-pole run through `approach` until it stops moving, which is what the
@@ -1325,7 +1419,7 @@ mod recorded_frame {
             None => String::new(),
         };
         let json = format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":{buffer_size_frames}}},
 {{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
 {{"elapsed_ms":50,"type":"play","deck":"A"{stamp}}},
@@ -1383,7 +1477,7 @@ mod jog {
 
     fn render_with(jog: &str) -> Vec<f32> {
         let json = format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":512}},
 {{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
 {{"elapsed_ms":50,"type":"play","deck":"A"}}{jog},
@@ -1441,7 +1535,7 @@ mod jog_block_size {
 
     fn render_at_buffer(buffer_size_frames: u32) -> Vec<f32> {
         let json = format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"type":"recording_start","buffer_size_frames":{buffer_size_frames}}},
 {{"elapsed_ms":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
 {{"elapsed_ms":50,"type":"play","deck":"A"}},
@@ -1524,10 +1618,8 @@ mod live_parity {
                 deck.device_sample_rate = SAMPLE_RATE;
                 deck.total_frames = total_frames;
                 deck.duration = total_frames as f64 / SAMPLE_RATE as f64;
-                let strip = ChannelStrip::from_manifest(
-                    &session_core::CLASSIC_3BAND_V2,
-                    SAMPLE_RATE as f32,
-                );
+                let strip =
+                    ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, SAMPLE_RATE as f32);
                 (id, deck, strip)
             })
             .collect();
@@ -1563,6 +1655,7 @@ mod live_parity {
                     RenderTargets {
                         main: Some(&mut block_buffer),
                         cue: None,
+                        send: None,
                     },
                 );
             }
@@ -1607,8 +1700,7 @@ mod live_parity {
         }
         let json = format!(
             r#"{{"version":2,"mixer":{header},"events":[{events}]}}"#,
-            header =
-                serde_json::to_string(&session_core::CLASSIC_3BAND_V2.header()).expect("header"),
+            header = serde_json::to_string(&session_core::CLASSIC_4BAND.header()).expect("header"),
             events = events.join(",\n")
         )
         .replace("__SOURCE__", &source_wav_path());
@@ -1681,7 +1773,7 @@ mod recorded_sample_rate {
 
     fn render_recorded_at(recorded_rate: u32, play_frame: u64) -> Vec<f32> {
         let json = format!(
-            r#"{{"version":2,"events":[
+            r#"{{"version":2,"mixer":{{"id":"classic-4band","hash":"4a8d9895950238aa"}},"events":[
 {{"elapsed_ms":0,"frame":0,"type":"recording_start","buffer_size_frames":512,"sample_rate":{recorded_rate}}},
 {{"elapsed_ms":0,"frame":0,"type":"load_track","deck":"A","path":"__SOURCE__"}},
 {{"elapsed_ms":1000,"frame":{play_frame},"type":"play","deck":"A"}},
@@ -1814,8 +1906,7 @@ mod live_parity_fuzz {
         deck.duration = total_frames as f64 / SAMPLE_RATE as f64;
         deck.bpm = Some(BPM);
         deck.quantize = true;
-        let strip =
-            ChannelStrip::from_manifest(&session_core::CLASSIC_3BAND_V2, SAMPLE_RATE as f32);
+        let strip = ChannelStrip::from_manifest(&session_core::CLASSIC_4BAND, SAMPLE_RATE as f32);
         (deck, strip)
     }
 
@@ -2055,6 +2146,7 @@ mod live_parity_fuzz {
                     RenderTargets {
                         main: Some(&mut block_buffer),
                         cue: None,
+                        send: None,
                     },
                 );
             }
@@ -2076,8 +2168,7 @@ mod live_parity_fuzz {
     fn offline_render_of(events: &[String]) -> Vec<f32> {
         let json = format!(
             r#"{{"version":2,"mixer":{header},"events":[{body}]}}"#,
-            header =
-                serde_json::to_string(&session_core::CLASSIC_3BAND_V2.header()).expect("header"),
+            header = serde_json::to_string(&session_core::CLASSIC_4BAND.header()).expect("header"),
             body = events.join(",\n")
         )
         .replace("__SOURCE__", &source_wav_path());

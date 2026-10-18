@@ -138,23 +138,6 @@ impl Biquad {
         )
     }
 
-    // Flat magnitude, phase only. A Linkwitz-Riley split sums to this, so a band skipping
-    // one crossover needs the matching allpass to stay aligned with the ones that did not.
-    pub(crate) fn all_pass(sr: f32, freq: f32, q: f32) -> Self {
-        let w0 = 2.0 * std::f64::consts::PI * f64::from(freq) / f64::from(sr);
-        let cos_w = w0.cos();
-        let alpha = w0.sin() / (2.0 * f64::from(q));
-
-        Self::normalized(
-            1.0 - alpha,
-            -2.0 * cos_w,
-            1.0 + alpha,
-            1.0 + alpha,
-            -2.0 * cos_w,
-            1.0 - alpha,
-        )
-    }
-
     pub(crate) fn high_shelf(sr: f32, freq: f32, db: f32) -> Self {
         if db == 0.0 {
             return Self::identity();
@@ -176,13 +159,9 @@ impl Biquad {
     }
 }
 
-const EQ_LOW_SHELF_HZ: f32 = 200.0;
-const EQ_MID_PEAK_HZ: f32 = 1000.0;
-const EQ_MID_Q: f32 = 0.4;
-const EQ_HIGH_SHELF_HZ: f32 = 6_000.0;
-
 pub(crate) struct Equalizer {
     sample_rate: f32,
+    voicing: &'static session_core::Eq3Voicing,
     low_stage1: [Biquad; 2],
     low_stage2: [Biquad; 2],
     mid: [Biquad; 2],
@@ -191,9 +170,10 @@ pub(crate) struct Equalizer {
 }
 
 impl Equalizer {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32, voicing: &'static session_core::Eq3Voicing) -> Self {
         Self {
             sample_rate,
+            voicing,
             low_stage1: [Biquad::identity(), Biquad::identity()],
             low_stage2: [Biquad::identity(), Biquad::identity()],
             mid: [Biquad::identity(), Biquad::identity()],
@@ -203,7 +183,7 @@ impl Equalizer {
     }
 
     pub(crate) fn set_low(&mut self, db: f32) {
-        let stage = Biquad::low_shelf(self.sample_rate, EQ_LOW_SHELF_HZ, db / 2.0);
+        let stage = Biquad::low_shelf(self.sample_rate, self.voicing.low_shelf_hz, db / 2.0);
         for (first, second) in self.low_stage1.iter_mut().zip(self.low_stage2.iter_mut()) {
             first.set_coefficients(stage);
             second.set_coefficients(stage);
@@ -211,14 +191,19 @@ impl Equalizer {
     }
 
     pub(crate) fn set_mid(&mut self, db: f32) {
-        let filter = Biquad::peaking(self.sample_rate, EQ_MID_PEAK_HZ, EQ_MID_Q, db);
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.mid_peak_hz,
+            self.voicing.mid_q,
+            db,
+        );
         for ch in &mut self.mid {
             ch.set_coefficients(filter);
         }
     }
 
     pub(crate) fn set_high(&mut self, db: f32) {
-        let stage = Biquad::high_shelf(self.sample_rate, EQ_HIGH_SHELF_HZ, db / 2.0);
+        let stage = Biquad::high_shelf(self.sample_rate, self.voicing.high_shelf_hz, db / 2.0);
         for (first, second) in self.high_stage1.iter_mut().zip(self.high_stage2.iter_mut()) {
             first.set_coefficients(stage);
             second.set_coefficients(stage);
@@ -237,11 +222,154 @@ impl Equalizer {
     }
 }
 
+fn eq4_mid_q(table: &[(f32, f32)], db: f32) -> f32 {
+    let above = table.partition_point(|&(entry_db, _)| entry_db < db);
+    let below = above.checked_sub(1).and_then(|index| table.get(index));
+    match (below, table.get(above)) {
+        (Some(&(low_db, low_q)), Some(&(high_db, high_q))) => {
+            low_q + (high_q - low_q) * (db - low_db) / (high_db - low_db)
+        }
+        (Some(&(_, q)), None) | (None, Some(&(_, q))) => q,
+        // Unreachable on a validated manifest. Butterworth keeps the bell finite rather
+        // than panicking on the audio thread.
+        (None, None) => std::f32::consts::FRAC_1_SQRT_2,
+    }
+}
+
+/// The crossfade below the detent is what the analogue stage does: it sweeps its filter's
+/// shunt reference between the stage input and ground.
+struct ShelfBand {
+    shelf: [Biquad; 2],
+    kill: [Biquad; 2],
+    kill_mix: f32,
+    range: EqRange,
+}
+
+impl ShelfBand {
+    fn new(kill: Biquad, range: EqRange) -> Self {
+        Self {
+            shelf: [Biquad::identity(), Biquad::identity()],
+            kill: [kill, kill],
+            kill_mix: 0.0,
+            range,
+        }
+    }
+
+    fn set(&mut self, db: f32, shelf: impl Fn(f32) -> Biquad) {
+        let db = db.clamp(self.range.min_db, self.range.max_db);
+        if db >= 0.0 {
+            let stage = shelf(db);
+            for channel in &mut self.shelf {
+                channel.set_coefficients(stage);
+            }
+            self.kill_mix = 0.0;
+        } else {
+            let flat = Biquad::identity();
+            for channel in &mut self.shelf {
+                channel.set_coefficients(flat);
+            }
+            self.kill_mix = db / self.range.min_db;
+        }
+    }
+
+    // Fixed coefficients, so it keeps running while mixed out rather than restarting cold.
+    #[inline]
+    fn process(&mut self, channel: usize, x: f32) -> f32 {
+        let shelved = self.shelf[channel].process(x);
+        let killed = self.kill[channel].process(shelved);
+        shelved + (killed - shelved) * self.kill_mix
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EqRange {
+    pub(crate) min_db: f32,
+    pub(crate) max_db: f32,
+}
+
+pub(crate) struct Equalizer4 {
+    sample_rate: f32,
+    voicing: &'static session_core::Eq4Voicing,
+    low: ShelfBand,
+    low_mid: [Biquad; 2],
+    high_mid: [Biquad; 2],
+    high: ShelfBand,
+}
+
+impl Equalizer4 {
+    pub(crate) fn new(
+        sample_rate: f32,
+        voicing: &'static session_core::Eq4Voicing,
+        low_range: EqRange,
+        high_range: EqRange,
+    ) -> Self {
+        let low_kill = Biquad::high_pass(sample_rate, voicing.low_hz, voicing.low_kill_q);
+        let high_kill = Biquad::low_pass(sample_rate, voicing.high_hz, voicing.high_kill_q);
+        Self {
+            sample_rate,
+            voicing,
+            low: ShelfBand::new(low_kill, low_range),
+            low_mid: [Biquad::identity(), Biquad::identity()],
+            high_mid: [Biquad::identity(), Biquad::identity()],
+            high: ShelfBand::new(high_kill, high_range),
+        }
+    }
+
+    pub(crate) fn set_low(&mut self, db: f32) {
+        let (sample_rate, hz) = (self.sample_rate, self.voicing.low_hz);
+        self.low
+            .set(db, |db| Biquad::low_shelf(sample_rate, hz, db));
+    }
+
+    pub(crate) fn set_high(&mut self, db: f32) {
+        let (sample_rate, hz) = (self.sample_rate, self.voicing.high_hz);
+        self.high
+            .set(db, |db| Biquad::high_shelf(sample_rate, hz, db));
+    }
+
+    pub(crate) fn set_low_mid(&mut self, db: f32) {
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.low_mid_hz,
+            eq4_mid_q(self.voicing.mid_q_by_db, db),
+            db,
+        );
+        for channel in &mut self.low_mid {
+            channel.set_coefficients(filter);
+        }
+    }
+
+    pub(crate) fn set_high_mid(&mut self, db: f32) {
+        let filter = Biquad::peaking(
+            self.sample_rate,
+            self.voicing.high_mid_hz,
+            eq4_mid_q(self.voicing.mid_q_by_db, db),
+            db,
+        );
+        for channel in &mut self.high_mid {
+            channel.set_coefficients(filter);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let l = self.low.process(0, l);
+        let r = self.low.process(1, r);
+        let l = self.low_mid[0].process(l);
+        let r = self.low_mid[1].process(r);
+        let l = self.high_mid[0].process(l);
+        let r = self.high_mid[1].process(r);
+        let l = self.high.process(0, l);
+        let r = self.high.process(1, r);
+        (l, r)
+    }
+}
+
 // Negative sweeps the lowpass down from 20 kHz, positive the highpass up from 20 Hz.
 
 const FILTER_MIN_FREQ_HZ: f32 = 20.0;
 const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
-const FILTER_RESONANCE_Q: f32 = 2.0;
+pub(crate) const FILTER_RESONANCE_Q: f32 = 2.0;
 // Q used at sweep=0 (center/dead-zone boundary). Interpolated up to
 // FILTER_RESONANCE_Q as the knob sweeps toward the extremes. Butterworth (0.5)
 // gives a smooth, flat response at the entry point of the sweep with no
@@ -275,6 +403,8 @@ pub(crate) struct Filter {
     sample_rate: f32,
     target_knob: f32,
     current_knob: f32,
+    target_resonance: f32,
+    current_resonance: f32,
     smoothing_coeff: f32,
     coeff_refresh_counter: u32,
     // Two cascaded 2nd-order stages per channel give 4th-order (-24 dB/oct) rolloff.
@@ -297,6 +427,8 @@ impl Filter {
             sample_rate,
             target_knob: 0.0,
             current_knob: 0.0,
+            target_resonance: FILTER_RESONANCE_Q,
+            current_resonance: FILTER_RESONANCE_Q,
             smoothing_coeff,
             coeff_refresh_counter: 0,
             filters_a: [Biquad::identity(), Biquad::identity()],
@@ -310,6 +442,11 @@ impl Filter {
 
     pub(crate) fn set_knob(&mut self, v: f32) {
         self.target_knob = v.clamp(-1.0, 1.0);
+        self.coeff_refresh_counter = 0;
+    }
+
+    pub(crate) fn set_resonance(&mut self, q: f32) {
+        self.target_resonance = q.max(FILTER_CENTER_Q);
         self.coeff_refresh_counter = 0;
     }
 
@@ -335,7 +472,7 @@ impl Filter {
         }
 
         let sweep = (abs_knob - FILTER_CENTER_DEAD_ZONE) / (1.0 - FILTER_CENTER_DEAD_ZONE);
-        let q = FILTER_CENTER_Q + (FILTER_RESONANCE_Q - FILTER_CENTER_Q) * sweep;
+        let q = FILTER_CENTER_Q + (self.current_resonance - FILTER_CENTER_Q) * sweep;
         let peak = resonant_peak(q);
         self.makeup = 1.0 / (peak * peak);
         let new_filter = if knob < 0.0 {
@@ -356,6 +493,11 @@ impl Filter {
     pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         self.current_knob =
             super::unit::approach(self.current_knob, self.target_knob, self.smoothing_coeff);
+        self.current_resonance = super::unit::approach(
+            self.current_resonance,
+            self.target_resonance,
+            self.smoothing_coeff,
+        );
 
         if self.coeff_refresh_counter == 0 {
             self.update_filters();
@@ -387,6 +529,152 @@ impl Filter {
             l * (1.0 - wet) + l_filtered * wet,
             r * (1.0 - wet) + r_filtered * wet,
         )
+    }
+}
+
+// Freeverb's tunings, by Jezar at Dreampoint, public domain.
+const REVERB_TUNING_SR: f32 = 44_100.0;
+const REVERB_COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+const REVERB_ALLPASSES: [usize; 4] = [556, 441, 341, 225];
+// The right channel's lines run this much longer, which is what makes the tail wide.
+const REVERB_STEREO_SPREAD: usize = 23;
+const REVERB_ALLPASS_FEEDBACK: f32 = 0.5;
+const REVERB_DAMPING: f32 = 0.2;
+// Freeverb's allpasses are not true allpasses: each raises the average power 7/3 times, so
+// the four come back about 14.7 dB above what entered them.
+const REVERB_OUTPUT_GAIN: f32 = 9.0 / 49.0;
+
+const REVERB_SMOOTHING_TAU_SEC: f32 = 0.020;
+
+struct Comb {
+    line: Vec<f32>,
+    index: usize,
+    damped: f32,
+    feedback: f32,
+    feedback_target: f32,
+}
+
+impl Comb {
+    fn new(length: usize) -> Self {
+        Self {
+            line: vec![0.0; length],
+            index: 0,
+            damped: 0.0,
+            feedback: 0.0,
+            feedback_target: 0.0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, input: f32, smoothing_coeff: f32) -> f32 {
+        self.feedback = super::unit::approach(self.feedback, self.feedback_target, smoothing_coeff);
+        let level = (1.0 - self.feedback * self.feedback).sqrt();
+        let output = self.line[self.index];
+        self.damped =
+            flush_denormal(output * (1.0 - REVERB_DAMPING) + self.damped * REVERB_DAMPING);
+        self.line[self.index] = flush_denormal(input * level + self.damped * self.feedback);
+        self.index = (self.index + 1) % self.line.len();
+        output
+    }
+}
+
+struct Allpass {
+    line: Vec<f32>,
+    index: usize,
+}
+
+impl Allpass {
+    fn new(length: usize) -> Self {
+        Self {
+            line: vec![0.0; length],
+            index: 0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, input: f32) -> f32 {
+        let delayed = self.line[self.index];
+        self.line[self.index] = flush_denormal(input + delayed * REVERB_ALLPASS_FEEDBACK);
+        self.index = (self.index + 1) % self.line.len();
+        delayed - input
+    }
+}
+
+pub(crate) struct Reverb {
+    sample_rate: f32,
+    tail_ms: f32,
+    combs: [[Comb; REVERB_COMBS.len()]; 2],
+    allpasses: [[Allpass; REVERB_ALLPASSES.len()]; 2],
+    smoothing_coeff: f32,
+}
+
+impl Reverb {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        let length = |tuning: usize, channel: usize| {
+            let samples = (tuning + channel * REVERB_STEREO_SPREAD) as f32;
+            ((samples * sample_rate / REVERB_TUNING_SR).round() as usize).max(1)
+        };
+        Self {
+            sample_rate,
+            tail_ms: 0.0,
+            combs: std::array::from_fn(|channel| {
+                std::array::from_fn(|index| Comb::new(length(REVERB_COMBS[index], channel)))
+            }),
+            allpasses: std::array::from_fn(|channel| {
+                std::array::from_fn(|index| Allpass::new(length(REVERB_ALLPASSES[index], channel)))
+            }),
+            smoothing_coeff: 1.0 - (-1.0 / (sample_rate * REVERB_SMOOTHING_TAU_SEC)).exp(),
+        }
+    }
+
+    pub(crate) fn settle(&mut self) {
+        for comb in self.combs.iter_mut().flatten() {
+            comb.feedback = comb.feedback_target;
+        }
+    }
+
+    pub(crate) fn set_tail_ms(&mut self, ms: f32) {
+        self.tail_ms = ms.max(1.0);
+        let tail_frames = self.tail_ms * self.sample_rate / 1000.0;
+        for comb in self.combs.iter_mut().flatten() {
+            comb.feedback_target = 10f32.powf(-3.0 * comb.line.len() as f32 / tail_frames);
+        }
+    }
+
+    pub(crate) fn ring_out_frames(&self) -> usize {
+        let longest = self
+            .combs
+            .iter()
+            .flatten()
+            .map(|comb| comb.line.len())
+            .max()
+            .unwrap_or(0);
+        (self.tail_ms * self.sample_rate / 1000.0) as usize + longest
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let input = (l + r) * 0.5 / (REVERB_COMBS.len() as f32).sqrt();
+        let smoothing_coeff = self.smoothing_coeff;
+        let mut out = [0.0f32; 2];
+        for (channel, sum) in out.iter_mut().enumerate() {
+            *sum = self.combs[channel]
+                .iter_mut()
+                .map(|comb| comb.process(input, smoothing_coeff))
+                .sum();
+            for allpass in &mut self.allpasses[channel] {
+                *sum = allpass.process(*sum);
+            }
+        }
+        (out[0] * REVERB_OUTPUT_GAIN, out[1] * REVERB_OUTPUT_GAIN)
+    }
+
+    pub(crate) fn mix_block(&mut self, send: &[f32], mix: &mut [f32]) {
+        for (frame, pair) in send.chunks_exact(2).enumerate() {
+            let (l, r) = self.process(pair[0], pair[1]);
+            mix[frame * 2] += l;
+            mix[frame * 2 + 1] += r;
+        }
     }
 }
 
@@ -776,10 +1064,29 @@ mod tests {
         }
     }
 
+    const EQ_MIN_DB: f32 = session_core::EQ_MIN_DB as f32;
+    const EQ_MAX_DB: f32 = session_core::EQ_MAX_DB as f32;
+
+    pub(super) fn classic_eq4(sample_rate: f32) -> Equalizer4 {
+        let slot = session_core::CLASSIC_4BAND
+            .strip_slot("eq")
+            .expect("an eq slot");
+        let session_core::Voicing::Eq4(voicing) = slot.voicing else {
+            panic!("the four band is voiced as one");
+        };
+        let range = EqRange {
+            min_db: EQ_MIN_DB,
+            max_db: EQ_MAX_DB,
+        };
+        Equalizer4::new(sample_rate, voicing, range, range)
+    }
+
     #[test]
-    fn eq_at_zero_db_is_transparent() {
+    fn eq_at_its_detents_is_transparent() {
         let sr = 44100.0f32;
-        let mut eq = Equalizer::new(sr);
+        let mut eq = classic_eq4(sr);
+        eq.set_low(0.0);
+        eq.set_high(0.0);
         for &s in sine_wave(1000.0, sr, 1024).iter() {
             let (l, _r) = eq.process(s, s);
             assert!((l - s).abs() < 1e-6, "input={} output={}", s, l);
@@ -791,52 +1098,177 @@ mod tests {
         (sum_sq / signal.len() as f32).sqrt()
     }
 
-    #[test]
-    fn eq_high_cut_reduces_high_frequency_level() {
+    fn band_rms(hz: f32, set: impl Fn(&mut Equalizer4)) -> f32 {
         let sr = 44100.0f32;
         let input: Vec<f32> = (0..8192)
-            .map(|i| (2.0 * std::f32::consts::PI * 8000.0 * i as f32 / sr).sin())
+            .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / sr).sin())
             .collect();
+        let mut eq = classic_eq4(sr);
+        set(&mut eq);
+        let out: Vec<f32> = input.iter().map(|&s| eq.process(s, s).0).collect();
+        rms(&out[4096..])
+    }
 
-        let mut flat = Equalizer::new(sr);
-        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
-
-        let mut cut = Equalizer::new(sr);
-        cut.set_high(-12.0);
-        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
-
-        let flat_rms = rms(&flat_out[4096..]);
-        let cut_rms = rms(&cut_out[4096..]);
+    #[test]
+    fn a_shelf_swept_to_its_end_rolls_its_band_off_at_12_db_per_octave() {
+        let at = |hz: f32, set: fn(&mut Equalizer4)| 20.0 * band_rms(hz, set).log10();
+        let one_octave = at(1250.0, |eq| eq.set_high(EQ_MIN_DB));
+        let two_octaves = at(2500.0 * 2.0, |eq| eq.set_high(EQ_MIN_DB));
         assert!(
-            cut_rms < flat_rms * 0.6,
-            "high cut should reduce 8kHz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms,
-            cut_rms
+            (one_octave - two_octaves - 12.0).abs() < 3.0,
+            "HI rolled {} dB over the octave",
+            one_octave - two_octaves
+        );
+
+        let flat_low = band_rms(80.0, |eq| eq.set_low(0.0));
+        let killed_low = band_rms(80.0, |eq| eq.set_low(EQ_MIN_DB));
+        assert!(
+            killed_low < flat_low * 0.2,
+            "80 Hz was not rolled off by LO"
         );
     }
 
     #[test]
-    fn eq_low_cut_reduces_low_frequency_level() {
-        let sr = 44100.0f32;
-        let input: Vec<f32> = (0..8192)
-            .map(|i| (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin())
-            .collect();
+    fn a_shelf_swept_the_other_way_boosts_its_band() {
+        let flat = band_rms(80.0, |eq| eq.set_low(0.0));
+        let boosted = band_rms(80.0, |eq| eq.set_low(EQ_MAX_DB));
+        assert!(boosted > flat * 1.5, "full LO boost did not reach +6 dB");
+    }
 
-        let mut flat = Equalizer::new(sr);
-        let flat_out: Vec<f32> = input.iter().map(|&s| flat.process(s, s).0).collect();
+    #[test]
+    fn each_bell_reaches_its_own_centre() {
+        let bells: [(f32, fn(&mut Equalizer4, f32)); 2] = [
+            (350.0, Equalizer4::set_low_mid),
+            (2000.0, Equalizer4::set_high_mid),
+        ];
+        for (hz, set) in bells {
+            let flat = band_rms(hz, |_| {});
+            let cut = band_rms(hz, |eq| set(eq, -20.0));
+            assert!(cut < flat * 0.5, "{hz} Hz was not cut by its own bell");
+        }
+    }
 
-        let mut cut = Equalizer::new(sr);
-        cut.set_low(-12.0);
-        let cut_out: Vec<f32> = input.iter().map(|&s| cut.process(s, s).0).collect();
+    #[test]
+    fn the_mid_q_follows_its_table_and_holds_at_either_end() {
+        let table = [(-10.0, 1.0), (0.0, 2.0)];
+        assert_eq!(eq4_mid_q(&table, -20.0), 1.0);
+        assert_eq!(eq4_mid_q(&table, -5.0), 1.5);
+        assert_eq!(eq4_mid_q(&table, 0.0), 2.0);
+        assert_eq!(eq4_mid_q(&table, 6.0), 2.0);
+    }
 
-        let flat_rms = rms(&flat_out[4096..]);
-        let cut_rms = rms(&cut_out[4096..]);
+    const REVERB_SR: f32 = 48_000.0;
+
+    fn settled_reverb(tail_ms: f32) -> Reverb {
+        let mut reverb = Reverb::new(REVERB_SR);
+        reverb.set_tail_ms(tail_ms);
+        reverb.settle();
+        reverb
+    }
+
+    fn impulse_response(reverb: &mut Reverb, seconds: f32) -> Vec<f32> {
+        let frames = (REVERB_SR * seconds) as usize;
+        let mut out = Vec::with_capacity(frames);
+        out.push(reverb.process(1.0, 1.0).0);
+        for _ in 1..frames {
+            out.push(reverb.process(0.0, 0.0).0);
+        }
+        out
+    }
+
+    fn level_db(response: &[f32], from_sec: f32, to_sec: f32) -> f32 {
+        let window = &response[(REVERB_SR * from_sec) as usize..(REVERB_SR * to_sec) as usize];
+        let power = window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32;
+        10.0 * power.max(1e-30).log10()
+    }
+
+    #[test]
+    fn a_reverb_with_nothing_sent_is_silent() {
+        let mut reverb = settled_reverb(2_000.0);
+        for _ in 0..REVERB_SR as usize {
+            assert_eq!(reverb.process(0.0, 0.0), (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn the_tail_falls_sixty_db_over_its_length() {
+        let response = impulse_response(&mut settled_reverb(1_000.0), 1.3);
+        let early = level_db(&response, 0.1, 0.2);
+        let halfway = level_db(&response, 0.6, 0.7) - early;
+        let past = level_db(&response, 1.1, 1.2) - early;
         assert!(
-            cut_rms < flat_rms * 0.6,
-            "low cut should reduce 80Hz level; flat_rms={:.4} cut_rms={:.4}",
-            flat_rms,
-            cut_rms
+            (-45.0..-20.0).contains(&halfway),
+            "halfway down {halfway} dB"
         );
+        assert!(
+            past < -45.0,
+            "a tail of 1 s was only {past} dB down after it"
+        );
+    }
+
+    #[test]
+    fn a_longer_tail_rings_longer() {
+        let short = impulse_response(&mut settled_reverb(500.0), 2.0);
+        let long = impulse_response(&mut settled_reverb(3_000.0), 2.0);
+        let late = |response: &[f32]| level_db(response, 1.0, 2.0) - level_db(response, 0.1, 0.2);
+        assert!(
+            late(&long) > late(&short) + 20.0,
+            "{} against {}",
+            late(&long),
+            late(&short)
+        );
+    }
+
+    fn steady_level_db(tail_ms: f32) -> f32 {
+        let mut reverb = settled_reverb(tail_ms);
+        let mut seed: u32 = 1;
+        let mut low = 0.0f32;
+        // Mostly below 1 kHz, where music carries its weight and damping takes little.
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            low += 0.1 * ((seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0 - low);
+            low
+        };
+        let (sent, returned): (Vec<f32>, Vec<f32>) = (0..(REVERB_SR * 3.0) as usize)
+            .map(|_| {
+                let sample = noise();
+                (sample, reverb.process(sample, sample).0)
+            })
+            .unzip();
+        level_db(&returned, 2.0, 3.0) - level_db(&sent, 2.0, 3.0)
+    }
+
+    #[test]
+    fn the_tail_changes_how_long_it_rings_and_not_how_loud() {
+        let short = steady_level_db(500.0);
+        let long = steady_level_db(5_000.0);
+        assert!((short - long).abs() < 3.0, "{short} dB against {long} dB");
+        assert!(
+            (-6.0..3.0).contains(&long),
+            "a full send returned at {long} dB"
+        );
+    }
+
+    #[test]
+    fn a_tail_at_or_below_zero_still_dies() {
+        let response = impulse_response(&mut settled_reverb(-100.0), 1.0);
+        let half = (REVERB_SR * 0.5) as usize;
+        assert!(response[half..].iter().all(|sample| sample.abs() < 1e-6));
+    }
+
+    #[test]
+    fn the_left_and_right_tails_differ() {
+        let mut reverb = settled_reverb(2_000.0);
+        reverb.process(1.0, 1.0);
+        let differs = (0..(REVERB_SR * 0.2) as usize)
+            .map(|_| reverb.process(0.0, 0.0))
+            .any(|(l, r)| (l - r).abs() > 1e-4);
+        assert!(differs);
+    }
+
+    #[test]
+    fn the_ring_out_lasts_at_least_the_tail() {
+        assert!(settled_reverb(2_000.0).ring_out_frames() >= (REVERB_SR * 2.0) as usize);
     }
 
     #[test]
@@ -951,6 +1383,7 @@ mod tests {
 // shelf frequency, or a reordered cascade. These pin the actual output.
 #[cfg(test)]
 mod identity {
+    use super::tests::classic_eq4;
     use super::*;
 
     const SAMPLE_RATE: f32 = 44_100.0;
@@ -995,10 +1428,11 @@ mod identity {
     }
 
     fn eq_probes() -> Vec<f32> {
-        let mut eq = Equalizer::new(SAMPLE_RATE);
-        eq.set_low(6.0);
-        eq.set_mid(-8.0);
-        eq.set_high(3.0);
+        let mut eq = classic_eq4(SAMPLE_RATE);
+        eq.set_low(4.0);
+        eq.set_low_mid(-8.0);
+        eq.set_high_mid(3.0);
+        eq.set_high(-12.0);
         probe(|l, r| eq.process(l, r))
     }
 
@@ -1031,49 +1465,49 @@ mod identity {
 
     #[rustfmt::skip]
     const EXPECTED_EQ: &[f32] = &[
-        -2.672801316e-1, 4.593355656e-1, -3.726890683e-2, -4.196850955e-1,
-        1.208602637e-1, 2.411809564e-1, 2.271541953e-2, 3.183543980e-1,
-        2.303746343e-1, 4.259868860e-1, -2.640019655e-1, -4.104354978e-2,
-        2.332944572e-1, 2.599276602e-1, -1.492637098e-1, 1.026549339e-1,
-        4.080123901e-1, -1.939231753e-1, 4.020324647e-1, 2.228890210e-1,
-        5.407449603e-1, 2.582729757e-1, -6.219656020e-2, 3.504483104e-1,
-        5.833734274e-1, 2.522146106e-1, 3.818815053e-1, 4.355834126e-1,
-        -1.164730340e-1, 3.443146944e-1, 6.957521439e-1, -5.202608705e-1,
-        -2.487288713e-1, 3.528073728e-1, -3.361644447e-1, 5.375606418e-1,
-        -4.845426232e-2, 4.383772314e-1, -2.172189206e-1, -4.380227327e-1,
-        -2.719285190e-1, 5.747136474e-1, -3.542581797e-1, 2.982886136e-1,
-        3.401522040e-1, 4.098726213e-1, 1.336056292e-1, 3.937143385e-1,
-        -1.769902259e-1, 1.102022529e-1, -4.605298862e-2, 3.754657507e-1,
-        3.959478736e-1, 4.447689652e-1, 1.589464247e-1, -5.938336849e-1,
-        -2.786172032e-1, -2.361189127e-1, -7.047908008e-2, 8.475690335e-2,
-        1.837246865e-1, -8.270978183e-2, 3.779116552e-3, -3.738029003e-1,
-        -2.435001582e-1, 6.597428918e-1, 1.942592710e-1, 1.599933505e-1,
-        5.480293036e-1, -8.524333686e-2, -2.239445299e-1, 2.501299977e-1,
-        -2.333959788e-1, -6.922489405e-1, 2.364087701e-1, -2.286149114e-1,
-        8.192615509e-1, -6.428797841e-1, -4.579114616e-1, -1.049317792e-2,
-        -2.921657562e-1, -2.570690960e-2, 6.366635114e-2, 4.918781519e-1,
-        4.799149036e-1, 1.433235705e-1, -1.627466679e-1, -3.351861984e-2,
-        -4.448723197e-1, -3.996409848e-2, -1.942261457e-1, 2.606243491e-1,
-        3.230100498e-2, 4.009176791e-2, -7.708870173e-1, 3.742616177e-1,
-        -4.105474055e-1, -1.336518228e-1, -8.347012848e-2, -5.722479522e-2,
-        3.655713797e-1, -4.697908759e-1, -6.785975099e-1, 2.255985290e-1,
-        3.810511529e-1, -5.775634944e-2, -6.121293306e-1, 1.143875867e-1,
-        -6.168357134e-1, -4.264205098e-1, 1.667537987e-1, -3.931484818e-1,
-        -2.654018700e-1, 2.894315422e-1, 8.412844688e-2, 5.003609061e-1,
-        -3.312286139e-1, 6.116205454e-1, 7.722440362e-1, -6.148669720e-1,
-        -1.651830524e-1, 4.627619982e-1, -2.475141138e-1, -2.161183655e-1,
-        2.331306487e-1, 4.536720514e-1, 4.082947373e-1, 3.330346346e-1,
-        3.762929738e-1, 2.971366048e-2, -1.989849806e-1, -4.663156867e-1,
-        1.336277276e-1, -2.457723320e-1, 6.262287498e-1, -7.167210579e-1,
-        -4.929295778e-1, 7.193487287e-1, -3.666267097e-1, -2.730633020e-1,
-        -3.934163451e-1, 3.216511607e-1, -4.512065649e-2, 7.001493573e-1,
-        -5.711629391e-1, 2.935220897e-1, -8.490790427e-2, -3.551824987e-1,
-        3.019878864e-1, -5.654896051e-2, 4.644807577e-1, -1.845764816e-1,
-        1.856894940e-1, -8.335237205e-2, 9.939108789e-2, -4.191378057e-1,
-        2.642998099e-1, -4.187245965e-1, -1.599487662e-1, -1.983449310e-1,
-        3.688427433e-2, -9.002367407e-2, 7.186941803e-3, -8.031918108e-2,
-        -3.543225527e-1, -6.193388253e-3, 2.286755741e-1, -8.280418813e-2,
-        -1.612436175e-1, 2.441374958e-1,
+        -1.324709952e-1, 2.276586741e-1, -5.433481187e-2, -2.379948050e-1,
+        6.471173465e-2, 1.574465036e-1, 1.138727665e-1, 2.689629197e-1,
+        1.271901280e-1, 2.500383556e-1, -1.550689042e-1, -1.019197851e-1,
+        1.313577443e-1, 2.015821487e-1, -6.819458306e-2, 1.266416721e-2,
+        2.596150935e-1, 3.030305356e-2, 2.310652584e-1, 2.115294635e-1,
+        1.441571712e-1, 1.578044742e-1, -6.970494986e-3, 2.010465860e-1,
+        3.005047441e-1, 2.570427954e-1, 1.757200062e-1, 2.626730800e-1,
+        -1.439720094e-1, 6.137210876e-2, 1.960377395e-1, -2.334267795e-1,
+        -1.274943799e-1, 1.202696115e-1, -1.268526018e-1, 2.166930437e-1,
+        5.313330889e-2, 2.832038105e-1, 1.148962602e-1, -6.645712256e-2,
+        -1.839477867e-1, 1.811905056e-1, -9.397349507e-2, 1.502274871e-1,
+        1.285328418e-1, 2.401066273e-1, 7.862018049e-2, 2.544380426e-1,
+        -2.241368294e-1, -1.057844087e-1, 8.765471727e-2, 2.593964338e-1,
+        1.521619111e-1, 2.540917993e-1, 2.479580045e-1, -1.082621813e-1,
+        -1.356182396e-1, -1.958851069e-1, -8.063078672e-2, -1.596998423e-2,
+        1.214292049e-1, -3.255382180e-3, 8.150199801e-2, -9.668639302e-2,
+        -2.198381871e-1, 2.052933872e-1, 2.120500356e-1, 2.725176811e-1,
+        1.410623491e-1, -4.675435275e-2, -2.169142663e-1, 8.377179503e-3,
+        -2.959627286e-2, -2.856968939e-1, 8.358162642e-2, -5.843140185e-2,
+        1.673666835e-1, -3.346149921e-1, -2.608200312e-1, -1.147356629e-1,
+        -2.984780669e-1, -2.186537683e-1, -4.836743698e-3, 2.451847941e-1,
+        1.648519784e-1, 1.072576940e-1, 3.041353077e-2, 4.660047591e-2,
+        -2.255350053e-1, -9.727965295e-2, 1.647041366e-2, 1.858751178e-1,
+        1.753129065e-3, 2.507622540e-2, -2.204872072e-1, 1.709071696e-1,
+        -1.545617729e-1, -1.106580049e-1, -1.326831281e-1, -1.656599939e-1,
+        1.592531055e-1, -1.667588651e-1, -1.415540129e-1, 1.287261099e-1,
+        1.471493691e-1, 2.605446801e-2, -3.282814026e-1, -8.542001247e-2,
+        -1.457607001e-1, -2.035155445e-1, 1.696975827e-1, -6.341329217e-2,
+        -8.633554727e-2, 1.219843850e-1, -3.755034506e-2, 1.585929692e-1,
+        -2.014648616e-1, 2.014262974e-1, 2.003653646e-1, -2.982605696e-1,
+        -8.676282316e-2, 2.003021985e-1, -2.584623694e-1, -3.016157746e-1,
+        -1.377993822e-2, 1.736326516e-1, 1.773674488e-1, 2.430833578e-1,
+        9.681995213e-2, 3.630496562e-2, -4.581117630e-2, -2.483896911e-1,
+        -5.295423418e-2, -2.060673535e-1, 1.960297227e-1, -2.997342944e-1,
+        -2.315933108e-1, 2.480821013e-1, -3.156897724e-1, -3.158527017e-1,
+        -2.024295330e-1, 8.973081410e-2, -1.191698313e-1, 2.377606928e-1,
+        -7.887901366e-2, 1.930376142e-1, 1.721484959e-2, -1.215685979e-1,
+        1.906346530e-1, 5.894189700e-2, 2.603484690e-1, 5.236881971e-2,
+        1.129211336e-1, 2.876224741e-2, 2.012480199e-1, -4.520867765e-2,
+        2.515160739e-1, -6.503134966e-2, -7.599392533e-2, -1.303970367e-1,
+        8.108679950e-2, -4.619568586e-3, -1.347905248e-1, -1.542650610e-1,
+        -2.541981936e-1, -1.510358751e-1, 7.969618589e-2, -2.269930765e-2,
+        -6.818598509e-2, 1.188368946e-1,
     ];
 
     #[rustfmt::skip]

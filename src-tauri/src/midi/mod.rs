@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 const CLIENT_NAME: &str = "Beatmatcher";
@@ -65,6 +65,7 @@ struct Device {
     mapping: Option<usize>,
     profile: Option<Profile>,
     memory: ControlMemory,
+    takeover: HashMap<Target, SoftTakeover>,
     deck: Option<String>,
 }
 
@@ -101,6 +102,18 @@ impl MidiState {
         }
     }
 
+    fn takeover_ignores(&self, port: &str, target: Target, current: f64, incoming: f64) -> bool {
+        let mut devices = self.devices.locked();
+        let Some(device) = devices.get_mut(port) else {
+            return true;
+        };
+        device
+            .takeover
+            .entry(target)
+            .or_default()
+            .ignores(current, incoming, Instant::now())
+    }
+
     fn mapping_for(&self, port: &str) -> Option<usize> {
         self.mappings
             .iter()
@@ -130,6 +143,7 @@ impl MidiState {
                     mapping,
                     profile,
                     memory: ControlMemory::default(),
+                    takeover: HashMap::new(),
                     deck: None,
                 },
             );
@@ -358,6 +372,11 @@ pub(crate) fn apply(
             ) else {
                 return;
             };
+            let current =
+                descriptor.to_unit_interval(f64::from(engine.audio.monitor.xfader_position()));
+            if midi.takeover_ignores(port, Target::Xfader, current, position) {
+                return;
+            }
             let value = descriptor.from_unit_interval(position);
             engine.set_xfader_position(crate::ParamOrigin::Midi, value as f32);
         }
@@ -375,6 +394,21 @@ pub(crate) fn apply(
             else {
                 return;
             };
+            let current = engine
+                .audio
+                .strip(&deck)
+                .and_then(|strip| strip.locked().param(&slot, &param));
+            if let Some(current) = current {
+                let target = Target::Param {
+                    deck: deck.clone(),
+                    slot: slot.clone(),
+                    param: param.clone(),
+                };
+                let current = descriptor.to_unit_interval(f64::from(current));
+                if midi.takeover_ignores(port, target, current, position) {
+                    return;
+                }
+            }
             let value = descriptor.from_unit_interval(position);
             engine
                 .set_deck_param(crate::ParamOrigin::Midi, &deck, &slot, &param, value as f32)
@@ -535,6 +569,7 @@ pub fn set_midi_device_deck(
         };
         device.deck = deck.clone();
         device.memory.clear();
+        device.takeover.clear();
         device.profile = match deck {
             Some(deck) => Some(state.mappings[index].profile(Some(&deck))?),
             None => None,
@@ -558,10 +593,12 @@ pub fn set_midi_monitor(state: tauri::State<'_, crate::midi::MidiState>, enabled
 
 mod decode;
 mod mapping;
+mod takeover;
 mod wire;
 use decode::{resolve_move, ControlMemory, Move};
 pub(crate) use mapping::Feedback;
 use mapping::{built_in_mappings, Mapping, Profile, ResolutionSpec};
+use takeover::{SoftTakeover, Target};
 use wire::{Key, Resolution, NOTE_ON};
 
 /// A mapped control that fails without saying so reads as broken hardware.

@@ -70,6 +70,7 @@ function sessionContent(...trackPaths: string[]): string {
   return JSON.stringify({
     version: 1,
     startedAt: '2026-06-11T00:00:00Z',
+    mixer: { id: 'classic-4band', hash: '4a8d9895950238aa' },
     events: [
       ...trackPaths.map((path, i) => ({
         elapsed_ms: 0,

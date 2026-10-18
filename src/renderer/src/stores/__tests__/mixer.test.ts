@@ -33,8 +33,7 @@ const settingsMock = reactive({
 });
 
 vi.mock('@renderer/stores/settings', () => ({
-  DEFAULT_MIXER_ID: 'classic-3band',
-  LIVE_MIXER_ID: 'classic-3band-v2',
+  LIVE_MIXER_ID: 'classic-4band',
   useSettingsStore: () => settingsMock
 }));
 
@@ -55,7 +54,8 @@ beforeEach(() => {
 });
 
 const EQ_LOW = paramKey('eq', 'low');
-const EQ_MID = paramKey('eq', 'mid');
+const EQ_LOW_MID = paramKey('eq', 'lowMid');
+const EQ_HIGH_MID = paramKey('eq', 'highMid');
 const EQ_HIGH = paramKey('eq', 'high');
 
 // Looped from the manifest rather than named, so a param the mixer gains is covered
@@ -105,7 +105,8 @@ describe('setParam', () => {
   it('does not affect other decks or params', () => {
     const store = useMixerStore();
     store.setParam('A', EQ_LOW, 4);
-    expect(store.paramValue('A', EQ_MID)).toBe(0);
+    expect(store.paramValue('A', EQ_LOW_MID)).toBe(0);
+    expect(store.paramValue('A', EQ_HIGH_MID)).toBe(0);
     expect(store.paramValue('A', EQ_HIGH)).toBe(0);
     expect(store.paramValue('B', EQ_LOW)).toBe(0);
   });
@@ -119,12 +120,23 @@ describe('eq specs', () => {
 
   it('come from the mixer manifest', () => {
     const store = useMixerStore();
-    expect(store.eqSpecs.map((spec) => spec.param)).toEqual(['low', 'mid', 'high']);
+    expect(store.eqSpecs.map((spec) => spec.param).sort()).toEqual([
+      'high',
+      'highMid',
+      'low',
+      'lowMid'
+    ]);
     for (const spec of store.eqSpecs) {
-      expect(spec.min).toBe(EQ_MIN_DB);
-      expect(spec.max).toBe(EQ_MAX_DB);
-      expect(spec.defaultValue).toBe(0);
       expect(spec.step).toBeGreaterThan(0);
+    }
+  });
+
+  it('give every band one dB scale', () => {
+    const store = useMixerStore();
+    for (const spec of store.eqSpecs) {
+      expect(spec.min, spec.param).toBe(EQ_MIN_DB);
+      expect(spec.max, spec.param).toBe(EQ_MAX_DB);
+      expect(spec.defaultValue, spec.param).toBe(0);
     }
   });
 

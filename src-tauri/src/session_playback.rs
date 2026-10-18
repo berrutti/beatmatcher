@@ -114,6 +114,13 @@ impl SessionLibrary {
             files: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
+
+    pub(crate) fn is_playing(&self) -> bool {
+        self.playback_handle
+            .locked()
+            .as_ref()
+            .is_some_and(|handle| !handle.inner().is_finished())
+    }
 }
 
 pub(crate) type TrackEntry = (Arc<Vec<f32>>, usize);
@@ -322,10 +329,18 @@ fn reset_all(audio: &audio::AppAudio) {
         }
     }
     audio.monitor.set_master_gain(DEFAULT_MASTER_GAIN);
+    audio.reset_master();
 }
 
 fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
     audio.monitor.set_master_gain(sim.master_gain);
+    audio.reset_master();
+    audio.set_fader_curve(sim.fader_curve);
+    for (address, value) in &sim.master_params {
+        if let Some((slot, param)) = address.split_once('/') {
+            audio.set_master_effect(slot, param, *value);
+        }
+    }
     for id in crate::audio::LIVE_DECK_IDS {
         let snap = sim.strips.get(id).cloned().unwrap_or_default();
         if let Some(strip_arc) = audio.strip(id) {
@@ -337,7 +352,6 @@ fn apply_sim_strips_and_master(sim: &SimState, audio: &audio::AppAudio) {
             }
             s.set_xfader_assign(snap.xfader_assign);
             s.set_xfader_position(sim.xfader_position);
-            s.set_fader_curve(sim.fader_curve);
         }
         if let Some(deck_arc) = audio.deck(id) {
             deck_arc
@@ -414,13 +428,16 @@ fn apply_event_live(
                     }
                 }
             }
-            SessionCommand::SetFaderCurve { curve } => {
-                for id in crate::audio::LIVE_DECK_IDS {
-                    if let Some(strip_arc) = audio.strip(id) {
-                        strip_arc.locked().set_fader_curve(curve);
-                    }
-                }
+            SessionCommand::SetParam {
+                scope: session_core::ParamScope::Master,
+                slot,
+                param,
+                value,
+                ..
+            } => {
+                audio.set_master_effect(slot, param, value as f32);
             }
+            SessionCommand::SetFaderCurve { curve } => audio.set_fader_curve(curve),
             SessionCommand::SetJogRotationSpeed { speed } => {
                 for id in crate::audio::LIVE_DECK_IDS {
                     if let Some(deck_arc) = audio.deck(id) {
@@ -537,7 +554,8 @@ pub(crate) async fn update_session_events(
         .files
         .locked()
         .get(&path)
-        .and_then(|session| session.mixer.clone());
+        .map(|session| session.mixer.clone())
+        .ok_or_else(|| format!("session '{path}' is not loaded"))?;
 
     index_session(
         &sessions,
@@ -603,7 +621,7 @@ pub(crate) async fn start_session_playback(
 
     // Refused rather than replayed against the wrong scales, which would differ from
     // the offline render. Hosting beats an id match, so pre-versioned sessions play.
-    let manifest = session_core::resolve_manifest(session.mixer.as_ref())?;
+    let manifest = session_core::resolve_manifest(&session.mixer)?;
     if !engine.audio.mixer().can_host(manifest) {
         return Err(format!(
             "this session was recorded on mixer '{}', which this build cannot play live",
@@ -753,6 +771,27 @@ mod tests {
     use super::*;
     use crate::audio::{ChannelStrip, Deck};
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn a_playback_counts_as_playing_until_its_task_ends() {
+        let sessions = SessionLibrary::new();
+        assert!(!sessions.is_playing());
+
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        *sessions.playback_handle.locked() = Some(tauri::async_runtime::spawn(async move {
+            finished.await.ok();
+        }));
+        assert!(sessions.is_playing());
+
+        finish.send(()).ok();
+        for _ in 0..200 {
+            if !sessions.is_playing() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!sessions.is_playing());
+    }
 
     const SR: u32 = 44100;
     const SR_F: f64 = 44100.0;

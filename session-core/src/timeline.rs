@@ -2,7 +2,7 @@
 // frontend maps it to a collection title.
 
 use crate::event::SessionEvent;
-use crate::sim::DEFAULT_MASTER_GAIN;
+use crate::{MixerManifest, ParamScope};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -789,12 +789,19 @@ pub fn build_clips(events: &[SessionEvent]) -> ClipsBuild {
     }
 }
 
-pub const DEFAULT_GAIN: f64 = 1.0;
-pub const DEFAULT_EQ_DB: f64 = 0.0;
-pub const DEFAULT_FILTER_VALUE: f64 = 0.0;
 pub const DEFAULT_RATE: f64 = 1.0;
-// Centre. A constant because `build_lanes` derives lanes without a manifest.
-pub const DEFAULT_XFADER_POSITION: f64 = 0.0;
+
+/// A lane for an address the mixer lacks starts at zero, which reads as flat for every
+/// band and centre for every bipolar control.
+fn manifest_default(manifest: &MixerManifest, scope: ParamScope, slot: &str, param: &str) -> f64 {
+    manifest
+        .descriptor(scope, slot, param)
+        .map_or(0.0, |descriptor| descriptor.default)
+}
+
+fn seeded(value: f64) -> Vec<LanePoint> {
+    vec![LanePoint { ms: 0.0, value }]
+}
 
 // A lane narrower than this is unreadable, so a flat (or barely-pitched) session
 // still draws at +/-8%. This is a timeline-drawing floor, not a pitch setting.
@@ -844,7 +851,8 @@ pub struct FilterActiveSpan {
 pub struct DeckLanes {
     pub gain: Vec<LanePoint>,
     pub eq_low: Vec<LanePoint>,
-    pub eq_mid: Vec<LanePoint>,
+    pub eq_low_mid: Vec<LanePoint>,
+    pub eq_high_mid: Vec<LanePoint>,
     pub eq_high: Vec<LanePoint>,
     pub filter: Vec<LanePoint>,
     pub rate: Vec<LanePoint>,
@@ -885,12 +893,13 @@ pub fn build_timeline(
     events: &[SessionEvent],
     duration_ms: f64,
     pitch_options: &[f64],
+    manifest: &MixerManifest,
 ) -> TimelineBuild {
     // build_clips assumes ordered input. Playback sorts the same way.
     let mut sorted: Vec<SessionEvent> = events.to_vec();
     sorted.sort_by(crate::sim::event_sim_order);
     let clips = build_clips(&sorted);
-    let lanes = build_lanes(&sorted, duration_ms, pitch_options);
+    let lanes = build_lanes(&sorted, duration_ms, pitch_options, manifest);
     TimelineBuild {
         clips: clips.clips,
         loaded_spans: clips.loaded_spans,
@@ -908,40 +917,25 @@ struct DeckAccum {
 }
 
 impl DeckAccum {
-    fn new() -> Self {
+    fn new(manifest: &MixerManifest) -> Self {
         Self {
-            lanes: make_deck_lanes(),
+            lanes: deck_lanes_at_defaults(manifest),
             filter_active_since_ms: None,
         }
     }
 }
 
-fn make_deck_lanes() -> DeckLanes {
+fn deck_lanes_at_defaults(manifest: &MixerManifest) -> DeckLanes {
+    let deck =
+        |slot: &str, param: &str| seeded(manifest_default(manifest, ParamScope::Deck, slot, param));
     DeckLanes {
-        gain: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_GAIN,
-        }],
-        eq_low: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_EQ_DB,
-        }],
-        eq_mid: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_EQ_DB,
-        }],
-        eq_high: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_EQ_DB,
-        }],
-        filter: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_FILTER_VALUE,
-        }],
-        rate: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_RATE,
-        }],
+        gain: deck("fader", "gain"),
+        eq_low: deck("eq", "low"),
+        eq_low_mid: deck("eq", "lowMid"),
+        eq_high_mid: deck("eq", "highMid"),
+        eq_high: deck("eq", "high"),
+        filter: deck("filter", "value"),
+        rate: seeded(DEFAULT_RATE),
         // Placeholder: build_lanes overwrites both once the session's largest
         // rate deviation (and thus the range step) is known.
         rate_min: DEFAULT_RATE,
@@ -961,18 +955,21 @@ fn extend_to_end(points: &mut Vec<LanePoint>, duration_ms: f64) {
     }
 }
 
-pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f64]) -> LanesBuild {
+pub fn build_lanes(
+    events: &[SessionEvent],
+    duration_ms: f64,
+    pitch_options: &[f64],
+    manifest: &MixerManifest,
+) -> LanesBuild {
     let mut decks: BTreeMap<String, DeckAccum> = BTreeMap::new();
-    let mut master_lanes = MasterLanes {
-        gain: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_MASTER_GAIN as f64,
-        }],
-        xfader: vec![LanePoint {
-            ms: 0.0,
-            value: DEFAULT_XFADER_POSITION,
-        }],
+    let master = |slot: &str, param: &str| {
+        seeded(manifest_default(manifest, ParamScope::Master, slot, param))
     };
+    let mut master_lanes = MasterLanes {
+        gain: master("gain", "gain"),
+        xfader: master("xfader", "position"),
+    };
+    let new_deck = || DeckAccum::new(manifest);
 
     // Seed a deck's lanes (and span trackers) the first time any event names it.
     for event in events {
@@ -986,7 +983,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     event.value,
                 ) {
                     (Some(id), Some("fader"), Some("gain"), Some(value)) => {
-                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                         deck.lanes.gain.push(LanePoint {
                             ms: event.elapsed_ms,
                             value: value as f64,
@@ -994,11 +991,12 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     }
 
                     (Some(id), Some("eq"), Some(band), Some(value)) => {
-                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                         let auto = &mut deck.lanes;
                         let lane = match band {
                             "low" => Some(&mut auto.eq_low),
-                            "mid" => Some(&mut auto.eq_mid),
+                            "lowMid" => Some(&mut auto.eq_low_mid),
+                            "highMid" => Some(&mut auto.eq_high_mid),
                             "high" => Some(&mut auto.eq_high),
                             _ => None,
                         };
@@ -1011,7 +1009,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     }
 
                     (Some(id), Some("filter"), Some("value"), Some(value)) => {
-                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                         deck.lanes.filter.push(LanePoint {
                             ms: event.elapsed_ms,
                             value: value as f64,
@@ -1019,7 +1017,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
                     }
 
                     (Some(id), Some("filter"), Some("active"), Some(value)) => {
-                        let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                        let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                         let active = value != 0.0;
                         let since = &mut deck.filter_active_since_ms;
                         if active && since.is_none() {
@@ -1055,7 +1053,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
 
             "deck_snapshot" => {
                 if let (Some(id), Some(rate)) = (deck_id, event.playback_rate) {
-                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                     deck.lanes.rate.push(LanePoint {
                         ms: event.elapsed_ms,
                         value: rate,
@@ -1065,7 +1063,7 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
 
             "set_playback_rate" => {
                 if let (Some(id), Some(rate)) = (deck_id, event.rate) {
-                    let deck = decks.entry(id.to_string()).or_insert_with(DeckAccum::new);
+                    let deck = decks.entry(id.to_string()).or_insert_with(new_deck);
                     deck.lanes.rate.push(LanePoint {
                         ms: event.elapsed_ms,
                         value: rate,
@@ -1087,7 +1085,8 @@ pub fn build_lanes(events: &[SessionEvent], duration_ms: f64, pitch_options: &[f
         let auto = &mut deck.lanes;
         extend_to_end(&mut auto.gain, duration_ms);
         extend_to_end(&mut auto.eq_low, duration_ms);
-        extend_to_end(&mut auto.eq_mid, duration_ms);
+        extend_to_end(&mut auto.eq_low_mid, duration_ms);
+        extend_to_end(&mut auto.eq_high_mid, duration_ms);
         extend_to_end(&mut auto.eq_high, duration_ms);
         extend_to_end(&mut auto.filter, duration_ms);
         extend_to_end(&mut auto.rate, duration_ms);
@@ -1798,7 +1797,8 @@ mod tests {
     #[test]
     fn seeds_a_deck_with_default_lane_values() {
         let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         let a = &deck_lanes["A"];
         assert_eq!(
             a.gain[0],
@@ -1808,21 +1808,53 @@ mod tests {
             }
         );
         assert_eq!(a.eq_low[0].value, 0.0);
-        assert_eq!(a.eq_mid[0].value, 0.0);
+        assert_eq!(a.eq_low_mid[0].value, 0.0);
+        assert_eq!(a.eq_high_mid[0].value, 0.0);
         assert_eq!(a.eq_high[0].value, 0.0);
         assert_eq!(a.filter[0].value, 0.0);
         assert!(a.filter_active.is_empty());
     }
 
     #[test]
+    fn every_lane_starts_at_the_default_its_mixer_declares() {
+        for manifest in crate::MANIFESTS {
+            let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
+            let LanesBuild {
+                deck_lanes,
+                master_lanes,
+            } = build_lanes(&events, 10_000.0, &PITCH_OPTS, manifest);
+            let a = &deck_lanes["A"];
+            for (slot, param, lane) in [
+                ("eq", "low", &a.eq_low),
+                ("eq", "highMid", &a.eq_high_mid),
+                ("eq", "high", &a.eq_high),
+                ("filter", "value", &a.filter),
+            ] {
+                let declared = manifest
+                    .descriptor(ParamScope::Deck, slot, param)
+                    .expect("declared")
+                    .default;
+                assert_eq!(lane[0].value, declared, "{} {slot}/{param}", manifest.id);
+            }
+            let gain = manifest
+                .descriptor(ParamScope::Master, "gain", "gain")
+                .expect("declared")
+                .default;
+            assert_eq!(master_lanes.gain[0].value, gain, "{}", manifest.id);
+        }
+    }
+
+    #[test]
     fn seeds_master_gain_default_at_ms_zero() {
-        let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
+        let LanesBuild { master_lanes, .. } =
+            build_lanes(&[], 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(master_lanes.gain[0].ms, 0.0);
     }
 
     #[test]
     fn a_session_with_no_crossfader_move_reads_centre_throughout() {
-        let LanesBuild { master_lanes, .. } = build_lanes(&[], 10_000.0, &PITCH_OPTS);
+        let LanesBuild { master_lanes, .. } =
+            build_lanes(&[], 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             master_lanes.xfader.first().map(|point| point.value),
             Some(0.0)
@@ -1839,7 +1871,8 @@ mod tests {
             SessionEvent::param(1500.0, None, "xfader", "position", -1.0),
             SessionEvent::param(3000.0, None, "xfader", "position", 1.0),
         ];
-        let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { master_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(master_lanes.xfader[1].value, -1.0);
         assert_eq!(master_lanes.xfader[1].ms, 1500.0);
         assert_eq!(master_lanes.xfader[2].value, 1.0);
@@ -1859,7 +1892,7 @@ mod tests {
             deck_lanes,
             master_lanes,
             ..
-        } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        } = build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         let gain = &deck_lanes["A"].gain;
         assert_eq!(
             *gain.last().unwrap(),
@@ -1874,7 +1907,8 @@ mod tests {
     #[test]
     fn appends_gain_points_for_fader_gain() {
         let events = vec![SessionEvent::param(1000.0, Some("A"), "fader", "gain", 0.7)];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         let gain = &deck_lanes["A"].gain;
         assert_eq!(gain.len(), 3);
         assert_eq!(
@@ -1895,20 +1929,24 @@ mod tests {
     #[test]
     fn routes_eq_params_to_their_band_lane() {
         let events = vec![
-            SessionEvent::param(100.0, Some("A"), "eq", "low", -3.0),
-            SessionEvent::param(200.0, Some("A"), "eq", "mid", 2.0),
-            SessionEvent::param(300.0, Some("A"), "eq", "high", 4.0),
+            SessionEvent::param(100.0, Some("A"), "eq", "low", -6.0),
+            SessionEvent::param(200.0, Some("A"), "eq", "lowMid", 2.0),
+            SessionEvent::param(300.0, Some("A"), "eq", "highMid", -3.0),
+            SessionEvent::param(400.0, Some("A"), "eq", "high", 4.0),
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
-        assert_eq!(deck_lanes["A"].eq_low[1].value, -3.0);
-        assert_eq!(deck_lanes["A"].eq_mid[1].value, 2.0);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
+        assert_eq!(deck_lanes["A"].eq_low[1].value, -6.0);
+        assert_eq!(deck_lanes["A"].eq_low_mid[1].value, 2.0);
+        assert_eq!(deck_lanes["A"].eq_high_mid[1].value, -3.0);
         assert_eq!(deck_lanes["A"].eq_high[1].value, 4.0);
     }
 
     #[test]
     fn appends_master_gain_points_regardless_of_deck() {
         let events = vec![SessionEvent::param(1500.0, None, "gain", "gain", 0.5)];
-        let LanesBuild { master_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { master_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(master_lanes.gain[1].value, 0.5);
         assert_eq!(master_lanes.gain[1].ms, 1500.0);
         assert_eq!(master_lanes.gain.last().unwrap().ms, 5000.0);
@@ -1920,7 +1958,8 @@ mod tests {
             SessionEvent::param(1000.0, Some("A"), "filter", "active", 1.0),
             SessionEvent::param(4000.0, Some("A"), "filter", "active", 0.0),
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1937,7 +1976,8 @@ mod tests {
             SessionEvent::param(2000.0, Some("A"), "filter", "active", 1.0),
             SessionEvent::param(4000.0, Some("A"), "filter", "active", 0.0),
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1956,7 +1996,8 @@ mod tests {
             "active",
             1.0,
         )];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             deck_lanes["A"].filter_active,
             vec![FilterActiveSpan {
@@ -1972,7 +2013,8 @@ mod tests {
             rate: Some(1.05),
             ..event("set_playback_rate", 2000.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 10_000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 10_000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             deck_lanes["A"].rate,
             vec![
@@ -2001,7 +2043,8 @@ mod tests {
             playback_rate: Some(0.96),
             ..event("deck_snapshot", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert_eq!(
             deck_lanes["A"].rate,
             vec![
@@ -2030,7 +2073,8 @@ mod tests {
             },
             SessionEvent::param(200.0, Some("B"), "fader", "gain", 0.5),
         ];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert!((deck_lanes["A"].rate_min - 0.9).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 1.1).abs() < 1e-9);
         assert!((deck_lanes["B"].rate_min - 0.9).abs() < 1e-9);
@@ -2040,7 +2084,8 @@ mod tests {
     #[test]
     fn rate_range_defaults_to_smallest_when_neutral() {
         let events = vec![SessionEvent::param(0.0, Some("A"), "fader", "gain", 1.0)];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert!((deck_lanes["A"].rate_min - 0.92).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 1.08).abs() < 1e-9);
     }
@@ -2051,7 +2096,8 @@ mod tests {
             rate: Some(3.0),
             ..event("set_playback_rate", 0.0, Some("A"))
         }];
-        let LanesBuild { deck_lanes, .. } = build_lanes(&events, 5000.0, &PITCH_OPTS);
+        let LanesBuild { deck_lanes, .. } =
+            build_lanes(&events, 5000.0, &PITCH_OPTS, &crate::CLASSIC_4BAND);
         assert!((deck_lanes["A"].rate_min - 0.0).abs() < 1e-9);
         assert!((deck_lanes["A"].rate_max - 2.0).abs() < 1e-9);
     }

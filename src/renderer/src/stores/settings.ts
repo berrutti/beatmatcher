@@ -20,13 +20,7 @@ export type JogRotationSpeedOption = (typeof JOG_ROTATION_SPEED_OPTIONS)[number]
 export const FADER_CURVE_OPTIONS = ['exponential', 'linear', 'logarithmic'] as const;
 export type FaderCurveOption = (typeof FADER_CURVE_OPTIONS)[number];
 
-// Sessions written before the .bms carried a mixer header were all played on
-// this one, so it is the fallback when a file names none.
-export const DEFAULT_MIXER_ID = 'classic-3band';
-
-// What the engine builds its strips on today. It diverged from the fallback with the
-// crossfader, which could not go into a frozen manifest without refusing older sessions.
-export const LIVE_MIXER_ID = 'classic-3band-v2';
+export const LIVE_MIXER_ID = 'classic-3band';
 
 type Stored = {
   keybindings?: Keybindings;

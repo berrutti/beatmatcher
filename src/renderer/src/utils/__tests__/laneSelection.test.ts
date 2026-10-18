@@ -3,10 +3,12 @@ import {
   toggleLane,
   lanesForDeck,
   lanesForMaster,
+  lanesOnMixer,
   DEFAULT_DECK_LANES,
   DEFAULT_MASTER_LANES
 } from '@renderer/utils/laneSelection';
-import { DECK_LANE_KEYS, MASTER_LANE_KEYS } from '@renderer/utils/types';
+import { laneSpecs } from '@renderer/utils/sessionCore';
+import { DECK_LANE_KEYS, MASTER_LANE_KEYS, type EditableLaneKey } from '@renderer/utils/types';
 
 describe('toggleLane', () => {
   it('adds a lane that was not selected', () => {
@@ -21,16 +23,16 @@ describe('toggleLane', () => {
     const byOneOrder = toggleLane(
       DECK_LANE_KEYS,
       toggleLane(DECK_LANE_KEYS, ['jog'], 'gain'),
-      'eqMid'
+      'eqHighMid'
     );
     const byAnother = toggleLane(
       DECK_LANE_KEYS,
-      toggleLane(DECK_LANE_KEYS, ['eqMid'], 'jog'),
+      toggleLane(DECK_LANE_KEYS, ['eqHighMid'], 'jog'),
       'gain'
     );
 
     expect(byOneOrder).toEqual(byAnother);
-    expect(byOneOrder).toEqual(['gain', 'eqMid', 'jog']);
+    expect(byOneOrder).toEqual(['gain', 'eqHighMid', 'jog']);
   });
 
   it('refuses to turn off the last lane, so a row always has one to click on', () => {
@@ -78,5 +80,37 @@ describe('lanesForMaster', () => {
 
   it('never offers a deck lane on the master row', () => {
     expect(lanesForMaster(['filter', 'xfader'])).toEqual(['xfader']);
+  });
+});
+
+describe('lanesOnMixer', () => {
+  function existsOn(mixerId: string): (lane: EditableLaneKey) => boolean {
+    return (lane) => laneSpecs(mixerId)[lane].available;
+  }
+
+  it('offers no low-mid lane on the three-band mixer', () => {
+    expect(lanesOnMixer(DECK_LANE_KEYS, existsOn('classic-3band'), DEFAULT_DECK_LANES)).toEqual(
+      DECK_LANE_KEYS.filter((lane) => lane !== 'eqLowMid')
+    );
+  });
+
+  it('offers every lane on the four-band mixer', () => {
+    expect(lanesOnMixer(DECK_LANE_KEYS, existsOn('classic-4band'), DEFAULT_DECK_LANES)).toEqual([
+      ...DECK_LANE_KEYS
+    ]);
+  });
+
+  it('falls back to the default when every chosen lane is missing', () => {
+    expect(lanesOnMixer(['eqLowMid'], existsOn('classic-3band'), DEFAULT_DECK_LANES)).toEqual(
+      DEFAULT_DECK_LANES
+    );
+  });
+
+  it('keeps the master lanes on both mixers', () => {
+    for (const mixerId of ['classic-3band', 'classic-4band']) {
+      expect(lanesOnMixer(MASTER_LANE_KEYS, existsOn(mixerId), DEFAULT_MASTER_LANES)).toEqual([
+        ...MASTER_LANE_KEYS
+      ]);
+    }
   });
 });

@@ -74,6 +74,7 @@ pub struct SimState {
     pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
     pub xfader_position: f32,
+    pub master_params: BTreeMap<String, f32>,
     pub fader_curve: crate::FaderCurve,
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
@@ -85,6 +86,7 @@ impl Default for SimState {
             strips: HashMap::new(),
             master_gain: DEFAULT_MASTER_GAIN,
             xfader_position: 0.0,
+            master_params: BTreeMap::new(),
             fader_curve: crate::FaderCurve::default(),
             jog_rotation_speed: crate::JogRotationSpeed::default(),
         }
@@ -122,6 +124,7 @@ pub struct SessionSnapshot {
     pub strips: HashMap<String, StripSim>,
     pub master_gain: f32,
     pub xfader_position: f32,
+    pub master_params: BTreeMap<String, f32>,
     pub fader_curve: crate::FaderCurve,
     pub jog_rotation_speed: crate::JogRotationSpeed,
 }
@@ -210,6 +213,7 @@ pub fn sim_state_from_snapshot(snap: &SessionSnapshot) -> SimState {
         master_gain: snap.master_gain,
         jog_rotation_speed: snap.jog_rotation_speed,
         xfader_position: snap.xfader_position,
+        master_params: snap.master_params.clone(),
         fader_curve: snap.fader_curve,
     }
 }
@@ -411,7 +415,11 @@ pub fn sim_apply_event(
             }
             (None, "gain", "gain") => state.master_gain = value as f32,
             (None, "xfader", "position") => state.xfader_position = value as f32,
-            (None, _, _) => {}
+            (None, _, _) => {
+                state
+                    .master_params
+                    .insert(format!("{slot}/{param}"), value as f32);
+            }
         },
         SessionCommand::SetBeatGrid {
             deck,
@@ -488,6 +496,7 @@ fn snap_at(state: &SimState, ms: f64, sample_rate_f64: f64) -> SessionSnapshot {
         strips,
         master_gain: state.master_gain,
         xfader_position: state.xfader_position,
+        master_params: state.master_params.clone(),
         fader_curve: state.fader_curve,
         jog_rotation_speed: state.jog_rotation_speed,
     }
@@ -1023,6 +1032,18 @@ mod tests {
             SAMPLE_RATE,
         );
         assert_eq!(state.master_gain, 0.5);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_master_effect_settings() {
+        let events = [
+            SessionEvent::param(0.0, None, "reverb", "tail", 250.0),
+            SessionEvent::param(0.0, None, "filter", "resonance", 3.5),
+        ];
+        let snaps = build_snapshots(&events, SAMPLE_RATE, &HashMap::new());
+        let last = snaps.last().expect("a snapshot");
+        assert_eq!(last.master_params.get("reverb/tail"), Some(&250.0));
+        assert_eq!(last.master_params.get("filter/resonance"), Some(&3.5));
     }
 
     #[test]
@@ -1741,10 +1762,6 @@ mod tests {
 
     #[test]
     fn filter_defaults_to_center_so_active_without_a_curve_is_transparent() {
-        // Turning the filter on with no set_filter value must leave the knob at 0
-        // (center/bypass), matching the timeline's DEFAULT_FILTER_VALUE. A stale
-        // non-zero default would audibly filter where the drawn curve reads 0
-        // (e.g. after stretching an active region back over an un-drawn stretch).
         let events = vec![SessionEvent::param(
             1000.0,
             Some("A"),

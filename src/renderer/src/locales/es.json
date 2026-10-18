@@ -40,6 +40,17 @@
   },
   "settings": {
     "title": "Configuración",
+    "panes": {
+      "audio": "Audio",
+      "mixer": "Mezclador",
+      "decks": "Decks",
+      "control": "Control",
+      "appearance": "Apariencia"
+    },
+    "filter": {
+      "placeholder": "Filtrar ajustes",
+      "noMatch": "Ningún ajuste coincide."
+    },
     "close": "Cerrar",
     "limiter": {
       "title": "Limitador de salida",
@@ -117,6 +128,12 @@
       "title": "Número de decks por defecto",
       "unit": "decks",
       "hint": "Número de decks activos. Tiene efecto inmediato y se recuerda entre sesiones."
+    },
+    "mixer": {
+      "title": "EQ",
+      "threeBand": "3 bandas",
+      "fourBand": "4 bandas",
+      "hint": "La de 3 bandas tiene un shelf de graves, una campana de medios y un shelf de agudos. La de 4 bandas divide los medios y sus bandas externas llegan hasta el silencio. Cambiarla reinicia los mandos de EQ; faders y filtros mantienen su posición."
     },
     "language": {
       "title": "Idioma",
@@ -263,7 +280,13 @@
     "assignA": "A",
     "assignB": "B",
     "assignHint": "Asignar al crossfader: A o B, ninguno para omitir",
-    "xfaderHint": "Crossfader: doble clic para centrar"
+    "xfaderHint": "Crossfader: doble clic para centrar",
+    "reverb": "Reverb",
+    "sendHint": "Cuánto de este canal alimenta la reverb",
+    "tail": "Cola",
+    "tailHint": "Cuánto dura la cola de la reverb",
+    "resonance": "Resonancia",
+    "resonanceHint": "Resonancia del filtro, de suave a extrema, para todos los canales"
   },
   "session": {
     "dropHint": "Suelta aquí una sesión grabada o haz clic para abrir",
@@ -273,7 +296,8 @@
       "filter": "Filtro",
       "rate": "Pitch",
       "eqLow": "EQ Graves",
-      "eqMid": "EQ Medios",
+      "eqLowMid": "EQ Medios Bajos",
+      "eqHighMid": "EQ Medios Altos",
       "eqHigh": "EQ Agudos",
       "jog": "Jog",
       "masterGain": "Master",

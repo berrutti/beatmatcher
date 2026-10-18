@@ -6,7 +6,7 @@ const SESSION_MS = 100_000;
 function camera() {
   const view = useTimelineView(
     () => SESSION_MS,
-    () => 'classic-3band'
+    () => 'classic-4band'
   );
   view.setView({ start: 0, duration: 10_000 });
   return view;

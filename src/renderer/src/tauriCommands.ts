@@ -74,9 +74,11 @@ type Commands = {
   set_loop_in: { args: { deck: string }; returns: unknown };
   set_loop_out: { args: { deck: string }; returns: unknown | null };
   set_main_device: { args: { deviceId: string; channelOffset: number }; returns: void };
+  set_master_effect: { args: { slot: string; param: string; value: number }; returns: void };
   set_master_gain: { args: { gain: number }; returns: void };
   set_midi_device_deck: { args: { port: string; deck: string | null }; returns: void };
   set_midi_monitor: { args: { enabled: boolean }; returns: void };
+  set_mixer: { args: { id: string }; returns: unknown[] };
   set_nudge: { args: { deck: string; percent: number }; returns: unknown };
   set_pitch_offset: { args: { deck: string; percent: number }; returns: number };
   set_pitch_range: { args: { percent: number }; returns: void };
