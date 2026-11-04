@@ -40,7 +40,7 @@
     "@tauri-apps/plugin-store": "^2.4.4",
     "pinia": "^3.0.4",
     "vue": "^3.5.42",
-    "vue-i18n": "^11.4.10"
+    "vue-i18n": "^11.4.14"
   },
   "simple-git-hooks": {
     "pre-commit": "yarn lint && yarn lint:rust && yarn format"
